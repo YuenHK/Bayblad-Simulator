@@ -573,13 +573,15 @@ export class RealtimeGateway {
       this.#emit(socket, this.#rooms.snapshot(membership.roomId, session.id));
       this.#broadcastLobby();
     } else if (event.type === "room.join") {
-      const membership = this.#rooms.join(event.roomId, this.#user(session), event.role);
-      session.roomIds.add(event.roomId);
-      this.#bindParticipant(event.roomId, membership.participantId, session.id);
-      this.#joinTransportRoom(socket, session, event.roomId);
-      this.#broadcastRoom(event.roomId);
-      this.#emit(socket, this.#rooms.snapshot(event.roomId, session.id));
-      this.#sendCheckpoint(socket, event.roomId, session.id);
+      const roomId = this.#rooms.resolveRoomReference(event.roomId);
+      if (!roomId) throw Object.assign(new Error("ROOM_NOT_FOUND"), { code: "ROOM_NOT_FOUND" });
+      const membership = this.#rooms.join(roomId, this.#user(session), event.role);
+      session.roomIds.add(roomId);
+      this.#bindParticipant(roomId, membership.participantId, session.id);
+      this.#joinTransportRoom(socket, session, roomId);
+      this.#broadcastRoom(roomId);
+      this.#emit(socket, this.#rooms.snapshot(roomId, session.id));
+      this.#sendCheckpoint(socket, roomId, session.id);
       this.#broadcastLobby();
     } else if (event.type === "room.move") {
       this.#rooms.move(event.roomId, session.id, event.target, event.subjectParticipantId);
@@ -597,6 +599,29 @@ export class RealtimeGateway {
       const match = this.#matches.get(event.roomId);
       if (match) this.#cancelMatch(event.roomId, match);
       this.#cleanupRoom(event.roomId);
+      this.#broadcastLobby();
+    } else if (event.type === "room.leave") {
+      const beforeLeave = this.#rooms.snapshot(event.roomId, session.id);
+      if (beforeLeave.phase !== "waiting" && beforeLeave.viewer.role !== "spectator") {
+        throw Object.assign(new Error("ROOM_ACTIVE"), { code: "ROOM_ACTIVE" });
+      }
+      const participantId = this.#participantForSession(event.roomId, session.id);
+      this.#rooms.leave(event.roomId, session.id);
+      this.#sessionIdsByParticipant.get(event.roomId)?.delete(participantId);
+      session.roomIds.delete(event.roomId);
+      session.ownedRoomIds.delete(event.roomId);
+      this.io.in(`session:${session.id}`).socketsLeave([
+        `room:${event.roomId}`, `room:${event.roomId}:player1`,
+        `room:${event.roomId}:player2`, `room:${event.roomId}:spectator`,
+      ]);
+      if (this.#rooms.hasRoom(event.roomId)) {
+        const room = this.#rooms.get(event.roomId)!;
+        const nextOwnerSessionId = room.ownerParticipantId
+          ? this.#sessionIdsByParticipant.get(event.roomId)?.get(room.ownerParticipantId)
+          : undefined;
+        if (nextOwnerSessionId) this.#sessionsById.get(nextOwnerSessionId)?.ownedRoomIds.add(event.roomId);
+        this.#broadcastRoom(event.roomId);
+      } else this.#cleanupRoom(event.roomId);
       this.#broadcastLobby();
     } else if (event.type === "launch.tap") {
       const match = this.#matches.get(event.roomId);

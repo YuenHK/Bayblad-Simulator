@@ -99,6 +99,37 @@ describe("realtime app", () => {
     vi.unstubAllEnvs();
   });
 
+  it("可以用公開房間碼進入並真正離房，不會在重連時自動回到舊房", async () => {
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const owner = await connect(url, "Owner");
+    const peer = await connect(url, "Peer");
+    closers.push(() => { owner.socket.close(); }, () => { peer.socket.close(); });
+    const created = nextEvent(owner.socket, "room.snapshot");
+    owner.socket.emit("client.event", command("room.create", { name: "Code room" }));
+    const room = await created;
+    const joined = nextEvent(peer.socket, "room.snapshot");
+    const joinedDelta = nextEvent(owner.socket, "room.delta");
+    peer.socket.emit("client.event", command("room.join", { roomId: room.code.toLowerCase(), role: "player" }));
+    const peerRoom = await joined;
+    await joinedDelta;
+    expect(peerRoom.roomId).toBe(room.roomId);
+    const left = nextEvent(owner.socket, "room.delta");
+    peer.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
+    expect(await left).toMatchObject({ patch: { player2: null } });
+    peer.socket.close();
+    const resumed = await connect(url, "Peer", peer.token);
+    closers.push(() => { resumed.socket.close(); });
+    const unexpected = vi.fn();
+    resumed.socket.on("server.event", (event) => { if (event.type === "room.snapshot") unexpected(event); });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(unexpected).not.toHaveBeenCalled();
+  });
+
   it("allocates sessions only after hello, enforces handshake timeout, quotas, rate recovery, and payload limits", async () => {
     let now = 1_000;
     const app = buildApp({

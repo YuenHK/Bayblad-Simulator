@@ -133,12 +133,21 @@ export const roomCloseEventSchema = z
   })
   .strict();
 
+export const roomLeaveEventSchema = z
+  .object({
+    type: z.literal("room.leave"),
+    roomId: correlationIdSchema,
+    ...commandEnvelopeShape,
+  })
+  .strict();
+
 export const v1CommandEventSchema = z.discriminatedUnion("type", [
   roomCreateEventSchema,
   roomJoinEventSchema,
   roomMoveEventSchema,
   playerReadyEventSchema,
   launchTapEventSchema,
+  roomLeaveEventSchema,
   roomCloseEventSchema,
 ]);
 export type V1CommandEvent = z.infer<typeof v1CommandEventSchema>;
@@ -150,6 +159,7 @@ export const clientEventSchema = z.discriminatedUnion("type", [
   roomMoveEventSchema,
   playerReadyEventSchema,
   launchTapEventSchema,
+  roomLeaveEventSchema,
   roomCloseEventSchema,
 ]);
 export type ClientEvent = z.infer<typeof clientEventSchema>;
@@ -160,6 +170,7 @@ export type RoomJoinEvent = z.infer<typeof roomJoinEventSchema>;
 export type RoomMoveEvent = z.infer<typeof roomMoveEventSchema>;
 export type PlayerReadyEvent = z.infer<typeof playerReadyEventSchema>;
 export type LaunchTapEvent = z.infer<typeof launchTapEventSchema>;
+export type RoomLeaveEvent = z.infer<typeof roomLeaveEventSchema>;
 export type RoomCloseEvent = z.infer<typeof roomCloseEventSchema>;
 
 export const protocolWelcomeEventSchema = z

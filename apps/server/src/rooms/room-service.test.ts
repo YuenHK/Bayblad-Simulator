@@ -30,6 +30,13 @@ const makeHarness = () => {
 const user = (id: string, displayName = id) => ({ id, displayName });
 
 describe("RoomService membership and public state", () => {
+  it("將公開房間碼解析為房間 id，也接受原本 id", () => {
+    const { service } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    expect(service.resolveRoomReference(room.code.toLowerCase())).toBe(room.roomId);
+    expect(service.resolveRoomReference(room.roomId)).toBe(room.roomId);
+    expect(service.resolveRoomReference("missing")).toBeUndefined();
+  });
   it("creates a normalized room with its owner in player 1 and unique codes", () => {
     const { service } = makeHarness();
     const first = service.create(user("internal-owner", "  Cafe\u0301 🌟  "), "  First  ");

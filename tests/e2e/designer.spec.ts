@@ -41,7 +41,7 @@ test("iPad student creates a legal three-layer design and loads the real 3D chun
   await replaceNumber(page, "圓角程度", "0.7");
   await replaceNumber(page, "螺絲半徑（mm）", "10");
 
-  await expect(page.getByRole("button", { name: "規格通過，可參戰" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "用此設計參戰" })).toBeEnabled();
   const tabs = page.getByRole("tablist", { name: "預覽模式" }).getByRole("tab");
   await expect(tabs).toHaveCount(3);
 
