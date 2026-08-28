@@ -4,6 +4,7 @@ import { makeDefaultDesign, type TopDesign } from "./design";
 import { makeLayerVertices } from "./geometry";
 import { ASSEMBLY } from "./mass";
 import {
+  calculateMinimumMaterialNeckMm,
   validateDesign,
   validateHeightLimit,
   validateMassLimit,
@@ -111,6 +112,31 @@ describe("metal-disc fit", () => {
 });
 
 describe("screw and material safety", () => {
+  it("calculates the minimum clearance from layer, axle, and screw gaps", () => {
+    const outerLimited = designWithAllLayers({ diameterMm: 40 });
+    outerLimited.screwLayout.radiusMm = 15;
+    expect(calculateMinimumMaterialNeckMm(outerLimited)).toBeCloseTo(3, 10);
+
+    const axleLimited = designWithAllLayers({ diameterMm: 40 });
+    axleLimited.screwLayout.radiusMm = 5;
+    expect(calculateMinimumMaterialNeckMm(axleLimited)).toBeCloseTo(-0.25, 10);
+
+    const screwGapLimited = designWithAllLayers({ diameterMm: 40 });
+    screwGapLimited.screwLayout = { count: 8, radiusMm: 7, rotationDeg: 0 };
+    expect(calculateMinimumMaterialNeckMm(screwGapLimited)).toBeCloseTo(
+      2 * 7 * Math.sin(Math.PI / 8) - 2 * ASSEMBLY.screwHoleRadiusMm,
+      10,
+    );
+  });
+
+  it("returns a negative clearance when a screw hole crosses a layer edge", () => {
+    const design = designWithAllLayers({ diameterMm: 40 });
+    design.screwLayout.radiusMm = 18.5;
+
+    expect(calculateMinimumMaterialNeckMm(design)).toBeCloseTo(-0.5, 10);
+    expect(issueCodes(design)).toContain("SCREW_OUTSIDE_LAYER");
+  });
+
   it.each([
     [17.999, false, true],
     [18, false, true],

@@ -2,212 +2,198 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   PERFORMANCE_MODEL_VERSION,
+  calculateMassProperties,
+  calculateMinimumMaterialNeckMm,
+  derivePerformanceInput,
+  makeDefaultDesign,
+  predictDesignPerformance,
   predictPerformance,
   scoreStability,
+  validateDesign,
   type PerformanceInput,
   type PerformancePrediction,
+  type TopDesign,
 } from ".";
 
-type CalibrationFixture = Readonly<{
+type DesignFixture = Readonly<{
   name: string;
-  input: PerformanceInput;
-  expected: Omit<PerformancePrediction, "modelVersion">;
+  diameterMm: number;
+  screwCount: number;
+  screwRadiusMm: number;
+  roundness: number;
+  metalDiscDiameterMm: number;
+  expectedMassRange: readonly [number, number];
+  expectedSpeedRange: readonly [number, number];
+  expectedSpinDurationRange: readonly [number, number];
 }>;
 
-const calibrationFixtures: readonly CalibrationFixture[] = [
+const calibrationFixtures: readonly DesignFixture[] = [
   {
-    name: "light compact beginner top",
-    input: {
-      totalMassG: 10,
-      polarMomentGmm2: 5_000,
-      averageCornerRoundness: 0.2,
-      minNeckThicknessMm: 2,
-      centerOfMassOffsetMm: 0.1,
-    },
-    expected: {
-      speed: 91.5,
-      spinDuration: 24.142857142857142,
-      stability: 98.2,
-      impactResistance: 39,
-    },
+    name: "compact sharp three-screw",
+    diameterMm: 30,
+    screwCount: 3,
+    screwRadiusMm: 10,
+    roundness: 0,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [13, 14],
+    expectedSpeedRange: [85, 87],
+    expectedSpinDurationRange: [17, 18],
   },
   {
-    name: "light rim-weighted top",
-    input: {
-      totalMassG: 10,
-      polarMomentGmm2: 15_000,
-      averageCornerRoundness: 0.2,
-      minNeckThicknessMm: 2,
-      centerOfMassOffsetMm: 0.1,
-    },
-    expected: {
-      speed: 91.5,
-      spinDuration: 38.42857142857143,
-      stability: 98.2,
-      impactResistance: 39,
-    },
+    name: "compact rounded three-screw",
+    diameterMm: 30,
+    screwCount: 3,
+    screwRadiusMm: 10,
+    roundness: 1,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [13, 14],
+    expectedSpeedRange: [95, 97],
+    expectedSpinDurationRange: [27, 28],
   },
   {
-    name: "medium balanced top",
-    input: {
-      totalMassG: 35,
-      polarMomentGmm2: 25_000,
-      averageCornerRoundness: 0.5,
-      minNeckThicknessMm: 3,
-      centerOfMassOffsetMm: 0.5,
-    },
-    expected: {
-      speed: 68.25,
-      spinDuration: 55.714285714285715,
-      stability: 91,
-      impactResistance: 56.5,
-    },
+    name: "small four-screw",
+    diameterMm: 36,
+    screwCount: 4,
+    screwRadiusMm: 13,
+    roundness: 0.25,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [19, 21],
+    expectedSpeedRange: [81, 83],
+    expectedSpinDurationRange: [22, 23],
   },
   {
-    name: "medium fully rounded top",
-    input: {
-      totalMassG: 35,
-      polarMomentGmm2: 25_000,
-      averageCornerRoundness: 1,
-      minNeckThicknessMm: 3,
-      centerOfMassOffsetMm: 0.5,
-    },
-    expected: {
-      speed: 73.25,
-      spinDuration: 60.714285714285715,
-      stability: 91,
-      impactResistance: 64,
-    },
+    name: "balanced four-screw",
+    diameterMm: 40,
+    screwCount: 4,
+    screwRadiusMm: 15,
+    roundness: 0.5,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [24, 26],
+    expectedSpeedRange: [78, 80],
+    expectedSpinDurationRange: [27, 28],
   },
   {
-    name: "medium sharp-cornered top",
-    input: {
-      totalMassG: 35,
-      polarMomentGmm2: 25_000,
-      averageCornerRoundness: 0,
-      minNeckThicknessMm: 3,
-      centerOfMassOffsetMm: 0.5,
-    },
-    expected: {
-      speed: 63.25,
-      spinDuration: 50.714285714285715,
-      stability: 91,
-      impactResistance: 49,
-    },
+    name: "balanced top with metal disc",
+    diameterMm: 40,
+    screwCount: 4,
+    screwRadiusMm: 15,
+    roundness: 0.5,
+    metalDiscDiameterMm: 30,
+    expectedMassRange: [30, 31],
+    expectedSpeedRange: [72, 74],
+    expectedSpinDurationRange: [28, 29],
   },
   {
-    name: "medium thin-neck top",
-    input: {
-      totalMassG: 35,
-      polarMomentGmm2: 25_000,
-      averageCornerRoundness: 0.5,
-      minNeckThicknessMm: 1,
-      centerOfMassOffsetMm: 0.5,
-    },
-    expected: {
-      speed: 68.25,
-      spinDuration: 55.714285714285715,
-      stability: 91,
-      impactResistance: 30.5,
-    },
+    name: "medium five-screw",
+    diameterMm: 44,
+    screwCount: 5,
+    screwRadiusMm: 17,
+    roundness: 0.4,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [30, 31],
+    expectedSpeedRange: [71, 73],
+    expectedSpinDurationRange: [29, 31],
   },
   {
-    name: "medium thick-neck top",
-    input: {
-      totalMassG: 35,
-      polarMomentGmm2: 25_000,
-      averageCornerRoundness: 0.5,
-      minNeckThicknessMm: 6,
-      centerOfMassOffsetMm: 0.5,
-    },
-    expected: {
-      speed: 68.25,
-      spinDuration: 55.714285714285715,
-      stability: 91,
-      impactResistance: 95.5,
-    },
+    name: "wide six-screw",
+    diameterMm: 50,
+    screwCount: 6,
+    screwRadiusMm: 20,
+    roundness: 0.6,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [39, 40],
+    expectedSpeedRange: [64, 66],
+    expectedSpinDurationRange: [38, 40],
   },
   {
-    name: "perfectly centred top",
-    input: {
-      totalMassG: 35,
-      polarMomentGmm2: 25_000,
-      averageCornerRoundness: 0.5,
-      minNeckThicknessMm: 3,
-      centerOfMassOffsetMm: 0,
-    },
-    expected: {
-      speed: 68.25,
-      spinDuration: 55.714285714285715,
-      stability: 100,
-      impactResistance: 56.5,
-    },
+    name: "wide top with metal disc",
+    diameterMm: 50,
+    screwCount: 6,
+    screwRadiusMm: 20,
+    roundness: 0.6,
+    metalDiscDiameterMm: 40,
+    expectedMassRange: [49, 50],
+    expectedSpeedRange: [53, 55],
+    expectedSpinDurationRange: [41, 42],
   },
   {
-    name: "two-millimetre offset top",
-    input: {
-      totalMassG: 35,
-      polarMomentGmm2: 25_000,
-      averageCornerRoundness: 0.5,
-      minNeckThicknessMm: 3,
-      centerOfMassOffsetMm: 2,
-    },
-    expected: {
-      speed: 68.25,
-      spinDuration: 55.714285714285715,
-      stability: 64,
-      impactResistance: 56.5,
-    },
+    name: "broad three-screw",
+    diameterMm: 54,
+    screwCount: 3,
+    screwRadiusMm: 22,
+    roundness: 0.3,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [47, 48],
+    expectedSpeedRange: [53, 54],
+    expectedSpinDurationRange: [42, 44],
   },
   {
-    name: "heavy high-inertia top",
-    input: {
-      totalMassG: 80,
-      polarMomentGmm2: 60_000,
-      averageCornerRoundness: 0.5,
-      minNeckThicknessMm: 4,
-      centerOfMassOffsetMm: 1,
-    },
-    expected: {
-      speed: 21,
-      spinDuration: 100,
-      stability: 82,
-      impactResistance: 69.5,
-    },
+    name: "large seven-screw",
+    diameterMm: 56,
+    screwCount: 7,
+    screwRadiusMm: 23,
+    roundness: 0.7,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [49, 50],
+    expectedSpeedRange: [54, 56],
+    expectedSpinDurationRange: [49, 51],
   },
   {
-    name: "high-inertia rounded top",
-    input: {
-      totalMassG: 50,
-      polarMomentGmm2: 100_000,
-      averageCornerRoundness: 0.8,
-      minNeckThicknessMm: 4,
-      centerOfMassOffsetMm: 0.25,
-    },
-    expected: {
-      speed: 55.5,
-      spinDuration: 100,
-      stability: 95.5,
-      impactResistance: 74,
-    },
+    name: "large eight-screw",
+    diameterMm: 58,
+    screwCount: 8,
+    screwRadiusMm: 24,
+    roundness: 0.8,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [53, 54],
+    expectedSpeedRange: [51, 53],
+    expectedSpinDurationRange: [54, 56],
   },
   {
-    name: "extreme input clamped to score limits",
-    input: {
-      totalMassG: 1_000,
-      polarMomentGmm2: 1_000_000_000,
-      averageCornerRoundness: 1,
-      minNeckThicknessMm: 100,
-      centerOfMassOffsetMm: 100,
-    },
-    expected: {
-      speed: 0,
-      spinDuration: 100,
-      stability: 0,
-      impactResistance: 100,
-    },
+    name: "maximum course circle",
+    diameterMm: 60,
+    screwCount: 8,
+    screwRadiusMm: 25,
+    roundness: 1,
+    metalDiscDiameterMm: 0,
+    expectedMassRange: [57, 58],
+    expectedSpeedRange: [49, 51],
+    expectedSpinDurationRange: [61, 63],
   },
 ];
+
+function makeCalibrationDesign(fixture: DesignFixture): TopDesign {
+  const design = makeDefaultDesign();
+  return {
+    ...design,
+    name: fixture.name,
+    layers: design.layers.map((layer) => ({
+      ...layer,
+      shape: "circle" as const,
+      diameterMm: fixture.diameterMm,
+      cornerRoundness: fixture.roundness,
+    })) as TopDesign["layers"],
+    screwLayout: {
+      count: fixture.screwCount,
+      radiusMm: fixture.screwRadiusMm,
+      rotationDeg: 0,
+    },
+    metalDiscDiameterMm: fixture.metalDiscDiameterMm,
+  };
+}
+
+function expectScoresInRange(prediction: PerformancePrediction): void {
+  for (const score of [
+    prediction.speed,
+    prediction.spinDuration,
+    prediction.stability,
+    prediction.impactResistance,
+  ]) {
+    expect(Number.isFinite(score)).toBe(true);
+    expect(score).toBeGreaterThanOrEqual(0);
+    expect(score).toBeLessThanOrEqual(100);
+  }
+}
 
 describe("performance model contract", () => {
   it("exposes readonly input and prediction fields with model version 1.0.0", () => {
@@ -232,49 +218,129 @@ describe("performance model contract", () => {
     >();
   });
 
-  it.each(calibrationFixtures)("locks v1 calibration: $name", ({ input, expected }) => {
-    const result = predictPerformance(input);
+  it.each(calibrationFixtures)(
+    "calibrates a real valid design: $name",
+    (fixture) => {
+      const design = makeCalibrationDesign(fixture);
+      const validation = validateDesign(design);
+      const input = derivePerformanceInput(design);
+      const prediction = predictDesignPerformance(design);
 
-    expect(result.speed).toBeCloseTo(expected.speed, 10);
-    expect(result.spinDuration).toBeCloseTo(expected.spinDuration, 10);
-    expect(result.stability).toBeCloseTo(expected.stability, 10);
-    expect(result.impactResistance).toBeCloseTo(
-      expected.impactResistance,
-      10,
+      expect(validation.valid).toBe(true);
+      expect(input.totalMassG).toBeGreaterThanOrEqual(
+        fixture.expectedMassRange[0],
+      );
+      expect(input.totalMassG).toBeLessThanOrEqual(
+        fixture.expectedMassRange[1],
+      );
+      expect(input.polarMomentGmm2).toBeGreaterThan(0);
+      expect(input.minNeckThicknessMm).toBeGreaterThanOrEqual(2);
+      expect(input.averageCornerRoundness).toBeCloseTo(
+        fixture.roundness,
+        12,
+      );
+      expect(prediction.modelVersion).toBe("1.0.0");
+      expect(prediction.speed).toBeGreaterThanOrEqual(
+        fixture.expectedSpeedRange[0],
+      );
+      expect(prediction.speed).toBeLessThanOrEqual(
+        fixture.expectedSpeedRange[1],
+      );
+      expect(prediction.spinDuration).toBeGreaterThanOrEqual(
+        fixture.expectedSpinDurationRange[0],
+      );
+      expect(prediction.spinDuration).toBeLessThanOrEqual(
+        fixture.expectedSpinDurationRange[1],
+      );
+      expectScoresInRange(prediction);
+    },
+  );
+
+  it("preserves expected v1 ordering across physical design variants", () => {
+    const predictions = calibrationFixtures.map((fixture) =>
+      predictDesignPerformance(makeCalibrationDesign(fixture)),
     );
-    expect(result.modelVersion).toBe("1.0.0");
+    const compactSharp = predictions[0]!;
+    const compactRounded = predictions[1]!;
+    const balanced = predictions[3]!;
+    const balancedDisc = predictions[4]!;
+    const maximum = predictions[11]!;
+
+    expect(compactRounded.speed).toBeGreaterThan(compactSharp.speed);
+    expect(compactRounded.spinDuration).toBeGreaterThan(
+      compactSharp.spinDuration,
+    );
+    expect(compactRounded.impactResistance).toBeGreaterThan(
+      compactSharp.impactResistance,
+    );
+    expect(balancedDisc.speed).toBeLessThan(balanced.speed);
+    expect(balancedDisc.spinDuration).toBeGreaterThan(
+      balanced.spinDuration,
+    );
+    expect(maximum.speed).toBeLessThan(compactRounded.speed);
+    expect(maximum.spinDuration).toBeGreaterThan(
+      compactRounded.spinDuration,
+    );
   });
 
-  it.each(calibrationFixtures)("returns finite 0..100 scores: $name", ({ input }) => {
-    const { modelVersion: _modelVersion, ...scores } = predictPerformance(input);
+  it("derives every calculated value from authoritative domain helpers", () => {
+    const design = makeCalibrationDesign(calibrationFixtures[6]!);
+    const mass = calculateMassProperties(design);
+    const input = derivePerformanceInput(design);
 
-    for (const score of Object.values(scores)) {
-      expect(Number.isFinite(score)).toBe(true);
-      expect(score).toBeGreaterThanOrEqual(0);
-      expect(score).toBeLessThanOrEqual(100);
-    }
+    expect(input.totalMassG).toBeCloseTo(mass.totalMassG, 12);
+    expect(input.polarMomentGmm2).toBeCloseTo(mass.polarMomentGmm2, 12);
+    expect(input.centerOfMassOffsetMm).toBeCloseTo(
+      Math.hypot(mass.centerOfMassMm.x, mass.centerOfMassMm.y),
+      12,
+    );
+    expect(input.averageCornerRoundness).toBeCloseTo(0.6, 12);
+    expect(input.minNeckThicknessMm).toBeCloseTo(
+      calculateMinimumMaterialNeckMm(design),
+      12,
+    );
   });
 
-  it("is deterministic and does not mutate its input", () => {
-    const input = Object.freeze({ ...calibrationFixtures[2]!.input });
-    const before = structuredClone(input);
+  it("predicts a schema-valid course-invalid draft with negative neck clamped to zero", () => {
+    const design = makeCalibrationDesign(calibrationFixtures[3]!);
+    design.screwLayout.radiusMm = 18.5;
+    const before = structuredClone(design);
 
-    const first = predictPerformance(input);
-    const second = predictPerformance(input);
+    expect(validateDesign(design).valid).toBe(false);
+    expect(calculateMinimumMaterialNeckMm(design)).toBeLessThan(0);
+    expect(derivePerformanceInput(design).minNeckThicknessMm).toBe(0);
+    expectScoresInRange(predictDesignPerformance(design));
+    expect(design).toEqual(before);
+  });
+
+  it("is deterministic and does not mutate the design", () => {
+    const design = makeCalibrationDesign(calibrationFixtures[7]!);
+    const before = structuredClone(design);
+
+    const first = predictDesignPerformance(design);
+    const second = predictDesignPerformance(design);
 
     expect(first).toEqual(second);
-    expect(input).toEqual(before);
+    expect(design).toEqual(before);
   });
 });
 
-describe("performance model monotonicity", () => {
+describe("raw calculated performance input", () => {
   const baseline: PerformanceInput = {
-    totalMassG: 40,
-    polarMomentGmm2: 30_000,
+    totalMassG: 35,
+    polarMomentGmm2: 25_000,
     averageCornerRoundness: 0.5,
     minNeckThicknessMm: 3,
     centerOfMassOffsetMm: 0.5,
   };
+
+  it("remains deterministic and does not mutate a trusted calculated input", () => {
+    const input = Object.freeze({ ...baseline });
+    const before = structuredClone(input);
+
+    expect(predictPerformance(input)).toEqual(predictPerformance(input));
+    expect(input).toEqual(before);
+  });
 
   it("raises spin duration when the same mass moves outward", () => {
     const compact = predictPerformance({
@@ -290,21 +356,15 @@ describe("performance model monotonicity", () => {
   });
 
   it("lowers stability as centre-of-mass offset grows", () => {
-    const centred = predictPerformance({
-      ...baseline,
-      centerOfMassOffsetMm: 0,
-    });
-    const offset = predictPerformance({
-      ...baseline,
-      centerOfMassOffsetMm: 2,
-    });
-
-    expect(centred.stability).toBeGreaterThan(offset.stability);
+    expect(
+      predictPerformance({ ...baseline, centerOfMassOffsetMm: 0 }).stability,
+    ).toBeGreaterThan(
+      predictPerformance({ ...baseline, centerOfMassOffsetMm: 2 }).stability,
+    );
   });
 
   it("never lowers impact resistance when the minimum neck thickens", () => {
-    const thicknesses = [0, 1, 2, 4, 8, 20];
-    const scores = thicknesses.map(
+    const scores = [0, 1, 2, 4, 8, 20].map(
       (minNeckThicknessMm) =>
         predictPerformance({ ...baseline, minNeckThicknessMm })
           .impactResistance,
@@ -313,14 +373,77 @@ describe("performance model monotonicity", () => {
     expect(scores).toEqual([...scores].sort((left, right) => left - right));
   });
 
-  it("never raises speed when only total mass increases in a reasonable range", () => {
-    const masses = [5, 10, 20, 35, 50, 80, 100];
-    const scores = masses.map(
+  it("never raises speed when only total mass increases", () => {
+    const scores = [20, 35, 50, 80].map(
       (totalMassG) => predictPerformance({ ...baseline, totalMassG }).speed,
     );
 
     expect(scores).toEqual([...scores].sort((left, right) => right - left));
   });
+
+  it.each([0, Number.NaN, Number.POSITIVE_INFINITY, -0.01])(
+    "rejects invalid total mass: %s",
+    (totalMassG) => {
+      expect(() => predictPerformance({ ...baseline, totalMassG })).toThrow(
+        RangeError,
+      );
+    },
+  );
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -0.01])(
+    "rejects invalid polar moment: %s",
+    (polarMomentGmm2) => {
+      expect(() =>
+        predictPerformance({ ...baseline, polarMomentGmm2 }),
+      ).toThrow(RangeError);
+    },
+  );
+
+  it.each([
+    "minNeckThicknessMm",
+    "centerOfMassOffsetMm",
+  ] as const)("rejects non-finite or negative %s", (field) => {
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, -0.01]) {
+      expect(() => predictPerformance({ ...baseline, [field]: value })).toThrow(
+        RangeError,
+      );
+    }
+  });
+
+  it("rejects a polar moment above the schema-radius physical bound", () => {
+    expect(() =>
+      predictPerformance({
+        ...baseline,
+        totalMassG: 1,
+        polarMomentGmm2: Number.MAX_VALUE,
+      }),
+    ).toThrow(RangeError);
+    expect(() =>
+      predictPerformance({
+        ...baseline,
+        totalMassG: 1,
+        polarMomentGmm2: 1_601,
+      }),
+    ).toThrow(RangeError);
+  });
+
+  it.each([
+    ["centerOfMassOffsetMm", 40.01],
+    ["minNeckThicknessMm", 80.01],
+  ] as const)("rejects canonical bound overflow for %s", (field, value) => {
+    expect(() => predictPerformance({ ...baseline, [field]: value })).toThrow(
+      RangeError,
+    );
+  });
+
+  it.each([Number.NaN, Number.NEGATIVE_INFINITY, -0.01, 1.01])(
+    "rejects invalid average corner roundness: %s",
+    (averageCornerRoundness) => {
+      expect(() =>
+        predictPerformance({ ...baseline, averageCornerRoundness }),
+      ).toThrow(RangeError);
+    },
+  );
 });
 
 describe("scoreStability", () => {
@@ -334,32 +457,6 @@ describe("scoreStability", () => {
     "rejects an invalid offset: %s",
     (offsetMm) => {
       expect(() => scoreStability({ offsetMm })).toThrow(RangeError);
-    },
-  );
-});
-
-describe("performance input validation", () => {
-  const validInput = calibrationFixtures[2]!.input;
-
-  it.each([
-    "totalMassG",
-    "polarMomentGmm2",
-    "minNeckThicknessMm",
-    "centerOfMassOffsetMm",
-  ] as const)("rejects non-finite or negative %s", (field) => {
-    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -0.01]) {
-      expect(() =>
-        predictPerformance({ ...validInput, [field]: invalid }),
-      ).toThrow(RangeError);
-    }
-  });
-
-  it.each([Number.NaN, Number.NEGATIVE_INFINITY, -0.01, 1.01])(
-    "rejects invalid average corner roundness: %s",
-    (averageCornerRoundness) => {
-      expect(() =>
-        predictPerformance({ ...validInput, averageCornerRoundness }),
-      ).toThrow(RangeError);
     },
   );
 });

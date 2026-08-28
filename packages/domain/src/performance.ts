@@ -1,8 +1,17 @@
+import type { TopDesign } from "./design";
+import { calculateMinimumMaterialNeckMm, validateDesign } from "./rules";
+
 export const PERFORMANCE_MODEL_VERSION = "1.0.0" as const;
+export const MAX_SCHEMA_RADIUS_MM = 40;
+
+const MAX_CANONICAL_NECK_MM = 80;
+const PHYSICAL_BOUND_EPSILON = 1e-9;
 
 /**
- * Pre-calculated physical properties consumed by the relative performance
- * model. Shape and design parameters intentionally stay outside this API.
+ * Trusted, pre-calculated physical properties consumed by the relative
+ * performance model. Shape and design parameters intentionally stay outside
+ * this API. Authoritative callers must use predictDesignPerformance instead
+ * of accepting these values from an untrusted client DTO.
  */
 export type PerformanceInput = Readonly<{
   totalMassG: number;
@@ -31,13 +40,37 @@ function assertFiniteNonNegative(value: number, name: string): void {
 }
 
 function validateInput(input: PerformanceInput): void {
-  assertFiniteNonNegative(input.totalMassG, "totalMassG");
+  if (!Number.isFinite(input.totalMassG) || input.totalMassG <= 0) {
+    throw new RangeError("totalMassG must be finite and positive");
+  }
   assertFiniteNonNegative(input.polarMomentGmm2, "polarMomentGmm2");
   assertFiniteNonNegative(input.minNeckThicknessMm, "minNeckThicknessMm");
   assertFiniteNonNegative(
     input.centerOfMassOffsetMm,
     "centerOfMassOffsetMm",
   );
+  const maximumPolarMomentGmm2 =
+    input.totalMassG * MAX_SCHEMA_RADIUS_MM ** 2;
+  const polarMomentEpsilon =
+    Math.max(1, maximumPolarMomentGmm2) * PHYSICAL_BOUND_EPSILON;
+  if (
+    input.polarMomentGmm2 >
+    maximumPolarMomentGmm2 + polarMomentEpsilon
+  ) {
+    throw new RangeError(
+      "polarMomentGmm2 exceeds the schema-radius physical bound",
+    );
+  }
+  if (input.centerOfMassOffsetMm > MAX_SCHEMA_RADIUS_MM) {
+    throw new RangeError(
+      `centerOfMassOffsetMm must not exceed ${MAX_SCHEMA_RADIUS_MM}`,
+    );
+  }
+  if (input.minNeckThicknessMm > MAX_CANONICAL_NECK_MM) {
+    throw new RangeError(
+      `minNeckThicknessMm must not exceed ${MAX_CANONICAL_NECK_MM}`,
+    );
+  }
   if (
     !Number.isFinite(input.averageCornerRoundness) ||
     input.averageCornerRoundness < 0 ||
@@ -78,4 +111,40 @@ export function predictPerformance(
     ),
     modelVersion: PERFORMANCE_MODEL_VERSION,
   };
+}
+
+/**
+ * Recalculates every performance input from the authoritative domain model.
+ * A schema-valid draft may still fail course rules; its negative material
+ * clearance is clamped to zero so it can be previewed, while validateDesign
+ * remains the authority for battle eligibility.
+ */
+export function derivePerformanceInput(design: TopDesign): PerformanceInput {
+  const { massProperties } = validateDesign(design);
+  const averageCornerRoundness =
+    design.layers.reduce(
+      (total, layer) => total + layer.cornerRoundness,
+      0,
+    ) / design.layers.length;
+
+  return {
+    totalMassG: massProperties.totalMassG,
+    polarMomentGmm2: massProperties.polarMomentGmm2,
+    averageCornerRoundness,
+    minNeckThicknessMm: Math.max(
+      0,
+      calculateMinimumMaterialNeckMm(design),
+    ),
+    centerOfMassOffsetMm: Math.hypot(
+      massProperties.centerOfMassMm.x,
+      massProperties.centerOfMassMm.y,
+    ),
+  };
+}
+
+/** Canonical prediction entry point for UI and server callers. */
+export function predictDesignPerformance(
+  design: TopDesign,
+): PerformancePrediction {
+  return predictPerformance(derivePerformanceInput(design));
 }
