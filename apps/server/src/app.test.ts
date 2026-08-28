@@ -222,6 +222,48 @@ describe("realtime app", () => {
     expect((await joined).roomId).toBe(room2.roomId);
   });
 
+  it("延遲clock ACK不能把固定server收件時間的Good提升為Perfect", async () => {
+    let now = 1_000;
+    const app = buildApp({
+      battleEngine: new FakeBattleEngine(), now: () => now,
+      launch: new LaunchCoordinator({ now: () => now, leadTimeMs: 100 }), sweepIntervalMs: 0,
+    });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const p1 = await connect(url, "Latency P1");
+    const p2 = await connect(url, "Latency P2");
+    closers.push(() => { p1.socket.close(); }, () => { p2.socket.close(); });
+    const pong = nextEvent(p1.socket, "clock.pong");
+    p1.socket.emit("client.event", command("clock.ping", { pingId: "delayed-ack", clientSentAtMs: 1_000 }));
+    await pong;
+    const created = nextEvent(p1.socket, "room.snapshot");
+    p1.socket.emit("client.event", command("room.create", { name: "Latency" }));
+    const room = await created;
+    const joined = nextEvent(p2.socket, "room.snapshot");
+    p2.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
+    await joined;
+    const register = async (token: string) => (await app.inject({
+      method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${token}` }, payload: makeDefaultDesign(),
+    })).json().designId as string;
+    const [d1, d2] = await Promise.all([register(p1.token), register(p2.token)]);
+    p1.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
+    const scheduled = nextEvent(p1.socket, "launch.schedule");
+    p2.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
+    const schedule = await scheduled;
+    now = schedule.serverTargetTimeMs + 145;
+    const ack = nextEvent(p1.socket, "command.ack");
+    p1.socket.emit("client.event", command("clock.ack", { pingId: "delayed-ack" }));
+    await ack;
+    const grade = nextEvent(p1.socket, "launch.result.private");
+    p1.socket.emit("client.event", command("launch.tap", {
+      roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: schedule.serverTargetTimeMs,
+    }));
+    expect((await grade).grade).toBe("Good");
+  });
+
   it("allocates sessions only after hello, enforces handshake timeout, quotas, rate recovery, and payload limits", async () => {
     let now = 1_000;
     const app = buildApp({

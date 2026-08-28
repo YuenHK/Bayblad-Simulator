@@ -398,6 +398,8 @@ it("shows both grades to a spectator", () => {
 
 節拍以 server target time 對齊；`BattleArena` 只內插 15 Hz frames。支援 `prefers-reduced-motion`。
 
+**安全／公平決策記錄（2026-08-29）：** `clock.ping/pong/ack` 的 offset 與 RTT 只供客戶端節拍畫面同步及連線診斷；權威發射判定只比較伺服器收到 `launch.tap` 的時間與 `serverTargetTimeMs`，不作任何 RTT 補償，也不使用 `clientTimeMs`。這會令高延遲裝置無法獲得網絡補償，但可避免學生延遲 ACK 或偽造客戶端時間改善判定，並確保所有學生遵守同一伺服器時間窗口。
+
 - [ ] **步驟 4：測試分數只在賽後顯示**
 
 waiting、launch、battle phase 不渲染分數或排行榜；只有 `result` phase 顯示對戰分、挑戰分及總分。
