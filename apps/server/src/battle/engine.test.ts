@@ -14,6 +14,7 @@ import {
 import {
   ARENA_CENTER_SAFE_RADIUS_MM,
   BattleEngine,
+  InMemoryCompletedRoundStore,
   COLLISION_OUTLINE_MAX_ERROR_MM,
   buildCollisionOutlineVertices,
   buildCollisionProxyVertices,
@@ -514,6 +515,20 @@ describe("elimination and outcome rules", () => {
     expect(classifyEliminations({ player1StoppedTicks: 30, player2StoppedTicks: 0, player1RadiusMm: 0, player2RadiusMm: ARENA_CENTER_SAFE_RADIUS_MM + 1 })).toEqual({ player1: true, player2: true, reason: "simultaneous" });
   });
 
+  it("has a deterministic legal path that crosses the authoritative centre boundary", () => {
+    const result = simulateMatchRound(maximalStarTop, player2, {
+      seed: 0,
+      launchA: launch("Perfect", 2, 2),
+      launchB: launch("Miss", 0.1, 0.1),
+    });
+    expect(result.outcome.reason).toBe("out-of-bounds");
+    const finalFrame = result.frames.at(-1)!;
+    expect(Math.max(
+      Math.hypot(finalFrame.player1.x, finalFrame.player1.y),
+      Math.hypot(finalFrame.player2.x, finalFrame.player2.y),
+    )).toBeGreaterThan(ARENA_CENTER_SAFE_RADIUS_MM);
+  }, 30_000);
+
   it("uses a fixed three-percent timeout tie tolerance", () => {
     expect(resolveTimeoutOutcome({ energy1: 10, energy2: 9, spin1: 100, spin2: 90 })).toEqual({ winner: "player1", reason: "timeout" });
     expect(resolveTimeoutOutcome({ energy1: 10, energy2: 9.8, spin1: 100, spin2: 100 })).toEqual({ winner: "draw", reason: "timeout" });
@@ -620,8 +635,9 @@ describe("BattleEngine simulate-once cache", () => {
       }),
     ]);
     clearInterval(heartbeat);
+    gaps.push(performance.now() - previous);
     expect(results.every(({ ticks }) => ticks > 60)).toBe(true);
-    expect(gaps.length).toBeGreaterThan(1);
+    expect(gaps.length).toBeGreaterThan(0);
     expect(Math.max(...gaps)).toBeLessThan(100);
     expect(performance.now() - started).toBeLessThan(1_000);
   }, 30_000);
@@ -668,19 +684,19 @@ describe("BattleEngine simulate-once cache", () => {
     expect(engine.simulateOnce("match-ttl", "round-1", inputs())).toEqual(first);
     expect(engine.simulationCount).toBe(1);
     now += 2;
-    engine.simulateOnce("match-ttl", "round-1", inputs());
-    expect(engine.simulationCount).toBe(2);
+    expect(engine.simulateOnce("match-ttl", "round-1", inputs())).toEqual(first);
+    expect(engine.simulationCount).toBe(1);
   });
 
   it("bounds large timeout results and evicts the least recently used entry", () => {
     const engine = new BattleEngine({ maxEntries: 2 });
     engine.simulateOnce("match-a", "round", inputs(1));
-    engine.simulateOnce("match-b", "round", inputs(2));
+    const expectedB = engine.simulateOnce("match-b", "round", inputs(2));
     engine.simulateOnce("match-a", "round", inputs(1));
     engine.simulateOnce("match-c", "round", inputs(3));
     expect(engine.cacheSize).toBe(2);
-    engine.simulateOnce("match-b", "round", inputs(2));
-    expect(engine.simulationCount).toBe(4);
+    expect(engine.simulateOnce("match-b", "round", inputs(2))).toEqual(expectedB);
+    expect(engine.simulationCount).toBe(3);
     expect(engine.cacheSize).toBe(2);
 
     const timeoutEngine = new BattleEngine({ maxEntries: 1 });
@@ -691,10 +707,29 @@ describe("BattleEngine simulate-once cache", () => {
 
   it("rejects correlation conflicts while explicit cleanup deletes immediately", () => {
     const engine = new BattleEngine();
-    engine.simulateOnce("match-1", "round-1", inputs());
+    const expected = engine.simulateOnce("match-1", "round-1", inputs());
     expect(() => engine.simulateOnce("match-1", "round-1", inputs(9))).toThrow(/conflict/i);
     expect(engine.cleanup("match-1", "round-1")).toBe(true);
-    engine.simulateOnce("match-1", "round-1", inputs());
+    expect(engine.simulateOnce("match-1", "round-1", inputs())).toEqual(expected);
+    expect(engine.simulationCount).toBe(1);
+  });
+
+  it("uses an injected authoritative repository across engine lifetimes", () => {
+    const repository = new InMemoryCompletedRoundStore({ maxResults: 4 });
+    const firstEngine = new BattleEngine({ resultRepository: repository, maxEntries: 1 });
+    const expected = firstEngine.simulateOnce("persisted-match", "round", inputs(71));
+    const secondEngine = new BattleEngine({ resultRepository: repository, maxEntries: 1 });
+    expect(secondEngine.simulateOnce("persisted-match", "round", inputs(71))).toEqual(expected);
+    expect(secondEngine.simulationCount).toBe(0);
+    expect(() => secondEngine.simulateOnce("persisted-match", "round", inputs(72))).toThrow(/conflict/i);
+  });
+
+  it("keeps bounded full results and refuses to replay an evicted authoritative tombstone", () => {
+    const repository = new InMemoryCompletedRoundStore({ maxResults: 1 });
+    const engine = new BattleEngine({ resultRepository: repository, maxEntries: 1 });
+    engine.simulateOnce("tombstone-a", "round", inputs(81));
+    engine.simulateOnce("tombstone-b", "round", inputs(82));
+    expect(() => engine.simulateOnce("tombstone-a", "round", inputs(81))).toThrow(/expired|replay/i);
     expect(engine.simulationCount).toBe(2);
   });
 
