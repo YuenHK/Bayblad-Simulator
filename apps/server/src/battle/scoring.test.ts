@@ -105,6 +105,60 @@ describe("scoreMatch", () => {
     expect(result.player2.total).toBe(0.3);
   });
 
+  it("scores equal raw differences identically regardless of absolute decimals", () => {
+    const first = scoreMatch({
+      player1MassG: 50,
+      player2MassG: 40.0004,
+      roundWinners: ["player1", "player1"],
+    });
+    const second = scoreMatch({
+      player1MassG: 50.0002,
+      player2MassG: 40.0006,
+      roundWinners: ["player1", "player1"],
+    });
+
+    expect(first.player2.challengePoints).toBe(second.player2.challengePoints);
+  });
+
+  it("keeps the same 0.0002g raw difference invariant across absolute weights", () => {
+    const first = scoreMatch({
+      player1MassG: 40.0002,
+      player2MassG: 40,
+      roundWinners: ["player1", "player1"],
+    });
+    const second = scoreMatch({
+      player1MassG: 50.0003,
+      player2MassG: 50.0001,
+      roundWinners: ["player1", "player1"],
+    });
+
+    expect(first.player2.challengePoints).toBe(second.player2.challengePoints);
+    expect(first.player2.challengePoints).toBe(0);
+  });
+
+  it.each([
+    [50, 40.0004],
+    [50.0002, 40.0006],
+    [40.0006, 40],
+    [40, 40.0006],
+    [50.001, 40],
+  ])("uses the public challengePoints path for %sg versus %sg", (
+    player1MassG,
+    player2MassG,
+  ) => {
+    const result = scoreMatch({
+      player1MassG,
+      player2MassG,
+      roundWinners: ["player1", "player1"],
+    });
+    const expected = challengePoints(Math.abs(player1MassG - player2MassG));
+    const lighterScore = player1MassG < player2MassG
+      ? result.player1.challengePoints
+      : result.player2.challengePoints;
+
+    expect(lighterScore).toBe(expected);
+  });
+
   it.each([
     [Number.NaN, 40], [Number.POSITIVE_INFINITY, 40],
     [Number.NEGATIVE_INFINITY, 40], [0, 40], [-1, 40], [60.000_001, 40],

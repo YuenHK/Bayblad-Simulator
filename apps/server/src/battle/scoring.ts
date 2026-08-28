@@ -8,8 +8,8 @@ import { z } from "zod";
 
 /**
  * Simulated masses have more precision than the student UI displays. Scoring
- * takes one deterministic measurement snapshot at 1 mg (0.001 g), then uses
- * integer milligrams so floating-point multiplication cannot alter boundaries.
+ * quantises the weight difference once at 1 mg (0.001 g), then uses integer
+ * milligrams so floating-point multiplication cannot alter boundaries.
  */
 export const MASS_MEASUREMENT_PRECISION_G = 0.001;
 const MASS_UNITS_PER_GRAM = 1 / MASS_MEASUREMENT_PRECISION_G;
@@ -67,12 +67,7 @@ const scoreMatchInputSchema = z
     player2MassG: measuredMassSchema,
     roundWinners: completedRoundWinnersSchema,
   })
-  .strict()
-  .transform(({ player1MassG, player2MassG, roundWinners }) => ({
-    player1MassUnits: toMeasurementUnits(player1MassG),
-    player2MassUnits: toMeasurementUnits(player2MassG),
-    roundWinners,
-  }));
+  .strict();
 
 export type ScoreMatchInput = z.input<typeof scoreMatchInputSchema>;
 export type PlayerMatchScore = Readonly<MatchScore>;
@@ -114,14 +109,13 @@ export function scoreMatch(input: ScoreMatchInput): MatchScoreResult {
     (winner) => winner === "player1",
   ).length;
   const player2BattlePoints = parsed.roundWinners.length - player1BattlePoints;
-  const differenceUnits = Math.abs(
-    parsed.player1MassUnits - parsed.player2MassUnits,
+  const lighterChallengePoints = challengePoints(
+    Math.abs(parsed.player1MassG - parsed.player2MassG),
   );
-  const lighterChallengePoints = pointsFromDifferenceUnits(differenceUnits);
-  const player1ChallengePoints = parsed.player1MassUnits < parsed.player2MassUnits
+  const player1ChallengePoints = parsed.player1MassG < parsed.player2MassG
     ? lighterChallengePoints
     : 0;
-  const player2ChallengePoints = parsed.player2MassUnits < parsed.player1MassUnits
+  const player2ChallengePoints = parsed.player2MassG < parsed.player1MassG
     ? lighterChallengePoints
     : 0;
 
