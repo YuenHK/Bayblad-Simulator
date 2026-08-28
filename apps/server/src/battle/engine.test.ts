@@ -7,12 +7,15 @@ import {
 import {
   designSchema,
   maxDiameter,
+  radialFactor,
   type TopDesign,
 } from "@steam-top/domain";
 
 import {
   ARENA_CENTER_SAFE_RADIUS_MM,
   BattleEngine,
+  COLLISION_OUTLINE_MAX_ERROR_MM,
+  buildCollisionOutlineVertices,
   buildCollisionProxyVertices,
   BROADCAST_EVERY_TICKS,
   MAX_ROUND_SECONDS,
@@ -20,6 +23,7 @@ import {
   STEP_SECONDS,
   STOPPED_TICKS,
   classifyEliminations,
+  collisionOutlinesOverlap,
   impactPhysicsFromScore,
   retainAngularSpeedAfterImpact,
   prepareBattleTop,
@@ -124,6 +128,94 @@ describe("DeterministicPrng", () => {
 });
 
 describe("authoritative Planck battle simulation", () => {
+  it("preserves concave canonical radial outlines within a bounded all-direction error", () => {
+    const radiusOnOutline = (vertices: readonly { x: number; y: number }[], angle: number) => {
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      let best = 0;
+      for (let index = 0; index < vertices.length; index += 1) {
+        const a = vertices[index]!;
+        const b = vertices[(index + 1) % vertices.length]!;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const denominator = dx * ey - dy * ex;
+        if (Math.abs(denominator) < 1e-12) continue;
+        const rayDistance = (a.x * ey - a.y * ex) / denominator;
+        const segmentRatio = (a.x * dy - a.y * dx) / denominator;
+        if (rayDistance >= 0 && segmentRatio >= -1e-9 && segmentRatio <= 1 + 1e-9) {
+          best = Math.max(best, rayDistance);
+        }
+      }
+      return best;
+    };
+    for (const [shape, points] of [["star", 9], ["star", 16], ["wave", 9], ["wave", 16]] as const) {
+      for (const rotationDeg of [0, 5.625, 23]) {
+        const candidate = design({
+          layers: design().layers.map((layer) => ({
+            ...layer,
+            id: `${shape}-${points}-${rotationDeg}-${layer.position}`,
+            shape,
+            points,
+            diameterMm: 60,
+            cornerRoundness: 0,
+            rotationDeg,
+          })) as TopDesign["layers"],
+        });
+        const outline = buildCollisionOutlineVertices(candidate);
+        let maximumError = 0;
+        for (let sample = 0; sample < 2_048; sample += 1) {
+          const angle = sample * Math.PI * 2 / 2_048;
+          const localAngle = angle - rotationDeg * Math.PI / 180;
+          const expectedRadius = 30 * radialFactor(shape, points, localAngle, 0);
+          maximumError = Math.max(maximumError, Math.abs(radiusOnOutline(outline, angle) - expectedRadius));
+        }
+        expect(maximumError).toBeLessThanOrEqual(COLLISION_OUTLINE_MAX_ERROR_MM);
+      }
+    }
+  });
+
+  it("keeps the valleys of a 9-point star in the top-to-top contact outline", () => {
+    const star = design({
+      layers: design().layers.map((layer) => ({
+        ...layer,
+        id: `${layer.id}-nine-star`,
+        shape: "star",
+        points: 9,
+        diameterMm: 60,
+        cornerRoundness: 0,
+        rotationDeg: 5.625,
+      })) as TopDesign["layers"],
+    });
+    const radii = buildCollisionOutlineVertices(star).map(({ x, y }) => Math.hypot(x, y));
+    expect(Math.max(...radii)).toBeCloseTo(30, 6);
+    expect(Math.min(...radii)).toBeLessThan(19);
+    expect(Math.max(...radii) - Math.min(...radii)).toBeGreaterThan(10);
+
+    const outline = buildCollisionOutlineVertices(star);
+    const probeOutline = buildCollisionOutlineVertices(design({
+      layers: design().layers.map((layer) => ({
+        ...layer,
+        id: `${layer.id}-valley-probe`,
+        diameterMm: 30,
+      })) as TopDesign["layers"],
+      screwLayout: { count: 4, radiusMm: 10, rotationDeg: 0 },
+    }));
+    const degrees = (value: number) => value * Math.PI / 180;
+    const left = { position: { x: 0, y: 0 } };
+    const right = { position: { x: 40, y: 0 }, angle: 0 };
+    // Bounding circles overlap at 40 mm. A probe misses the star valley but
+    // touches its peak: the contact path is not silently using the convex wall
+    // proxy or broad-phase sensor radius.
+    expect(collisionOutlinesOverlap(
+      outline, { ...left, angle: degrees(-25.625) },
+      probeOutline, right,
+    )).toBe(false);
+    expect(collisionOutlinesOverlap(
+      outline, { ...left, angle: degrees(-5.625) },
+      probeOutline, right,
+    )).toBe(true);
+  });
+
   it("builds finite convex collision proxies with <=8 vertices and rotation-stable outer diameter", () => {
     const rotations = [0, 5.625, 17, 89];
     for (const shape of ["circle", "polygon", "star", "wave"] as const) {
@@ -197,7 +289,7 @@ describe("authoritative Planck battle simulation", () => {
   });
 
   it("exports the canonical physics constants", () => {
-    expect(PHYSICS_MODEL_VERSION).toBe("1.0.0");
+    expect(PHYSICS_MODEL_VERSION).toBe("2.0.0");
     expect(STEP_SECONDS).toBe(1 / 60);
     expect(MAX_ROUND_SECONDS).toBe(90);
     expect(BROADCAST_EVERY_TICKS).toBe(4);
@@ -343,6 +435,56 @@ describe("elimination and outcome rules", () => {
     }
   });
 
+  it("distributes identical-design winners fairly across 2000 seeds", () => {
+    const identical = {
+      ...player1,
+      id: "identical-player2",
+      name: "相同設計副本",
+      layers: player1.layers.map((layer) => ({
+        ...layer,
+        id: `${layer.id}-identical`,
+        color: "#ffffff",
+      })) as TopDesign["layers"],
+    };
+    const counts = { player1: 0, player2: 0, draw: 0 };
+    for (let seed = 0; seed < 2_000; seed += 1) {
+      counts[simulateMatchRound(player1, identical, {
+        seed,
+        launchA: launch(),
+        launchB: launch(),
+      }).outcome.winner] += 1;
+    }
+    expect(Math.abs(counts.player1 - counts.player2)).toBeLessThanOrEqual(80);
+    expect(counts.player1 + counts.player2).toBeGreaterThan(1_500);
+  }, 30_000);
+
+  it("maps 200 swapped strong/weak simulations exactly back to external players", () => {
+    const swapWinner = (winner: "player1" | "player2" | "draw") =>
+      winner === "player1" ? "player2" : winner === "player2" ? "player1" : "draw";
+    for (let seed = 0; seed < 200; seed += 1) {
+      const forward = simulateMatchRound(enduranceTop, lightTop, {
+        seed,
+        launchA: launch("Perfect", 1.1, 1.1),
+        launchB: launch("Good", 0.9, 0.9),
+      });
+      const reverse = simulateMatchRound(lightTop, enduranceTop, {
+        seed,
+        launchA: launch("Good", 0.9, 0.9),
+        launchB: launch("Perfect", 1.1, 1.1),
+      });
+      expect(reverse.ticks).toBe(forward.ticks);
+      expect(reverse.outcome).toEqual({
+        winner: swapWinner(forward.outcome.winner),
+        reason: forward.outcome.reason,
+      });
+      expect(reverse.frames).toEqual(forward.frames.map((frame) => ({
+        tick: frame.tick,
+        player1: frame.player2,
+        player2: frame.player1,
+      })));
+    }
+  }, 30_000);
+
   it("requires exactly 30 consecutive stopped ticks (500 ms)", () => {
     expect(STOPPED_TICKS).toBe(30);
     expect(classifyEliminations({ player1StoppedTicks: 29, player2StoppedTicks: 0, player1RadiusMm: 0, player2RadiusMm: 0 })).toEqual({ player1: false, player2: false, reason: null });
@@ -398,6 +540,18 @@ describe("elimination and outcome rules", () => {
 });
 
 describe("BattleEngine simulate-once cache", () => {
+  const timeoutInputs = (seed: number): BattleInputs => ({
+    player1: lightTop,
+    player2: {
+      ...lightTop,
+      id: `timeout-copy-${seed}`,
+      layers: lightTop.layers.map((layer) => ({ ...layer, id: `${layer.id}-timeout-${seed}` })) as TopDesign["layers"],
+    },
+    seed,
+    launchA: launch("Perfect", 2, 1e-9),
+    launchB: launch("Perfect", 2, 1e-9),
+  });
+
   it("cooperatively yields during a worst-case async round and exactly matches sync", async () => {
     const timeoutPlayer2 = {
       ...lightTop,
@@ -476,17 +630,6 @@ describe("BattleEngine simulate-once cache", () => {
     expect(engine.cacheSize).toBe(2);
 
     const timeoutEngine = new BattleEngine({ maxEntries: 1 });
-    const timeoutInputs = (seed: number): BattleInputs => ({
-      player1: lightTop,
-      player2: {
-        ...lightTop,
-        id: `timeout-copy-${seed}`,
-        layers: lightTop.layers.map((layer) => ({ ...layer, id: `${layer.id}-timeout-${seed}` })) as TopDesign["layers"],
-      },
-      seed,
-      launchA: launch("Perfect", 2, 1e-9),
-      launchB: launch("Perfect", 2, 1e-9),
-    });
     expect(timeoutEngine.simulateOnce("timeout-a", "round", timeoutInputs(10)).ticks).toBe(5_400);
     expect(timeoutEngine.simulateOnce("timeout-b", "round", timeoutInputs(11)).ticks).toBe(5_400);
     expect(timeoutEngine.cacheSize).toBe(1);
@@ -501,12 +644,63 @@ describe("BattleEngine simulate-once cache", () => {
     expect(engine.simulationCount).toBe(2);
   });
 
-  it("does not retain an in-flight result after explicit room cleanup", async () => {
+  it("bounds concurrent and queued jobs, rejects overflow, and drains FIFO", async () => {
+    const engine = new BattleEngine({ chunkTicks: 60, maxConcurrent: 1, maxQueued: 2 });
+    const completionOrder: string[] = [];
+    const first = engine.simulateOnceAsync("schedule-a", "round", timeoutInputs(21))
+      .then((result) => { completionOrder.push("a"); return result; });
+    const second = engine.simulateOnceAsync("schedule-b", "round", timeoutInputs(22))
+      .then((result) => { completionOrder.push("b"); return result; });
+    const third = engine.simulateOnceAsync("schedule-c", "round", timeoutInputs(23))
+      .then((result) => { completionOrder.push("c"); return result; });
+    expect(engine.runningCount).toBe(1);
+    expect(engine.queuedCount).toBe(2);
+    await expect(engine.simulateOnceAsync("schedule-overflow", "round", timeoutInputs(24)))
+      .rejects.toThrow(/capacity/i);
+    await Promise.all([first, second, third]);
+    expect(completionOrder).toEqual(["a", "b", "c"]);
+    expect(engine.simulationCount).toBe(3);
+    expect(engine.runningCount).toBe(0);
+    expect(engine.queuedCount).toBe(0);
+  });
+
+  it("cancels a queued job through AbortSignal without consuming a slot", async () => {
+    const engine = new BattleEngine({ chunkTicks: 60, maxConcurrent: 1, maxQueued: 2 });
+    const active = engine.simulateOnceAsync("abort-active", "round", timeoutInputs(31));
+    const controller = new AbortController();
+    const queued = engine.simulateOnceAsync("abort-queued", "round", timeoutInputs(32), {
+      signal: controller.signal,
+    });
+    expect(engine.queuedCount).toBe(1);
+    controller.abort();
+    await expect(queued).rejects.toMatchObject({ name: "AbortError" });
+    expect(engine.queuedCount).toBe(0);
+    await active;
+    expect(engine.simulationCount).toBe(1);
+  });
+
+  it("cancels a running job and starts the next queued job", async () => {
+    const engine = new BattleEngine({ chunkTicks: 1, maxConcurrent: 1, maxQueued: 1 });
+    const controller = new AbortController();
+    const active = engine.simulateOnceAsync("running-cancel", "round", timeoutInputs(41), {
+      signal: controller.signal,
+    });
+    const queued = engine.simulateOnceAsync("running-recovery", "round", inputs(42));
+    controller.abort();
+    await expect(active).rejects.toMatchObject({ name: "AbortError" });
+    await expect(queued).resolves.toMatchObject({ seed: 42 });
+    expect(engine.simulationCount).toBe(2);
+    expect(engine.cacheSize).toBe(1);
+    expect(engine.runningCount).toBe(0);
+  });
+
+  it("cleanup cancels an in-flight result and does not retain it", async () => {
     const engine = new BattleEngine({ chunkTicks: 1 });
     const active = engine.simulateOnceAsync("match-cleanup", "round-1", inputs());
     expect(engine.cleanup("match-cleanup", "round-1")).toBe(true);
-    await active;
+    await expect(active).rejects.toMatchObject({ name: "AbortError" });
     expect(engine.cacheSize).toBe(0);
+    expect(engine.runningCount).toBe(0);
   });
 
   it("rejects unbounded correlation keys", () => {
