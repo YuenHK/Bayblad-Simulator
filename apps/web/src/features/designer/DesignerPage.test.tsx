@@ -347,6 +347,80 @@ describe("DesignerPage", () => {
     ).toBeEnabled();
   });
 
+  it("清空顏色會標示格式錯誤並停用參戰", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+
+    await user.clear(screen.getByLabelText("顏色"));
+
+    expect(screen.getByLabelText("顏色")).toHaveValue("");
+    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "true");
+    expect(
+      screen.getByText("請輸入 #RRGGBB 格式的顏色，例如 #2563EB"),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "規格未通過，請先修正" }),
+    ).toBeDisabled();
+  });
+
+  it.each(["#123", "文字"])("拒絕非法顏色 %s", async (invalidColor) => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+
+    await user.clear(screen.getByLabelText("顏色"));
+    await user.type(screen.getByLabelText("顏色"), invalidColor);
+
+    expect(screen.getByLabelText("顏色")).toHaveValue(invalidColor);
+    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "true");
+    expect(
+      screen.getByRole("button", { name: "規格未通過，請先修正" }),
+    ).toBeDisabled();
+  });
+
+  it("修正為合法 #RRGGBB 後恢復並寫入 design", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+    await user.clear(screen.getByLabelText("顏色"));
+    await user.type(screen.getByLabelText("顏色"), "#123");
+
+    await user.clear(screen.getByLabelText("顏色"));
+    await user.type(screen.getByLabelText("顏色"), "#ABCDEF");
+
+    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "false");
+    expect(
+      screen.queryByText("請輸入 #RRGGBB 格式的顏色，例如 #2563EB"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "規格通過，可參戰" }),
+    ).toBeEnabled();
+    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+    await user.selectOptions(screen.getByLabelText("目前編輯層"), "top");
+    expect(screen.getByLabelText("顏色")).toHaveValue("#ABCDEF");
+  });
+
+  it("切換至 canonical 顏色相同的另一層會重設並清除舊顏色錯誤", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+    await user.clear(screen.getByLabelText("顏色"));
+    await user.type(screen.getByLabelText("顏色"), "#2563eb");
+    await user.selectOptions(screen.getByLabelText("目前編輯層"), "top");
+    await user.clear(screen.getByLabelText("顏色"));
+    await user.type(screen.getByLabelText("顏色"), "#123");
+    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "true");
+
+    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+
+    expect(screen.getByLabelText("顏色")).toHaveValue("#2563eb");
+    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "false");
+    expect(
+      screen.queryByText("請輸入 #RRGGBB 格式的顏色，例如 #2563EB"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "規格通過，可參戰" }),
+    ).toBeEnabled();
+  });
+
   it("主要控制都有可存取標籤及鍵盤按鈕", () => {
     render(<DesignerPage />);
 
