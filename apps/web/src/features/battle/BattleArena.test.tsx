@@ -10,6 +10,7 @@ describe("BattleArena", () => {
       { sequence: 2, tick: 8, player1: { x: -10, y: 2, angle: 1, angularSpeed: 15 }, player2: { x: 10, y: -2, angle: -1, angularSpeed: 14 } },
     ]} reducedMotion />);
     expect(screen.getByTestId("battle-player1")).toHaveAttribute("transform", expect.stringContaining("-10"));
-    expect(screen.getByRole("status")).toHaveTextContent("第 8 tick");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByText("對戰進行中")).toBeInTheDocument();
   });
 });

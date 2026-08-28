@@ -1,24 +1,28 @@
 import type { TopDesign } from "@steam-top/domain";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { DesignerPage } from "./features/designer/DesignerPage";
 import { loadDesignerDraft } from "./features/designer/designerDraft";
 import { LobbyPage } from "./features/lobby/LobbyPage";
 import { RoomPage } from "./features/room/RoomPage";
 import { createRealtimeClient, type RealtimeClient } from "./realtime/socket-client";
+import { createSafeStorage, type SafeStorage } from "./realtime/safe-storage";
 
 const DESIGN_ID_KEY = "steam-top.design-id";
+const browserStorage = (): Storage | null => { try { return window.localStorage; } catch { return null; } };
 
-export function App({ client: suppliedClient }: Readonly<{ client?: RealtimeClient }>) {
+export function App({ client: suppliedClient, storage: suppliedStorage }: Readonly<{ client?: RealtimeClient; storage?: SafeStorage }>) {
+  const storage = useMemo(() => suppliedStorage ?? createSafeStorage(browserStorage()), [suppliedStorage]);
   const client = useMemo(() => suppliedClient ?? createRealtimeClient(), [suppliedClient]);
   const state = useSyncExternalStore(client.subscribe, client.getState, client.getState);
   const [page, setPage] = useState<"designer" | "lobby" | "room">("designer");
   const [design, setDesign] = useState<TopDesign>(() => loadDesignerDraft());
-  const [designId, setDesignId] = useState<string | null>(() => localStorage.getItem(DESIGN_ID_KEY));
+  const [designId, setDesignId] = useState<string | null>(() => storage.get(DESIGN_ID_KEY));
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
+  const actionController = useRef<AbortController | null>(null);
 
-  useEffect(() => { client.start(); return () => client.stop(); }, [client]);
+  useEffect(() => { client.start(); return () => { actionController.current?.abort(); client.stop(); }; }, [client]);
   useEffect(() => {
     const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     if (!media) return;
@@ -28,26 +32,31 @@ export function App({ client: suppliedClient }: Readonly<{ client?: RealtimeClie
   }, []);
   useEffect(() => { if (state.room) setPage("room"); }, [state.room]);
   useEffect(() => { if (page === "room" && !state.room) setPage("lobby"); }, [page, state.room]);
+  useEffect(() => { if (state.sessionStatus === "replaced" || state.sessionStatus === "new") { actionController.current?.abort(); actionController.current = null; setBusy(false); setDesignId(null); storage.remove(DESIGN_ID_KEY); if (state.sessionStatus === "replaced") setPage("lobby"); } }, [state.sessionStatus, storage]);
 
   const useFromDesigner = async (next: TopDesign) => {
+    if (busy) return;
+    actionController.current?.abort(); const controller = new AbortController(); actionController.current = controller;
     setBusy(true); setActionError(null); setDesign(next);
     try {
-      const id = await client.uploadDesign(next);
-      setDesignId(id); localStorage.setItem(DESIGN_ID_KEY, id); setPage("lobby");
+      const id = await client.uploadDesign(next, controller.signal);
+      setDesignId(id); storage.set(DESIGN_ID_KEY, id); setPage("lobby");
     } catch (error) { setActionError(error instanceof Error ? error.message : "上載設計失敗。"); }
-    finally { setBusy(false); }
+    finally { if (actionController.current === controller) { actionController.current = null; setBusy(false); } }
   };
 
   const ready = async () => {
-    if (!state.room || state.room.viewer.role === "spectator") return;
+    if (!state.room || state.room.viewer.role === "spectator" || busy) return;
+    actionController.current?.abort(); const controller = new AbortController(); actionController.current = controller;
     setBusy(true); setActionError(null);
     try {
-      let id = designId;
-      if (!id) { id = await client.uploadDesign(design); setDesignId(id); localStorage.setItem(DESIGN_ID_KEY, id); }
-      client.command({ type: "player.ready", roomId: state.room.roomId, designId: id });
+      const id = await client.readyWithDesign(state.room.roomId, design, controller.signal);
+      setDesignId(id); storage.set(DESIGN_ID_KEY, id);
     } catch (error) { setActionError(error instanceof Error ? error.message : "無法準備。"); }
-    finally { setBusy(false); }
+    finally { if (actionController.current === controller) { actionController.current = null; setBusy(false); } }
   };
+
+  const send = (command: Parameters<RealtimeClient["command"]>[0]) => { try { client.command(command); } catch (error) { setActionError(error instanceof Error ? error.message : "操作失敗。"); } };
 
   const connectionLabel = state.status === "online" ? "已連線" : state.status === "reconnecting" ? "重新連線中……" : state.status === "connecting" ? "連線中……" : "離線";
   const phase = state.matchFinished || state.cancelledReason ? "result" : state.room?.phase ?? "waiting";
@@ -58,9 +67,9 @@ export function App({ client: suppliedClient }: Readonly<{ client?: RealtimeClie
     {(actionError || state.lastError) ? <p className="system-banner error" role="alert">{actionError ?? state.lastError}</p> : null}
     {busy ? <p className="system-banner" role="status">正在處理……</p> : null}
     {page === "designer" ? <DesignerPage onUseDesign={useFromDesigner} /> : null}
-    {page === "lobby" ? <LobbyPage rooms={state.lobbyRooms} onCommand={(command) => client.command(command)} /> : null}
-    {page === "room" && state.room ? <RoomPage snapshot={state.room} design={design} designId={designId} departurePending={state.departurePending} onUseDesign={ready} onCommand={(command) => client.command(command)} onLeave={() => { client.command({ type: "room.leave", roomId: state.room!.roomId }); }} reducedMotion={reducedMotion} battle={{
-      phase, schedule: state.schedule ? { ...state.schedule, serverTargetTimeMs: client.serverToClientTime(state.schedule.serverTargetTimeMs) } : undefined, privateGrade: state.privateGrade ?? undefined,
+    {page === "lobby" ? <LobbyPage rooms={state.lobbyRooms} disabled={busy || state.pendingActions > 0 || state.status !== "online"} onCommand={send} /> : null}
+    {page === "room" && state.room ? <RoomPage snapshot={state.room} design={design} designId={designId} departurePending={state.departurePending} actionsDisabled={busy || state.pendingActions > 0 || state.status !== "online"} onUseDesign={ready} onCommand={send} onLeave={() => send({ type: "room.leave", roomId: state.room!.roomId })} reducedMotion={reducedMotion} battle={{
+      phase, clockReady: state.clockReady && state.status === "online", schedule: state.schedule ? { ...state.schedule, serverTargetTimeMs: client.serverToClientTime(state.schedule.serverTargetTimeMs) } : undefined, privateGrade: state.privateGrade ?? undefined,
       spectatorGrades: state.spectatorGrades ?? undefined, started: state.battleStarted ?? undefined,
       frames: state.frames, roundWinner: state.roundFinished?.winner,
       matchFinished: state.matchFinished ?? undefined, cancelledReason: state.cancelledReason ?? undefined,
