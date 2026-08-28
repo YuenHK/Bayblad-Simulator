@@ -6,12 +6,14 @@ import {
 } from "@steam-top/protocol";
 import {
   designSchema,
+  maxDiameter,
   type TopDesign,
 } from "@steam-top/domain";
 
 import {
   ARENA_CENTER_SAFE_RADIUS_MM,
   BattleEngine,
+  buildCollisionProxyVertices,
   BROADCAST_EVERY_TICKS,
   MAX_ROUND_SECONDS,
   PHYSICS_MODEL_VERSION,
@@ -23,6 +25,7 @@ import {
   prepareBattleTop,
   resolveTimeoutOutcome,
   simulateMatchRound,
+  simulateMatchRoundAsync,
   type BattleInputs,
 } from "./engine";
 import { DeterministicPrng } from "./prng";
@@ -121,6 +124,55 @@ describe("DeterministicPrng", () => {
 });
 
 describe("authoritative Planck battle simulation", () => {
+  it("builds finite convex collision proxies with <=8 vertices and rotation-stable outer diameter", () => {
+    const rotations = [0, 5.625, 17, 89];
+    for (const shape of ["circle", "polygon", "star", "wave"] as const) {
+      for (let points = 3; points <= 16; points += 1) {
+        for (const rotationDeg of rotations) {
+          const candidate = design({
+            layers: design().layers.map((layer) => ({
+              ...layer,
+              id: `${shape}-${points}-${rotationDeg}-${layer.position}`,
+              shape,
+              points,
+              diameterMm: 60,
+              cornerRoundness: 0,
+              rotationDeg,
+            })) as TopDesign["layers"],
+          });
+          const proxy = buildCollisionProxyVertices(candidate);
+          expect(proxy.length).toBeGreaterThanOrEqual(3);
+          expect(proxy.length).toBeLessThanOrEqual(8);
+          expect(proxy.flatMap(({ x, y }) => [x, y]).every(Number.isFinite)).toBe(true);
+          expect(maxDiameter(proxy)).toBeCloseTo(60, 6);
+          const crosses = proxy.map((point, index) => {
+            const next = proxy[(index + 1) % proxy.length]!;
+            const after = proxy[(index + 2) % proxy.length]!;
+            return (next.x - point.x) * (after.y - next.y) -
+              (next.y - point.y) * (after.x - next.x);
+          });
+          expect(crosses.every((cross) => cross >= -1e-9) || crosses.every((cross) => cross <= 1e-9)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("preserves the 60 mm radius extrema of a rotated legal 16-point star", () => {
+    const rotated = design({
+      layers: design().layers.map((layer) => ({
+        ...layer,
+        id: `${layer.id}-rotated-star`,
+        shape: "star",
+        points: 16,
+        diameterMm: 60,
+        cornerRoundness: 0,
+        rotationDeg: 5.625,
+      })) as TopDesign["layers"],
+      screwLayout: { count: 4, radiusMm: 12, rotationDeg: 0 },
+    });
+    expect(maxDiameter(buildCollisionProxyVertices(rotated))).toBeCloseTo(60, 6);
+  });
+
   it("maps canonical impact resistance monotonically to bounded fixture/contact physics", () => {
     const low = impactPhysicsFromScore(0);
     const middle = impactPhysicsFromScore(50);
@@ -239,8 +291,28 @@ describe("authoritative Planck battle simulation", () => {
     expect(prepareBattleTop(highImpactTop).performance.impactResistance)
       .toBeGreaterThan(prepareBattleTop(lowImpactTop).performance.impactResistance);
     expect(result.finalStats.topTopContactCount).toBeGreaterThan(0);
+    expect(result.finalStats.topTopImpactApplications)
+      .toBe(result.finalStats.topTopBeginContactEpisodes);
+    expect(result.finalStats.player1.impactRetentionProduct)
+      .toBeCloseTo(
+        impactPhysicsFromScore(prepareBattleTop(highImpactTop).performance.impactResistance)
+          .angularRetention ** result.finalStats.topTopImpactApplications,
+        12,
+      );
     expect(result.finalStats.player1.impactRetentionProduct)
       .toBeGreaterThan(result.finalStats.player2.impactRetentionProduct);
+  });
+
+  it("keeps a typical equal-design battle observable for more than one second at the median", () => {
+    const ticks = [1, 2, 3, 4, 5, 6, 7].map((seed) =>
+      simulateMatchRound(player1, {
+        ...player1,
+        id: `equal-${seed}`,
+        layers: player1.layers.map((layer) => ({ ...layer, id: `${layer.id}-equal-${seed}` })) as TopDesign["layers"],
+      }, { seed, launchA: launch(), launchB: launch() }).ticks,
+    ).sort((left, right) => left - right);
+    expect(ticks[Math.floor(ticks.length / 2)]).toBeGreaterThan(60);
+    expect(ticks.every((tick) => tick <= MAX_ROUND_SECONDS / STEP_SECONDS)).toBe(true);
   });
 
   it("does not mutate caller inputs", () => {
@@ -252,6 +324,25 @@ describe("authoritative Planck battle simulation", () => {
 });
 
 describe("elimination and outcome rules", () => {
+  it("has no player-seat bias when designs and launch judgements are swapped", () => {
+    const swapWinner = (winner: "player1" | "player2" | "draw") =>
+      winner === "player1" ? "player2" : winner === "player2" ? "player1" : "draw";
+    for (const seed of [1, 17, 31337, 0x7fff_ffff, 0xffff_ffff]) {
+      const forward = simulateMatchRound(enduranceTop, lightTop, {
+        seed,
+        launchA: launch("Perfect", 1.1, 1.1),
+        launchB: launch("Good", 0.9, 0.9),
+      });
+      const reverse = simulateMatchRound(lightTop, enduranceTop, {
+        seed,
+        launchA: launch("Good", 0.9, 0.9),
+        launchB: launch("Perfect", 1.1, 1.1),
+      });
+      expect(reverse.outcome.winner).toBe(swapWinner(forward.outcome.winner));
+      expect(reverse.outcome.reason).toBe(forward.outcome.reason);
+    }
+  });
+
   it("requires exactly 30 consecutive stopped ticks (500 ms)", () => {
     expect(STOPPED_TICKS).toBe(30);
     expect(classifyEliminations({ player1StoppedTicks: 29, player2StoppedTicks: 0, player1RadiusMm: 0, player2RadiusMm: 0 })).toEqual({ player1: false, player2: false, reason: null });
@@ -307,6 +398,37 @@ describe("elimination and outcome rules", () => {
 });
 
 describe("BattleEngine simulate-once cache", () => {
+  it("cooperatively yields during a worst-case async round and exactly matches sync", async () => {
+    const timeoutPlayer2 = {
+      ...lightTop,
+      id: "light-async-copy",
+      layers: lightTop.layers.map((layer) => ({ ...layer, id: `${layer.id}-async-copy` })) as TopDesign["layers"],
+    };
+    const options = {
+      seed: 123,
+      launchA: launch("Perfect", 2, 1e-9),
+      launchB: launch("Perfect", 2, 1e-9),
+    };
+    const sync = simulateMatchRound(lightTop, timeoutPlayer2, options);
+    let heartbeats = 0;
+    const heartbeat = setInterval(() => { heartbeats += 1; }, 0);
+    const asyncResult = await simulateMatchRoundAsync(lightTop, timeoutPlayer2, options, { chunkTicks: 120 });
+    clearInterval(heartbeat);
+    expect(asyncResult).toEqual(sync);
+    expect(heartbeats).toBeGreaterThan(1);
+  });
+
+  it("deduplicates concurrent async spectators and rejects an active fingerprint conflict", async () => {
+    const engine = new BattleEngine({ chunkTicks: 1 });
+    const first = engine.simulateOnceAsync("match-async", "round-1", inputs());
+    const second = engine.simulateOnceAsync("match-async", "round-1", inputs());
+    await expect(engine.simulateOnceAsync("match-async", "round-1", inputs(99))).rejects.toThrow(/conflict/i);
+    const [result1, result2] = await Promise.all([first, second]);
+    expect(result2).toEqual(result1);
+    expect(result2).not.toBe(result1);
+    expect(engine.simulationCount).toBe(1);
+  });
+
   it("simulates once for twenty spectators and returns defensive deep clones", () => {
     const engine = new BattleEngine();
     const results = Array.from({ length: 20 }, () => engine.simulateOnce("match-1", "round-1", inputs()));
@@ -316,15 +438,75 @@ describe("BattleEngine simulate-once cache", () => {
     expect(results[0]?.frames).not.toBe(results[1]?.frames);
   });
 
-  it("rejects correlation conflicts and permits explicit cleanup only after close", () => {
+  it("fingerprints parsed canonical inputs so trim-equivalent retries share cache", () => {
+    const engine = new BattleEngine();
+    const canonical = inputs();
+    const spaced = {
+      ...canonical,
+      player1: { ...canonical.player1, name: `  ${canonical.player1.name}  ` },
+    };
+    expect(engine.simulateOnce("match-canonical", "round-1", spaced)).toEqual(
+      engine.simulateOnce("match-canonical", "round-1", canonical),
+    );
+    expect(engine.simulationCount).toBe(1);
+  });
+
+  it("expires closed results after TTL but keeps them for a short reconnect", () => {
+    let now = 1_000;
+    const engine = new BattleEngine({ ttlMs: 100, now: () => now });
+    const first = engine.simulateOnce("match-ttl", "round-1", inputs());
+    engine.close("match-ttl", "round-1");
+    now += 99;
+    expect(engine.simulateOnce("match-ttl", "round-1", inputs())).toEqual(first);
+    expect(engine.simulationCount).toBe(1);
+    now += 2;
+    engine.simulateOnce("match-ttl", "round-1", inputs());
+    expect(engine.simulationCount).toBe(2);
+  });
+
+  it("bounds large timeout results and evicts the least recently used entry", () => {
+    const engine = new BattleEngine({ maxEntries: 2 });
+    engine.simulateOnce("match-a", "round", inputs(1));
+    engine.simulateOnce("match-b", "round", inputs(2));
+    engine.simulateOnce("match-a", "round", inputs(1));
+    engine.simulateOnce("match-c", "round", inputs(3));
+    expect(engine.cacheSize).toBe(2);
+    engine.simulateOnce("match-b", "round", inputs(2));
+    expect(engine.simulationCount).toBe(4);
+    expect(engine.cacheSize).toBe(2);
+
+    const timeoutEngine = new BattleEngine({ maxEntries: 1 });
+    const timeoutInputs = (seed: number): BattleInputs => ({
+      player1: lightTop,
+      player2: {
+        ...lightTop,
+        id: `timeout-copy-${seed}`,
+        layers: lightTop.layers.map((layer) => ({ ...layer, id: `${layer.id}-timeout-${seed}` })) as TopDesign["layers"],
+      },
+      seed,
+      launchA: launch("Perfect", 2, 1e-9),
+      launchB: launch("Perfect", 2, 1e-9),
+    });
+    expect(timeoutEngine.simulateOnce("timeout-a", "round", timeoutInputs(10)).ticks).toBe(5_400);
+    expect(timeoutEngine.simulateOnce("timeout-b", "round", timeoutInputs(11)).ticks).toBe(5_400);
+    expect(timeoutEngine.cacheSize).toBe(1);
+  });
+
+  it("rejects correlation conflicts while explicit cleanup deletes immediately", () => {
     const engine = new BattleEngine();
     engine.simulateOnce("match-1", "round-1", inputs());
     expect(() => engine.simulateOnce("match-1", "round-1", inputs(9))).toThrow(/conflict/i);
-    expect(() => engine.cleanup("match-1", "round-1")).toThrow(/closed/i);
-    engine.close("match-1", "round-1");
     expect(engine.cleanup("match-1", "round-1")).toBe(true);
     engine.simulateOnce("match-1", "round-1", inputs());
     expect(engine.simulationCount).toBe(2);
+  });
+
+  it("does not retain an in-flight result after explicit room cleanup", async () => {
+    const engine = new BattleEngine({ chunkTicks: 1 });
+    const active = engine.simulateOnceAsync("match-cleanup", "round-1", inputs());
+    expect(engine.cleanup("match-cleanup", "round-1")).toBe(true);
+    await active;
+    expect(engine.cacheSize).toBe(0);
   });
 
   it("rejects unbounded correlation keys", () => {
