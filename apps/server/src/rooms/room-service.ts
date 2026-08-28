@@ -5,6 +5,7 @@ import {
   lobbyRoomSchema,
   lobbySnapshotEventSchema,
   participantSummarySchema,
+  participantIdSchema,
   phaseSchema,
   playerReadyEventSchema,
   roomCreateEventSchema,
@@ -114,6 +115,7 @@ export type RoomServiceErrorCode =
   | "INVALID_PHASE_TRANSITION"
   | "ROOM_ACTIVE"
   | "ROOM_ID_GENERATION_FAILED"
+  | "PARTICIPANT_ID_GENERATION_FAILED"
   | "CODE_GENERATION_FAILED";
 
 export class RoomServiceError extends Error {
@@ -192,7 +194,9 @@ export class RoomService {
   }
 
   sweep(): void {
-    this.#transaction(null, () => this.#sweep());
+    for (const roomId of [...this.#rooms.keys()]) {
+      this.#transaction(roomId, () => this.#sweepRoom(roomId));
+    }
   }
 
   #create(user: InternalUser, roomName: string): RoomMembership {
@@ -237,7 +241,11 @@ export class RoomService {
       existing &&
       !existing.connected &&
       existing.disconnectedAt !== null &&
-      now - existing.disconnectedAt >= DISCONNECT_RETENTION_MS
+      now - existing.disconnectedAt >= DISCONNECT_RETENTION_MS &&
+      !(
+        (room.phase === "launch" || room.phase === "battle") &&
+        existing.role !== "spectator"
+      )
     ) {
       this.#removeParticipant(room, existing);
       this.#markEmpty(room, now);
@@ -263,6 +271,10 @@ export class RoomService {
       return Object.freeze({ roomId, code: room.code, participantId: existing.participantId });
     }
 
+    if (role === "player" && (room.phase === "launch" || room.phase === "battle")) {
+      throw new RoomServiceError("SEATS_LOCKED");
+    }
+
     let assignedRole: ViewerRole;
     if (role === "spectator") {
       assignedRole = "spectator";
@@ -274,7 +286,7 @@ export class RoomService {
       throw new RoomServiceError("ROOM_FULL");
     }
 
-    const participant = this.#newParticipant(user, assignedRole);
+    const participant = this.#newParticipant(user, assignedRole, room);
     room.participants.set(user.id, participant);
     this.#addToLocation(room, participant);
     room.emptySinceMs = null;
@@ -452,27 +464,48 @@ export class RoomService {
     this.#deleteRoom(room);
   }
 
-  #sweep(): void {
+  #sweepRoom(roomId: string): void {
+    const room = this.#room(roomId);
     const now = this.#dependencies.now();
-    for (const room of [...this.#rooms.values()]) {
-      for (const participant of [...room.participants.values()]) {
-        if (
-          !participant.connected &&
-          participant.disconnectedAt !== null &&
-          now - participant.disconnectedAt >= DISCONNECT_RETENTION_MS
-        ) {
-          this.#removeParticipant(room, participant);
+    const hasConnectedParticipant = [...room.participants.values()].some(
+      (participant) => participant.connected,
+    );
+    if (
+      !hasConnectedParticipant &&
+      room.emptySinceMs !== null &&
+      now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
+    ) {
+      this.#deleteRoom(room);
+      return;
+    }
+
+    const seatsAreRetained = room.phase === "launch" || room.phase === "battle";
+    for (const participant of [...room.participants.values()]) {
+      const expired =
+        !participant.connected &&
+        participant.disconnectedAt !== null &&
+        now - participant.disconnectedAt >= DISCONNECT_RETENTION_MS;
+      if (!expired) continue;
+      if (seatsAreRetained && participant.role !== "spectator") {
+        if (room.ownerInternalUserId === participant.internalUserId) {
+          const nextOwner = this.#ownerCandidate(room);
+          if (nextOwner) {
+            room.ownerInternalUserId = nextOwner.internalUserId;
+            this.#emitDelta(room, { ownerParticipantId: nextOwner.participantId }, [], []);
+          }
         }
+        continue;
       }
-      if (!this.#rooms.has(room.id)) continue;
-      this.#transferOwnerIfMissing(room);
-      this.#markEmpty(room, now);
-      if (
-        room.emptySinceMs !== null &&
-        now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
-      ) {
-        this.#deleteRoom(room);
-      }
+      this.#removeParticipant(room, participant);
+    }
+    if (!this.#rooms.has(room.id)) return;
+    this.#transferOwnerIfMissing(room);
+    this.#markEmpty(room, now);
+    if (
+      room.emptySinceMs !== null &&
+      now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
+    ) {
+      this.#deleteRoom(room);
     }
   }
 
@@ -552,9 +585,10 @@ export class RoomService {
     return this.#rooms.has(roomId);
   }
 
-  #newParticipant(user: InternalUser, role: ViewerRole): Participant {
+  #newParticipant(user: InternalUser, role: ViewerRole, room?: Room): Participant {
+    const participantId = this.#uniqueParticipantId(room);
     const summary = participantSummarySchema.parse({
-      participantId: this.#dependencies.createParticipantId(),
+      participantId,
       displayName: user.displayName,
     });
     return {
@@ -568,6 +602,23 @@ export class RoomService {
       connected: true,
       disconnectedAt: null,
     };
+  }
+
+  #uniqueParticipantId(room?: Room): string {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
+      const participantId = participantIdSchema.parse(
+        this.#dependencies.createParticipantId(),
+      );
+      if (
+        !room ||
+        ![...room.participants.values()].some(
+          (participant) => participant.participantId === participantId,
+        )
+      ) {
+        return participantId;
+      }
+    }
+    throw new RoomServiceError("PARTICIPANT_ID_GENERATION_FAILED");
   }
 
   #uniqueCode(): string {
@@ -728,11 +779,11 @@ export class RoomService {
   }
 
   #transaction<T>(roomId: string | null, mutation: () => T): T {
-    const allRoomsBackup = roomId === null ? structuredClone(this.#rooms) : undefined;
+    const allRoomsBackup = roomId === null ? new Map(this.#rooms) : undefined;
     const hadRoom = roomId !== null && this.#rooms.has(roomId);
     const roomBackup =
-      roomId !== null && hadRoom ? structuredClone(this.#rooms.get(roomId)!) : undefined;
-    const roomIdsByCodeBackup = structuredClone(this.#roomIdsByCode);
+      roomId !== null && hadRoom ? this.#copyRoom(this.#rooms.get(roomId)!) : undefined;
+    const roomIdsByCodeBackup = new Map(this.#roomIdsByCode);
     const lobbyRevisionBackup = this.#lobbyRevision;
     try {
       return mutation();
@@ -748,6 +799,20 @@ export class RoomService {
       this.#lobbyRevision = lobbyRevisionBackup;
       throw error;
     }
+  }
+
+  #copyRoom(room: Room): Room {
+    return {
+      ...room,
+      spectators: [...room.spectators],
+      participants: new Map(
+        [...room.participants].map(([internalUserId, participant]) => [
+          internalUserId,
+          { ...participant },
+        ]),
+      ),
+      pendingDeltas: [...room.pendingDeltas],
+    };
   }
 
   #emitDelta(

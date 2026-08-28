@@ -71,6 +71,35 @@ describe("RoomService membership and public state", () => {
     expect(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength).toBeLessThan(40_000);
   });
 
+  it("retries participant id collisions and rolls back when uniqueness is exhausted", () => {
+    let generatedId = 0;
+    let exhaust = false;
+    const service = new RoomService({
+      now: () => 1_000,
+      createRoomId: () => "room-participants",
+      createRoomCode: () => "PEOPLE",
+      createParticipantId: () => {
+        if (exhaust) return "p1";
+        generatedId += 1;
+        return generatedId <= 2 ? "p1" : "p2";
+      },
+      createServerEventId: () => "00000000-0000-4000-8000-000000000001",
+    });
+    const room = service.create(user("owner"), "Room");
+    const joined = service.join(room.roomId, user("player2"), "player");
+    expect(joined.participantId).toBe("p2");
+    service.drainDeltas(room.roomId);
+    const beforeRoom = service.get(room.roomId);
+    const beforeLobbyRevision = service.lobbySnapshot().revision;
+    exhaust = true;
+    expect(() => service.join(room.roomId, user("spectator"), "spectator")).toThrow(
+      new RoomServiceError("PARTICIPANT_ID_GENERATION_FAILED"),
+    );
+    expect(service.get(room.roomId)).toEqual(beforeRoom);
+    expect(service.lobbySnapshot().revision).toBe(beforeLobbyRevision);
+    expect(service.drainDeltas(room.roomId)).toEqual([]);
+  });
+
   it("makes repeated joins idempotent and never gives one user multiple roles", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
@@ -321,6 +350,81 @@ describe("RoomService moves, readiness, and phases", () => {
 });
 
 describe("RoomService disconnect, leave, sweep, and close", () => {
+  it("retains disconnected active seats until result while locking player joins", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    const player2 = service.join(room.roomId, user("player2"), "player");
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
+    service.setPhase(room.roomId, "launch");
+    service.setPhase(room.roomId, "battle");
+    service.disconnect(room.roomId, "player2");
+    advance(120_001);
+    service.sweep();
+    expect(service.snapshot(room.roomId, "owner").player2).toMatchObject({
+      participantId: player2.participantId,
+      ready: true,
+      designId: DESIGN_B,
+    });
+    expect(() => service.join(room.roomId, user("replacement"), "player")).toThrow(
+      new RoomServiceError("SEATS_LOCKED"),
+    );
+    const spectator = service.join(room.roomId, user("spectator"), "spectator");
+    expect(service.snapshot(room.roomId, "spectator").viewer.participantId).toBe(
+      spectator.participantId,
+    );
+    service.setPhase(room.roomId, "result");
+    service.sweep();
+    expect(service.get(room.roomId)?.player2).toBeNull();
+    const replacement = service.join(room.roomId, user("replacement"), "player");
+    expect(service.get(room.roomId)?.player2?.participantId).toBe(replacement.participantId);
+  });
+
+  it("transfers active ownership after timeout without removing the owner's seat", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    const player2 = service.join(room.roomId, user("player2"), "player");
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
+    service.setPhase(room.roomId, "launch");
+    service.disconnect(room.roomId, "owner");
+    advance(120_001);
+    service.sweep();
+    expect(service.get(room.roomId)).toMatchObject({
+      ownerParticipantId: player2.participantId,
+      player1: { participantId: room.participantId, ready: true, designId: DESIGN_A },
+    });
+  });
+
+  it("restores an expired active seat session even if reconnect requests spectator", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    const player2 = service.join(room.roomId, user("player2"), "player");
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
+    service.setPhase(room.roomId, "launch");
+    service.disconnect(room.roomId, "player2");
+    advance(120_001);
+    service.sweep();
+    const reconnected = service.join(room.roomId, user("player2"), "spectator");
+    expect(reconnected.participantId).toBe(player2.participantId);
+    expect(service.snapshot(room.roomId, "player2").viewer.role).toBe("player2");
+  });
+
+  it("still deletes a fully disconnected active room at the empty timeout", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    service.join(room.roomId, user("player2"), "player");
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
+    service.setPhase(room.roomId, "launch");
+    service.disconnect(room.roomId, "owner");
+    service.disconnect(room.roomId, "player2");
+    advance(120_000);
+    service.sweep();
+    expect(service.hasRoom(room.roomId)).toBe(false);
+  });
+
   it("treats active seated leave as an idempotent disconnect while spectators may leave", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
