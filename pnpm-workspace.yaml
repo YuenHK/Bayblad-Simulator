@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+# tsx and Vitest require esbuild's exact-version postinstall under this supply policy.
 allowBuilds:
   esbuild: true
 minimumReleaseAge: 1440

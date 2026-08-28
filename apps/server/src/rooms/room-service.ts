@@ -43,6 +43,33 @@ export type RoomMembership = Readonly<{
   participantId: string;
 }>;
 
+export type PublicParticipant = Readonly<{
+  participantId: string;
+  displayName: string;
+}>;
+
+export type PublicPlayerSeat = Readonly<{
+  participantId: string;
+  displayName: string;
+  ready: boolean;
+  designId: string | null;
+}>;
+
+export type PublicRoom = Readonly<{
+  id: string;
+  code: string;
+  name: string;
+  ownerParticipantId: string | null;
+  phase: Phase;
+  player1: PublicPlayerSeat | null;
+  player2: PublicPlayerSeat | null;
+  spectators: readonly PublicParticipant[];
+  revision: number;
+  emptySinceMs: number | null;
+}>;
+
+export type RoomView = PublicRoom;
+
 type Participant = {
   readonly internalUserId: string;
   readonly participantId: string;
@@ -404,6 +431,26 @@ export class RoomService {
       protocolVersion: PROTOCOL_VERSION,
       serverEventId: this.#dependencies.createServerEventId(),
     });
+  }
+
+  get(roomId: string): RoomView | undefined {
+    const room = this.#rooms.get(roomId);
+    if (!room) return undefined;
+    const owner = room.ownerInternalUserId
+      ? room.participants.get(room.ownerInternalUserId)
+      : undefined;
+    return {
+      id: room.id,
+      code: room.code,
+      name: room.name,
+      ownerParticipantId: owner?.participantId ?? null,
+      phase: room.phase,
+      player1: this.#publicSeat(room, "player1"),
+      player2: this.#publicSeat(room, "player2"),
+      spectators: room.spectators.map((id) => this.#summary(room.participants.get(id)!)),
+      revision: room.revision,
+      emptySinceMs: room.emptySinceMs,
+    };
   }
 
   drainDeltas(roomId: string): RoomDeltaEvent[] {

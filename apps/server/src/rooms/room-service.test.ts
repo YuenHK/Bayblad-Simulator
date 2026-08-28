@@ -98,6 +98,52 @@ describe("RoomService membership and public state", () => {
       new RoomServiceError("NOT_IN_ROOM"),
     );
   });
+
+  it("returns a public readonly deep copy without internal identities", () => {
+    const { service } = makeHarness();
+    const room = service.create(user("internal-owner", "Owner"), "Original");
+    service.join(room.roomId, user("internal-player", "Player"), "player");
+    service.join(room.roomId, user("internal-spectator", "Spectator"), "spectator");
+
+    const view = service.get(room.roomId);
+    expect(view).toMatchObject({
+      id: room.roomId,
+      code: room.code,
+      name: "Original",
+      ownerParticipantId: room.participantId,
+      phase: "waiting",
+      revision: 3,
+      emptySinceMs: null,
+      player1: { participantId: room.participantId, displayName: "Owner" },
+      player2: { displayName: "Player" },
+      spectators: [{ displayName: "Spectator" }],
+    });
+    expect(JSON.stringify(view)).not.toContain("internal-");
+    expect(JSON.stringify(view)).not.toContain("pendingDeltas");
+    expect(JSON.stringify(view)).not.toContain("participants");
+
+    const forced = view as unknown as {
+      name: string;
+      player1: { displayName: string };
+      spectators: Array<{ displayName: string }>;
+    };
+    forced.name = "Corrupt";
+    forced.player1.displayName = "Corrupt";
+    forced.spectators[0]!.displayName = "Corrupt";
+    forced.spectators.push({ displayName: "Injected" });
+
+    expect(service.get(room.roomId)).toMatchObject({
+      name: "Original",
+      player1: { displayName: "Owner" },
+      spectators: [{ displayName: "Spectator" }],
+    });
+    expect(service.snapshot(room.roomId, "internal-owner")).toMatchObject({
+      name: "Original",
+      player1: { displayName: "Owner" },
+      spectators: [{ displayName: "Spectator" }],
+    });
+    expect(service.get("missing-room")).toBeUndefined();
+  });
 });
 
 describe("RoomService moves, readiness, and phases", () => {
@@ -249,7 +295,7 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     expect(first.participantId < second.participantId).toBe(true);
     service.drainDeltas(room.roomId);
     service.leave(room.roomId, "owner");
-    expect(service.snapshot(room.roomId, "z-user").ownerParticipantId).toBe(first.participantId);
+    expect(service.get(room.roomId)?.ownerParticipantId).toBe(first.participantId);
     expect(service.drainDeltas(room.roomId)).toMatchObject([
       {
         patch: { player1: null, ownerParticipantId: first.participantId },
