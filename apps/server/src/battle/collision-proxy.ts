@@ -8,7 +8,7 @@ import {
 
 export const MAX_COLLISION_PROXY_VERTICES = 8;
 export const COLLISION_OUTLINE_MAX_ERROR_MM = 0.35;
-const ADAPTIVE_TARGET_ERROR_MM = 0.08;
+const ADAPTIVE_TARGET_ERROR_MM = 0.3;
 const FULL_TURN = Math.PI * 2;
 
 function normaliseAngle(angle: number): number {
@@ -46,11 +46,11 @@ function radialDistanceToSegment(angle: number, start: Point, end: Point): numbe
 export function buildCollisionOutlineVertices(input: TopDesign): readonly Point[] {
   const design = designSchema.parse(input);
   const candidateAngles = new Set<number>();
-  for (let index = 0; index < 32; index += 1) candidateAngles.add(index * FULL_TURN / 32);
   for (const layer of design.layers) {
     const rotation = layer.rotationDeg * Math.PI / 180;
-    for (let index = 0; index < layer.points * 2; index += 1) {
-      candidateAngles.add(normaliseAngle(rotation + index * Math.PI / layer.points));
+    const featureCount = layer.shape === "circle" ? 32 : layer.points * 2;
+    for (let index = 0; index < featureCount; index += 1) {
+      candidateAngles.add(normaliseAngle(rotation + index * FULL_TURN / featureCount));
     }
   }
   let angles = [...candidateAngles].sort((left, right) => left - right);
@@ -62,14 +62,19 @@ export function buildCollisionOutlineVertices(input: TopDesign): readonly Point[
       const endAngle = index === angles.length - 1 ? rawEnd + FULL_TURN : rawEnd;
       const start = pointForDesign(design, startAngle);
       const end = pointForDesign(design, endAngle);
-      for (const ratio of [0.25, 0.5, 0.75]) {
+      let maximumError = 0;
+      let splitAngle = (startAngle + endAngle) / 2;
+      for (const ratio of [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]) {
         const sampleAngle = startAngle + (endAngle - startAngle) * ratio;
         const actualRadius = radiusForDesign(design, sampleAngle);
         const polygonRadius = radialDistanceToSegment(sampleAngle, start, end);
-        if (Math.abs(actualRadius - polygonRadius) > ADAPTIVE_TARGET_ERROR_MM) {
-          additions.push(normaliseAngle(sampleAngle));
+        const error = Math.abs(actualRadius - polygonRadius);
+        if (error > maximumError) {
+          maximumError = error;
+          splitAngle = sampleAngle;
         }
       }
+      if (maximumError > ADAPTIVE_TARGET_ERROR_MM) additions.push(normaliseAngle(splitAngle));
     }
     if (additions.length === 0) break;
     angles = [...new Set([...angles, ...additions])].sort((left, right) => left - right);

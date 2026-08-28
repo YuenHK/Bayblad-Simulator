@@ -61,6 +61,7 @@ export const DEFAULT_BATTLE_CACHE_TTL_MS = 5 * 60_000;
 export const DEFAULT_BATTLE_CACHE_MAX_ENTRIES = 128;
 export const DEFAULT_BATTLE_MAX_CONCURRENT = 2;
 export const DEFAULT_BATTLE_MAX_QUEUED = 64;
+export const DEFAULT_ASYNC_YIELD_BUDGET_MS = 8;
 
 export type BattleBodyFrame = Readonly<ProtocolBattleBody>;
 
@@ -378,6 +379,78 @@ function pointInPolygon(point: Point, polygon: readonly Point[]): boolean {
   return inside;
 }
 
+type OutlineEdge = Readonly<{
+  start: Point;
+  end: Point;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}>;
+
+function outlineEdges(outline: readonly Point[]): OutlineEdge[] {
+  return outline.map((start, index) => {
+    const end = outline[(index + 1) % outline.length]!;
+    return {
+      start,
+      end,
+      minX: Math.min(start.x, end.x),
+      maxX: Math.max(start.x, end.x),
+      minY: Math.min(start.y, end.y),
+      maxY: Math.max(start.y, end.y),
+    };
+  });
+}
+
+function gridCoordinate(value: number, cellSize: number): number {
+  return Math.floor(value / cellSize);
+}
+
+function gridKey(x: number, y: number): string {
+  return `${x}:${y}`;
+}
+
+function edgesIntersectUsingGrid(edges1: readonly OutlineEdge[], edges2: readonly OutlineEdge[]): boolean {
+  const minimumX = Math.min(...edges2.map(({ minX }) => minX));
+  const maximumX = Math.max(...edges2.map(({ maxX }) => maxX));
+  const minimumY = Math.min(...edges2.map(({ minY }) => minY));
+  const maximumY = Math.max(...edges2.map(({ maxY }) => maxY));
+  const cellSize = Math.max(maximumX - minimumX, maximumY - minimumY) / 16;
+  if (!Number.isFinite(cellSize) || cellSize <= 0) return false;
+  const grid = new Map<string, number[]>();
+  for (const [index, edge] of edges2.entries()) {
+    for (let x = gridCoordinate(edge.minX, cellSize); x <= gridCoordinate(edge.maxX, cellSize); x += 1) {
+      for (let y = gridCoordinate(edge.minY, cellSize); y <= gridCoordinate(edge.maxY, cellSize); y += 1) {
+        const key = gridKey(x, y);
+        const bucket = grid.get(key);
+        if (bucket === undefined) grid.set(key, [index]);
+        else bucket.push(index);
+      }
+    }
+  }
+  const seen = new Uint32Array(edges2.length);
+  for (const [edgeIndex, edge1] of edges1.entries()) {
+    const marker = edgeIndex + 1;
+    for (let x = gridCoordinate(edge1.minX, cellSize); x <= gridCoordinate(edge1.maxX, cellSize); x += 1) {
+      for (let y = gridCoordinate(edge1.minY, cellSize); y <= gridCoordinate(edge1.maxY, cellSize); y += 1) {
+        const candidates = grid.get(gridKey(x, y));
+        if (candidates === undefined) continue;
+        for (const candidateIndex of candidates) {
+          if (seen[candidateIndex] === marker) continue;
+          seen[candidateIndex] = marker;
+          const edge2 = edges2[candidateIndex]!;
+          if (
+            edge1.maxX < edge2.minX || edge2.maxX < edge1.minX ||
+            edge1.maxY < edge2.minY || edge2.maxY < edge1.minY
+          ) continue;
+          if (segmentsIntersect(edge1.start, edge1.end, edge2.start, edge2.end)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /** Exact concave-polygon overlap used after Planck's sensor broad phase. */
 export function collisionOutlinesOverlap(
   vertices1: readonly Readonly<Point>[],
@@ -387,15 +460,7 @@ export function collisionOutlinesOverlap(
 ): boolean {
   const outline1 = transformedOutline(vertices1, pose1.position, pose1.angle);
   const outline2 = transformedOutline(vertices2, pose2.position, pose2.angle);
-  for (let index1 = 0; index1 < outline1.length; index1 += 1) {
-    const a = outline1[index1]!;
-    const b = outline1[(index1 + 1) % outline1.length]!;
-    for (let index2 = 0; index2 < outline2.length; index2 += 1) {
-      const c = outline2[index2]!;
-      const d = outline2[(index2 + 1) % outline2.length]!;
-      if (segmentsIntersect(a, b, c, d)) return true;
-    }
-  }
+  if (edgesIntersectUsingGrid(outlineEdges(outline1), outlineEdges(outline2))) return true;
   return pointInPolygon(outline1[0]!, outline2) || pointInPolygon(outline2[0]!, outline1);
 }
 
@@ -685,19 +750,29 @@ export async function simulateMatchRoundAsync(
   player1Design: TopDesign,
   player2Design: TopDesign,
   options: Readonly<{ seed: number; launchA: LaunchJudgement; launchB: LaunchJudgement }>,
-  asyncOptions: Readonly<{ chunkTicks?: number; signal?: AbortSignal }> = {},
+  asyncOptions: Readonly<{
+    chunkTicks?: number;
+    yieldBudgetMs?: number;
+    signal?: AbortSignal;
+  }> = {},
 ): Promise<BattleResult> {
   const chunkTicks = asyncOptions.chunkTicks ?? 120;
+  const yieldBudgetMs = asyncOptions.yieldBudgetMs ?? DEFAULT_ASYNC_YIELD_BUDGET_MS;
   if (!Number.isSafeInteger(chunkTicks) || chunkTicks < 1 || chunkTicks > MAX_TICKS) {
     throw new RangeError("chunkTicks must be a safe integer within one round");
+  }
+  if (!Number.isFinite(yieldBudgetMs) || yieldBudgetMs <= 0 || yieldBudgetMs > 50) {
+    throw new RangeError("yieldBudgetMs must be finite, positive, and at most 50 ms");
   }
   throwIfAborted(asyncOptions.signal);
   const simulation = simulateMatchRoundSteps(player1Design, player2Design, options);
   while (true) {
+    const chunkStartedAt = performance.now();
     for (let index = 0; index < chunkTicks; index += 1) {
       throwIfAborted(asyncOptions.signal);
       const step = simulation.next();
       if (step.done) return step.value;
+      if (performance.now() - chunkStartedAt >= yieldBudgetMs) break;
     }
     await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
     throwIfAborted(asyncOptions.signal);
@@ -767,7 +842,6 @@ type ScheduledBattleJob = {
   resolve: (result: BattleResult) => void;
   reject: (reason: unknown) => void;
   state: "queued" | "running" | "settled";
-  detachAbortListeners: Set<() => void>;
 };
 
 export class BattleEngine {
@@ -779,6 +853,7 @@ export class BattleEngine {
   readonly #maxEntries: number;
   readonly #maxConcurrent: number;
   readonly #maxQueued: number;
+  readonly #yieldBudgetMs: number;
   readonly #now: () => number;
   #simulationCount = 0;
   #runningCount = 0;
@@ -789,6 +864,7 @@ export class BattleEngine {
     maxEntries?: number;
     maxConcurrent?: number;
     maxQueued?: number;
+    yieldBudgetMs?: number;
     now?: () => number;
   }> = {}) {
     this.#chunkTicks = options.chunkTicks ?? 120;
@@ -796,6 +872,7 @@ export class BattleEngine {
     this.#maxEntries = options.maxEntries ?? DEFAULT_BATTLE_CACHE_MAX_ENTRIES;
     this.#maxConcurrent = options.maxConcurrent ?? DEFAULT_BATTLE_MAX_CONCURRENT;
     this.#maxQueued = options.maxQueued ?? DEFAULT_BATTLE_MAX_QUEUED;
+    this.#yieldBudgetMs = options.yieldBudgetMs ?? DEFAULT_ASYNC_YIELD_BUDGET_MS;
     this.#now = options.now ?? Date.now;
     if (!Number.isSafeInteger(this.#chunkTicks) || this.#chunkTicks < 1 || this.#chunkTicks > MAX_TICKS) {
       throw new RangeError("chunkTicks must be a safe integer within one round");
@@ -811,6 +888,9 @@ export class BattleEngine {
     }
     if (!Number.isSafeInteger(this.#maxQueued) || this.#maxQueued < 0) {
       throw new RangeError("maxQueued must be a non-negative safe integer");
+    }
+    if (!Number.isFinite(this.#yieldBudgetMs) || this.#yieldBudgetMs <= 0 || this.#yieldBudgetMs > 50) {
+      throw new RangeError("yieldBudgetMs must be finite, positive, and at most 50 ms");
     }
     this.#readNow();
   }
@@ -905,8 +985,7 @@ export class BattleEngine {
     const active = this.#inFlight.get(key);
     if (active !== undefined) {
       if (active.fingerprint !== fingerprint) throw new Error("Active battle correlation conflict");
-      this.#attachAbort(active, options.signal);
-      return structuredClone(await active.promise);
+      return this.#awaitForCaller(active.promise, options.signal);
     }
     throwIfAborted(options.signal);
     if (this.#runningCount >= this.#maxConcurrent && this.#queue.length >= this.#maxQueued) {
@@ -927,25 +1006,36 @@ export class BattleEngine {
       resolve,
       reject,
       state: "queued",
-      detachAbortListeners: new Set(),
     };
     this.#inFlight.set(key, job);
-    this.#attachAbort(job, options.signal);
-    if (job.state === "settled") return structuredClone(await promise);
     if (this.#runningCount < this.#maxConcurrent) this.#startJob(job);
     else this.#queue.push(job);
-    return structuredClone(await promise);
+    return this.#awaitForCaller(promise, options.signal);
   }
 
-  #attachAbort(job: ScheduledBattleJob, signal: AbortSignal | undefined): void {
-    if (signal === undefined) return;
-    const cancel = () => this.#cancelJob(job);
-    if (signal.aborted) {
-      cancel();
-      return;
-    }
-    signal.addEventListener("abort", cancel, { once: true });
-    job.detachAbortListeners.add(() => signal.removeEventListener("abort", cancel));
+  async #awaitForCaller(promise: Promise<BattleResult>, signal: AbortSignal | undefined): Promise<BattleResult> {
+    throwIfAborted(signal);
+    if (signal === undefined) return structuredClone(await promise);
+    return new Promise<BattleResult>((resolve, reject) => {
+      let settled = false;
+      const abort = () => {
+        if (settled) return;
+        settled = true;
+        reject(abortError());
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      void promise.then((result) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        resolve(structuredClone(result));
+      }, (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      });
+    });
   }
 
   #cancelJob(job: ScheduledBattleJob): void {
@@ -955,16 +1045,10 @@ export class BattleEngine {
       if (queuedIndex >= 0) this.#queue.splice(queuedIndex, 1);
       job.state = "settled";
       this.#inFlight.delete(job.key);
-      this.#detachAbort(job);
       job.reject(abortError());
       return;
     }
     job.controller.abort();
-  }
-
-  #detachAbort(job: ScheduledBattleJob): void {
-    for (const detach of job.detachAbortListeners) detach();
-    job.detachAbortListeners.clear();
   }
 
   #startJob(job: ScheduledBattleJob): void {
@@ -974,6 +1058,7 @@ export class BattleEngine {
     this.#simulationCount += 1;
     void simulateMatchRoundAsync(job.canonical.player1, job.canonical.player2, job.canonical, {
       chunkTicks: this.#chunkTicks,
+      yieldBudgetMs: this.#yieldBudgetMs,
       signal: job.controller.signal,
     }).then((result) => {
       if (!job.controller.signal.aborted) this.#storeCached(job.key, job.fingerprint, result);
@@ -984,7 +1069,6 @@ export class BattleEngine {
       job.state = "settled";
       this.#runningCount -= 1;
       this.#inFlight.delete(job.key);
-      this.#detachAbort(job);
       this.#startNextJob();
     });
   }
