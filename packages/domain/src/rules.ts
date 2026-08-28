@@ -140,10 +140,10 @@ function circleClearance(
   radiusMm: number,
   vertices: readonly Point[],
 ): number {
-  if (!pointIsInsidePolygon(center, vertices)) {
-    return Number.NEGATIVE_INFINITY;
-  }
-  return minimumBoundaryDistance(center, vertices) - radiusMm;
+  const boundaryDistance = minimumBoundaryDistance(center, vertices);
+  return pointIsInsidePolygon(center, vertices)
+    ? boundaryDistance - radiusMm
+    : -boundaryDistance - radiusMm;
 }
 
 function layerCircleClearance(
@@ -169,7 +169,8 @@ function screwCenters(design: TopDesign): Point[] {
   });
 }
 
-function hasThinGapBetweenScrews(centers: readonly Point[]): boolean {
+function interScrewGaps(centers: readonly Point[]): number[] {
+  const gaps: number[] = [];
   for (let leftIndex = 0; leftIndex < centers.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < centers.length; rightIndex += 1) {
       const left = centers[leftIndex];
@@ -180,21 +181,76 @@ function hasThinGapBetweenScrews(centers: readonly Point[]): boolean {
       const gap =
         Math.hypot(left.x - right.x, left.y - right.y) -
         2 * ASSEMBLY.screwHoleRadiusMm;
-      if (gap + EPSILON < ASSEMBLY.minimumMaterialNeckMm) {
-        return true;
-      }
+      gaps.push(gap);
     }
   }
-  return false;
+  return gaps;
+}
+
+type LayerMaterialClearances = Readonly<{
+  screwClearances: readonly number[];
+  axleClearance: number;
+}>;
+
+type MaterialClearances = Readonly<{
+  layers: readonly LayerMaterialClearances[];
+  axleGap: number;
+  interScrewGaps: readonly number[];
+}>;
+
+function calculateMaterialClearances(design: TopDesign): MaterialClearances {
+  const centers = screwCenters(design);
+  return {
+    layers: design.layers.map((layer) => {
+      const vertices = makeLayerVertices(layer);
+      return {
+        screwClearances: centers.map((center) =>
+          layerCircleClearance(
+            layer,
+            center,
+            ASSEMBLY.screwHoleRadiusMm,
+            vertices,
+          ),
+        ),
+        axleClearance: layerCircleClearance(
+          layer,
+          { x: 0, y: 0 },
+          ASSEMBLY.axleHoleRadiusMm,
+          vertices,
+        ),
+      };
+    }),
+    axleGap:
+      design.screwLayout.radiusMm -
+      ASSEMBLY.axleHoleRadiusMm -
+      ASSEMBLY.screwHoleRadiusMm,
+    interScrewGaps: interScrewGaps(centers),
+  };
+}
+
+function minimumMaterialClearance(clearances: MaterialClearances): number {
+  return Math.min(
+    clearances.axleGap,
+    ...clearances.interScrewGaps,
+    ...clearances.layers.flatMap(({ screwClearances, axleClearance }) => [
+      ...screwClearances,
+      axleClearance,
+    ]),
+  );
+}
+
+export function calculateMinimumMaterialNeckMm(input: TopDesign): number {
+  const design = designSchema.parse(input);
+  return minimumMaterialClearance(calculateMaterialClearances(design));
 }
 
 export function validateDesign(input: TopDesign): DesignValidation {
   const design = designSchema.parse(input);
   const massProperties = calculateMassProperties(design);
   const issues: RuleIssue[] = [];
-  const centers = screwCenters(design);
+  const materialClearances = calculateMaterialClearances(design);
 
-  for (const layer of design.layers) {
+  for (const [layerIndex, layer] of design.layers.entries()) {
     const vertices = makeLayerVertices(layer);
     if (maxDiameter(vertices) > MAX_DIAMETER_MM + EPSILON) {
       issues.push({
@@ -205,21 +261,18 @@ export function validateDesign(input: TopDesign): DesignValidation {
       });
     }
 
-    let hasOutsideScrew = false;
-    let hasThinNeck = false;
-    for (const center of centers) {
-      const clearance = layerCircleClearance(
-        layer,
-        center,
-        ASSEMBLY.screwHoleRadiusMm,
-        vertices,
-      );
-      if (clearance < -EPSILON) {
-        hasOutsideScrew = true;
-      } else if (clearance + EPSILON < ASSEMBLY.minimumMaterialNeckMm) {
-        hasThinNeck = true;
-      }
+    const layerClearances = materialClearances.layers[layerIndex];
+    if (layerClearances === undefined) {
+      throw new RangeError("Missing material clearances for design layer");
     }
+    const hasOutsideScrew = layerClearances.screwClearances.some(
+      (clearance) => clearance < -EPSILON,
+    );
+    const hasThinNeck = layerClearances.screwClearances.some(
+      (clearance) =>
+        clearance >= -EPSILON &&
+        clearance + EPSILON < ASSEMBLY.minimumMaterialNeckMm,
+    );
     if (hasOutsideScrew) {
       issues.push({
         code: "SCREW_OUTSIDE_LAYER",
@@ -229,15 +282,10 @@ export function validateDesign(input: TopDesign): DesignValidation {
       });
     }
 
-    const axleClearance = layerCircleClearance(
-      layer,
-      { x: 0, y: 0 },
-      ASSEMBLY.axleHoleRadiusMm,
-      vertices,
-    );
     if (
       hasThinNeck ||
-      axleClearance + EPSILON < ASSEMBLY.minimumMaterialNeckMm
+      layerClearances.axleClearance + EPSILON <
+        ASSEMBLY.minimumMaterialNeckMm
     ) {
       issues.push({
         code: "NECK_TOO_THIN",
@@ -248,11 +296,7 @@ export function validateDesign(input: TopDesign): DesignValidation {
     }
   }
 
-  const axleGap =
-    design.screwLayout.radiusMm -
-    ASSEMBLY.axleHoleRadiusMm -
-    ASSEMBLY.screwHoleRadiusMm;
-  if (axleGap < -EPSILON) {
+  if (materialClearances.axleGap < -EPSILON) {
     issues.push(
       globalIssue(
         "SCREW_HITS_AXLE",
@@ -260,7 +304,9 @@ export function validateDesign(input: TopDesign): DesignValidation {
         "螺絲孔與中央軸孔重疊。",
       ),
     );
-  } else if (axleGap + EPSILON < ASSEMBLY.minimumMaterialNeckMm) {
+  } else if (
+    materialClearances.axleGap + EPSILON < ASSEMBLY.minimumMaterialNeckMm
+  ) {
     issues.push(
       globalIssue(
         "NECK_TOO_THIN",
@@ -269,7 +315,11 @@ export function validateDesign(input: TopDesign): DesignValidation {
       ),
     );
   }
-  if (hasThinGapBetweenScrews(centers)) {
+  if (
+    materialClearances.interScrewGaps.some(
+      (gap) => gap + EPSILON < ASSEMBLY.minimumMaterialNeckMm,
+    )
+  ) {
     issues.push(
       globalIssue(
         "NECK_TOO_THIN",
