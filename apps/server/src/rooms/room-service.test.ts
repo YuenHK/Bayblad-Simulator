@@ -503,6 +503,44 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
+  it("allows an explicit empty room to be joined at 119999ms and clears its expiry", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    service.leave(room.roomId, "owner");
+    advance(119_999);
+    const joined = service.join(room.roomId, user("newcomer"), "spectator");
+    expect(service.snapshot(room.roomId, "newcomer")).toMatchObject({
+      ownerParticipantId: joined.participantId,
+      viewer: { participantId: joined.participantId, role: "spectator", isOwner: true },
+    });
+    advance(120_000);
+    service.sweep();
+    expect(service.hasRoom(room.roomId)).toBe(true);
+  });
+
+  it("rejects any join to an explicit empty room at 120000ms and releases its code", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    service.leave(room.roomId, "owner");
+    advance(120_000);
+    expect(() => service.join(room.roomId, user("newcomer"), "spectator")).toThrow(
+      new RoomServiceError("ROOM_NOT_FOUND"),
+    );
+    expect(service.hasRoom(room.roomId)).toBe(false);
+    expect(service.create(user("replacement"), "Replacement").code).toBe(room.code);
+  });
+
+  it("rejects a different newcomer when a disconnected empty room expires lazily", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    service.disconnect(room.roomId, "owner");
+    advance(120_000);
+    expect(() => service.join(room.roomId, user("newcomer"), "spectator")).toThrow(
+      new RoomServiceError("ROOM_NOT_FOUND"),
+    );
+    expect(service.hasRoom(room.roomId)).toBe(false);
+  });
+
   it("transfers a timed-out owner at the 120000ms boundary and deletes an empty room", () => {
     const { service, advance } = makeHarness();
     const room = service.create(user("owner"), "Room");

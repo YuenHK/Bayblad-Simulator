@@ -235,8 +235,15 @@ export class RoomService {
     role: JoinRole,
   ): RoomMembership | typeof ROOM_EXPIRED {
     const room = this.#room(roomId);
-    let existing = room.participants.get(user.id);
     const now = this.#dependencies.now();
+    if (
+      room.emptySinceMs !== null &&
+      now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
+    ) {
+      this.#deleteRoom(room);
+      return ROOM_EXPIRED;
+    }
+    let existing = room.participants.get(user.id);
     if (
       existing &&
       !existing.connected &&
