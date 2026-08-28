@@ -28,6 +28,7 @@ button, input, select { font: inherit; }
 .exploded-view-svg { display: block; width: min(100%, 390px); height: 360px; }
 .exploded-label { fill: #344054; font-size: 11px; font-weight: 700; }
 .preview-3d-controls { width: 100%; height: 320px; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+.preview-3d-controls:focus-visible { outline: none; box-shadow: inset 0 0 0 3px #1667c9; }
 .preview-3d-controls.is-interacting { cursor: grabbing; box-shadow: inset 0 0 0 2px #1667c9; }
 .preview-3d-controls canvas { display: block; width: 100%; height: 100%; }
 .gesture-hint { margin: 8px 0 12px; color: #526176; text-align: center; line-height: 1.5; }

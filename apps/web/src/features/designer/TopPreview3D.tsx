@@ -1,31 +1,23 @@
 import { Canvas, useThree } from "@react-three/fiber";
+import { MATERIALS, type Layer, type TopDesign } from "@steam-top/domain";
 import {
-  ASSEMBLY,
-  MATERIALS,
-  makeLayerVertices,
-  type Layer,
-  type TopDesign,
-} from "@steam-top/domain";
-import {
-  Component,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type ErrorInfo,
   type ReactNode,
 } from "react";
 import {
-  CylinderGeometry,
   ExtrudeGeometry,
   OrthographicCamera,
-  Path,
-  Shape,
 } from "three";
 
-import { ExplodedView } from "./ExplodedView";
+import {
+  PreviewErrorBoundary,
+  PreviewFallback,
+} from "./PreviewErrorBoundary";
 import {
   calculateOrthographicFit,
   calculatePreviewBounds,
@@ -39,7 +31,10 @@ import {
   zoomFromPinch,
   type PreviewRotation,
 } from "./previewGestures";
-import { screwCenters } from "./previewGeometry";
+import {
+  makeAcrylicShape,
+  makeSolidMetalDiscGeometry,
+} from "./preview3DGeometry";
 
 export type TopPreview3DProps = Readonly<{
   design: TopDesign;
@@ -54,32 +49,6 @@ export function layerStackZ(position: Layer["position"]): number {
 }
 
 export const METAL_DISC_CENTER_Z = -MATERIALS.metalDiscThicknessMm / 2;
-
-type PreviewErrorBoundaryProps = Readonly<{
-  children: ReactNode;
-  fallback: ReactNode;
-}>;
-
-type PreviewErrorBoundaryState = Readonly<{ failed: boolean }>;
-
-class PreviewErrorBoundary extends Component<
-  PreviewErrorBoundaryProps,
-  PreviewErrorBoundaryState
-> {
-  state: PreviewErrorBoundaryState = { failed: false };
-
-  static getDerivedStateFromError(): PreviewErrorBoundaryState {
-    return { failed: true };
-  }
-
-  componentDidCatch(_error: Error, _info: ErrorInfo): void {
-    // The accessible SVG fallback is rendered locally; the designer stays usable.
-  }
-
-  render(): ReactNode {
-    return this.state.failed ? this.props.fallback : this.props.children;
-  }
-}
 
 let cachedWebGLSupport: boolean | undefined;
 
@@ -105,42 +74,6 @@ export function canUseWebGL(): boolean {
   }
 }
 
-function Fallback({ design }: Readonly<{ design: TopDesign }>) {
-  return (
-    <div className="preview-fallback">
-      <p role="status">裝置未能啟用 3D，已顯示分解圖</p>
-      <ExplodedView design={design} />
-    </div>
-  );
-}
-
-function makeAcrylicShape(layer: Layer, design: TopDesign): Shape {
-  const vertices = makeLayerVertices(layer);
-  const first = vertices[0];
-  const shape = new Shape();
-  if (first === undefined) return shape;
-  shape.moveTo(first.x, first.y);
-  for (const vertex of vertices.slice(1)) shape.lineTo(vertex.x, vertex.y);
-  shape.closePath();
-
-  const axle = new Path();
-  axle.absarc(0, 0, ASSEMBLY.axleHoleRadiusMm, 0, Math.PI * 2, true);
-  shape.holes.push(axle);
-  for (const center of screwCenters(design)) {
-    const screw = new Path();
-    screw.absarc(
-      center.x,
-      center.y,
-      ASSEMBLY.screwHoleRadiusMm,
-      0,
-      Math.PI * 2,
-      true,
-    );
-    shape.holes.push(screw);
-  }
-  return shape;
-}
-
 function AcrylicLayer({ layer, design }: Readonly<{ layer: Layer; design: TopDesign }>) {
   const shape = useMemo(() => makeAcrylicShape(layer, design), [layer, design.screwLayout]);
   const geometry = useMemo(
@@ -163,12 +96,7 @@ function AcrylicLayer({ layer, design }: Readonly<{ layer: Layer; design: TopDes
 
 function MetalDisc({ diameterMm }: Readonly<{ diameterMm: number }>) {
   const geometry = useMemo(
-    () => new CylinderGeometry(
-      diameterMm / 2,
-      diameterMm / 2,
-      MATERIALS.metalDiscThicknessMm,
-      64,
-    ),
+    () => makeSolidMetalDiscGeometry(diameterMm),
     [diameterMm],
   );
   useEffect(() => () => geometry.dispose(), [geometry]);
@@ -200,6 +128,7 @@ function PreviewScene({
         boundingSphereRadiusMm={bounds.boundingSphereRadiusMm}
         userZoom={zoom}
       />
+      <InvalidateOnSceneChange design={design} rotation={rotation} />
       <ambientLight intensity={1.2} />
       <directionalLight position={[45, -30, 70]} intensity={2.3} />
       <directionalLight position={[-35, 25, 25]} intensity={0.8} />
@@ -213,6 +142,40 @@ function PreviewScene({
       </CenteredModel>
     </>
   );
+}
+
+export function WebGLContextLossHandler({
+  onContextLost,
+}: Readonly<{ onContextLost: () => void }>) {
+  const { gl } = useThree();
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      onContextLost();
+    };
+    canvas.addEventListener("webglcontextlost", handleContextLost);
+    return () => canvas.removeEventListener("webglcontextlost", handleContextLost);
+  }, [gl, onContextLost]);
+
+  return null;
+}
+
+export function InvalidateOnSceneChange({
+  design,
+  rotation,
+}: Readonly<{
+  design: TopDesign;
+  rotation: PreviewRotation;
+}>) {
+  const { invalidate } = useThree();
+
+  useEffect(() => {
+    invalidate();
+  }, [design, invalidate, rotation.x, rotation.y]);
+
+  return null;
 }
 
 export function CenteredModel({
@@ -246,7 +209,7 @@ export function FitOrthographicCamera({
   boundingSphereRadiusMm: number;
   userZoom: number;
 }>) {
-  const { camera, size } = useThree();
+  const { camera, invalidate, size } = useThree();
 
   useLayoutEffect(() => {
     if (
@@ -263,7 +226,8 @@ export function FitOrthographicCamera({
     );
     camera.zoom = fit.baseZoom * userZoom;
     camera.updateProjectionMatrix();
-  }, [boundingSphereRadiusMm, camera, size.height, size.width, userZoom]);
+    invalidate();
+  }, [boundingSphereRadiusMm, camera, invalidate, size.height, size.width, userZoom]);
 
   return null;
 }
@@ -278,10 +242,10 @@ export function TopPreview3D({
   const [rotation, setRotation] = useState<PreviewRotation>({ x: 0.85, y: -0.55 });
   const [zoom, setZoom] = useState(1);
   const [gestureStatus, setGestureStatus] = useState("可拖動旋轉或雙指縮放");
+  const [contextLost, setContextLost] = useState(false);
   const pointers = useRef(new Map<number, PointerPosition>());
   const pinchDistance = useRef<number | null>(null);
   const bounds = useMemo(() => calculatePreviewBounds(design), [design]);
-  const fallback = <Fallback design={design} />;
   const webGLAvailable = useMemo(
     () => !forceFallback && detectWebGL(),
     [detectWebGL, forceFallback],
@@ -321,7 +285,11 @@ export function TopPreview3D({
     };
   }, [finishPointer, webGLAvailable]);
 
-  if (!webGLAvailable) return fallback;
+  const handleContextLost = useCallback(() => setContextLost(true), []);
+
+  if (!webGLAvailable || contextLost) {
+    return <PreviewFallback design={design} />;
+  }
 
   const beginPointer = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -372,9 +340,10 @@ export function TopPreview3D({
   };
 
   return (
-    <PreviewErrorBoundary fallback={fallback}>
+    <PreviewErrorBoundary design={design} resetKey={design}>
       <div
         className={`preview-3d-controls${pointers.current.size > 0 ? " is-interacting" : ""}`}
+        data-testid="top-preview-3d"
         role="group"
         tabIndex={0}
         aria-label="3D 陀螺預覽控制：拖動旋轉，雙指或滾輪縮放"
@@ -410,9 +379,12 @@ export function TopPreview3D({
       >
         <Canvas
           orthographic
+          frameloop="demand"
+          dpr={[1, 1.5]}
           camera={{ position: [0, 0, 150], zoom: 1, near: 0.1, far: 400 }}
           gl={{ antialias: true, alpha: true }}
         >
+          <WebGLContextLossHandler onContextLost={handleContextLost} />
           <PreviewScene
             design={design}
             rotation={rotation}

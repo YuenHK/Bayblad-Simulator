@@ -1,23 +1,44 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { makeDefaultDesign, type TopDesign } from "@steam-top/domain";
-import { describe, expect, it, vi } from "vitest";
-import { OrthographicCamera } from "three";
+import { MATERIALS, makeDefaultDesign, type TopDesign } from "@steam-top/domain";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ExtrudeGeometry, OrthographicCamera } from "three";
+import { lazy, Suspense } from "react";
 
-const { mockUseThree } = vi.hoisted(() => ({
+const { mockCanvasState, mockUseThree } = vi.hoisted(() => ({
+  mockCanvasState: { renderFirstChild: false },
   mockUseThree: vi.fn(),
 }));
 
-vi.mock("@react-three/fiber", () => ({
-  Canvas: () => <div data-testid="mock-webgl-canvas" />,
+vi.mock("@react-three/fiber", async () => {
+  const { Children } = await import("react");
+  return {
+  Canvas: ({ children, frameloop, dpr }: {
+    children?: React.ReactNode;
+    frameloop?: string;
+    dpr?: number | readonly [number, number];
+  }) => (
+    <div
+      data-testid="mock-webgl-canvas"
+      data-frameloop={frameloop}
+      data-dpr={JSON.stringify(dpr)}
+    >
+      {mockCanvasState.renderFirstChild
+        ? Children.toArray(children)[0]
+        : null}
+    </div>
+  ),
   useThree: mockUseThree,
-}));
+  };
+});
 
 import { ExplodedView } from "./ExplodedView";
 import {
   METAL_DISC_CENTER_Z,
   CenteredModel,
   FitOrthographicCamera,
+  InvalidateOnSceneChange,
   TopPreview3D,
+  WebGLContextLossHandler,
   layerStackZ,
 } from "./TopPreview3D";
 import { TopViewSvg } from "./TopViewSvg";
@@ -32,6 +53,16 @@ import {
   calculateOrthographicFit,
   calculatePreviewBounds,
 } from "./previewBounds";
+import {
+  makeAcrylicShape,
+  makeSolidMetalDiscGeometry,
+} from "./preview3DGeometry";
+import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
+
+afterEach(() => {
+  mockCanvasState.renderFirstChild = false;
+  mockUseThree.mockReset();
+});
 
 function designFixture(): TopDesign {
   const design = makeDefaultDesign();
@@ -73,6 +104,7 @@ describe("TopViewSvg", () => {
     for (const path of paths) {
       expect(path.getAttribute("d")).toMatch(/^M .+ Z$/);
       expect(path).toHaveAttribute("vector-effect", "non-scaling-stroke");
+      expect(path.getAttribute("mask")).toMatch(/^url\(#.+-acrylic-cutouts\)$/);
     }
     const sixtyMillimetrePath = paths.find(
       (path) => path.getAttribute("data-layer-id") === "blue-top",
@@ -87,8 +119,13 @@ describe("TopViewSvg", () => {
   it("只畫一套共用螺絲孔和中央軸", () => {
     render(<TopViewSvg design={designFixture()} />);
 
-    expect(screen.getAllByTestId("screw-hole")).toHaveLength(5);
-    expect(screen.getByTestId("axle-hole")).toBeInTheDocument();
+    const mask = screen.getByTestId("acrylic-cutout-mask");
+    expect(mask).toHaveAttribute("maskUnits", "userSpaceOnUse");
+    expect(within(mask).getAllByTestId("screw-hole")).toHaveLength(5);
+    expect(within(mask).getByTestId("axle-hole")).toHaveAttribute("fill", "black");
+    for (const hole of within(mask).getAllByTestId("screw-hole")) {
+      expect(hole).toHaveAttribute("fill", "black");
+    }
   });
 
   it("沒有金屬碟時不畫，有金屬碟時只畫一個置中無孔圓", () => {
@@ -101,6 +138,7 @@ describe("TopViewSvg", () => {
     expect(metal).toHaveAttribute("cx", "0");
     expect(metal).toHaveAttribute("cy", "0");
     expect(metal).toHaveAttribute("r", "15");
+    expect(metal).not.toHaveAttribute("mask");
     expect(metal).not.toHaveAttribute("aria-label", expect.stringMatching(/孔/));
     expect(within(metal).queryByTestId("screw-hole")).not.toBeInTheDocument();
   });
@@ -112,6 +150,7 @@ describe("ExplodedView", () => {
     render(<ExplodedView design={design} />);
     const graphic = screen.getByRole("img", { name: "陀螺分解圖" });
     const groups = within(graphic).getAllByTestId("exploded-layer");
+    const mask = within(graphic).getByTestId("acrylic-cutout-mask");
 
     expect(groups.map((group) => group.getAttribute("data-position"))).toEqual([
       "top",
@@ -119,7 +158,15 @@ describe("ExplodedView", () => {
       "bottom",
     ]);
     expect(groups.map((group) => Number(group.getAttribute("data-offset-y")))).toEqual([48, 112, 176]);
+    expect(within(mask).getAllByTestId("screw-hole")).toHaveLength(5);
+    for (const group of groups) {
+      expect(group.querySelector("path")).toHaveAttribute(
+        "mask",
+        expect.stringMatching(/^url\(#.+-exploded-cutouts\)$/),
+      );
+    }
     expect(screen.getByTestId("exploded-metal")).toHaveAttribute("data-offset-y", "234");
+    expect(screen.getByTestId("exploded-metal")).not.toHaveAttribute("mask");
     expect(within(screen.getByTestId("exploded-metal")).queryByTestId("exploded-screw-hole")).not.toBeInTheDocument();
     expect(screen.getByText("頂層")).toBeVisible();
     expect(screen.getByText("中層")).toBeVisible();
@@ -152,6 +199,60 @@ describe("TopPreview3D", () => {
     expect(detectWebGL).toHaveBeenCalledTimes(1);
   });
 
+  it("提供穩定 selector 並以 demand frameloop 及受限 DPR 運作", () => {
+    render(<TopPreview3D design={designFixture()} detectWebGL={() => true} />);
+    expect(screen.getByTestId("top-preview-3d")).toHaveAccessibleName(
+      /3D 陀螺預覽控制/,
+    );
+    expect(screen.getByTestId("mock-webgl-canvas")).toHaveAttribute(
+      "data-frameloop",
+      "demand",
+    );
+    expect(screen.getByTestId("mock-webgl-canvas")).toHaveAttribute(
+      "data-dpr",
+      "[1,1.5]",
+    );
+  });
+
+  it("WebGL context loss 會 preventDefault 並立即切換分解圖", () => {
+    const canvas = document.createElement("canvas");
+    const addEventListener = vi.spyOn(canvas, "addEventListener");
+    const removeEventListener = vi.spyOn(canvas, "removeEventListener");
+    mockUseThree.mockReturnValue({ gl: { domElement: canvas } });
+    mockCanvasState.renderFirstChild = true;
+    render(<TopPreview3D design={designFixture()} detectWebGL={() => true} />);
+
+    expect(addEventListener).toHaveBeenCalledWith(
+      "webglcontextlost",
+      expect.any(Function),
+    );
+    const event = new Event("webglcontextlost", { cancelable: true });
+    fireEvent(canvas, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(screen.getByText("裝置未能啟用 3D，已顯示分解圖")).toBeVisible();
+    expect(removeEventListener).toHaveBeenCalledWith(
+      "webglcontextlost",
+      expect.any(Function),
+    );
+  });
+
+  it("context loss listener 在正常 unmount 時移除", () => {
+    const canvas = document.createElement("canvas");
+    const removeEventListener = vi.spyOn(canvas, "removeEventListener");
+    mockUseThree.mockReturnValue({ gl: { domElement: canvas } });
+    const onContextLost = vi.fn();
+    const { unmount } = render(
+      <WebGLContextLossHandler onContextLost={onContextLost} />,
+    );
+    unmount();
+
+    expect(removeEventListener).toHaveBeenCalledWith(
+      "webglcontextlost",
+      expect.any(Function),
+    );
+  });
+
   it("可用鍵盤旋轉和縮放並公告狀態", () => {
     render(<TopPreview3D design={designFixture()} detectWebGL={() => true} />);
     const controls = screen.getByRole("group", { name: /3D 陀螺預覽控制/ });
@@ -168,6 +269,32 @@ describe("TopPreview3D", () => {
     expect(layerStackZ("middle")).toBe(6);
     expect(layerStackZ("top")).toBe(12);
     expect(METAL_DISC_CENTER_Z).toBe(-0.5);
+  });
+
+  it("Three acrylic Shape 建立中軸及共用螺絲真孔，並可有限擠出", () => {
+    const design = designFixture();
+    const shape = makeAcrylicShape(design.layers[0], design);
+    expect(shape.holes).toHaveLength(1 + design.screwLayout.count);
+    const geometry = new ExtrudeGeometry(shape, {
+      depth: MATERIALS.layerThicknessMm,
+      bevelEnabled: false,
+    });
+    const positions = geometry.getAttribute("position");
+    expect(positions.count).toBeGreaterThan(0);
+    for (let index = 0; index < positions.count; index += 1) {
+      expect(Number.isFinite(positions.getX(index))).toBe(true);
+      expect(Number.isFinite(positions.getY(index))).toBe(true);
+      expect(Number.isFinite(positions.getZ(index))).toBe(true);
+    }
+    geometry.dispose();
+  });
+
+  it("金屬碟使用實心 CylinderGeometry，不共用 acrylic holes", () => {
+    const geometry = makeSolidMetalDiscGeometry(55);
+    expect(geometry.type).toBe("CylinderGeometry");
+    expect(geometry.index?.count).toBeGreaterThan(0);
+    expect(geometry.parameters.height).toBe(MATERIALS.metalDiscThicknessMm);
+    geometry.dispose();
   });
 });
 
@@ -261,7 +388,8 @@ describe("3D 預覽取景", () => {
   it("在 resize、design bounds 及 user zoom 變化時更新正交相機", () => {
     const camera = new OrthographicCamera(-164, 164, 140, -140, 0.1, 400);
     const updateProjectionMatrix = vi.spyOn(camera, "updateProjectionMatrix");
-    const store = { camera, size: { width: 328, height: 280 } };
+    const invalidate = vi.fn();
+    const store = { camera, size: { width: 328, height: 280 }, invalidate };
     mockUseThree.mockReturnValue(store);
     const radius = Math.hypot(30, 9.5);
     const { rerender } = render(
@@ -285,6 +413,29 @@ describe("3D 預覽取景", () => {
       calculateOrthographicFit(1088, 320, largerRadius).baseZoom * 1.25,
     );
     expect(updateProjectionMatrix).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledTimes(2);
+  });
+
+  it("設計或旋轉變化時 invalidate demand frame，靜止時不連續請求", () => {
+    const invalidate = vi.fn();
+    mockUseThree.mockReturnValue({ invalidate });
+    const design = designFixture();
+    const { rerender } = render(
+      <InvalidateOnSceneChange design={design} rotation={{ x: 0, y: 0 }} />,
+    );
+    expect(invalidate).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <InvalidateOnSceneChange design={design} rotation={{ x: 0.2, y: 0 }} />,
+    );
+    expect(invalidate).toHaveBeenCalledTimes(2);
+    rerender(
+      <InvalidateOnSceneChange
+        design={{ ...design, metalDiscDiameterMm: 30 }}
+        rotation={{ x: 0.2, y: 0 }}
+      />,
+    );
+    expect(invalidate).toHaveBeenCalledTimes(3);
   });
 
   it("先將模型中心移到原點，再由 outer group 繞原點旋轉", () => {
@@ -299,5 +450,34 @@ describe("3D 預覽取景", () => {
     expect(outer).toHaveAttribute("rotation", "0.85,0,-0.55");
     expect(inner).toHaveAttribute("position", "0,0,-8.5");
     expect(within(inner as HTMLElement).getByTestId("model-content")).toBeVisible();
+  });
+});
+
+describe("3D lazy loading 降級", () => {
+  it("實際 React.lazy import rejection 只降級預覽，可 reset 且其他控制仍可用", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const BrokenPreview = lazy(() => Promise.reject(new Error("chunk unavailable")));
+    const design = designFixture();
+    const { rerender } = render(
+      <>
+        <button type="button">其他設計控制</button>
+        <PreviewErrorBoundary design={design} resetKey="3d">
+          <Suspense fallback={<p>正在載入</p>}>
+            <BrokenPreview />
+          </Suspense>
+        </PreviewErrorBoundary>
+      </>,
+    );
+
+    expect(await screen.findByText("裝置未能啟用 3D，已顯示分解圖")).toBeVisible();
+    expect(screen.getByRole("button", { name: "其他設計控制" })).toBeEnabled();
+
+    rerender(
+      <PreviewErrorBoundary design={design} resetKey="top">
+        <p>預覽已重設</p>
+      </PreviewErrorBoundary>,
+    );
+    expect(await screen.findByText("預覽已重設")).toBeVisible();
+    consoleError.mockRestore();
   });
 });

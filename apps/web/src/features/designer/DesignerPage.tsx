@@ -1,9 +1,19 @@
-import type { RuleIssueCode } from "@steam-top/domain";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import type { RuleIssueCode, TopDesign } from "@steam-top/domain";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+} from "react";
 
 import { AssemblyControls } from "./AssemblyControls";
 import { ExplodedView } from "./ExplodedView";
 import { LayerControls } from "./LayerControls";
+import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
 import { TopViewSvg } from "./TopViewSvg";
 import { useDesigner } from "./useDesigner";
 
@@ -39,16 +49,26 @@ const PREVIEW_TABS: ReadonlyArray<Readonly<{ mode: PreviewMode; label: string }>
   { mode: "3d", label: "3D 預覽" },
 ];
 
-const LazyTopPreview3D = lazy(async () => {
+type Preview3DModule = Readonly<{
+  default: ComponentType<Readonly<{ design: TopDesign }>>;
+}>;
+
+export type DesignerPageProps = Readonly<{
+  load3DPreview?: () => Promise<Preview3DModule>;
+}>;
+
+const loadDefault3DPreview = async (): Promise<Preview3DModule> => {
   const module = await import("./TopPreview3D");
   return { default: module.TopPreview3D };
-});
+};
 
 function format(value: number, digits = 1): string {
   return value.toFixed(digits);
 }
 
-export function DesignerPage() {
+export function DesignerPage({
+  load3DPreview = loadDefault3DPreview,
+}: DesignerPageProps = {}) {
   const { design, validation, prediction, dispatch } = useDesigner();
   const [selectedLayerId, setSelectedLayerId] = useState(
     () => design.layers[0].id,
@@ -57,6 +77,11 @@ export function DesignerPage() {
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("top");
+  const [previewLoadAttempt, setPreviewLoadAttempt] = useState(0);
+  const LazyTopPreview3D = useMemo(
+    () => lazy(load3DPreview),
+    [load3DPreview, previewLoadAttempt],
+  );
   const [invalidFieldKeys, setInvalidFieldKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -83,6 +108,12 @@ export function DesignerPage() {
     },
     [],
   );
+  const selectPreviewMode = useCallback((mode: PreviewMode) => {
+    if (mode === "3d" && previewMode !== "3d") {
+      setPreviewLoadAttempt((current) => current + 1);
+    }
+    setPreviewMode(mode);
+  }, [previewMode]);
 
   const reorderLayers = (sourceId: string, targetId: string) => {
     const source = design.layers.find((layer) => layer.id === sourceId);
@@ -211,7 +242,7 @@ export function DesignerPage() {
                   aria-selected={previewMode === mode}
                   aria-controls="preview-tabpanel"
                   tabIndex={previewMode === mode ? 0 : -1}
-                  onClick={() => setPreviewMode(mode)}
+                  onClick={() => selectPreviewMode(mode)}
                   onKeyDown={(event) => {
                     let nextIndex = index;
                     if (event.key === "ArrowRight") nextIndex = (index + 1) % PREVIEW_TABS.length;
@@ -221,7 +252,7 @@ export function DesignerPage() {
                     else return;
                     event.preventDefault();
                     const nextMode = PREVIEW_TABS[nextIndex]!.mode;
-                    setPreviewMode(nextMode);
+                    selectPreviewMode(nextMode);
                     requestAnimationFrame(() => document.getElementById(`preview-tab-${nextMode}`)?.focus());
                   }}
                 >
@@ -239,9 +270,11 @@ export function DesignerPage() {
             {previewMode === "top" ? <TopViewSvg design={design} /> : null}
             {previewMode === "exploded" ? <ExplodedView design={design} /> : null}
             {previewMode === "3d" ? (
-              <Suspense fallback={<p role="status">正在載入 3D 預覽……</p>}>
-                <LazyTopPreview3D design={design} />
-              </Suspense>
+              <PreviewErrorBoundary design={design} resetKey={previewLoadAttempt}>
+                <Suspense fallback={<p role="status">正在載入 3D 預覽……</p>}>
+                  <LazyTopPreview3D design={design} />
+                </Suspense>
+              </PreviewErrorBoundary>
             ) : null}
           </div>
         </section>
