@@ -695,6 +695,15 @@ describe("LaunchCoordinator expiry and cleanup", () => {
     );
   });
 
+  it("authoritatively cancels an open round during transaction rollback", () => {
+    const { coordinator, schedule } = makeHarness();
+    schedule();
+    expect(coordinator.cancelRound("room-1", "round-1")).toBe(true);
+    expect(coordinator.activeRoundCount).toBe(0);
+    expect(coordinator.replayProtectionCounts.activeNonces).toBe(0);
+    expect(coordinator.cancelRound("room-1", "round-1")).toBe(false);
+  });
+
   it("produces the same outcome whether finalize or tap is called first at the deadline", () => {
     const first = makeHarness();
     first.schedule();

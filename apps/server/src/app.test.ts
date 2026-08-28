@@ -7,6 +7,7 @@ import { buildApp, type BattleEnginePort } from "./app";
 import { LaunchCoordinator } from "./battle/launch";
 import { scoreMatch } from "./battle/scoring";
 import { RoomService } from "./rooms/room-service";
+import { DesignRegistry } from "./design-registry";
 
 const uuid = () => crypto.randomUUID();
 const command = (type: string, fields: Record<string, unknown> = {}) => ({
@@ -44,6 +45,23 @@ class FakeBattleEngine implements BattleEnginePort {
     };
   }
   cleanup(): boolean { return true; }
+}
+
+class FailFirstPhaseRoomService extends RoomService {
+  #failed = false;
+  override setPhase(roomId: string, phase: Parameters<RoomService["setPhase"]>[1]): void {
+    super.setPhase(roomId, phase);
+    if (!this.#failed && phase === "launch") { this.#failed = true; throw new Error("injected phase failure"); }
+  }
+}
+
+class FailFirstScheduleCoordinator extends LaunchCoordinator {
+  #failed = false;
+  override schedule(input: Parameters<LaunchCoordinator["schedule"]>[0]): ReturnType<LaunchCoordinator["schedule"]> {
+    const scheduled = super.schedule(input);
+    if (!this.#failed) { this.#failed = true; throw new Error("injected schedule failure"); }
+    return scheduled;
+  }
 }
 
 function nextEvent(socket: Socket, type: ServerEvent["type"] | "protocol.unsupported", timeoutMs = 3_000): Promise<any> {
@@ -99,7 +117,7 @@ describe("realtime app", () => {
     await new Promise<void>((resolve) => pending.once("connect", resolve));
     expect(app.realtimeGateway.debugCounts.sessions).toBe(0);
     await new Promise<void>((resolve) => pending.once("disconnect", () => resolve()));
-    expect(app.realtimeGateway.debugCounts.sessions).toBe(0);
+    expect(app.realtimeGateway.debugCounts).toMatchObject({ sessions: 0, connections: 0, newSessionClientBuckets: 0 });
 
     const owner = await connect(url, "Owner");
     closers.push(() => { owner.socket.close(); });
@@ -125,7 +143,9 @@ describe("realtime app", () => {
     expect((await app.inject({
       method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${owner.token}` }, payload: makeDefaultDesign(),
     })).statusCode).toBe(429);
-    expect((await app.inject({ method: "POST", url: "/api/designs", payload: { padding: "x".repeat(8_192) } })).statusCode).toBe(413);
+    expect((await app.inject({
+      method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${other.token}` }, payload: { padding: "x".repeat(8_192) },
+    })).statusCode).toBe(413);
 
     const oversized = io(url, { transports: ["websocket"], auth: { displayName: "Oversized" } });
     closers.push(() => { oversized.close(); });
@@ -135,6 +155,125 @@ describe("realtime app", () => {
     const disconnected = new Promise<void>((resolve) => oversized.once("disconnect", () => resolve()));
     oversized.emit("client.event", "x".repeat(2_048));
     await disconnected;
+  });
+
+  it("bounds retained session churn, rate-limits new identities, and reclaims them after retention", async () => {
+    let now = 1_000;
+    const app = buildApp({
+      battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0,
+      maxRetainedSessions: 3, newSessionBurstPerClient: 2, newSessionRefillPerSecond: 1,
+      newSessionGlobalBurst: 20, newSessionGlobalRefillPerSecond: 20,
+    });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    for (let wave = 0; wave < 5; wave += 1) {
+      const client = await connect(url, `Churn ${wave}`);
+      client.socket.close();
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      expect(app.realtimeGateway.debugCounts.sessions).toBeLessThanOrEqual(3);
+      now += 1_000;
+    }
+    const first = await connect(url, "Burst 1");
+    const second = await connect(url, "Burst 2");
+    closers.push(() => { first.socket.close(); }, () => { second.socket.close(); });
+    const blocked = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: "Burst blocked" } });
+    closers.push(() => { blocked.close(); });
+    await new Promise<void>((resolve) => blocked.once("connect", resolve));
+    const limited = nextEvent(blocked, "error");
+    blocked.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+    expect((await limited).code).toBe("SESSION_RATE_LIMITED");
+    await new Promise<void>((resolve) => blocked.once("disconnect", () => resolve()));
+    first.socket.close(); second.socket.close();
+    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    now += 120_001;
+    app.realtimeGateway.pump(now);
+    expect(app.realtimeGateway.debugCounts).toMatchObject({ sessions: 0, connections: 0, newSessionClientBuckets: 0 });
+  });
+
+  it("never prunes active room participants to admit a new retained session", async () => {
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0, maxRetainedSessions: 2 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const [p1, p2] = await Promise.all([connect(url, "Protected 1"), connect(url, "Protected 2")]);
+    closers.push(() => { p1.socket.close(); }, () => { p2.socket.close(); });
+    const created = nextEvent(p1.socket, "room.snapshot");
+    p1.socket.emit("client.event", command("room.create", { name: "Protected" }));
+    const room = await created;
+    const joined = nextEvent(p2.socket, "room.snapshot");
+    p2.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
+    await joined;
+    const blocked = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: "Blocked" } });
+    closers.push(() => { blocked.close(); });
+    await new Promise<void>((resolve) => blocked.once("connect", resolve));
+    const capacity = nextEvent(blocked, "error");
+    blocked.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+    expect((await capacity).code).toBe("SESSION_CAPACITY");
+    expect(app.realtimeGateway.debugCounts.sessions).toBe(2);
+  });
+
+  it("rate-limits design requests before validation, refills, and isolates sessions", async () => {
+    let now = 2_000;
+    const app = buildApp({
+      battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0,
+      designRateBurst: 2, designRateRefillPerSecond: 1, maxDesignsPerSession: 1, bodyLimit: 4_096,
+    });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const [first, other] = await Promise.all([connect(url, "First"), connect(url, "Other")]);
+    closers.push(() => { first.socket.close(); }, () => { other.socket.close(); });
+    const post = (token: string, payload: any) => app.inject({
+      method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${token}` }, payload,
+    });
+    expect((await post(first.token, {})).statusCode).toBe(422);
+    expect((await post(first.token, { invalid: true })).statusCode).toBe(422);
+    expect((await post(first.token, makeDefaultDesign())).statusCode).toBe(429);
+    expect((await post(other.token, makeDefaultDesign())).statusCode).toBe(201);
+    now += 1_000;
+    expect((await post(first.token, makeDefaultDesign())).statusCode).toBe(201);
+    now += 1_000;
+    expect((await post(first.token, { padding: "x".repeat(8_000) })).statusCode).toBe(429);
+  });
+
+  it("fails fast on invalid runtime limits and requires a proxy-aware client key in production", () => {
+    expect(() => buildApp({ battleEngine: new FakeBattleEngine(), maxMatchAttempts: 1_001 })).toThrow(/1000/u);
+    expect(() => buildApp({ battleEngine: new FakeBattleEngine(), handshakeTimeoutMs: Number.NaN })).toThrow(/handshakeTimeoutMs/u);
+    expect(() => buildApp({ battleEngine: new FakeBattleEngine(), maxRooms: 1, maxOwnedRoomsPerSession: 2 })).toThrow(/maxOwnedRoomsPerSession/u);
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() => buildApp({ battleEngine: new FakeBattleEngine(), allowedOrigins: ["https://school.example"], behindProxy: true })).toThrow(/clientKeyResolver/u);
+  });
+
+  it("uses an injected proxy client-key resolver instead of collapsing students onto the proxy IP", async () => {
+    const app = buildApp({
+      battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0, maxConnectionsPerIp: 1,
+      clientKeyResolver: (request) => String(request.headers["x-student-device"] ?? "missing"),
+    });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const make = (key: string) => io(url, {
+      transports: ["websocket"], reconnection: false, extraHeaders: { "x-student-device": key }, auth: { displayName: key },
+    });
+    const first = make("device-a");
+    const second = make("device-b");
+    closers.push(() => { first.close(); }, () => { second.close(); });
+    await Promise.all([first, second].map((socket) => new Promise<void>((resolve) => socket.once("connect", resolve))));
+    expect(first.connected).toBe(true);
+    expect(second.connected).toBe(true);
+    const duplicate = make("device-a");
+    closers.push(() => { duplicate.close(); });
+    await new Promise<void>((resolve) => duplicate.once("disconnect", () => resolve()));
+    expect(duplicate.connected).toBe(false);
   });
 
   it("uses the same strict origin policy for websocket requests and production composition", async () => {
@@ -200,8 +339,10 @@ describe("realtime app", () => {
     raw.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [9] });
     expect((await unsupported).supportedVersions).toEqual([1]);
     const error = nextEvent(raw, "error");
+    const preHelloDisconnected = new Promise<void>((resolve) => raw.once("disconnect", () => resolve()));
     raw.emit("client.event", { type: "room.create", nope: true });
     expect((await error).code).toBe("INVALID_EVENT");
+    await preHelloDisconnected;
     expect((await app.inject({ method: "GET", url: "/health" })).statusCode).toBe(200);
   });
 
@@ -247,6 +388,58 @@ describe("realtime app", () => {
     const invalid = makeDefaultDesign();
     invalid.layers[0].diameterMm = 80;
     expect((await app.inject({ method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${alice.token}` }, payload: invalid })).statusCode).toBe(422);
+  });
+
+  it("rolls back pins, room state, match maps, and launch jobs when initial match setup throws", async () => {
+    for (const failure of ["phase", "schedule"] as const) {
+      const rooms = failure === "phase" ? new FailFirstPhaseRoomService() : new RoomService();
+      const designs = new DesignRegistry();
+      const launch = failure === "schedule" ? new FailFirstScheduleCoordinator() : new LaunchCoordinator();
+      const app = buildApp({ battleEngine: new FakeBattleEngine(), rooms, designs, launch, sweepIntervalMs: 0 });
+      await app.listen({ host: "127.0.0.1", port: 0 });
+      const address = app.server.address();
+      if (!address || typeof address === "string") throw new Error("No address");
+      const url = `http://127.0.0.1:${address.port}`;
+      const p1 = await connect(url, `${failure} p1`);
+      const p2 = await connect(url, `${failure} p2`);
+      try {
+        const created = nextEvent(p1.socket, "room.snapshot");
+        p1.socket.emit("client.event", command("room.create", { name: failure }));
+        const room = await created;
+        const joined = nextEvent(p2.socket, "room.snapshot");
+        p2.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
+        await joined;
+        const register = async (token: string) => (await app.inject({
+          method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${token}` }, payload: makeDefaultDesign(),
+        })).json().designId as string;
+        const [d1, d2] = await Promise.all([register(p1.token), register(p2.token)]);
+        const firstReadyAck = nextEvent(p1.socket, "command.ack");
+        p1.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
+        await firstReadyAck;
+        const rollbackDeltas: any[] = [];
+        p1.socket.on("server.event", (event) => { if (event.type === "room.delta") rollbackDeltas.push(event); });
+        const failed = nextEvent(p2.socket, "error");
+        p2.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
+        expect((await failed).code).toBe("COMMAND_FAILED");
+        expect(app.realtimeGateway.activeMatchCount).toBe(0);
+        expect(designs.debugCounts().pinned).toBe(0);
+        expect(launch.activeRoundCount).toBe(0);
+        expect(rollbackDeltas.some((event) => event.patch.phase === "waiting" && event.patch.player1?.ready === false && event.patch.player2?.ready === false)).toBe(true);
+        expect(rooms.get(room.roomId)).toMatchObject({
+          phase: "waiting", player1: { ready: false, designId: null }, player2: { ready: false, designId: null },
+        });
+        const retryReadyAck = nextEvent(p1.socket, "command.ack");
+        p1.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
+        await retryReadyAck;
+        const retrySchedule = nextEvent(p1.socket, "launch.schedule");
+        p2.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
+        expect((await retrySchedule).roomId).toBe(room.roomId);
+        expect(app.realtimeGateway.activeMatchCount).toBe(1);
+      } finally {
+        p1.socket.close(); p2.socket.close();
+        await app.close();
+      }
+    }
   });
 
   it("runs two players and 20 spectators with O(1) frame broadcasts through a private-launch match", async () => {
@@ -295,9 +488,12 @@ describe("realtime app", () => {
     const d2 = await register(p2.token);
     p1.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
     const startedPromise = nextEvent(p1.socket, "battle.started");
+    const spectatorStartedPromises = spectators.map(({ socket }) => nextEvent(socket, "battle.started"));
     const schedule1Promise = nextEvent(p1.socket, "launch.schedule");
     p2.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
     const started = await startedPromise;
+    const spectatorStarted = await Promise.all(spectatorStartedPromises);
+    expect(spectatorStarted.every((event) => event.matchId === started.matchId)).toBe(true);
     expect(started.player1.designId).toBe(d1);
     expect(started.player2.design.layers).toHaveLength(3);
     expect(started.player2).not.toHaveProperty("ownerSessionId");
@@ -308,12 +504,14 @@ describe("realtime app", () => {
       const private1 = nextEvent(p1.socket, "launch.result.private");
       const private2 = nextEvent(p2Socket, "launch.result.private");
       const publicResult = nextEvent(spectator.socket, "launch.result.spectator");
+      const finalFrames = spectators.map(({ socket }) => nextEvent(socket, "battle.frame", 5_000));
       p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
       p2Socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
-      const [own1, own2, both] = await Promise.all([private1, private2, publicResult]);
+      const [own1, own2, both, ...frames] = await Promise.all([private1, private2, publicResult, ...finalFrames]);
       expect(own1.participantId).not.toBe(own2.participantId);
       expect(own1).not.toHaveProperty("player2");
       expect(both.player1.grade).toBe("Perfect");
+      expect(frames.every((frame) => frame.matchId === started.matchId && frame.tick === frames[0]!.tick)).toBe(true);
     };
 
     const schedule2Promise = nextEvent(p1.socket, "launch.schedule", 5_000);
@@ -349,11 +547,16 @@ describe("realtime app", () => {
     expect(leaked.every((event) => event.participantId === started.player2.participantId)).toBe(true);
     p2Socket = resumedSocket;
     const matchFinished = nextEvent(p1.socket, "match.finished", 5_000);
+    const spectatorFinished = spectators.map(({ socket }) => nextEvent(socket, "match.finished", 5_000));
+    const spectatorFinalFramesRound2 = spectators.map(({ socket }) => nextEvent(socket, "battle.frame", 5_000));
     const finalPrivate = nextEvent(p1.socket, "launch.result.private");
     const finalSpectator = nextEvent(spectator.socket, "launch.result.spectator");
     p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule2.roundId, nonce: schedule2.nonce, clientTimeMs: now }));
     await Promise.all([finalPrivate, finalSpectator]);
     const match = await matchFinished;
+    const finalFramesRound2 = await Promise.all(spectatorFinalFramesRound2);
+    expect(finalFramesRound2.every((frame) => frame.matchId === match.matchId && frame.tick === finalFramesRound2[0]!.tick)).toBe(true);
+    expect((await Promise.all(spectatorFinished)).every((event) => event.matchId === match.matchId)).toBe(true);
     expect(match.roundWinners).toEqual(["player1", "player1"]);
     expect(engine.simulationCount).toBe(2);
     expect(app.realtimeGateway.debugCounts.frameBroadcastOperations).toBe(2);
@@ -665,8 +868,12 @@ describe("realtime app", () => {
     expect(waits[0]!.delayMs).toBeCloseTo(1_000 / 15, 5);
 
     const watcherFrames: number[] = [];
+    const watcherOrder: string[] = [];
+    const finalKeyframes: any[] = [];
     watcher.socket.on("server.event", (event) => {
-      if (event.type === "battle.frame") watcherFrames.push(event.sequence);
+      if (event.type === "battle.frame") { watcherFrames.push(event.sequence); watcherOrder.push(`frame:${event.sequence}`); }
+      if (event.type === "battle.frame" && event.sequence === 2) finalKeyframes.push(event);
+      if (event.type === "round.finished") watcherOrder.push("round.finished");
     });
     const watcherSnapshot = nextEvent(watcher.socket, "room.snapshot");
     const watcherStarted = nextEvent(watcher.socket, "battle.started");
@@ -680,17 +887,25 @@ describe("realtime app", () => {
     expect(watcherFrames).toEqual([0]);
 
     const secondFrame = nextEvent(p1.socket, "battle.frame");
+    const watcherSecondFrame = nextEvent(watcher.socket, "battle.frame");
     waits.shift()!.resolve();
     expect((await secondFrame).sequence).toBe(1);
+    expect((await watcherSecondFrame).sequence).toBe(1);
     while (waits.length < 1) await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(waits[0]!.delayMs).toBeCloseTo(1_000 / 15, 5);
     const thirdFrame = nextEvent(p1.socket, "battle.frame");
+    const watcherThirdFrame = nextEvent(watcher.socket, "battle.frame");
     const roundFinished = nextEvent(p1.socket, "round.finished");
+    const watcherRoundFinished = nextEvent(watcher.socket, "round.finished");
     const nextRoundSchedule = nextEvent(p1.socket, "launch.schedule");
     waits.shift()!.resolve();
     expect((await thirdFrame).sequence).toBe(2);
+    expect((await watcherThirdFrame).sequence).toBe(2);
     await roundFinished;
+    await watcherRoundFinished;
     expect(watcherFrames).toEqual([0, 1, 2]);
+    expect(finalKeyframes[0]).toMatchObject({ tick: 8, player1: { x: -2 }, player2: { x: 2 } });
+    expect(watcherOrder.indexOf("frame:2")).toBeLessThan(watcherOrder.indexOf("round.finished"));
 
     const secondSchedule = await nextRoundSchedule;
     now = secondSchedule.serverTargetTimeMs;

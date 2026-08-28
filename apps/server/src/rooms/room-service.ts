@@ -459,10 +459,13 @@ export class RoomService {
 
   #cancelMatch(roomId: string): void {
     const room = this.#room(roomId);
-    if (room.phase === "waiting") throw new RoomServiceError("INVALID_PHASE_TRANSITION");
-    room.phase = "waiting";
-    const patch: RoomStatePatch = { phase: "waiting" };
+    const patch: RoomStatePatch = {};
+    if (room.phase !== "waiting") {
+      room.phase = "waiting";
+      patch.phase = "waiting";
+    }
     this.#clearReady(room, patch);
+    if (Object.keys(patch).length === 0) throw new RoomServiceError("INVALID_PHASE_TRANSITION");
     this.#emitDelta(room, patch, [], []);
   }
 
