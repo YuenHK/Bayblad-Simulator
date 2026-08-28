@@ -1,6 +1,5 @@
 import {
   designSchema,
-  makeLayerVertices,
   predictDesignPerformance,
   validateDesign,
   type PerformancePrediction,
@@ -16,10 +15,14 @@ import {
   type BattleBody as ProtocolBattleBody,
   type LaunchGrade,
 } from "@steam-top/protocol";
-import { Edge, Polygon, Settings, Vec2, World, type Body, type Contact } from "planck";
+import { Edge, Polygon, Vec2, World, type Body, type Contact } from "planck";
 
+import { buildCollisionProxyVertices } from "./collision-proxy";
 import type { LaunchJudgement } from "./launch";
+import { ensurePlanckSiTuning } from "./planck-config";
 import { DeterministicPrng } from "./prng";
+
+export { buildCollisionProxyVertices } from "./collision-proxy";
 
 export const PHYSICS_MODEL_VERSION = "1.0.0" as const;
 export const STEP_SECONDS = 1 / 60;
@@ -34,19 +37,17 @@ const MAX_TICKS = MAX_ROUND_SECONDS / STEP_SECONDS;
 const METRES_PER_MM = 0.001;
 const KG_PER_G = 0.001;
 const KG_M2_PER_G_MM2 = 1e-9;
-const ARENA_WALL_RADIUS_M = 0.1;
+// Leaves at least 10 mm of solver travel before a top centre reaches the 70 mm
+// authoritative out-of-bounds circle, including the maximum 30 mm silhouette.
+const ARENA_WALL_RADIUS_M = 0.09;
 const ARENA_WALL_SEGMENTS = 64;
 const VELOCITY_ITERATIONS = 8;
 const POSITION_ITERATIONS = 3;
 const MAX_CORRELATION_LENGTH = 128;
 const TIMEOUT_TIE_TOLERANCE = 0.03;
 const LAUNCH_GRADES = new Set<LaunchGrade>(launchGradeSchema.options);
-
-// Planck's metre-scale defaults use a 5 mm slop / 10 mm polygon skin. These
-// documented tuning values preserve SI units while resolving 40-60 mm objects.
-Settings.linearSlop = 0.00005;
-Settings.aabbExtension = 0.001;
-Settings.maxLinearCorrection = 0.01;
+export const DEFAULT_BATTLE_CACHE_TTL_MS = 5 * 60_000;
+export const DEFAULT_BATTLE_CACHE_MAX_ENTRIES = 128;
 
 export type BattleBodyFrame = Readonly<ProtocolBattleBody>;
 
@@ -67,12 +68,15 @@ export type PreparedBattleTop = Readonly<{
   polarInertiaKgM2: number;
   performance: Readonly<PerformancePrediction>;
   envelopeRadiiM: readonly number[];
+  collisionVerticesM: readonly Readonly<Point>[];
 }>;
 
 export type BattleFinalStats = Readonly<{
   player1: Readonly<{ angularSpeed: number; speedMps: number; energyJ: number; stoppedTicks: number; impactRetentionProduct: number }>;
   player2: Readonly<{ angularSpeed: number; speedMps: number; energyJ: number; stoppedTicks: number; impactRetentionProduct: number }>;
   topTopContactCount: number;
+  topTopBeginContactEpisodes: number;
+  topTopImpactApplications: number;
 }>;
 
 export type BattleResult = Readonly<{
@@ -117,8 +121,8 @@ export function impactPhysicsFromScore(score: number): ImpactPhysics {
     throw new RangeError("impactResistance must be finite and between 0 and 100");
   }
   return Object.freeze({
-    friction: 0.3 - score * 0.0012,
-    restitution: 0.35 + score * 0.0035,
+    friction: 0.04 - score * 0.0003,
+    restitution: 0.25 + score * 0.0025,
     angularRetention: 0.82 + score * 0.0016,
   });
 }
@@ -140,20 +144,6 @@ function deepFreeze<T extends object>(value: T): Readonly<T> {
   return value;
 }
 
-function radiusAtAngle(vertices: readonly Point[], angle: number): number {
-  let bestRadius = 0;
-  let bestAngularDistance = Number.POSITIVE_INFINITY;
-  for (const vertex of vertices) {
-    const vertexAngle = Math.atan2(vertex.y, vertex.x);
-    const distance = Math.abs(Math.atan2(Math.sin(vertexAngle - angle), Math.cos(vertexAngle - angle)));
-    if (distance < bestAngularDistance) {
-      bestAngularDistance = distance;
-      bestRadius = Math.hypot(vertex.x, vertex.y);
-    }
-  }
-  return bestRadius;
-}
-
 /** Rebuilds every trusted physical value from schema-valid domain geometry. */
 export function prepareBattleTop(input: TopDesign): PreparedBattleTop {
   let design: TopDesign;
@@ -169,10 +159,14 @@ export function prepareBattleTop(input: TopDesign): PreparedBattleTop {
   // validateDesign recalculates canonical calculateMassProperties internally.
   const mass = validation.massProperties;
   const performance = predictDesignPerformance(design);
-  const layers = design.layers.map((layer) => makeLayerVertices(layer));
+  const collisionProxyMm = buildCollisionProxyVertices(design);
+  const collisionVerticesM = collisionProxyMm.map(({ x, y }) => ({
+    x: x * METRES_PER_MM,
+    y: y * METRES_PER_MM,
+  }));
   const envelopeRadiiM = Array.from({ length: ENVELOPE_SEGMENTS }, (_, index) => {
     const angle = (index / ENVELOPE_SEGMENTS) * Math.PI * 2;
-    return Math.max(...layers.map((vertices) => radiusAtAngle(vertices, angle))) * METRES_PER_MM;
+    return Math.max(...collisionVerticesM.map(({ x, y }) => x * Math.cos(angle) + y * Math.sin(angle)));
   });
   const prepared = {
     massKg: mass.totalMassG * KG_PER_G,
@@ -183,11 +177,13 @@ export function prepareBattleTop(input: TopDesign): PreparedBattleTop {
     polarInertiaKgM2: mass.polarMomentGmm2 * KG_M2_PER_G_MM2,
     performance: { ...performance },
     envelopeRadiiM,
+    collisionVerticesM,
   };
   if (
     !Number.isFinite(prepared.massKg) || prepared.massKg <= 0 ||
     !Number.isFinite(prepared.polarInertiaKgM2) || prepared.polarInertiaKgM2 <= 0 ||
-    !prepared.envelopeRadiiM.every((radius) => Number.isFinite(radius) && radius > 0)
+    !prepared.envelopeRadiiM.every((radius) => Number.isFinite(radius) && radius > 0) ||
+    !prepared.collisionVerticesM.flatMap(({ x, y }) => [x, y]).every(Number.isFinite)
   ) {
     throw new RangeError("Authoritative physical properties must be finite and positive");
   }
@@ -238,19 +234,10 @@ function createTopBody(
     angularDamping: 0.015 + (100 - top.performance.spinDuration) * 0.0001,
   });
   const impactPhysics = impactPhysicsFromScore(top.performance.impactResistance);
-  for (let index = 0; index < ENVELOPE_SEGMENTS; index += 1) {
-    const next = (index + 1) % ENVELOPE_SEGMENTS;
-    const angleA = (index / ENVELOPE_SEGMENTS) * Math.PI * 2;
-    const angleB = (next / ENVELOPE_SEGMENTS) * Math.PI * 2;
-    body.createFixture(
-      new Polygon([
-        Vec2(0, 0),
-        Vec2(Math.cos(angleA) * (top.envelopeRadiiM[index] ?? 0), Math.sin(angleA) * (top.envelopeRadiiM[index] ?? 0)),
-        Vec2(Math.cos(angleB) * (top.envelopeRadiiM[next] ?? 0), Math.sin(angleB) * (top.envelopeRadiiM[next] ?? 0)),
-      ]),
-      { density: 1, friction: impactPhysics.friction, restitution: impactPhysics.restitution },
-    );
-  }
+  body.createFixture(
+    new Polygon(top.collisionVerticesM.map(({ x, y }) => Vec2(x, y))),
+    { density: 1, friction: impactPhysics.friction, restitution: impactPhysics.restitution },
+  );
   body.setMassData({
     mass: top.massKg,
     center: Vec2(top.centerOfMassM.x, top.centerOfMassM.y),
@@ -336,11 +323,12 @@ export function resolveTimeoutOutcome(input: Readonly<{
   return { winner, reason: "timeout" };
 }
 
-export function simulateMatchRound(
+function* simulateMatchRoundSteps(
   player1Design: TopDesign,
   player2Design: TopDesign,
   options: Readonly<{ seed: number; launchA: LaunchJudgement; launchB: LaunchJudgement }>,
-): BattleResult {
+): Generator<void, BattleResult, void> {
+  ensurePlanckSiTuning();
   const prng = new DeterministicPrng(options.seed);
   validateLaunch(options.launchA);
   validateLaunch(options.launchB);
@@ -350,31 +338,28 @@ export function simulateMatchRound(
   createArena(world);
 
   // Perturbations are deliberately bounded to +/-1% magnitude and +/-2 degrees.
-  const headingJitter1 = prng.nextRange(-Math.PI / 90, Math.PI / 90);
-  const headingJitter2 = prng.nextRange(-Math.PI / 90, Math.PI / 90);
-  const positionJitter1 = prng.nextRange(-0.0005, 0.0005);
-  const positionJitter2 = prng.nextRange(-0.0005, 0.0005);
-  const impulseJitter1 = prng.nextRange(0.99, 1.01);
-  const impulseJitter2 = prng.nextRange(0.99, 1.01);
-  const baseAngular1 = 90 + top1.performance.spinDuration * 1.1 + top1.performance.stability * 0.2;
-  const baseAngular2 = 90 + top2.performance.spinDuration * 1.1 + top2.performance.stability * 0.2;
-  const baseSpeed1 = 0.35 + top1.performance.speed * 0.004;
-  const baseSpeed2 = 0.35 + top2.performance.speed * 0.004;
+  const headingJitter = prng.nextRange(-Math.PI / 90, Math.PI / 90);
+  const positionJitter = prng.nextRange(-0.0005, 0.0005);
+  const impulseJitter = prng.nextRange(0.99, 1.01);
+  const baseAngular1 = 45 + top1.performance.spinDuration * 0.55 + top1.performance.stability * 0.1;
+  const baseAngular2 = 45 + top2.performance.spinDuration * 0.55 + top2.performance.stability * 0.1;
+  const baseSpeed1 = 0.05 + top1.performance.speed * 0.0008;
+  const baseSpeed2 = 0.05 + top2.performance.speed * 0.0008;
   const body1 = createTopBody(
     world,
     top1,
-    { x: -0.032, y: positionJitter1 },
-    headingJitter1,
+    { x: -0.04, y: positionJitter },
+    headingJitter,
     baseAngular1 * options.launchA.angularMultiplier,
-    { x: Math.cos(headingJitter1) * baseSpeed1 * options.launchA.impulseMultiplier * impulseJitter1, y: Math.sin(headingJitter1) * baseSpeed1 * options.launchA.impulseMultiplier * impulseJitter1 },
+    { x: Math.cos(headingJitter) * baseSpeed1 * options.launchA.impulseMultiplier * impulseJitter, y: Math.sin(headingJitter) * baseSpeed1 * options.launchA.impulseMultiplier * impulseJitter },
   );
   const body2 = createTopBody(
     world,
     top2,
-    { x: 0.032, y: positionJitter2 },
-    Math.PI + headingJitter2,
+    { x: 0.04, y: -positionJitter },
+    Math.PI + headingJitter,
     -baseAngular2 * options.launchB.angularMultiplier,
-    { x: -Math.cos(headingJitter2) * baseSpeed2 * options.launchB.impulseMultiplier * impulseJitter2, y: -Math.sin(headingJitter2) * baseSpeed2 * options.launchB.impulseMultiplier * impulseJitter2 },
+    { x: -Math.cos(headingJitter) * baseSpeed2 * options.launchB.impulseMultiplier * impulseJitter, y: -Math.sin(headingJitter) * baseSpeed2 * options.launchB.impulseMultiplier * impulseJitter },
   );
 
   const frames: BattleFrame[] = [makeFrame(0, body1, body2)];
@@ -386,6 +371,8 @@ export function simulateMatchRound(
   let outcome: BattleOutcome | null = null;
   let activeTopContactFixtures = 0;
   let topTopContactCount = 0;
+  let topTopBeginContactEpisodes = 0;
+  let topTopImpactApplications = 0;
   let impactRetentionProduct1 = 1;
   let impactRetentionProduct2 = 1;
   let steppingTick = 0;
@@ -395,12 +382,14 @@ export function simulateMatchRound(
 
   world.on("begin-contact", (contact) => {
     if (!contactIsBetween(contact, body1, body2)) return;
+    if (activeTopContactFixtures === 0) topTopBeginContactEpisodes += 1;
     if (activeTopContactFixtures === 0 && lastImpactTick !== steppingTick) {
       body1.setAngularVelocity(retainAngularSpeedAfterImpact(body1.getAngularVelocity(), top1.performance.impactResistance));
       body2.setAngularVelocity(retainAngularSpeedAfterImpact(body2.getAngularVelocity(), top2.performance.impactResistance));
       impactRetentionProduct1 *= impact1.angularRetention;
       impactRetentionProduct2 *= impact2.angularRetention;
       topTopContactCount += 1;
+      topTopImpactApplications += 1;
       lastImpactTick = steppingTick;
     }
     activeTopContactFixtures += 1;
@@ -437,6 +426,7 @@ export function simulateMatchRound(
     }
     if (tick % BROADCAST_EVERY_TICKS === 0) frames.push(makeFrame(tick, body1, body2));
     if (outcome !== null) break;
+    yield;
   }
 
   const energy1 = energy(body1, top1);
@@ -460,8 +450,42 @@ export function simulateMatchRound(
       player1: { angularSpeed: body1.getAngularVelocity(), speedMps: body1.getLinearVelocity().length(), energyJ: energy1, stoppedTicks: stoppedTicks1, impactRetentionProduct: impactRetentionProduct1 },
       player2: { angularSpeed: body2.getAngularVelocity(), speedMps: body2.getLinearVelocity().length(), energyJ: energy2, stoppedTicks: stoppedTicks2, impactRetentionProduct: impactRetentionProduct2 },
       topTopContactCount,
+      topTopBeginContactEpisodes,
+      topTopImpactApplications,
     },
   };
+}
+
+export function simulateMatchRound(
+  player1Design: TopDesign,
+  player2Design: TopDesign,
+  options: Readonly<{ seed: number; launchA: LaunchJudgement; launchB: LaunchJudgement }>,
+): BattleResult {
+  const simulation = simulateMatchRoundSteps(player1Design, player2Design, options);
+  while (true) {
+    const step = simulation.next();
+    if (step.done) return step.value;
+  }
+}
+
+export async function simulateMatchRoundAsync(
+  player1Design: TopDesign,
+  player2Design: TopDesign,
+  options: Readonly<{ seed: number; launchA: LaunchJudgement; launchB: LaunchJudgement }>,
+  asyncOptions: Readonly<{ chunkTicks?: number }> = {},
+): Promise<BattleResult> {
+  const chunkTicks = asyncOptions.chunkTicks ?? 120;
+  if (!Number.isSafeInteger(chunkTicks) || chunkTicks < 1 || chunkTicks > MAX_TICKS) {
+    throw new RangeError("chunkTicks must be a safe integer within one round");
+  }
+  const simulation = simulateMatchRoundSteps(player1Design, player2Design, options);
+  while (true) {
+    for (let index = 0; index < chunkTicks; index += 1) {
+      const step = simulation.next();
+      if (step.done) return step.value;
+    }
+    await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+  }
 }
 
 function stableStringify(value: unknown): string {
@@ -469,6 +493,28 @@ function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+}
+
+function canonicalizeBattleInputs(inputs: BattleInputs): BattleInputs {
+  // Constructor validates the complete uint32 seed contract without consuming it.
+  new DeterministicPrng(inputs.seed);
+  validateLaunch(inputs.launchA);
+  validateLaunch(inputs.launchB);
+  return {
+    player1: designSchema.parse(inputs.player1),
+    player2: designSchema.parse(inputs.player2),
+    launchA: {
+      grade: inputs.launchA.grade,
+      angularMultiplier: inputs.launchA.angularMultiplier,
+      impulseMultiplier: inputs.launchA.impulseMultiplier,
+    },
+    launchB: {
+      grade: inputs.launchB.grade,
+      angularMultiplier: inputs.launchB.angularMultiplier,
+      impulseMultiplier: inputs.launchB.impulseMultiplier,
+    },
+    seed: inputs.seed,
+  };
 }
 
 function correlationKey(matchId: string, roundId: string): string {
@@ -480,41 +526,153 @@ function correlationKey(matchId: string, roundId: string): string {
   return `${matchId.length}:${matchId}${roundId.length}:${roundId}`;
 }
 
-type CacheEntry = { fingerprint: string; result: BattleResult; closed: boolean };
+type CacheEntry = {
+  fingerprint: string;
+  result: BattleResult;
+  closed: boolean;
+  expiresAtMs: number;
+};
+type InFlightEntry = { fingerprint: string; promise: Promise<BattleResult> };
 
 export class BattleEngine {
   readonly #cache = new Map<string, CacheEntry>();
+  readonly #inFlight = new Map<string, InFlightEntry>();
+  readonly #discardOnCompletion = new Set<string>();
+  readonly #chunkTicks: number;
+  readonly #ttlMs: number;
+  readonly #maxEntries: number;
+  readonly #now: () => number;
   #simulationCount = 0;
+
+  constructor(options: Readonly<{
+    chunkTicks?: number;
+    ttlMs?: number;
+    maxEntries?: number;
+    now?: () => number;
+  }> = {}) {
+    this.#chunkTicks = options.chunkTicks ?? 120;
+    this.#ttlMs = options.ttlMs ?? DEFAULT_BATTLE_CACHE_TTL_MS;
+    this.#maxEntries = options.maxEntries ?? DEFAULT_BATTLE_CACHE_MAX_ENTRIES;
+    this.#now = options.now ?? Date.now;
+    if (!Number.isSafeInteger(this.#chunkTicks) || this.#chunkTicks < 1 || this.#chunkTicks > MAX_TICKS) {
+      throw new RangeError("chunkTicks must be a safe integer within one round");
+    }
+    if (!Number.isFinite(this.#ttlMs) || this.#ttlMs <= 0) {
+      throw new RangeError("ttlMs must be finite and positive");
+    }
+    if (!Number.isSafeInteger(this.#maxEntries) || this.#maxEntries < 1) {
+      throw new RangeError("maxEntries must be a positive safe integer");
+    }
+    this.#readNow();
+  }
 
   get simulationCount(): number {
     return this.#simulationCount;
   }
 
+  get cacheSize(): number {
+    this.#pruneExpired();
+    return this.#cache.size;
+  }
+
+  #readNow(): number {
+    const value = this.#now();
+    if (!Number.isFinite(value)) throw new RangeError("now() must return a finite number");
+    return value;
+  }
+
+  #pruneExpired(): void {
+    const now = this.#readNow();
+    for (const [key, entry] of this.#cache) {
+      if (entry.expiresAtMs <= now) this.#cache.delete(key);
+    }
+  }
+
+  #getCached(key: string, fingerprint: string): CacheEntry | undefined {
+    this.#pruneExpired();
+    const entry = this.#cache.get(key);
+    if (entry === undefined) return undefined;
+    if (entry.fingerprint !== fingerprint) throw new Error("Battle correlation conflict");
+    // Map insertion order is the LRU order; a hit becomes most-recently used.
+    this.#cache.delete(key);
+    this.#cache.set(key, entry);
+    return entry;
+  }
+
+  #storeCached(key: string, fingerprint: string, result: BattleResult): void {
+    this.#pruneExpired();
+    this.#cache.delete(key);
+    this.#cache.set(key, {
+      fingerprint,
+      result: structuredClone(result),
+      closed: false,
+      expiresAtMs: this.#readNow() + this.#ttlMs,
+    });
+    while (this.#cache.size > this.#maxEntries) {
+      const oldestKey = this.#cache.keys().next().value as string | undefined;
+      if (oldestKey === undefined) break;
+      this.#cache.delete(oldestKey);
+    }
+  }
+
   simulateOnce(matchId: string, roundId: string, inputs: BattleInputs): BattleResult {
     const key = correlationKey(matchId, roundId);
-    const fingerprint = stableStringify(inputs);
-    const existing = this.#cache.get(key);
+    const canonical = canonicalizeBattleInputs(inputs);
+    const fingerprint = stableStringify(canonical);
+    const existing = this.#getCached(key, fingerprint);
     if (existing !== undefined) {
-      if (existing.fingerprint !== fingerprint) throw new Error("Battle correlation conflict");
       return structuredClone(existing.result);
     }
-    const result = simulateMatchRound(inputs.player1, inputs.player2, inputs);
-    this.#cache.set(key, { fingerprint, result: structuredClone(result), closed: false });
+    const active = this.#inFlight.get(key);
+    if (active !== undefined) throw new Error("Active battle correlation conflict");
+    const result = simulateMatchRound(canonical.player1, canonical.player2, canonical);
+    this.#storeCached(key, fingerprint, result);
     this.#simulationCount += 1;
     return structuredClone(result);
   }
 
+  async simulateOnceAsync(matchId: string, roundId: string, inputs: BattleInputs): Promise<BattleResult> {
+    const key = correlationKey(matchId, roundId);
+    const canonical = canonicalizeBattleInputs(inputs);
+    const fingerprint = stableStringify(canonical);
+    const existing = this.#getCached(key, fingerprint);
+    if (existing !== undefined) {
+      return structuredClone(existing.result);
+    }
+    const active = this.#inFlight.get(key);
+    if (active !== undefined) {
+      if (active.fingerprint !== fingerprint) throw new Error("Active battle correlation conflict");
+      return structuredClone(await active.promise);
+    }
+    this.#simulationCount += 1;
+    const promise = simulateMatchRoundAsync(canonical.player1, canonical.player2, canonical, {
+      chunkTicks: this.#chunkTicks,
+    }).then((result) => {
+      if (!this.#discardOnCompletion.delete(key)) {
+        this.#storeCached(key, fingerprint, result);
+      }
+      return result;
+    }).finally(() => {
+      this.#inFlight.delete(key);
+      this.#discardOnCompletion.delete(key);
+    });
+    this.#inFlight.set(key, { fingerprint, promise });
+    return structuredClone(await promise);
+  }
+
   close(matchId: string, roundId: string): void {
+    this.#pruneExpired();
     const entry = this.#cache.get(correlationKey(matchId, roundId));
     if (entry === undefined) throw new Error("Battle result not found");
     entry.closed = true;
   }
 
   cleanup(matchId: string, roundId: string): boolean {
+    this.#pruneExpired();
     const key = correlationKey(matchId, roundId);
-    const entry = this.#cache.get(key);
-    if (entry === undefined) return false;
-    if (!entry.closed) throw new Error("Battle result must be closed before cleanup");
-    return this.#cache.delete(key);
+    const removed = this.#cache.delete(key);
+    const active = this.#inFlight.has(key);
+    if (active) this.#discardOnCompletion.add(key);
+    return removed || active;
   }
 }
