@@ -1,10 +1,14 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import type { IncomingMessage } from "node:http";
 import type { BattleInputs, BattleResult, ResultRepository } from "./battle/engine";
 import { BattleEngine } from "./battle/engine";
 import { LaunchCoordinator } from "./battle/launch";
 import { DesignRegistry, DesignRegistryError } from "./design-registry";
 import { RoomService } from "./rooms/room-service";
 import { RealtimeGateway, type FrameScheduler, type MatchScorer } from "./socket";
+import { TokenBucketLimiter } from "./rate-limit";
+
+export type ClientKeyResolver = (request: IncomingMessage) => string;
 
 export interface BattleEnginePort {
   readonly simulationCount: number;
@@ -34,6 +38,11 @@ export type BuildAppOptions = Readonly<{
   rateLimitRefillPerSecond?: number;
   maxConnections?: number;
   maxConnectionsPerIp?: number;
+  maxRetainedSessions?: number;
+  newSessionBurstPerClient?: number;
+  newSessionRefillPerSecond?: number;
+  newSessionGlobalBurst?: number;
+  newSessionGlobalRefillPerSecond?: number;
   maxRooms?: number;
   maxOwnedRoomsPerSession?: number;
   maxDesigns?: number;
@@ -41,6 +50,12 @@ export type BuildAppOptions = Readonly<{
   designTtlMs?: number;
   maxMatchAttempts?: number;
   lobbyDebounceMs?: number;
+  designRateBurst?: number;
+  designRateRefillPerSecond?: number;
+  designClientRateBurst?: number;
+  designClientRateRefillPerSecond?: number;
+  behindProxy?: boolean;
+  clientKeyResolver?: ClientKeyResolver;
   logError?: (error: unknown) => void;
   sweepIntervalMs?: number;
 }>;
@@ -50,21 +65,72 @@ export type BuiltApp = FastifyInstance & Readonly<{
   battleEngine: BattleEnginePort;
 }>;
 
+function requirePositive(name: string, value: number, integer = true): number {
+  if (!Number.isFinite(value) || value <= 0 || (integer && !Number.isInteger(value))) {
+    throw new TypeError(`${name} must be a finite positive${integer ? " integer" : " number"}`);
+  }
+  return value;
+}
+
+function requireNonnegative(name: string, value: number): number {
+  if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) throw new TypeError(`${name} must be a finite nonnegative integer`);
+  return value;
+}
+
 export function buildApp(options: BuildAppOptions): BuiltApp {
   if (process.env.NODE_ENV === "production" && !options.allowedOrigins?.length) {
     throw new TypeError("Production composition requires allowedOrigins");
   }
+  if (process.env.NODE_ENV === "production" && options.behindProxy && !options.clientKeyResolver) {
+    throw new TypeError("Production behindProxy composition requires clientKeyResolver");
+  }
+  const config = {
+    bodyLimit: requirePositive("bodyLimit", options.bodyLimit ?? 64 * 1_024),
+    maxHttpBufferSize: requirePositive("maxHttpBufferSize", options.maxHttpBufferSize ?? 64 * 1_024),
+    handshakeTimeoutMs: requirePositive("handshakeTimeoutMs", options.handshakeTimeoutMs ?? 10_000),
+    rateLimitBurst: requirePositive("rateLimitBurst", options.rateLimitBurst ?? 30),
+    rateLimitRefillPerSecond: requirePositive("rateLimitRefillPerSecond", options.rateLimitRefillPerSecond ?? 10, false),
+    maxConnections: requirePositive("maxConnections", options.maxConnections ?? 5_000),
+    maxConnectionsPerIp: requirePositive("maxConnectionsPerIp", options.maxConnectionsPerIp ?? 500),
+    maxRetainedSessions: requirePositive("maxRetainedSessions", options.maxRetainedSessions ?? 10_000),
+    newSessionBurstPerClient: requirePositive("newSessionBurstPerClient", options.newSessionBurstPerClient ?? 600),
+    newSessionRefillPerSecond: requirePositive("newSessionRefillPerSecond", options.newSessionRefillPerSecond ?? 10, false),
+    newSessionGlobalBurst: requirePositive("newSessionGlobalBurst", options.newSessionGlobalBurst ?? 5_000),
+    newSessionGlobalRefillPerSecond: requirePositive("newSessionGlobalRefillPerSecond", options.newSessionGlobalRefillPerSecond ?? 100, false),
+    maxRooms: requirePositive("maxRooms", options.maxRooms ?? 1_000),
+    maxOwnedRoomsPerSession: requirePositive("maxOwnedRoomsPerSession", options.maxOwnedRoomsPerSession ?? 3),
+    maxDesigns: requirePositive("maxDesigns", options.maxDesigns ?? 2_000),
+    maxDesignsPerSession: requirePositive("maxDesignsPerSession", options.maxDesignsPerSession ?? 20),
+    designTtlMs: requirePositive("designTtlMs", options.designTtlMs ?? 24 * 60 * 60_000),
+    maxMatchAttempts: requirePositive("maxMatchAttempts", options.maxMatchAttempts ?? 5),
+    lobbyDebounceMs: requireNonnegative("lobbyDebounceMs", options.lobbyDebounceMs ?? (process.env.NODE_ENV === "test" ? 0 : 50)),
+    sweepIntervalMs: requireNonnegative("sweepIntervalMs", options.sweepIntervalMs ?? 1_000),
+    designRateBurst: requirePositive("designRateBurst", options.designRateBurst ?? 10),
+    designRateRefillPerSecond: requirePositive("designRateRefillPerSecond", options.designRateRefillPerSecond ?? 2, false),
+    designClientRateBurst: requirePositive("designClientRateBurst", options.designClientRateBurst ?? 600),
+    designClientRateRefillPerSecond: requirePositive("designClientRateRefillPerSecond", options.designClientRateRefillPerSecond ?? 20, false),
+  };
+  if (config.maxConnectionsPerIp > config.maxConnections) throw new TypeError("maxConnectionsPerIp cannot exceed maxConnections");
+  if (config.maxOwnedRoomsPerSession > config.maxRooms) throw new TypeError("maxOwnedRoomsPerSession cannot exceed maxRooms");
+  if (config.maxDesignsPerSession > config.maxDesigns) throw new TypeError("maxDesignsPerSession cannot exceed maxDesigns");
+  if (config.maxMatchAttempts > 1_000) throw new TypeError("maxMatchAttempts cannot exceed 1000");
+  const resolveClientKey: ClientKeyResolver = options.clientKeyResolver ?? ((request) => request.socket.remoteAddress ?? "unknown");
+  const safeClientKey = (request: IncomingMessage) => {
+    const key = resolveClientKey(request);
+    if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new TypeError("clientKeyResolver returned an invalid key");
+    return key;
+  };
   const app = Fastify({
     logger: false,
     forceCloseConnections: true,
-    bodyLimit: options.bodyLimit ?? 64 * 1_024,
+    bodyLimit: config.bodyLimit,
   });
   const rooms = options.rooms ?? new RoomService(options.now ? { now: options.now } : {});
   const designs = options.designs ?? new DesignRegistry({
     ...(options.now ? { now: options.now } : {}),
-    maxGlobal: options.maxDesigns ?? 2_000,
-    maxPerOwner: options.maxDesignsPerSession ?? 20,
-    ttlMs: options.designTtlMs ?? 24 * 60 * 60_000,
+    maxGlobal: config.maxDesigns,
+    maxPerOwner: config.maxDesignsPerSession,
+    ttlMs: config.designTtlMs,
   });
   const battleEngine = options.battleEngine ?? (options.resultRepository
     ? new BattleEngine({ resultRepository: options.resultRepository })
@@ -84,26 +150,51 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     ...(options.scoreMatch ? { scoreMatch: options.scoreMatch } : {}),
     allowedOrigins: options.allowedOrigins ?? [],
     allowMissingOrigin: options.allowMissingOrigin ?? process.env.NODE_ENV !== "production",
-    maxHttpBufferSize: options.maxHttpBufferSize ?? 64 * 1_024,
-    handshakeTimeoutMs: options.handshakeTimeoutMs ?? 10_000,
-    rateLimitBurst: options.rateLimitBurst ?? 30,
-    rateLimitRefillPerSecond: options.rateLimitRefillPerSecond ?? 10,
-    maxConnections: options.maxConnections ?? 5_000,
-    maxConnectionsPerIp: options.maxConnectionsPerIp ?? 500,
-    maxRooms: options.maxRooms ?? 1_000,
-    maxOwnedRoomsPerSession: options.maxOwnedRoomsPerSession ?? 3,
-    maxMatchAttempts: options.maxMatchAttempts ?? 5,
-    lobbyDebounceMs: options.lobbyDebounceMs ?? (process.env.NODE_ENV === "test" ? 0 : 50),
+    maxHttpBufferSize: config.maxHttpBufferSize,
+    handshakeTimeoutMs: config.handshakeTimeoutMs,
+    rateLimitBurst: config.rateLimitBurst,
+    rateLimitRefillPerSecond: config.rateLimitRefillPerSecond,
+    maxConnections: config.maxConnections,
+    maxConnectionsPerIp: config.maxConnectionsPerIp,
+    maxRetainedSessions: config.maxRetainedSessions,
+    newSessionBurstPerClient: config.newSessionBurstPerClient,
+    newSessionRefillPerSecond: config.newSessionRefillPerSecond,
+    newSessionGlobalBurst: config.newSessionGlobalBurst,
+    newSessionGlobalRefillPerSecond: config.newSessionGlobalRefillPerSecond,
+    clientKeyResolver: safeClientKey,
+    maxRooms: config.maxRooms,
+    maxOwnedRoomsPerSession: config.maxOwnedRoomsPerSession,
+    maxMatchAttempts: config.maxMatchAttempts,
+    lobbyDebounceMs: config.lobbyDebounceMs,
     ...(options.logError ? { logError: options.logError } : {}),
   });
   app.decorate("realtimeGateway", gateway);
   app.decorate("battleEngine", battleEngine);
 
   app.get("/health", async () => ({ status: "ok" }));
-  app.post("/api/designs", async (request, reply) => {
+  const designLimiter = new TokenBucketLimiter({
+    burst: config.designRateBurst, refillPerSecond: config.designRateRefillPerSecond,
+    ...(options.now ? { now: options.now } : {}),
+  });
+  const designClientLimiter = new TokenBucketLimiter({
+    burst: config.designClientRateBurst, refillPerSecond: config.designClientRateRefillPerSecond,
+    ...(options.now ? { now: options.now } : {}),
+  });
+  app.post("/api/designs", { onRequest: async (request, reply) => {
     const authorization = request.headers.authorization;
     const session = gateway.sessionForBearer(authorization);
     if (!session) return reply.code(401).send({ error: "UNAUTHORIZED" });
+    let clientKey: string;
+    try { clientKey = safeClientKey(request.raw); } catch { return reply.code(400).send({ error: "INVALID_CLIENT_KEY" }); }
+    if (!designLimiter.consume(session.id) || !designClientLimiter.consume(clientKey)) {
+      return reply.code(429).send({ error: "RATE_LIMITED" });
+    }
+    try { designs.assertCanRegister(session.id); } catch (error) {
+      if (error instanceof DesignRegistryError) return reply.code(429).send({ error: error.code });
+      throw error;
+    }
+  } }, async (request, reply) => {
+    const session = gateway.sessionForBearer(request.headers.authorization)!;
     try {
       const stored = designs.register(session.id, request.body);
       return reply.code(201).send({
@@ -119,7 +210,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     }
   });
 
-  const intervalMs = options.sweepIntervalMs ?? 1_000;
+  const intervalMs = config.sweepIntervalMs;
   const timer = intervalMs > 0 ? setInterval(() => gateway.pump(), intervalMs) : undefined;
   timer?.unref();
   app.addHook("preClose", async () => {

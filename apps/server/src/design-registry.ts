@@ -76,13 +76,11 @@ export class DesignRegistry {
   }
 
   register(ownerSessionId: string, input: unknown): StoredDesign {
+    this.assertCanRegister(ownerSessionId);
     const parsed = strictDesignSchema.safeParse(input);
     if (!parsed.success) throw new DesignRegistryError("DESIGN_INVALID");
     const validation = validateDesign(parsed.data);
     if (!validation.valid) throw new DesignRegistryError("DESIGN_INVALID");
-    this.#prune();
-    const owned = [...this.#designs.values()].filter(({ value }) => value.ownerSessionId === ownerSessionId).length;
-    if (owned >= this.#maxPerOwner) throw new DesignRegistryError("DESIGN_QUOTA_EXCEEDED");
     this.#makeCapacity();
     const designId = this.#uniqueId();
     const stored: StoredDesign = {
@@ -94,6 +92,12 @@ export class DesignRegistry {
     };
     this.#designs.set(designId, { value: structuredClone(stored), lastUsedAt: this.#readNow(), pins: 0 });
     return clone(stored);
+  }
+
+  assertCanRegister(ownerSessionId: string): void {
+    this.#prune();
+    const owned = [...this.#designs.values()].filter(({ value }) => value.ownerSessionId === ownerSessionId).length;
+    if (owned >= this.#maxPerOwner) throw new DesignRegistryError("DESIGN_QUOTA_EXCEEDED");
   }
 
   requireOwned(ownerSessionId: string, designId: string): StoredDesign {

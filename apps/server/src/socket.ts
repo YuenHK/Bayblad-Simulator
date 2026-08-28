@@ -15,7 +15,8 @@ import {
 import type { Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import { DesignRegistry } from "./design-registry";
-import type { BattleEnginePort } from "./app";
+import type { BattleEnginePort, ClientKeyResolver } from "./app";
+import { TokenBucketLimiter } from "./rate-limit";
 import { LaunchCoordinator, type LaunchJudgement } from "./battle/launch";
 import { scoreMatch as defaultScoreMatch } from "./battle/scoring";
 import type { ScoreMatchInput, MatchScoreResult } from "./battle/scoring";
@@ -30,6 +31,7 @@ type Session = {
   socketIds: Set<string>;
   events: Map<string, string>;
   disconnectedAt: number | null;
+  lastActiveAt: number;
 };
 
 export type FrameScheduler = (
@@ -58,6 +60,12 @@ export type RealtimeDependencies = Readonly<{
   rateLimitRefillPerSecond: number;
   maxConnections: number;
   maxConnectionsPerIp: number;
+  maxRetainedSessions: number;
+  newSessionBurstPerClient: number;
+  newSessionRefillPerSecond: number;
+  newSessionGlobalBurst: number;
+  newSessionGlobalRefillPerSecond: number;
+  clientKeyResolver: ClientKeyResolver;
   maxRooms: number;
   maxOwnedRoomsPerSession: number;
   maxMatchAttempts: number;
@@ -132,6 +140,10 @@ export class RealtimeGateway {
   readonly #rateLimitRefillPerMs: number;
   readonly #maxConnections: number;
   readonly #maxConnectionsPerIp: number;
+  readonly #maxRetainedSessions: number;
+  readonly #clientKeyResolver: ClientKeyResolver;
+  readonly #newSessionByClientLimiter: TokenBucketLimiter;
+  readonly #newSessionGlobalLimiter: TokenBucketLimiter;
   readonly #maxRooms: number;
   readonly #maxOwnedRoomsPerSession: number;
   readonly #maxMatchAttempts: number;
@@ -163,6 +175,18 @@ export class RealtimeGateway {
     this.#rateLimitRefillPerMs = dependencies.rateLimitRefillPerSecond / 1_000;
     this.#maxConnections = dependencies.maxConnections;
     this.#maxConnectionsPerIp = dependencies.maxConnectionsPerIp;
+    this.#maxRetainedSessions = dependencies.maxRetainedSessions;
+    this.#clientKeyResolver = dependencies.clientKeyResolver;
+    this.#newSessionByClientLimiter = new TokenBucketLimiter({
+      burst: dependencies.newSessionBurstPerClient,
+      refillPerSecond: dependencies.newSessionRefillPerSecond,
+      ...(dependencies.now ? { now: dependencies.now } : {}),
+    });
+    this.#newSessionGlobalLimiter = new TokenBucketLimiter({
+      burst: dependencies.newSessionGlobalBurst,
+      refillPerSecond: dependencies.newSessionGlobalRefillPerSecond,
+      ...(dependencies.now ? { now: dependencies.now } : {}),
+    });
     this.#maxRooms = dependencies.maxRooms;
     this.#maxOwnedRoomsPerSession = dependencies.maxOwnedRoomsPerSession;
     this.#maxMatchAttempts = dependencies.maxMatchAttempts;
@@ -191,12 +215,16 @@ export class RealtimeGateway {
     bindings: number;
     matches: number;
     frameBroadcastOperations: number;
+    connections: number;
+    newSessionClientBuckets: number;
   }> {
     return {
       sessions: this.#sessionsById.size,
       bindings: [...this.#sessionIdsByParticipant.values()].reduce((sum, map) => sum + map.size, 0),
       matches: this.#matches.size,
       frameBroadcastOperations: this.#frameBroadcastOperations,
+      connections: [...this.#connectionsByIp.values()].reduce((sum, count) => sum + count, 0),
+      newSessionClientBuckets: this.#newSessionByClientLimiter.size,
     };
   }
 
@@ -223,6 +251,7 @@ export class RealtimeGateway {
 
   pump(nowMs = this.#now()): void {
     this.#launch.finalizeExpired(nowMs);
+    this.#newSessionByClientLimiter.pruneOlderThan(120_000);
     for (const [roomId, match] of [...this.#matches]) {
       if (!this.#rooms.hasRoom(roomId)) {
         this.#cancelMatch(roomId, match);
@@ -266,27 +295,29 @@ export class RealtimeGateway {
   }
 
   #connect(socket: Socket): void {
-    const ip = socket.handshake.address || "unknown";
-    const ipCount = this.#connectionsByIp.get(ip) ?? 0;
-    if (this.io.engine.clientsCount > this.#maxConnections || ipCount >= this.#maxConnectionsPerIp) {
+    let clientKey: string;
+    try { clientKey = this.#clientKeyResolver(socket.request); } catch { socket.disconnect(true); return; }
+    const clientCount = this.#connectionsByIp.get(clientKey) ?? 0;
+    if (this.io.engine.clientsCount > this.#maxConnections || clientCount >= this.#maxConnectionsPerIp) {
       socket.disconnect(true);
       return;
     }
-    this.#connectionsByIp.set(ip, ipCount + 1);
+    this.#connectionsByIp.set(clientKey, clientCount + 1);
     const auth = socket.handshake.auth as Record<string, unknown>;
     const display = participantSummarySchema.safeParse({
       participantId: "identity-check",
       displayName: auth.displayName,
     });
     if (!display.success) {
-      if (ipCount === 0) this.#connectionsByIp.delete(ip);
-      else this.#connectionsByIp.set(ip, ipCount);
+      if (clientCount === 0) this.#connectionsByIp.delete(clientKey);
+      else this.#connectionsByIp.set(clientKey, clientCount);
       socket.disconnect(true);
       return;
     }
     const requestedToken = typeof auth.sessionToken === "string" ? auth.sessionToken : undefined;
     let session: Session | null = null;
     let welcomed = false;
+    let closingPreHello = false;
     let tokens = this.#rateLimitBurst;
     let lastRefillAt = this.#now();
     const handshakeTimer = setTimeout(() => socket.disconnect(true), this.#handshakeTimeoutMs);
@@ -309,9 +340,18 @@ export class RealtimeGateway {
           return;
         }
         clearTimeout(handshakeTimer);
-        const established = this.#establishSession(display.data.displayName, requestedToken);
+        let established: Readonly<{ session: Session; status: "new" | "resumed" | "replaced" }>;
+        try {
+          established = this.#establishSession(display.data.displayName, requestedToken, clientKey);
+        } catch (error) {
+          const code = this.#safeErrorCode(error);
+          this.#error(socket, code, code);
+          setTimeout(() => socket.disconnect(true), 0);
+          return;
+        }
         session = established.session;
         session.disconnectedAt = null;
+        session.lastActiveAt = this.#now();
         session.socketIds.add(socket.id);
         socket.join(`session:${session.id}`);
         socket.join("protocol:v1");
@@ -341,7 +381,10 @@ export class RealtimeGateway {
         return;
       }
       if (!welcomed) {
+        if (closingPreHello) return;
+        closingPreHello = true;
         this.#error(socket, "INVALID_EVENT", "Protocol hello is required");
+        setTimeout(() => socket.disconnect(true), 0);
         return;
       }
       const now = this.#now();
@@ -352,6 +395,7 @@ export class RealtimeGateway {
         return;
       }
       tokens -= 1;
+      session!.lastActiveAt = now;
       const parsed = clientEventSchema.safeParse(raw);
       if (!parsed.success || parsed.data.type === "protocol.hello") {
         this.#error(socket, "INVALID_EVENT", "Malformed protocol event");
@@ -365,13 +409,14 @@ export class RealtimeGateway {
     });
     socket.on("disconnect", () => {
       clearTimeout(handshakeTimer);
-      const remaining = Math.max(0, (this.#connectionsByIp.get(ip) ?? 1) - 1);
-      if (remaining === 0) this.#connectionsByIp.delete(ip);
-      else this.#connectionsByIp.set(ip, remaining);
+      const remaining = Math.max(0, (this.#connectionsByIp.get(clientKey) ?? 1) - 1);
+      if (remaining === 0) this.#connectionsByIp.delete(clientKey);
+      else this.#connectionsByIp.set(clientKey, remaining);
       if (!session) return;
       session.socketIds.delete(socket.id);
       if (session.socketIds.size > 0) return;
       session.disconnectedAt = this.#now();
+      session.lastActiveAt = session.disconnectedAt;
       for (const roomId of session.roomIds) {
         try { this.#rooms.disconnect(roomId, session.id); } catch { /* already closed */ }
       }
@@ -381,6 +426,7 @@ export class RealtimeGateway {
   #establishSession(
     displayName: string,
     requestedToken: string | undefined,
+    clientKey: string,
   ): Readonly<{ session: Session; status: "new" | "resumed" | "replaced" }> {
     let session = requestedToken ? this.#sessionsByToken.get(requestedToken) : undefined;
     let status: "new" | "resumed" | "replaced" = requestedToken ? "replaced" : "new";
@@ -389,6 +435,14 @@ export class RealtimeGateway {
       session = undefined;
     }
     if (session) return { session, status: "resumed" };
+    this.#pruneSessionsForCapacity();
+    if (this.#sessionsById.size >= this.#maxRetainedSessions) {
+      throw Object.assign(new Error("SESSION_CAPACITY"), { code: "SESSION_CAPACITY" });
+    }
+    if (!this.#newSessionGlobalLimiter.consume("global") || !this.#newSessionByClientLimiter.consume(clientKey)) {
+      throw Object.assign(new Error("SESSION_RATE_LIMITED"), { code: "SESSION_RATE_LIMITED" });
+    }
+    const now = this.#now();
     session = {
       id: this.#uniqueSessionId(),
       token: this.#uniqueToken(),
@@ -398,10 +452,21 @@ export class RealtimeGateway {
       socketIds: new Set(),
       events: new Map(),
       disconnectedAt: null,
+      lastActiveAt: now,
     };
     this.#sessionsByToken.set(session.token, session);
     this.#sessionsById.set(session.id, session);
     return { session, status };
+  }
+
+  #pruneSessionsForCapacity(): void {
+    if (this.#sessionsById.size < this.#maxRetainedSessions) return;
+    const candidates = [...this.#sessionsById.values()]
+      .filter(({ roomIds, socketIds }) => roomIds.size === 0 && socketIds.size === 0)
+      .sort((left, right) => left.lastActiveAt - right.lastActiveAt);
+    while (this.#sessionsById.size >= this.#maxRetainedSessions && candidates.length > 0) {
+      this.#expireSession(candidates.shift()!);
+    }
   }
 
   #expireSession(session: Session): void {
@@ -440,6 +505,7 @@ export class RealtimeGateway {
       "EVENT_ID_CONFLICT", "INVALID_TAP", "SCHEDULE_MISMATCH", "UNKNOWN_PARTICIPANT",
       "OUTSIDE_ACCEPTANCE_WINDOW", "ALREADY_SUBMITTED", "ROUND_CLOSED",
       "ROOM_QUOTA_EXCEEDED", "SERVER_CAPACITY",
+      "SESSION_CAPACITY", "SESSION_RATE_LIMITED",
     ]);
     return allowed.has(candidate) ? candidate : "COMMAND_FAILED";
   }
@@ -529,8 +595,10 @@ export class RealtimeGateway {
       this.#designs.unpin(session1, room.player1.designId);
       throw error;
     }
-    const matchId = crypto.randomUUID();
-    const battleStarted: BattleStartedEvent = {
+    let match: MatchState | undefined;
+    try {
+      const matchId = crypto.randomUUID();
+      const battleStarted: BattleStartedEvent = {
       type: "battle.started",
       roomId,
       matchId,
@@ -546,8 +614,8 @@ export class RealtimeGateway {
       },
       protocolVersion: PROTOCOL_VERSION,
       serverEventId: this.#createServerEventId(),
-    };
-    const match: MatchState = {
+      };
+      match = {
       generation: 1,
       matchId,
       attempt: 0,
@@ -566,19 +634,31 @@ export class RealtimeGateway {
       latestRoundFinished: null,
       simulating: false,
       controller: null,
-    };
-    this.#matches.set(roomId, match);
-    this.#rooms.setPhase(roomId, "launch");
-    this.#broadcastRoom(roomId);
-    this.#broadcastLobby();
-    this.#emitToRoom(roomId, battleStarted);
-    this.#scheduleRound(roomId, match);
+      };
+      this.#matches.set(roomId, match);
+      this.#rooms.setPhase(roomId, "launch");
+      const initialSchedule = this.#scheduleRound(roomId, match, false);
+      this.#broadcastRoom(roomId);
+      this.#broadcastLobby();
+      this.#emitToRoom(roomId, battleStarted);
+      if (initialSchedule) this.#emitToRoom(roomId, initialSchedule);
+    } catch (error) {
+      if (match) this.#cancelMatch(roomId, match);
+      else {
+        this.#designs.unpin(session1, room.player1.designId);
+        this.#designs.unpin(session2, room.player2.designId);
+      }
+      try { this.#rooms.cancelMatch(roomId); } catch (rollbackError) { this.#logError(rollbackError); }
+      this.#broadcastRoom(roomId);
+      this.#broadcastLobby();
+      throw error;
+    }
   }
 
-  #scheduleRound(roomId: string, match: MatchState): void {
+  #scheduleRound(roomId: string, match: MatchState, emit = true): LaunchScheduleEvent | null {
     if (match.attempt >= this.#maxMatchAttempts) {
       this.#cancelForAttemptLimit(roomId, match);
-      return;
+      return null;
     }
     match.attempt += 1;
     match.currentRoundId = `round-${match.attempt}-${crypto.randomUUID()}`;
@@ -597,7 +677,8 @@ export class RealtimeGateway {
       ],
     });
     match.schedule = schedule;
-    this.#emitToRoom(roomId, schedule);
+    if (emit) this.#emitToRoom(roomId, schedule);
+    return schedule;
   }
 
   #flushLaunch(roomId: string, match: MatchState): void {
@@ -639,6 +720,7 @@ export class RealtimeGateway {
         seed: this.#seedFactory(),
       }, { signal: controller.signal });
       if (this.#matches.get(roomId) !== match || match.generation !== generation || match.currentRoundId !== roundId) return;
+      if (result.frames.length === 0) throw new Error("Battle result contained no frames");
       let previousTick = 0;
       for (const [sequence, frame] of result.frames.entries()) {
         const delayMs = Math.max(0, frame.tick - previousTick) * (1_000 / 60);
@@ -651,7 +733,7 @@ export class RealtimeGateway {
           serverEventId: this.#createServerEventId(),
         };
         match.latestFrame = event;
-        this.#emitToRoom(roomId, event);
+        this.#emitToRoom(roomId, event, sequence === result.frames.length - 1);
       }
       const candidateWinners = [...match.roundWinners];
       if (result.outcome.winner !== "draw") candidateWinners.push(result.outcome.winner);
@@ -723,7 +805,10 @@ export class RealtimeGateway {
   #cancelMatch(roomId: string, match: MatchState): void {
     match.generation += 1;
     match.controller?.abort();
-    if (match.currentRoundId) this.#battleEngine.cleanup(match.matchId, match.currentRoundId);
+    if (match.currentRoundId) {
+      try { this.#launch.cancelRound(roomId, match.currentRoundId); } catch { /* already reclaimed */ }
+      this.#battleEngine.cleanup(match.matchId, match.currentRoundId);
+    }
     this.#unpinMatchDesigns(match);
     this.#matches.delete(roomId);
   }
@@ -837,11 +922,12 @@ export class RealtimeGateway {
     if (match.latestRoundFinished) this.#emit(socket, match.latestRoundFinished);
   }
 
-  #emitToRoom(roomId: string, event: Record<string, unknown>): void {
+  #emitToRoom(roomId: string, event: Record<string, unknown>, reliable = false): void {
     const channel = this.io.to(`room:${roomId}`);
     if (event.type === "battle.frame") {
       this.#frameBroadcastOperations += 1;
-      channel.volatile.emit("server.event", event);
+      if (reliable) channel.emit("server.event", event);
+      else channel.volatile.emit("server.event", event);
     } else channel.emit("server.event", event);
   }
 

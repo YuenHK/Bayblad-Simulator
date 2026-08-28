@@ -624,14 +624,22 @@ export class LaunchCoordinator {
     const state = this.#rounds.get(key);
     if (!state) return false;
     if (!state.closed) throw new LaunchError("ROUND_NOT_CLOSED");
+    return this.#deleteRound(key, state);
+  }
+
+  cancelRound(roomId: string, roundId: string): boolean {
+    this.#prepareServerTime(this.#dependencies.now());
+    const key = roundKey(roomId, roundId);
+    const state = this.#rounds.get(key);
+    if (!state) return false;
+    return this.#deleteRound(key, state);
+  }
+
+  #deleteRound(key: string, state: RoundState): boolean {
     this.#activeNonces.delete(state.schedule.nonce);
     this.#activeServerEventIds.delete(state.schedule.serverEventId);
-    if (state.spectatorResult) {
-      this.#activeServerEventIds.delete(state.spectatorResult.serverEventId);
-    }
-    for (const event of state.results.values()) {
-      this.#activeServerEventIds.delete(event.serverEventId);
-    }
+    if (state.spectatorResult) this.#activeServerEventIds.delete(state.spectatorResult.serverEventId);
+    for (const event of state.results.values()) this.#activeServerEventIds.delete(event.serverEventId);
     this.#rounds.delete(key);
     return true;
   }
