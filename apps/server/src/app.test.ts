@@ -183,14 +183,77 @@ describe("realtime app", () => {
     closers.push(() => { blocked.close(); });
     await new Promise<void>((resolve) => blocked.once("connect", resolve));
     const limited = nextEvent(blocked, "error");
+    const blockedDisconnected = new Promise<void>((resolve) => blocked.once("disconnect", () => resolve()));
     blocked.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
     expect((await limited).code).toBe("SESSION_RATE_LIMITED");
-    await new Promise<void>((resolve) => blocked.once("disconnect", () => resolve()));
+    await blockedDisconnected;
     first.socket.close(); second.socket.close();
     await new Promise<void>((resolve) => setTimeout(resolve, 2));
     now += 120_001;
     app.realtimeGateway.pump(now);
     expect(app.realtimeGateway.debugCounts).toMatchObject({ sessions: 0, connections: 0, newSessionClientBuckets: 0 });
+  });
+
+  it("responds once then disconnects unsupported and repeated hello spam", async () => {
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const unsupported = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: "Unsupported" } });
+    await new Promise<void>((resolve) => unsupported.once("connect", resolve));
+    const unsupportedEvents: any[] = [];
+    unsupported.on("server.event", (event) => unsupportedEvents.push(event));
+    const unsupportedReply = nextEvent(unsupported, "protocol.unsupported");
+    const unsupportedDisconnected = new Promise<void>((resolve) => unsupported.once("disconnect", () => resolve()));
+    for (let index = 0; index < 100; index += 1) unsupported.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [9] });
+    await Promise.all([unsupportedReply, unsupportedDisconnected]);
+    expect(unsupportedEvents.filter(({ type }) => type === "protocol.unsupported")).toHaveLength(1);
+
+    const welcomed = await connect(url, "Welcomed");
+    closers.push(() => { welcomed.socket.close(); });
+    const repeatedEvents: any[] = [];
+    welcomed.socket.on("server.event", (event) => repeatedEvents.push(event));
+    const repeatedError = nextEvent(welcomed.socket, "error");
+    const repeatedDisconnected = new Promise<void>((resolve) => welcomed.socket.once("disconnect", () => resolve()));
+    for (let index = 0; index < 100; index += 1) welcomed.socket.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+    expect((await repeatedError).code).toBe("INVALID_EVENT");
+    await repeatedDisconnected;
+    expect(repeatedEvents.filter(({ type }) => type === "error")).toHaveLength(1);
+  });
+
+  it("shares command tokens across sockets for one session and refills for reconnect", async () => {
+    let now = 10_000;
+    const app = buildApp({
+      battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0,
+      rateLimitBurst: 2, rateLimitRefillPerSecond: 1,
+    });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const first = await connect(url, "Shared");
+    const second = await connect(url, "Shared resumed", first.token);
+    closers.push(() => { first.socket.close(); }, () => { second.socket.close(); });
+    const received: any[] = [];
+    for (const socket of [first.socket, second.socket]) socket.on("server.event", (event) => { if (event.type === "error") received.push(event); });
+    for (const socket of [first.socket, second.socket]) {
+      socket.emit("client.event", { malformed: 1 });
+      socket.emit("client.event", { malformed: 2 });
+    }
+    while (received.length < 4) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(received.filter(({ code }) => code === "INVALID_EVENT")).toHaveLength(2);
+    expect(received.filter(({ code }) => code === "RATE_LIMITED")).toHaveLength(2);
+    first.socket.close(); second.socket.close();
+    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    now += 1_000;
+    const reconnected = await connect(url, "Shared reconnect", first.token);
+    closers.push(() => { reconnected.socket.close(); });
+    const afterRefill = nextEvent(reconnected.socket, "error");
+    reconnected.socket.emit("client.event", { malformed: true });
+    expect((await afterRefill).code).toBe("INVALID_EVENT");
   });
 
   it("never prunes active room participants to admit a new retained session", async () => {
@@ -247,6 +310,7 @@ describe("realtime app", () => {
     expect(() => buildApp({ battleEngine: new FakeBattleEngine(), maxMatchAttempts: 1_001 })).toThrow(/1000/u);
     expect(() => buildApp({ battleEngine: new FakeBattleEngine(), handshakeTimeoutMs: Number.NaN })).toThrow(/handshakeTimeoutMs/u);
     expect(() => buildApp({ battleEngine: new FakeBattleEngine(), maxRooms: 1, maxOwnedRoomsPerSession: 2 })).toThrow(/maxOwnedRoomsPerSession/u);
+    expect(() => buildApp({ battleEngine: new FakeBattleEngine(), clientKeyResolver: () => "untrusted" })).toThrow(/trusted boundary/u);
     vi.stubEnv("NODE_ENV", "production");
     expect(() => buildApp({ battleEngine: new FakeBattleEngine(), allowedOrigins: ["https://school.example"], behindProxy: true })).toThrow(/clientKeyResolver/u);
   });
@@ -254,6 +318,7 @@ describe("realtime app", () => {
   it("uses an injected proxy client-key resolver instead of collapsing students onto the proxy IP", async () => {
     const app = buildApp({
       battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0, maxConnectionsPerIp: 1,
+      behindProxy: true,
       clientKeyResolver: (request) => String(request.headers["x-student-device"] ?? "missing"),
     });
     closers.push(() => app.close());
@@ -336,11 +401,16 @@ describe("realtime app", () => {
     closers.push(() => { raw.close(); });
     await new Promise<void>((resolve) => raw.once("connect", resolve));
     const unsupported = nextEvent(raw, "protocol.unsupported");
+    const unsupportedDisconnected = new Promise<void>((resolve) => raw.once("disconnect", () => resolve()));
     raw.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [9] });
     expect((await unsupported).supportedVersions).toEqual([1]);
-    const error = nextEvent(raw, "error");
-    const preHelloDisconnected = new Promise<void>((resolve) => raw.once("disconnect", () => resolve()));
-    raw.emit("client.event", { type: "room.create", nope: true });
+    await unsupportedDisconnected;
+    const malformed = io(`http://127.0.0.1:${address.port}`, { transports: ["websocket"], auth: { displayName: "學生 B" } });
+    closers.push(() => { malformed.close(); });
+    await new Promise<void>((resolve) => malformed.once("connect", resolve));
+    const error = nextEvent(malformed, "error");
+    const preHelloDisconnected = new Promise<void>((resolve) => malformed.once("disconnect", () => resolve()));
+    malformed.emit("client.event", { type: "room.create", nope: true });
     expect((await error).code).toBe("INVALID_EVENT");
     await preHelloDisconnected;
     expect((await app.inject({ method: "GET", url: "/health" })).statusCode).toBe(200);
@@ -812,7 +882,9 @@ describe("realtime app", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     now += 120_001;
     app.realtimeGateway.pump(now);
-    expect(app.realtimeGateway.debugCounts).toMatchObject({ sessions: 0, bindings: 0, matches: 0 });
+    expect(app.realtimeGateway.debugCounts).toMatchObject({
+      sessions: 0, bindings: 0, matches: 0, pendingBuckets: 0, sessionCommandBuckets: 0,
+    });
   });
 
   it("paces frames at their 60 Hz ticks and gives a late spectator only the latest checkpoint", async () => {

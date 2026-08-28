@@ -8,6 +8,13 @@
 
 **技術棧：** Docker Compose、Caddy、PostgreSQL、Node.js 24、GitHub Actions 或等效 CI、Playwright、k6／Socket.IO 負載腳本。
 
+### 可信代理與 client key 邊界
+
+- 預設以 server 直接觀察到的 `remoteAddress` 作限速 client key；不要直接信任互聯網客戶端送入的 `X-Forwarded-For`、`x-student-device` 或同類自訂 header。
+- 只有在請求必定經過受控反向代理，且 server 不可被公網繞過直連時，才可啟用 `behindProxy` 及自訂 `clientKeyResolver`。
+- 反向代理必須先移除客戶端提供的識別 header，再由受信代理以已驗證來源（或具時效的簽章值）重新寫入；server firewall／security group 只允許該代理連入。
+- 若未能建立以上信任邊界，維持 `remoteAddress`；不得把可由學生自行偽造的 header 當作配額或限速身份。
+
 ---
 
 ## 檔案結構
@@ -309,4 +316,3 @@ docker compose build
 git add docs/operations
 git commit -m "docs: complete production go-live checks"
 ```
-
