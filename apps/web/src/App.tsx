@@ -69,7 +69,7 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
     {page === "designer" ? <DesignerPage onUseDesign={useFromDesigner} /> : null}
     {page === "lobby" ? <LobbyPage rooms={state.lobbyRooms} disabled={busy || state.pendingActions > 0 || state.status !== "online"} onCommand={send} /> : null}
     {page === "room" && state.room ? <RoomPage snapshot={state.room} design={design} designId={designId} departurePending={state.departurePending} actionsDisabled={busy || state.pendingActions > 0 || state.status !== "online"} onUseDesign={ready} onCommand={send} onLeave={() => send({ type: "room.leave", roomId: state.room!.roomId })} reducedMotion={reducedMotion} battle={{
-      phase, clockReady: state.clockReady && state.status === "online", clockSamples: state.clockSamples, schedule: state.schedule ? { ...state.schedule, serverTargetTimeMs: client.serverToClientTime(state.schedule.serverTargetTimeMs) } : undefined, privateGrade: state.privateGrade ?? undefined,
+      phase, clockReady: state.clockReady && state.status === "online", clockSamples: state.clockSamples, clockQuality: state.clockQuality, schedule: state.schedule ? { ...state.schedule, serverTargetTimeMs: client.serverToClientTime(state.schedule.serverTargetTimeMs) } : undefined, privateGrade: state.privateGrade ?? undefined,
       spectatorGrades: state.spectatorGrades ?? undefined, started: state.battleStarted ?? undefined,
       frames: state.frames, roundWinner: state.roundFinished?.winner,
       matchFinished: state.matchFinished ?? undefined, cancelledReason: state.cancelledReason ?? undefined,

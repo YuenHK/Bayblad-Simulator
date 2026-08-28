@@ -28,6 +28,7 @@ class FakeTransport implements RealtimeTransport {
 }
 
 const uuid = (digit: number) => `${digit}0000000-0000-4000-8000-000000000000`;
+const uploadPayload = (designId: string) => ({ designId, massG: 25, performance: { speed: 70, spinDuration: 60, stability: 80, impactResistance: 50, modelVersion: "1.0.0" } });
 
 describe("RealtimeClient", () => {
   it("在客戶端時鐘慢 5 秒與 50ms RTT 時收旂 offset，正確轉換 server target", () => {
@@ -41,7 +42,8 @@ describe("RealtimeClient", () => {
   it("RTT超過400ms的clock sample不會讓同步就緒", () => {
     const estimator = new ClientClockEstimator();
     estimator.add({ clientSentAtMs: 1_000, serverReceivedAtMs: 6_200, serverSentAtMs: 6_201, clientReceivedAtMs: 1_402 });
-    expect(estimator.sampleCount).toBe(0);
+    expect(estimator.sampleCount).toBe(1);
+    expect(estimator.highQualitySampleCount).toBe(0);
   });
 
   it("clock pong只供視覺 offset，client以不含server timestamps的ack回覆", () => {
@@ -62,8 +64,35 @@ describe("RealtimeClient", () => {
     const ack = transport.emitted.map(([, event]) => event as any).filter((event) => event.type === "clock.ack").at(-1);
     expect(ack).toMatchObject({ pingId: ping.pingId });
     expect(ack).not.toHaveProperty("serverReceiveTimeMs");
-    expect(client.getState()).toMatchObject({ clockReady: true, clockSamples: 3, clockOffsetMs: 5_000 });
+    expect(client.getState()).toMatchObject({ clockReady: true, clockQuality: "good", clockSamples: 3, clockOffsetMs: 5_000 });
     client.stop();
+  });
+
+  it("401/1000/2000ms RTT三次後降級但仍可發射，不改變權威判定", () => {
+    let now = 1_000; const transport = new FakeTransport(); const client = new RealtimeClient({ transport, now: () => now });
+    client.start(); transport.fire("connect"); transport.fire("server.event", welcome("new"));
+    for (const [index, rtt] of [401, 1_000, 2_000].entries()) {
+      const ping = transport.emitted.map(([, event]) => event as any).filter((event) => event.type === "clock.ping").at(-1);
+      now = ping.clientSentAtMs + rtt + 1;
+      transport.fire("server.event", { type: "clock.pong", pingId: ping.pingId, clientSentAtMs: ping.clientSentAtMs, serverReceiveTimeMs: ping.clientSentAtMs + 5_000, serverSendTimeMs: ping.clientSentAtMs + 5_001, protocolVersion: 1, serverEventId: uuid(index + 2) });
+    }
+    expect(client.getState()).toMatchObject({ clockReady: true, clockQuality: "degraded", clockSamples: 0 });
+    client.stop();
+  });
+
+  it("clock無pong時2秒後降級可操作，初始同步最多5次不會無限ping", () => {
+    vi.useFakeTimers();
+    try {
+      const transport = new FakeTransport(); const client = new RealtimeClient({ transport, now: () => Date.now() });
+      client.start(); transport.fire("connect"); transport.fire("server.event", welcome("new"));
+      vi.advanceTimersByTime(2_000);
+      expect(client.getState()).toMatchObject({ clockReady: true, clockQuality: "degraded" });
+      const count = transport.emitted.filter(([, event]) => (event as any).type === "clock.ping").length;
+      expect(count).toBeLessThanOrEqual(5);
+      vi.advanceTimersByTime(10_000);
+      expect(transport.emitted.filter(([, event]) => (event as any).type === "clock.ping")).toHaveLength(count);
+      client.stop();
+    } finally { vi.useRealTimers(); }
   });
 
   it("connect 後送出 v1 hello，並保存伺服器 session token 供重連", () => {
@@ -117,6 +146,35 @@ describe("RealtimeClient", () => {
     expect(() => client.command({ type: "room.create", name: "offline" })).toThrow("目前離線"); expect(transport.emitted).toHaveLength(before);
   });
 
+  it.each(["room.leave", "room.close"] as const)("%s timeout會恢復按鈕並可retry", (type) => {
+    vi.useFakeTimers();
+    try {
+      const transport = new FakeTransport(); const client = onlineClient(transport);
+      const first = client.command({ type, roomId: "room-1" });
+      expect(client.getState().departurePending).toBe(true);
+      vi.advanceTimersByTime(8_000);
+      expect(client.getState()).toMatchObject({ departurePending: false, pendingActions: 0, room: { roomId: "room-1" }, lastError: "操作逾時，請重試。" });
+      const retry = client.command({ type, roomId: "room-1" });
+      expect(retry).not.toBe(first); expect(client.getState()).toMatchObject({ departurePending: true, pendingActions: 1, lastError: null });
+      transport.fire("server.event", { type: "command.ack", causedByEventId: first, commandType: type, status: "applied", protocolVersion: 1, serverEventId: uuid(5) });
+      expect(client.getState()).toMatchObject({ departurePending: true, pendingActions: 1, room: { roomId: "room-1" } });
+      transport.fire("server.event", { type: "room.departed", departureId: uuid(8), roomId: "room-1", reason: type === "room.leave" ? "left" : "closed", protocolVersion: 1, serverEventId: uuid(6) });
+      expect(client.getState()).toMatchObject({ departurePending: false, pendingActions: 0, room: null });
+      client.stop();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("新command清舊錯誤，但matching ack不會清除其後到達的新錯誤", () => {
+    const transport = new FakeTransport(); const client = onlineClient(transport);
+    transport.fire("server.event", { type: "error", code: "OLD", message: "old error", protocolVersion: 1, serverEventId: uuid(5) });
+    const eventId = client.command({ type: "room.move", roomId: "room-1", target: "spectator" });
+    expect(client.getState().lastError).toBeNull();
+    transport.fire("server.event", { type: "error", code: "NEW", message: "new error", protocolVersion: 1, serverEventId: uuid(6) });
+    transport.fire("server.event", { type: "command.ack", causedByEventId: eventId, commandType: "room.move", status: "applied", protocolVersion: 1, serverEventId: uuid(7) });
+    expect(client.getState().lastError).toBe("new error");
+    client.stop();
+  });
+
   it("pending command只由matching ack完成，unrelated delta與wrong ack不會清除", async () => {
     const transport = new FakeTransport(); const client = onlineClient(transport);
     const pending = client.commandAsync({ type: "room.move", roomId: "room-1", target: "spectator" });
@@ -156,8 +214,8 @@ describe("RealtimeClient", () => {
     const transport = new FakeTransport();
     const storage = createSafeStorage();
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: uuid(2) }), { status: 201, headers: { "content-type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: uuid(3) }), { status: 201, headers: { "content-type": "application/json" } }));
+      .mockResolvedValueOnce(new Response(JSON.stringify(uploadPayload(uuid(2))), { status: 201, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(uploadPayload(uuid(3))), { status: 201, headers: { "content-type": "application/json" } }));
     const client = onlineClient(transport, { storage, fetcher });
     const design = makeDefaultDesign();
 
@@ -179,8 +237,8 @@ describe("RealtimeClient", () => {
     const transport = new FakeTransport();
     const storage = createSafeStorage();
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: uuid(2) }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: uuid(3) }), { status: 201 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify(uploadPayload(uuid(2))), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(uploadPayload(uuid(3))), { status: 201 }));
     const client = onlineClient(transport, { storage, fetcher });
     const design = makeDefaultDesign();
     const prime = client.readyWithDesign("room-1", design);
@@ -208,7 +266,7 @@ describe("RealtimeClient", () => {
     const client = onlineClient(transport, { storage, fetcher });
     const uploading = client.uploadDesign(makeDefaultDesign());
     transport.fire("server.event", { ...welcome("replaced", "n"), serverEventId: uuid(8) });
-    resolveFetch(new Response(JSON.stringify({ designId: uuid(2) }), { status: 201 }));
+    resolveFetch(new Response(JSON.stringify(uploadPayload(uuid(2))), { status: 201 }));
     await expect(uploading).rejects.toThrow("連線已更新");
     expect(storage.get("steam-top.design-cache")).toBeNull();
     client.stop();
@@ -217,9 +275,9 @@ describe("RealtimeClient", () => {
   it("嚴格拒絕上載回應的non-string、bad uuid與extra fields", async () => {
     const transport = new FakeTransport();
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: 123 }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: "bad-id" }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: uuid(2), extra: true }), { status: 201 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...uploadPayload(uuid(2)), designId: 123 }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...uploadPayload(uuid(2)), designId: "bad-id" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...uploadPayload(uuid(2)), extra: true }), { status: 201 }));
     const client = onlineClient(transport, { fetcher });
     for (let attempt = 0; attempt < 3; attempt += 1) await expect(client.uploadDesign(makeDefaultDesign())).rejects.toThrow("伺服器回應格式錯誤");
     expect(readyCommands(transport)).toHaveLength(0);
@@ -240,7 +298,7 @@ describe("RealtimeClient", () => {
   it("損壞快取當作miss並移除，不會送出malformed ready", async () => {
     const transport = new FakeTransport(); const storage = createSafeStorage();
     storage.set("steam-top.design-cache", JSON.stringify({ sessionToken: "s".repeat(32), fingerprint: "x", designId: 123 }));
-    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ designId: uuid(2) }), { status: 201 }));
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(uploadPayload(uuid(2))), { status: 201 }));
     const client = onlineClient(transport, { storage, fetcher }); const design = makeDefaultDesign();
     const ready = client.readyWithDesign("room-1", design); await acknowledgeLatestReady(transport, uuid(4), 1);
     expect(await ready).toBe(uuid(2)); expect(readyCommands(transport)[0]?.designId).toBe(uuid(2)); expect(fetcher).toHaveBeenCalledOnce();

@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { designUploadResponseSchema } from "@steam-top/domain";
 import type { IncomingMessage } from "node:http";
 import type { BattleInputs, BattleResult, ResultRepository } from "./battle/engine";
 import { BattleEngine } from "./battle/engine";
@@ -221,11 +222,11 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     const session = gateway.sessionForBearer(request.headers.authorization)!;
     try {
       const stored = designs.register(session.id, request.body);
-      return reply.code(201).send({
+      return reply.code(201).send(designUploadResponseSchema.parse({
         designId: stored.designId,
         massG: stored.massG,
         performance: stored.performance,
-      });
+      }));
     } catch (error) {
       if (error instanceof DesignRegistryError) {
         return reply.code(error.code === "DESIGN_QUOTA_EXCEEDED" ? 429 : 422).send({ error: error.code });
