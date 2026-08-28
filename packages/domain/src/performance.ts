@@ -1,4 +1,4 @@
-import type { TopDesign } from "./design";
+import type { Layer, TopDesign } from "./design";
 import { calculateMinimumMaterialNeckMm, validateDesign } from "./rules";
 
 export const PERFORMANCE_MODEL_VERSION = "1.0.0" as const;
@@ -89,6 +89,20 @@ export function scoreStability({
   return clampScore(100 - 18 * offsetMm);
 }
 
+export function effectiveLayerRoundness(
+  layer: Pick<Layer, "shape" | "cornerRoundness">,
+): number {
+  return layer.shape === "circle" ? 1 : layer.cornerRoundness;
+}
+
+function normalizedRadiusOfGyration(input: PerformanceInput): number {
+  // sqrt(I / m) measures how far the mass is distributed from the spin axis.
+  return (
+    Math.sqrt(input.polarMomentGmm2 / input.totalMassG) /
+    MAX_SCHEMA_RADIUS_MM
+  );
+}
+
 export function predictPerformance(
   input: PerformanceInput,
 ): PerformancePrediction {
@@ -103,7 +117,11 @@ export function predictPerformance(
         input.polarMomentGmm2 / 700 +
         10 * input.averageCornerRoundness,
     ),
-    stability: scoreStability({ offsetMm: input.centerOfMassOffsetMm }),
+    stability: clampScore(
+      scoreStability({ offsetMm: input.centerOfMassOffsetMm }) -
+        35 +
+        35 * normalizedRadiusOfGyration(input),
+    ),
     impactResistance: clampScore(
       10 +
         13 * input.minNeckThicknessMm +
@@ -123,7 +141,7 @@ export function derivePerformanceInput(design: TopDesign): PerformanceInput {
   const { massProperties } = validateDesign(design);
   const averageCornerRoundness =
     design.layers.reduce(
-      (total, layer) => total + layer.cornerRoundness,
+      (total, layer) => total + effectiveLayerRoundness(layer),
       0,
     ) / design.layers.length;
 
