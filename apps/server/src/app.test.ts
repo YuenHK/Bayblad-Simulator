@@ -119,8 +119,10 @@ describe("realtime app", () => {
     await joinedDelta;
     expect(peerRoom.roomId).toBe(room.roomId);
     const left = nextEvent(owner.socket, "room.delta");
+    const departed = nextEvent(peer.socket, "room.departed");
     peer.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
     expect(await left).toMatchObject({ patch: { player2: null } });
+    expect(await departed).toMatchObject({ roomId: room.roomId, reason: "left" });
     peer.socket.close();
     const resumed = await connect(url, "Peer", peer.token);
     closers.push(() => { resumed.socket.close(); });
@@ -128,6 +130,34 @@ describe("realtime app", () => {
     resumed.socket.on("server.event", (event) => { if (event.type === "room.snapshot") unexpected(event); });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(unexpected).not.toHaveBeenCalled();
+  });
+
+  it("回應 clock.ping 四時間戳，並在房主關房時通知全部成員", async () => {
+    let now = 6_025;
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const owner = await connect(url, "Owner");
+    const watcher = await connect(url, "Watcher");
+    closers.push(() => { owner.socket.close(); }, () => { watcher.socket.close(); });
+    const pong = nextEvent(owner.socket, "clock.pong");
+    owner.socket.emit("client.event", command("clock.ping", { pingId: "ping-1", clientSendTimeMs: 1_000 }));
+    expect(await pong).toMatchObject({ pingId: "ping-1", clientSendTimeMs: 1_000, serverReceiveTimeMs: 6_025, serverSendTimeMs: 6_025 });
+    const created = nextEvent(owner.socket, "room.snapshot");
+    owner.socket.emit("client.event", command("room.create", { name: "Close room" }));
+    const room = await created;
+    const joined = nextEvent(watcher.socket, "room.snapshot");
+    const delta = nextEvent(owner.socket, "room.delta");
+    watcher.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "spectator" }));
+    await Promise.all([joined, delta]);
+    const ownerDeparted = nextEvent(owner.socket, "room.departed");
+    const watcherDeparted = nextEvent(watcher.socket, "room.departed");
+    owner.socket.emit("client.event", command("room.close", { roomId: room.roomId }));
+    expect(await ownerDeparted).toMatchObject({ roomId: room.roomId, reason: "closed" });
+    expect(await watcherDeparted).toMatchObject({ roomId: room.roomId, reason: "closed" });
   });
 
   it("allocates sessions only after hello, enforces handshake timeout, quotas, rate recovery, and payload limits", async () => {
@@ -599,6 +629,9 @@ describe("realtime app", () => {
     expect(started.player2.design.layers).toHaveLength(3);
     expect(started.player2).not.toHaveProperty("ownerSessionId");
     const schedule1 = await schedule1Promise;
+    const activeLeaveRejected = nextEvent(p1.socket, "error");
+    p1.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
+    expect(await activeLeaveRejected).toMatchObject({ code: "ROOM_ACTIVE" });
 
     const playAttempt = async (schedule: any) => {
       now = schedule.serverTargetTimeMs;
@@ -662,8 +695,45 @@ describe("realtime app", () => {
     expect(engine.simulationCount).toBe(2);
     expect(app.realtimeGateway.debugCounts.frameBroadcastOperations).toBe(2);
     expect(app.realtimeGateway.activeMatchCount).toBe(0);
+    expect(app.realtimeGateway.debugCounts.terminalMatches).toBe(1);
     expect(p1Events.some((event) => event.type === "launch.result.spectator")).toBe(false);
     expect(p1Events.filter((event) => event.type === "match.finished")).toHaveLength(1);
+
+    const finishedAt = now;
+    const resumeTerminal = async (elapsedMs: number) => {
+      p2Socket.close();
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      now = finishedAt + elapsedMs;
+      const socket = io(url, { transports: ["websocket"], auth: { displayName: "P2", sessionToken: p2.token } });
+      await new Promise<void>((resolve) => socket.once("connect", resolve));
+      const welcome = nextEvent(socket, "protocol.welcome");
+      const restoredStarted = nextEvent(socket, "battle.started");
+      const restoredCheckpoint = nextEvent(socket, "battle.checkpoint");
+      const restoredFrame = nextEvent(socket, "battle.frame");
+      const restoredFinished = nextEvent(socket, "match.finished");
+      socket.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+      expect((await welcome).sessionStatus).toBe("resumed");
+      expect((await restoredStarted).matchId).toBe(match.matchId);
+      expect(await restoredCheckpoint).toMatchObject({ matchId: match.matchId, phase: "result", roundWinners: match.roundWinners });
+      expect((await restoredFrame).matchId).toBe(match.matchId);
+      expect(await restoredFinished).toEqual(match);
+      p2Socket = socket;
+    };
+    await resumeTerminal(30_000);
+    await resumeTerminal(119_000);
+    p2Socket.close();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    now = finishedAt + 120_001;
+    app.realtimeGateway.pump(now);
+    expect(app.realtimeGateway.debugCounts.terminalMatches).toBe(0);
+    const expired = await connect(url, "P2", p2.token);
+    p2Socket = expired.socket;
+    const leakedTerminal = vi.fn();
+    p2Socket.on("server.event", (event) => {
+      if (event.type === "match.finished") leakedTerminal(event);
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(leakedTerminal).not.toHaveBeenCalled();
   });
 
   it("retries a draw without counting it as a scored round", async () => {
@@ -797,9 +867,11 @@ describe("realtime app", () => {
     await play(schedule);
     expect((await finished).roundWinners).toEqual(["player1", "player1"]);
     expect(engine.simulationCount).toBe(4);
+    expect(app.realtimeGateway.debugCounts.terminalMatches).toBe(1);
 
     engine.outcomes = ["throw", "throw"];
     schedule = await readyAndGetSchedule();
+    expect(app.realtimeGateway.debugCounts.terminalMatches).toBe(0);
     const failure1 = nextEvent(p1.socket, "error");
     const failureRetry = nextEvent(p1.socket, "launch.schedule");
     await play(schedule);

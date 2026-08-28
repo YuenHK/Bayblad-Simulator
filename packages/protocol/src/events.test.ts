@@ -102,6 +102,11 @@ const clientCases = [
     },
   },
   {
+    type: "clock.ping",
+    valid: { type: "clock.ping", pingId: "ping-1", clientSendTimeMs: 1_000, ...clientEnvelope },
+    invalid: { type: "clock.ping", pingId: "", clientSendTimeMs: -1, ...clientEnvelope },
+  },
+  {
     type: "room.leave",
     valid: { type: "room.leave", roomId: "room-1", ...clientEnvelope },
     invalid: { type: "room.leave", roomId: "", ...clientEnvelope },
@@ -173,7 +178,7 @@ describe("clientEventSchema", () => {
   });
 
   it("requires protocol version 1 on commands", () => {
-    const close = clientCases[7].valid;
+    const close = clientCases[8].valid;
     const { protocolVersion: _version, ...withoutVersion } = close;
     expect(clientEventSchema.safeParse(withoutVersion).success).toBe(false);
     expect(
@@ -220,7 +225,7 @@ describe("clientEventSchema", () => {
   });
 
   it("requires a UUID event id and rejects unknown fields", () => {
-    const close = clientCases[7].valid;
+    const close = clientCases[8].valid;
     expect(clientEventSchema.safeParse({ ...close, eventId: "event-1" }).success).toBe(
       false,
     );
@@ -528,6 +533,18 @@ describe("handshake server events", () => {
 });
 
 describe("serverEventSchema", () => {
+  it("接受 strict clock.pong 與 authoritative room.departed", () => {
+    expect(serverEventSchema.safeParse({
+      type: "clock.pong", pingId: "ping-1", clientSendTimeMs: 1_000,
+      serverReceiveTimeMs: 6_025, serverSendTimeMs: 6_026, ...serverEnvelope,
+    }).success).toBe(true);
+    expect(serverEventSchema.safeParse({
+      type: "room.departed", roomId: "room-1", reason: "closed", ...serverEnvelope,
+    }).success).toBe(true);
+    expect(serverEventSchema.safeParse({
+      type: "room.departed", roomId: "room-1", reason: "unknown", ...serverEnvelope,
+    }).success).toBe(false);
+  });
   it.each(serverCases)("accepts a valid $type event", ({ value }) => {
     expect(serverEventSchema.safeParse(value).success).toBe(true);
   });

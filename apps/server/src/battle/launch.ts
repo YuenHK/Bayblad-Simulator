@@ -465,7 +465,7 @@ export class LaunchCoordinator {
     return { ...event };
   }
 
-  submit(participantId: string, rawEvent: unknown, receivedAtMs = this.#dependencies.now()): SubmitLaunchResult {
+  submit(participantId: string, rawEvent: unknown, receivedAtMs = this.#dependencies.now(), clockEstimate?: ClockEstimate | null): SubmitLaunchResult {
     let tapEvent: ReturnType<typeof launchTapEventSchema.parse>;
     try {
       tapEvent = launchTapEventSchema.parse(rawEvent);
@@ -501,7 +501,7 @@ export class LaunchCoordinator {
       tapEvent.clientTimeMs,
       received,
       state,
-      this.#dependencies.getClockEstimate(participantId),
+      clockEstimate === undefined ? this.#dependencies.getClockEstimate(participantId) : clockEstimate,
     );
     const gradingTimeMs = correctedServerTapMs ?? received;
     const judgement = judgeLaunch(gradingTimeMs - state.schedule.serverTargetTimeMs);

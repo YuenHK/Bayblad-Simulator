@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { RealtimeClient, type RealtimeTransport } from "./socket-client";
+import { ClientClockEstimator, RealtimeClient, type RealtimeTransport } from "./socket-client";
 
 class FakeTransport implements RealtimeTransport {
   auth: Record<string, unknown> = {};
@@ -28,6 +28,14 @@ class FakeTransport implements RealtimeTransport {
 const uuid = (digit: number) => `${digit}0000000-0000-4000-8000-000000000000`;
 
 describe("RealtimeClient", () => {
+  it("在客戶端時鐘慢 5 秒與 50ms RTT 時收旂 offset，正確轉換 server target", () => {
+    const estimator = new ClientClockEstimator();
+    estimator.add({ clientSentAtMs: 1_000, serverReceivedAtMs: 6_025, serverSentAtMs: 6_026, clientReceivedAtMs: 1_051 });
+    expect(estimator.offsetMs).toBe(5_000);
+    expect(estimator.rttMs).toBe(50);
+    expect(estimator.serverToClientTime(7_000)).toBe(2_000);
+  });
+
   it("connect 後送出 v1 hello，並保存伺服器 session token 供重連", () => {
     const transport = new FakeTransport();
     const storage = new Map<string, string>();
@@ -70,18 +78,74 @@ describe("RealtimeClient", () => {
     const transport = new FakeTransport();
     const client = new RealtimeClient({ transport });
     client.start();
+    transport.fire("server.event", roomSnapshot());
+    transport.fire("server.event", battleStarted("match"));
+    transport.fire("server.event", checkpoint("match", "round-1", 1));
     transport.fire("server.event", {
-      type: "battle.frame", roomId: "room", matchId: "match", roundId: "round-1",
+      type: "battle.frame", roomId: "room-1", matchId: "match", roundId: "round-1",
       sequence: 1, tick: 12,
       player1: { x: 0, y: 0, angle: 0, angularSpeed: 10 },
       player2: { x: 1, y: 0, angle: 0, angularSpeed: 10 },
-      protocolVersion: 1, serverEventId: uuid(2),
+      protocolVersion: 1, serverEventId: uuid(6),
     });
     expect(client.getState().frames).toHaveLength(1);
     transport.fire("server.event", {
-      type: "launch.schedule", roomId: "room", matchId: "match", roundId: "round-2",
-      serverTargetTimeMs: 10_000, nonce: "nonce-2", protocolVersion: 1, serverEventId: uuid(3),
+      type: "launch.schedule", roomId: "room-1", matchId: "match", roundId: "round-2",
+      serverTargetTimeMs: 10_000, nonce: "nonce-2", protocolVersion: 1, serverEventId: uuid(7),
     });
     expect(client.getState().frames).toEqual([]);
+    transport.fire("server.event", {
+      type: "launch.schedule", roomId: "room-1", matchId: "match", roundId: "round-1",
+      serverTargetTimeMs: 9_000, nonce: "nonce-stale", protocolVersion: 1, serverEventId: uuid(8),
+    });
+    expect(client.getState()).toMatchObject({ attempt: 2, currentRoundId: "round-2", schedule: { nonce: "nonce-2" } });
+  });
+
+  it("離房在 authoritative room.departed 前保留房間，被拒絕可重試", () => {
+    const transport = new FakeTransport();
+    const client = new RealtimeClient({ transport });
+    client.start();
+    transport.fire("server.event", roomSnapshot());
+    const eventId = client.command({ type: "room.leave", roomId: "room-1" });
+    expect(client.getState()).toMatchObject({ departurePending: true, room: { roomId: "room-1" } });
+    transport.fire("server.event", { type: "error", code: "ROOM_ACTIVE", message: "ROOM_ACTIVE", causedByEventId: eventId, protocolVersion: 1, serverEventId: uuid(4) });
+    expect(client.getState()).toMatchObject({ departurePending: false, room: { roomId: "room-1" } });
+    client.command({ type: "room.leave", roomId: "room-1" });
+    transport.fire("server.event", { type: "room.departed", roomId: "room-1", reason: "left", protocolVersion: 1, serverEventId: uuid(5) });
+    expect(client.getState()).toMatchObject({ departurePending: false, room: null });
+  });
+
+  it("按 room/match/round/attempt/sequence 忽略 stale 與倒序戰況", () => {
+    const transport = new FakeTransport();
+    const client = new RealtimeClient({ transport });
+    client.start();
+    transport.fire("server.event", roomSnapshot());
+    transport.fire("server.event", battleStarted("match-a"));
+    transport.fire("server.event", checkpoint("match-a", "round-2", 2));
+    transport.fire("server.event", frame("match-a", "round-2", 5, 20, uuid(6)));
+    transport.fire("server.event", frame("match-a", "round-2", 4, 16, uuid(7)));
+    transport.fire("server.event", frame("match-a", "round-1", 99, 999, uuid(8)));
+    transport.fire("server.event", { ...finished("match-b"), serverEventId: uuid(9) });
+    transport.fire("server.event", { ...checkpoint("match-a", "round-stale", 2), serverEventId: uuid(10) });
+    transport.fire("server.event", { ...battleStarted("match-stale"), serverEventId: uuid(11) });
+    expect(client.getState().frames).toHaveLength(1);
+    expect(client.getState().frames[0]).toMatchObject({ sequence: 5, tick: 20 });
+    expect(client.getState().matchFinished).toBeNull();
+    expect(client.getState()).toMatchObject({ battleStarted: { matchId: "match-a" }, attempt: 2, currentRoundId: "round-2" });
   });
 });
+
+function roomSnapshot() {
+  return { type: "room.snapshot", roomId: "room-1", code: "ABC123", name: "Room", ownerParticipantId: "p1", phase: "waiting", revision: 1,
+    player1: { participantId: "p1", displayName: "One", ready: false, designId: null }, player2: null, spectators: [],
+    viewer: { participantId: "p1", role: "player1", isOwner: true }, protocolVersion: 1, serverEventId: uuid(1) } as const;
+}
+const publicDesign = { layers: [
+  { id: "l1", position: "top", shape: "circle", points: 6, diameterMm: 40, cornerRoundness: .5, rotationDeg: 0, color: "#112233" },
+  { id: "l2", position: "middle", shape: "circle", points: 6, diameterMm: 45, cornerRoundness: .5, rotationDeg: 0, color: "#223344" },
+  { id: "l3", position: "bottom", shape: "circle", points: 6, diameterMm: 42, cornerRoundness: .5, rotationDeg: 0, color: "#334455" },
+], screwLayout: { count: 4, radiusMm: 12, rotationDeg: 0 }, metalDiscDiameterMm: 0 } as const;
+function battleStarted(matchId: string) { return { type: "battle.started", roomId: "room-1", matchId, player1: { participantId: "p1", designId: uuid(2), design: publicDesign }, player2: { participantId: "p2", designId: uuid(3), design: publicDesign }, protocolVersion: 1, serverEventId: uuid(2) } as const; }
+function checkpoint(matchId: string, roundId: string, attempt: number) { return { type: "battle.checkpoint", roomId: "room-1", matchId, roundId, attempt, phase: "battle", roundWinners: [], protocolVersion: 1, serverEventId: uuid(3) } as const; }
+function frame(matchId: string, roundId: string, sequence: number, tick: number, serverEventId: string) { return { type: "battle.frame", roomId: "room-1", matchId, roundId, sequence, tick, player1: { x: 0, y: 0, angle: 0, angularSpeed: 10 }, player2: { x: 1, y: 0, angle: 0, angularSpeed: 10 }, protocolVersion: 1, serverEventId } as const; }
+function finished(matchId: string) { return { type: "match.finished", roomId: "room-1", matchId, player1: { battlePoints: 2, challengePoints: 0, total: 2 }, player2: { battlePoints: 0, challengePoints: 0, total: 0 }, roundWinners: ["player1", "player1"], protocolVersion: 1, serverEventId: uuid(4) } as const; }
