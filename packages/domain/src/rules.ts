@@ -1,4 +1,4 @@
-import { designSchema, type TopDesign } from "./design";
+import { designSchema, type Layer, type TopDesign } from "./design";
 import { makeLayerVertices, maxDiameter, type Point } from "./geometry";
 import {
   ASSEMBLY,
@@ -146,6 +146,18 @@ function circleClearance(
   return minimumBoundaryDistance(center, vertices) - radiusMm;
 }
 
+function layerCircleClearance(
+  layer: Layer,
+  center: Point,
+  radiusMm: number,
+  vertices: readonly Point[],
+): number {
+  if (layer.shape === "circle") {
+    return layer.diameterMm / 2 - Math.hypot(center.x, center.y) - radiusMm;
+  }
+  return circleClearance(center, radiusMm, vertices);
+}
+
 function screwCenters(design: TopDesign): Point[] {
   const rotation = (design.screwLayout.rotationDeg * Math.PI) / 180;
   return Array.from({ length: design.screwLayout.count }, (_, index) => {
@@ -196,14 +208,18 @@ export function validateDesign(input: TopDesign): DesignValidation {
     let hasOutsideScrew = false;
     let hasThinNeck = false;
     for (const center of centers) {
-      const clearance = circleClearance(
+      const clearance = layerCircleClearance(
+        layer,
         center,
         ASSEMBLY.screwHoleRadiusMm,
         vertices,
       );
       if (clearance < -EPSILON) {
         hasOutsideScrew = true;
-      } else if (clearance + EPSILON < ASSEMBLY.minimumMaterialNeckMm) {
+      } else if (
+        clearance > EPSILON &&
+        clearance + EPSILON < ASSEMBLY.minimumMaterialNeckMm
+      ) {
         hasThinNeck = true;
       }
     }
@@ -216,8 +232,12 @@ export function validateDesign(input: TopDesign): DesignValidation {
       });
     }
 
-    const axleClearance =
-      circleClearance({ x: 0, y: 0 }, ASSEMBLY.axleHoleRadiusMm, vertices);
+    const axleClearance = layerCircleClearance(
+      layer,
+      { x: 0, y: 0 },
+      ASSEMBLY.axleHoleRadiusMm,
+      vertices,
+    );
     if (
       hasThinNeck ||
       axleClearance + EPSILON < ASSEMBLY.minimumMaterialNeckMm
@@ -264,7 +284,8 @@ export function validateDesign(input: TopDesign): DesignValidation {
 
   if (design.metalDiscDiameterMm > 0) {
     const bottomVertices = makeLayerVertices(design.layers[2]);
-    const metalClearance = circleClearance(
+    const metalClearance = layerCircleClearance(
+      design.layers[2],
       { x: 0, y: 0 },
       design.metalDiscDiameterMm / 2,
       bottomVertices,

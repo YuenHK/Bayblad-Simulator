@@ -30,6 +30,13 @@ function issueCodes(design: TopDesign): RuleIssueCode[] {
 }
 
 describe("course boundaries", () => {
+  it("accepts the default design without issues", () => {
+    const result = validateDesign(makeDefaultDesign());
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toEqual([]);
+  });
+
   it("accepts 60 mm and reports 60.01 mm as a course-rule issue", () => {
     expect(issueCodes(designWithAllLayers({ diameterMm: 60 }))).not.toContain(
       "DIAMETER_OVER_60",
@@ -59,6 +66,19 @@ describe("course boundaries", () => {
 });
 
 describe("metal-disc fit", () => {
+  it("accepts an equal circle disc and rejects one 0.01 mm larger", () => {
+    const exactFit = designWithAllLayers({});
+    exactFit.layers[2].diameterMm = 50;
+    exactFit.metalDiscDiameterMm = 50;
+    const oversized = structuredClone(exactFit);
+    oversized.metalDiscDiameterMm = 50.01;
+
+    expect(issueCodes(exactFit)).not.toContain(
+      "METAL_DISC_OUTSIDE_BOTTOM",
+    );
+    expect(issueCodes(oversized)).toContain("METAL_DISC_OUTSIDE_BOTTOM");
+  });
+
   it("reports a 55 mm disc under a 50 mm circular bottom layer", () => {
     const design = designWithAllLayers({});
     design.layers[2].diameterMm = 50;
@@ -89,6 +109,13 @@ describe("metal-disc fit", () => {
 });
 
 describe("screw and material safety", () => {
+  it("accepts screw holes tangent to an analytic circular layer", () => {
+    const design = designWithAllLayers({ diameterMm: 40 });
+    design.screwLayout.radiusMm = 18;
+
+    expect(issueCodes(design)).not.toContain("SCREW_OUTSIDE_LAYER");
+  });
+
   it("reports screw holes outside any layer", () => {
     const design = designWithAllLayers({ diameterMm: 40 });
     design.screwLayout.radiusMm = 25;
@@ -146,5 +173,39 @@ describe("screw and material safety", () => {
     validateDesign(design);
 
     expect(design).toEqual(before);
+  });
+});
+
+describe("validation performance", () => {
+  function medianRuntimeMs(design: TopDesign): number {
+    for (let index = 0; index < 3; index += 1) {
+      validateDesign(design);
+    }
+    const samples = Array.from({ length: 9 }, () => {
+      const start = performance.now();
+      validateDesign(design);
+      return performance.now() - start;
+    }).sort((left, right) => left - right);
+    return samples[Math.floor(samples.length / 2)] ?? Number.POSITIVE_INFINITY;
+  }
+
+  it("keeps the default analytic-circle fast path below 5 ms median", () => {
+    const median = medianRuntimeMs(makeDefaultDesign());
+    expect(median).toBeLessThan(5);
+  });
+
+  it("keeps a worst-case valid-schema draft below 20 ms median", () => {
+    const design = makeDefaultDesign();
+    design.layers = design.layers.map((layer) => ({
+      ...layer,
+      shape: "star",
+      points: 16,
+      diameterMm: 20,
+      cornerRoundness: 0,
+    })) as TopDesign["layers"];
+    design.screwLayout = { count: 8, radiusMm: 5, rotationDeg: 11 };
+
+    const median = medianRuntimeMs(design);
+    expect(median).toBeLessThan(20);
   });
 });
