@@ -36,19 +36,64 @@ function format(value: number, digits = 1): string {
 
 export function DesignerPage() {
   const { design, validation, prediction, dispatch } = useDesigner();
-  const [selectedPosition, setSelectedPosition] = useState<Position>("top");
+  const [selectedLayerId, setSelectedLayerId] = useState(
+    () => design.layers[0].id,
+  );
+  const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null);
+  const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
   const selectedLayer = design.layers.find(
-    (layer) => layer.position === selectedPosition,
-  )!;
+    (layer) => layer.id === selectedLayerId,
+  ) ?? design.layers[0];
   const selectedIndex = design.layers.findIndex(
-    (layer) => layer.position === selectedPosition,
+    (layer) => layer.id === selectedLayer.id,
   );
 
   const moveSelected = (direction: "up" | "down") => {
     const targetIndex = direction === "up" ? selectedIndex - 1 : selectedIndex + 1;
     if (targetIndex < 0 || targetIndex >= design.layers.length) return;
-    dispatch({ type: "move-layer", position: selectedPosition, direction });
-    setSelectedPosition(design.layers[targetIndex]!.position);
+    dispatch({ type: "move-layer", position: selectedLayer.position, direction });
+  };
+
+  const beginDrag = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    layerId: string,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.currentTarget.setPointerCapture === "function") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    setDraggingLayerId(layerId);
+    setDragOverLayerId(layerId);
+  };
+
+  const moveDraggedLayer = (targetId: string) => {
+    if (
+      draggingLayerId === null ||
+      draggingLayerId === targetId ||
+      dragOverLayerId === targetId
+    ) {
+      return;
+    }
+    dispatch({
+      type: "reorder-layer",
+      sourceId: draggingLayerId,
+      targetId,
+    });
+    setDragOverLayerId(targetId);
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    if (
+      typeof event.currentTarget.hasPointerCapture === "function" &&
+      event.currentTarget.hasPointerCapture(event.pointerId) &&
+      typeof event.currentTarget.releasePointerCapture === "function"
+    ) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setDraggingLayerId(null);
+    setDragOverLayerId(null);
   };
 
   return (
@@ -64,10 +109,35 @@ export function DesignerPage() {
           <h2 id="layer-heading">層板設計</h2>
           <ol className="layer-list" aria-label="三層排列">
             {design.layers.map((layer) => (
-              <li key={layer.id} data-layer-id={layer.id}>
-                <strong>{POSITION_LABELS[layer.position]}</strong>
-                <span>{SHAPE_LABELS[layer.shape]}</span>
-                <span>{layer.diameterMm} mm</span>
+              <li
+                key={layer.id}
+                data-layer-id={layer.id}
+                className={[
+                  draggingLayerId === layer.id ? "is-dragging" : "",
+                  draggingLayerId !== null && dragOverLayerId === layer.id
+                    ? "is-drag-target"
+                    : "",
+                ].filter(Boolean).join(" ")}
+                onPointerEnter={() => moveDraggedLayer(layer.id)}
+                onPointerMove={() => moveDraggedLayer(layer.id)}
+              >
+                <div className="layer-summary">
+                  <strong>{POSITION_LABELS[layer.position]}</strong>
+                  <span>{SHAPE_LABELS[layer.shape]}</span>
+                  <span>{layer.diameterMm} mm</span>
+                </div>
+                <button
+                  type="button"
+                  className="drag-handle"
+                  aria-label={`拖動${POSITION_LABELS[layer.position]}以重新排序`}
+                  aria-pressed={draggingLayerId === layer.id}
+                  onPointerDown={(event) => beginDrag(event, layer.id)}
+                  onPointerUp={endDrag}
+                  onPointerCancel={endDrag}
+                  onClick={(event) => event.preventDefault()}
+                >
+                  <span aria-hidden="true">↕</span>
+                </button>
               </li>
             ))}
           </ol>
@@ -75,8 +145,14 @@ export function DesignerPage() {
           <label>
             目前編輯層
             <select
-              value={selectedPosition}
-              onChange={(event) => setSelectedPosition(event.currentTarget.value as Position)}
+              value={selectedLayer.position}
+              onChange={(event) => {
+                const position = event.currentTarget.value as Position;
+                const layer = design.layers.find(
+                  (candidate) => candidate.position === position,
+                );
+                if (layer !== undefined) setSelectedLayerId(layer.id);
+              }}
             >
               {design.layers.map((layer) => (
                 <option key={layer.id} value={layer.position}>

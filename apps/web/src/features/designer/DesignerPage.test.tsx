@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -89,6 +89,59 @@ describe("DesignerPage", () => {
     expect(idsAfter).toHaveLength(3);
     expect(new Set(idsAfter).size).toBe(3);
     expect(idsAfter.toSorted()).toEqual(idsBefore.toSorted());
+  });
+
+  it("可用 Pointer Events 拖動手柄重排而不遺失層資料或選中層", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<DesignerPage />);
+    const idsBefore = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+      item.getAttribute("data-layer-id"),
+    );
+
+    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+    await replaceNumber(user, "直徑（mm）", "42");
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "拖動中層以重新排序" }),
+      { pointerId: 7 },
+    );
+    fireEvent.pointerEnter(screen.getAllByRole("listitem")[0]!, {
+      pointerId: 7,
+    });
+    fireEvent.pointerUp(
+      screen.getByRole("button", { name: "拖動頂層以重新排序" }),
+      { pointerId: 7 },
+    );
+
+    const summaries = screen.getAllByRole("listitem");
+    expect(within(summaries[0]!).getByText("42 mm")).toBeVisible();
+    expect(screen.getByLabelText("目前編輯層")).toHaveValue("top");
+    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(42);
+    const idsAfter = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+      item.getAttribute("data-layer-id"),
+    );
+    expect(idsAfter).toHaveLength(3);
+    expect(new Set(idsAfter).size).toBe(3);
+    expect(idsAfter.toSorted()).toEqual(idsBefore.toSorted());
+  });
+
+  it("取消 Pointer 拖動會安全清除狀態且不再重排", () => {
+    const { container } = render(<DesignerPage />);
+    const idsBefore = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+      item.getAttribute("data-layer-id"),
+    );
+    const topHandle = screen.getByRole("button", {
+      name: "拖動頂層以重新排序",
+    });
+
+    fireEvent.pointerDown(topHandle, { pointerId: 9 });
+    fireEvent.pointerCancel(topHandle, { pointerId: 9 });
+    fireEvent.pointerMove(screen.getAllByRole("listitem")[2]!, { pointerId: 9 });
+
+    const idsAfter = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+      item.getAttribute("data-layer-id"),
+    );
+    expect(idsAfter).toEqual(idsBefore);
+    expect(screen.getByRole("heading", { name: "陀螺設計器" })).toBeVisible();
   });
 
   it("只有一組共用螺絲控制並即時顯示違規", async () => {
