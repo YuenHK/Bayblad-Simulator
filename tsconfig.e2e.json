@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "noEmit": true,
+    "types": ["@playwright/test"]
+  },
+  "include": ["playwright.config.ts", "tests/e2e/**/*.ts"]
+}

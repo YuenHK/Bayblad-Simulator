@@ -344,6 +344,8 @@ export function TopPreview3D({
       <div
         className={`preview-3d-controls${pointers.current.size > 0 ? " is-interacting" : ""}`}
         data-testid="top-preview-3d"
+        data-preview-rotation={`${rotation.x},${rotation.y}`}
+        data-preview-zoom={zoom}
         role="group"
         tabIndex={0}
         aria-label="3D 陀螺預覽控制：拖動旋轉，雙指或滾輪縮放"
