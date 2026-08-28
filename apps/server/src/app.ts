@@ -53,6 +53,8 @@ export type BuildAppOptions = Readonly<{
   maxDesignsPerSession?: number;
   designTtlMs?: number;
   maxMatchAttempts?: number;
+  terminalResultTtlMs?: number;
+  maxTerminalResults?: number;
   lobbyDebounceMs?: number;
   designRateBurst?: number;
   designRateRefillPerSecond?: number;
@@ -114,6 +116,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     maxDesignsPerSession: requirePositive("maxDesignsPerSession", options.maxDesignsPerSession ?? 20),
     designTtlMs: requirePositive("designTtlMs", options.designTtlMs ?? 24 * 60 * 60_000),
     maxMatchAttempts: requirePositive("maxMatchAttempts", options.maxMatchAttempts ?? 5),
+    terminalResultTtlMs: requirePositive("terminalResultTtlMs", options.terminalResultTtlMs ?? 120_000),
+    maxTerminalResults: requirePositive("maxTerminalResults", options.maxTerminalResults ?? 1_000),
     lobbyDebounceMs: requireNonnegative("lobbyDebounceMs", options.lobbyDebounceMs ?? (process.env.NODE_ENV === "test" ? 0 : 50)),
     sweepIntervalMs: requireNonnegative("sweepIntervalMs", options.sweepIntervalMs ?? 1_000),
     designRateBurst: requirePositive("designRateBurst", options.designRateBurst ?? 10),
@@ -190,6 +194,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     maxRooms: config.maxRooms,
     maxOwnedRoomsPerSession: config.maxOwnedRoomsPerSession,
     maxMatchAttempts: config.maxMatchAttempts,
+    terminalResultTtlMs: config.terminalResultTtlMs,
+    maxTerminalResults: config.maxTerminalResults,
     lobbyDebounceMs: config.lobbyDebounceMs,
     maintenance: () => { designLimiter.pruneExpired(); designClientLimiter.pruneExpired(); },
     ...(options.logError ? { logError: options.logError } : {}),

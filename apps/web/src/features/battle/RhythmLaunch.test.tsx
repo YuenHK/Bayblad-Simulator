@@ -1,8 +1,20 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RhythmLaunch } from "./RhythmLaunch";
 
 describe("RhythmLaunch", () => {
+  afterEach(() => vi.useRealTimers());
+  it("低動態模式不以 50ms 移動 marker，但仍可發射", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const onCommand = vi.fn();
+    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "nonce", serverTargetTimeMs: 3_000 }} onCommand={onCommand} reducedMotion />);
+    expect(screen.getByTestId("rhythm-track")).toHaveClass("is-reduced-motion");
+    expect(screen.queryByTestId("moving-marker")).not.toBeInTheDocument();
+    vi.advanceTimersByTime(100);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "在判定線發射" }));
+    expect(onCommand).toHaveBeenCalledOnce();
+  });
   it("重連恢復同一 nonce 不重複發射，新一輪 nonce 可再發射", () => {
     const onCommand = vi.fn();
     const make = (nonce: string, roundId: string) => ({ roomId: "room", matchId: "match", roundId, nonce, serverTargetTimeMs: Date.now() });

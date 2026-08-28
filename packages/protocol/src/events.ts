@@ -141,12 +141,28 @@ export const roomLeaveEventSchema = z
   })
   .strict();
 
+export const clockSampleSchema = z.object({
+  clientSentAtMs: safeNonnegativeIntegerSchema,
+  serverReceivedAtMs: safeNonnegativeIntegerSchema,
+  serverSentAtMs: safeNonnegativeIntegerSchema,
+  clientReceivedAtMs: safeNonnegativeIntegerSchema,
+}).strict();
+
+export const clockPingEventSchema = z.object({
+  type: z.literal("clock.ping"),
+  pingId: correlationIdSchema,
+  clientSendTimeMs: safeNonnegativeIntegerSchema,
+  previousSample: clockSampleSchema.optional(),
+  ...commandEnvelopeShape,
+}).strict();
+
 export const v1CommandEventSchema = z.discriminatedUnion("type", [
   roomCreateEventSchema,
   roomJoinEventSchema,
   roomMoveEventSchema,
   playerReadyEventSchema,
   launchTapEventSchema,
+  clockPingEventSchema,
   roomLeaveEventSchema,
   roomCloseEventSchema,
 ]);
@@ -159,6 +175,7 @@ export const clientEventSchema = z.discriminatedUnion("type", [
   roomMoveEventSchema,
   playerReadyEventSchema,
   launchTapEventSchema,
+  clockPingEventSchema,
   roomLeaveEventSchema,
   roomCloseEventSchema,
 ]);
@@ -170,6 +187,7 @@ export type RoomJoinEvent = z.infer<typeof roomJoinEventSchema>;
 export type RoomMoveEvent = z.infer<typeof roomMoveEventSchema>;
 export type PlayerReadyEvent = z.infer<typeof playerReadyEventSchema>;
 export type LaunchTapEvent = z.infer<typeof launchTapEventSchema>;
+export type ClockPingEvent = z.infer<typeof clockPingEventSchema>;
 export type RoomLeaveEvent = z.infer<typeof roomLeaveEventSchema>;
 export type RoomCloseEvent = z.infer<typeof roomCloseEventSchema>;
 
@@ -681,6 +699,22 @@ export const errorEventSchema = z
   })
   .strict();
 
+export const clockPongEventSchema = z.object({
+  type: z.literal("clock.pong"),
+  pingId: correlationIdSchema,
+  clientSendTimeMs: safeNonnegativeIntegerSchema,
+  serverReceiveTimeMs: safeNonnegativeIntegerSchema,
+  serverSendTimeMs: safeNonnegativeIntegerSchema,
+  ...serverEnvelopeShape,
+}).strict();
+
+export const roomDepartedEventSchema = z.object({
+  type: z.literal("room.departed"),
+  roomId: correlationIdSchema,
+  reason: z.enum(["left", "closed", "expired", "removed"]),
+  ...serverEnvelopeShape,
+}).strict();
+
 export const serverEventSchema = z.discriminatedUnion("type", [
   protocolWelcomeEventSchema,
   lobbySnapshotEventSchema,
@@ -696,6 +730,8 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   matchFinishedEventSchema,
   matchCancelledEventSchema,
   commandAckEventSchema,
+  clockPongEventSchema,
+  roomDepartedEventSchema,
   errorEventSchema,
 ]);
 export type ServerEvent = z.infer<typeof serverEventSchema>;
@@ -714,6 +750,8 @@ export const playerServerEventSchema = z.discriminatedUnion("type", [
   matchFinishedEventSchema,
   matchCancelledEventSchema,
   commandAckEventSchema,
+  clockPongEventSchema,
+  roomDepartedEventSchema,
   errorEventSchema,
 ]);
 export type PlayerServerEvent = z.infer<typeof playerServerEventSchema>;
@@ -732,6 +770,8 @@ export const spectatorServerEventSchema = z.discriminatedUnion("type", [
   matchFinishedEventSchema,
   matchCancelledEventSchema,
   commandAckEventSchema,
+  clockPongEventSchema,
+  roomDepartedEventSchema,
   errorEventSchema,
 ]);
 export type SpectatorServerEvent = z.infer<typeof spectatorServerEventSchema>;
@@ -748,4 +788,6 @@ export type BattleFrameEvent = z.infer<typeof battleFrameEventSchema>;
 export type RoundFinishedEvent = z.infer<typeof roundFinishedEventSchema>;
 export type MatchFinishedEvent = z.infer<typeof matchFinishedEventSchema>;
 export type CommandAckEvent = z.infer<typeof commandAckEventSchema>;
+export type ClockPongEvent = z.infer<typeof clockPongEventSchema>;
+export type RoomDepartedEvent = z.infer<typeof roomDepartedEventSchema>;
 export type ErrorEvent = z.infer<typeof errorEventSchema>;

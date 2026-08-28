@@ -10,6 +10,7 @@ import {
   type LobbyRoom,
   type MatchFinishedEvent,
   type RoomSnapshotEvent,
+  type ServerEvent,
   type V1CommandEvent,
 } from "@steam-top/protocol";
 import { io, type Socket } from "socket.io-client";
@@ -30,6 +31,34 @@ export interface RealtimeTransport {
 }
 
 type RoundView = Readonly<{ winner: "player1" | "player2" | "draw" }>;
+export type ClientClockSample = Readonly<{
+  clientSentAtMs: number; serverReceivedAtMs: number; serverSentAtMs: number; clientReceivedAtMs: number;
+}>;
+
+export class ClientClockEstimator {
+  #samples: ClientClockSample[] = [];
+  get sampleCount(): number { return this.#samples.length; }
+  get offsetMs(): number {
+    if (!this.#samples.length) return 0;
+    const values = this.#samples.map((sample) => ((sample.serverReceivedAtMs - sample.clientSentAtMs) + (sample.serverSentAtMs - sample.clientReceivedAtMs)) / 2).sort((a, b) => a - b);
+    const middle = Math.floor(values.length / 2);
+    return values.length % 2 ? values[middle]! : (values[middle - 1]! + values[middle]!) / 2;
+  }
+  get rttMs(): number {
+    if (!this.#samples.length) return 0;
+    const values = this.#samples.map((sample) => sample.clientReceivedAtMs - sample.clientSentAtMs - (sample.serverSentAtMs - sample.serverReceivedAtMs)).sort((a, b) => a - b);
+    return values[Math.floor(values.length / 2)]!;
+  }
+  add(sample: ClientClockSample): void {
+    const rtt = sample.clientReceivedAtMs - sample.clientSentAtMs - (sample.serverSentAtMs - sample.serverReceivedAtMs);
+    if (![sample.clientSentAtMs, sample.serverReceivedAtMs, sample.serverSentAtMs, sample.clientReceivedAtMs].every(Number.isSafeInteger) || rtt < 0 || rtt > 2_000) return;
+    this.#samples.push({ ...sample });
+    if (this.#samples.length > 9) this.#samples.shift();
+  }
+  clear(): void { this.#samples = []; }
+  serverToClientTime(serverTimeMs: number): number { return serverTimeMs - this.offsetMs; }
+}
+
 export type RealtimeState = Readonly<{
   status: "offline" | "connecting" | "online" | "reconnecting";
   sessionStatus: "new" | "resumed" | "replaced" | null;
@@ -43,6 +72,12 @@ export type RealtimeState = Readonly<{
   roundFinished: RoundView | null;
   matchFinished: MatchFinishedEvent | null;
   cancelledReason: "attempt-limit" | "server-error" | null;
+  attempt: number;
+  currentRoundId: string | null;
+  departurePending: boolean;
+  clockOffsetMs: number;
+  clockRttMs: number;
+  clockReady: boolean;
   lastError: string | null;
 }>;
 
@@ -51,6 +86,8 @@ const initialState: RealtimeState = {
   status: "offline", sessionStatus: null, lobbyRooms: [], room: null,
   battleStarted: null, schedule: null, privateGrade: null, spectatorGrades: null,
   frames: [], roundFinished: null, matchFinished: null, cancelledReason: null,
+  attempt: 0, currentRoundId: null, departurePending: false,
+  clockOffsetMs: 0, clockRttMs: 0, clockReady: false,
   lastError: null,
 };
 
@@ -88,17 +125,26 @@ export class RealtimeClient {
   readonly #storage: StorageAdapter;
   readonly #apiBase: string;
   readonly #fetch: typeof fetch;
+  readonly #now: () => number;
+  readonly #clock = new ClientClockEstimator();
   readonly #listeners = new Set<() => void>();
   readonly #bound = new Map<string, (...args: unknown[]) => void>();
+  readonly #pendingPings = new Map<string, number>();
+  readonly #seenServerEvents = new Set<string>();
+  readonly #seenRoundIds = new Set<string>();
   #state: RealtimeState = initialState;
   #token: string | null;
   #started = false;
+  #clockTimer: ReturnType<typeof setInterval> | null = null;
+  #lastClockSample: ClientClockSample | null = null;
+  #pendingDepartureEventId: string | null = null;
 
-  constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch }>) {
+  constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number }>) {
     this.#transport = options.transport;
     this.#storage = options.storage ?? defaultStorage();
     this.#apiBase = (options.apiBase ?? "").replace(/\/$/u, "");
     this.#fetch = options.fetcher ?? fetch;
+    this.#now = options.now ?? Date.now;
     this.#token = this.#storage.get(SESSION_KEY);
     this.#transport.auth.sessionToken = this.#token ?? undefined;
   }
@@ -110,6 +156,7 @@ export class RealtimeClient {
     if (this.#started) return;
     this.#started = true;
     this.#listen("connect", () => {
+      this.#resetClock();
       this.#set({ status: "connecting", lastError: null });
       this.#transport.emit("client.event", { type: "protocol.hello", eventId: crypto.randomUUID(), supportedVersions: [PROTOCOL_VERSION] });
     });
@@ -125,6 +172,8 @@ export class RealtimeClient {
     for (const [event, listener] of this.#bound) this.#transport.off(event, listener);
     this.#bound.clear();
     this.#transport.disconnect();
+    if (this.#clockTimer) clearInterval(this.#clockTimer);
+    this.#clockTimer = null;
     this.#started = false;
     this.#set({ status: "offline" });
   }
@@ -132,6 +181,10 @@ export class RealtimeClient {
   command(input: CommandInput): string {
     const eventId = crypto.randomUUID();
     this.#transport.emit("client.event", { ...input, protocolVersion: PROTOCOL_VERSION, eventId } satisfies V1CommandEvent);
+    if (input.type === "room.leave" || input.type === "room.close") {
+      this.#pendingDepartureEventId = eventId;
+      this.#set({ departurePending: true, lastError: null });
+    }
     return eventId;
   }
 
@@ -145,7 +198,7 @@ export class RealtimeClient {
     return payload.designId;
   }
 
-  clearRoom(): void { this.#set({ room: null, battleStarted: null, schedule: null, frames: [], matchFinished: null, cancelledReason: null }); }
+  serverToClientTime(serverTimeMs: number): number { return this.#clock.serverToClientTime(serverTimeMs); }
 
   #listen(event: string, listener: (...args: unknown[]) => void): void { this.#bound.set(event, listener); this.#transport.on(event, listener); }
   #set(patch: Partial<RealtimeState>): void { this.#state = { ...this.#state, ...patch }; for (const listener of this.#listeners) listener(); }
@@ -157,29 +210,102 @@ export class RealtimeClient {
       return;
     }
     const event = parsed.data;
+    if (this.#seenServerEvents.has(event.serverEventId)) return;
+    this.#seenServerEvents.add(event.serverEventId);
+    if (this.#seenServerEvents.size > 1_024) this.#seenServerEvents.delete(this.#seenServerEvents.values().next().value!);
     switch (event.type) {
       case "protocol.welcome":
         if (event.sessionToken) { this.#token = event.sessionToken; this.#storage.set(SESSION_KEY, event.sessionToken); this.#transport.auth.sessionToken = event.sessionToken; }
-        this.#set({ status: "online", sessionStatus: event.sessionStatus ?? "new", lastError: null }); break;
+        this.#set({ status: "online", sessionStatus: event.sessionStatus ?? "new", lastError: null });
+        this.#sendClockPing();
+        if (this.#clockTimer) clearInterval(this.#clockTimer);
+        this.#clockTimer = setInterval(() => this.#sendClockPing(), 15_000);
+        break;
       case "lobby.snapshot": this.#set({ lobbyRooms: event.rooms }); break;
-      case "room.snapshot": this.#set({ room: event }); break;
+      case "room.snapshot": this.#set({ room: event, departurePending: false }); break;
       case "room.delta": {
-        if (!this.#state.room) break;
+        if (!this.#state.room || event.roomId !== this.#state.room.roomId) break;
         const room = updateRoomFromDelta(this.#state.room, event);
         this.#set(room ? { room } : { lastError: "房間資料需要同步，請重新進入。" }); break;
       }
-      case "battle.started": this.#set({ battleStarted: event, frames: [], roundFinished: null, matchFinished: null, cancelledReason: null }); break;
-      case "launch.schedule": this.#set({ schedule: event, privateGrade: null, spectatorGrades: null, frames: [], roundFinished: null }); break;
-      case "launch.result.private": this.#set({ privateGrade: event.grade }); break;
-      case "launch.result.spectator": this.#set({ spectatorGrades: { player1: event.player1.grade, player2: event.player2.grade } }); break;
-      case "battle.frame": this.#set({ frames: [...this.#state.frames.slice(-29), event] }); break;
-      case "round.finished": this.#set({ roundFinished: { winner: event.winner } }); break;
-      case "match.finished": this.#set({ matchFinished: event, schedule: null }); break;
-      case "match.cancelled": this.#set({ cancelledReason: event.reason, schedule: null }); break;
-      case "error": this.#set({ lastError: event.message }); break;
-      case "battle.checkpoint":
+      case "battle.started":
+        if (event.roomId !== this.#state.room?.roomId) break;
+        if (this.#state.battleStarted && this.#state.battleStarted.matchId !== event.matchId && !this.#state.matchFinished && !this.#state.cancelledReason) break;
+        if (this.#state.battleStarted?.matchId !== event.matchId) this.#seenRoundIds.clear();
+        this.#set({ battleStarted: event, attempt: 0, currentRoundId: null, frames: [], roundFinished: null, matchFinished: null, cancelledReason: null }); break;
+      case "battle.checkpoint": {
+        if (!this.#sameMatch(event) || event.attempt < this.#state.attempt) break;
+        if (event.attempt === this.#state.attempt && this.#state.currentRoundId && event.roundId !== this.#state.currentRoundId) break;
+        const newer = event.attempt > this.#state.attempt || this.#state.currentRoundId === null;
+        this.#seenRoundIds.add(event.roundId);
+        this.#set({ attempt: event.attempt, currentRoundId: event.roundId, ...(newer ? { frames: [], roundFinished: null } : {}) }); break;
+      }
+      case "launch.schedule": {
+        if (!this.#sameMatch(event)) break;
+        const changedRound = this.#state.currentRoundId !== null && event.roundId !== this.#state.currentRoundId;
+        if (changedRound && this.#seenRoundIds.has(event.roundId)) break;
+        const attempt = this.#state.currentRoundId === null ? Math.max(1, this.#state.attempt) : changedRound ? this.#state.attempt + 1 : this.#state.attempt;
+        this.#seenRoundIds.add(event.roundId);
+        this.#set({ schedule: event, attempt, currentRoundId: event.roundId, privateGrade: null, spectatorGrades: null, frames: [], roundFinished: null }); break;
+      }
+      case "launch.result.private": if (this.#sameRound(event)) this.#set({ privateGrade: event.grade }); break;
+      case "launch.result.spectator": if (this.#sameRound(event)) this.#set({ spectatorGrades: { player1: event.player1.grade, player2: event.player2.grade } }); break;
+      case "battle.frame": {
+        if (!this.#sameRound(event) || event.sequence <= (this.#state.frames.at(-1)?.sequence ?? -1)) break;
+        this.#set({ frames: [...this.#state.frames.slice(-29), event] }); break;
+      }
+      case "round.finished": if (this.#sameRound(event)) this.#set({ roundFinished: { winner: event.winner } }); break;
+      case "match.finished": if (this.#sameMatch(event)) this.#set({ matchFinished: event, schedule: null }); break;
+      case "match.cancelled": if (this.#sameMatch(event)) this.#set({ cancelledReason: event.reason, schedule: null }); break;
+      case "room.departed":
+        if (event.roomId === this.#state.room?.roomId) {
+          this.#pendingDepartureEventId = null;
+          this.#set({ room: null, departurePending: false, battleStarted: null, schedule: null, frames: [], matchFinished: null, cancelledReason: null, attempt: 0, currentRoundId: null });
+        }
+        break;
+      case "clock.pong": this.#acceptClockPong(event); break;
+      case "error":
+        if (event.causedByEventId && event.causedByEventId === this.#pendingDepartureEventId) {
+          this.#pendingDepartureEventId = null;
+          this.#set({ departurePending: false, lastError: event.message });
+        } else this.#set({ lastError: event.message });
+        break;
       case "command.ack": break;
     }
+  }
+
+  #sameMatch(event: Readonly<{ roomId: string; matchId: string }>): boolean {
+    return event.roomId === this.#state.room?.roomId && event.matchId === this.#state.battleStarted?.matchId;
+  }
+  #sameRound(event: Readonly<{ roomId: string; matchId: string; roundId: string }>): boolean {
+    return this.#sameMatch(event) && event.roundId === this.#state.currentRoundId;
+  }
+  #resetClock(): void {
+    this.#clock.clear(); this.#pendingPings.clear(); this.#lastClockSample = null;
+    this.#set({ clockOffsetMs: 0, clockRttMs: 0, clockReady: false });
+  }
+  #sendClockPing(): void {
+    if (this.#state.status !== "online") return;
+    const pingId = crypto.randomUUID();
+    const clientSendTimeMs = this.#now();
+    this.#pendingPings.set(pingId, clientSendTimeMs);
+    const previousSample = this.#lastClockSample;
+    this.#lastClockSample = null;
+    this.#transport.emit("client.event", {
+      type: "clock.ping", pingId, clientSendTimeMs,
+      ...(previousSample ? { previousSample } : {}),
+      protocolVersion: PROTOCOL_VERSION, eventId: crypto.randomUUID(),
+    } satisfies V1CommandEvent);
+  }
+  #acceptClockPong(event: Extract<ServerEvent, { type: "clock.pong" }>): void {
+    const sent = this.#pendingPings.get(event.pingId);
+    if (sent === undefined || sent !== event.clientSendTimeMs) return;
+    this.#pendingPings.delete(event.pingId);
+    const sample = { clientSentAtMs: sent, serverReceivedAtMs: event.serverReceiveTimeMs, serverSentAtMs: event.serverSendTimeMs, clientReceivedAtMs: this.#now() };
+    this.#clock.add(sample);
+    this.#lastClockSample = sample;
+    this.#set({ clockOffsetMs: this.#clock.offsetMs, clockRttMs: this.#clock.rttMs, clockReady: this.#clock.sampleCount > 0 });
+    if (this.#clock.sampleCount < 4) this.#sendClockPing();
   }
 }
 

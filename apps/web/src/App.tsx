@@ -27,6 +27,7 @@ export function App({ client: suppliedClient }: Readonly<{ client?: RealtimeClie
     return () => media.removeEventListener?.("change", update);
   }, []);
   useEffect(() => { if (state.room) setPage("room"); }, [state.room]);
+  useEffect(() => { if (page === "room" && !state.room) setPage("lobby"); }, [page, state.room]);
 
   const useFromDesigner = async (next: TopDesign) => {
     setBusy(true); setActionError(null); setDesign(next);
@@ -58,8 +59,8 @@ export function App({ client: suppliedClient }: Readonly<{ client?: RealtimeClie
     {busy ? <p className="system-banner" role="status">正在處理……</p> : null}
     {page === "designer" ? <DesignerPage onUseDesign={useFromDesigner} /> : null}
     {page === "lobby" ? <LobbyPage rooms={state.lobbyRooms} onCommand={(command) => client.command(command)} /> : null}
-    {page === "room" && state.room ? <RoomPage snapshot={state.room} design={design} designId={designId} onUseDesign={ready} onCommand={(command) => client.command(command)} onLeave={() => { client.command({ type: "room.leave", roomId: state.room!.roomId }); client.clearRoom(); setPage("lobby"); }} reducedMotion={reducedMotion} battle={{
-      phase, schedule: state.schedule ?? undefined, privateGrade: state.privateGrade ?? undefined,
+    {page === "room" && state.room ? <RoomPage snapshot={state.room} design={design} designId={designId} departurePending={state.departurePending} onUseDesign={ready} onCommand={(command) => client.command(command)} onLeave={() => { client.command({ type: "room.leave", roomId: state.room!.roomId }); }} reducedMotion={reducedMotion} battle={{
+      phase, schedule: state.schedule ? { ...state.schedule, serverTargetTimeMs: client.serverToClientTime(state.schedule.serverTargetTimeMs) } : undefined, privateGrade: state.privateGrade ?? undefined,
       spectatorGrades: state.spectatorGrades ?? undefined, started: state.battleStarted ?? undefined,
       frames: state.frames, roundWinner: state.roundFinished?.winner,
       matchFinished: state.matchFinished ?? undefined, cancelledReason: state.cancelledReason ?? undefined,
