@@ -19,7 +19,7 @@ describe("designSchema", () => {
     expect(parsed.layers.every((layer) => layerSchema.safeParse(layer).success)).toBe(true);
     expect(parsed.screwLayout).toEqual({
       count: 4,
-      radiusMm: 18,
+      radiusMm: 15,
       rotationDeg: 0,
     });
     expect(parsed.metalDiscDiameterMm).toBe(0);

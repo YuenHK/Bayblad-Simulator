@@ -82,7 +82,7 @@ export function makeDefaultDesign(): TopDesign {
     ],
     screwLayout: {
       count: 4,
-      radiusMm: 18,
+      radiusMm: 15,
       rotationDeg: 0,
     },
     metalDiscDiameterMm: 0,

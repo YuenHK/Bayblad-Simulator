@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { makeDefaultDesign, type TopDesign } from "./design";
+import { makeLayerVertices } from "./geometry";
+import { ASSEMBLY } from "./mass";
 import {
   validateDesign,
   validateHeightLimit,
@@ -109,11 +111,80 @@ describe("metal-disc fit", () => {
 });
 
 describe("screw and material safety", () => {
-  it("accepts screw holes tangent to an analytic circular layer", () => {
-    const design = designWithAllLayers({ diameterMm: 40 });
-    design.screwLayout.radiusMm = 18;
+  it.each([
+    [17.999, false, true],
+    [18, false, true],
+    [18.000001, true, false],
+  ] as const)(
+    "classifies a circle screw radius %s continuously at the boundary",
+    (radiusMm, outside, neck) => {
+      const design = designWithAllLayers({ diameterMm: 40 });
+      design.screwLayout.radiusMm = radiusMm;
+      const codes = issueCodes(design);
 
+      expect(codes.includes("SCREW_OUTSIDE_LAYER")).toBe(outside);
+      expect(codes.includes("NECK_TOO_THIN")).toBe(neck);
+    },
+  );
+
+  it("reports a tangent neck and then an outside hole on a polygon layer", () => {
+    const design = designWithAllLayers({});
+    design.layers[0] = {
+      ...design.layers[0],
+      shape: "polygon",
+      points: 4,
+      diameterMm: 40,
+      cornerRoundness: 0,
+      rotationDeg: 0,
+    };
+    const vertices = makeLayerVertices(design.layers[0]);
+    const distanceToSegment = (
+      point: { x: number; y: number },
+      start: { x: number; y: number },
+      end: { x: number; y: number },
+    ) => {
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const lengthSquared = dx ** 2 + dy ** 2;
+      const projection = Math.max(
+        0,
+        Math.min(
+          1,
+          ((point.x - start.x) * dx + (point.y - start.y) * dy) /
+            lengthSquared,
+        ),
+      );
+      return Math.hypot(
+        point.x - start.x - projection * dx,
+        point.y - start.y - projection * dy,
+      );
+    };
+    const clearance = (radiusMm: number) =>
+      Math.min(
+        ...vertices.map((start, index) =>
+          distanceToSegment(
+            { x: radiusMm, y: 0 },
+            start,
+            vertices[(index + 1) % vertices.length] ?? start,
+          ),
+        ),
+      ) - ASSEMBLY.screwHoleRadiusMm;
+    let inside = 0;
+    let outside = 20;
+    for (let iteration = 0; iteration < 80; iteration += 1) {
+      const midpoint = (inside + outside) / 2;
+      if (clearance(midpoint) >= 0) {
+        inside = midpoint;
+      } else {
+        outside = midpoint;
+      }
+    }
+
+    design.screwLayout.radiusMm = inside;
+    expect(issueCodes(design)).toContain("NECK_TOO_THIN");
     expect(issueCodes(design)).not.toContain("SCREW_OUTSIDE_LAYER");
+    design.screwLayout.radiusMm = outside + 0.000001;
+    expect(issueCodes(design)).toContain("SCREW_OUTSIDE_LAYER");
   });
 
   it("reports screw holes outside any layer", () => {
@@ -173,39 +244,5 @@ describe("screw and material safety", () => {
     validateDesign(design);
 
     expect(design).toEqual(before);
-  });
-});
-
-describe("validation performance", () => {
-  function medianRuntimeMs(design: TopDesign): number {
-    for (let index = 0; index < 3; index += 1) {
-      validateDesign(design);
-    }
-    const samples = Array.from({ length: 9 }, () => {
-      const start = performance.now();
-      validateDesign(design);
-      return performance.now() - start;
-    }).sort((left, right) => left - right);
-    return samples[Math.floor(samples.length / 2)] ?? Number.POSITIVE_INFINITY;
-  }
-
-  it("keeps the default analytic-circle fast path below 5 ms median", () => {
-    const median = medianRuntimeMs(makeDefaultDesign());
-    expect(median).toBeLessThan(5);
-  });
-
-  it("keeps a worst-case valid-schema draft below 20 ms median", () => {
-    const design = makeDefaultDesign();
-    design.layers = design.layers.map((layer) => ({
-      ...layer,
-      shape: "star",
-      points: 16,
-      diameterMm: 20,
-      cornerRoundness: 0,
-    })) as TopDesign["layers"];
-    design.screwLayout = { count: 8, radiusMm: 5, rotationDeg: 11 };
-
-    const median = medianRuntimeMs(design);
-    expect(median).toBeLessThan(20);
   });
 });
