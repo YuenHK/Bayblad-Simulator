@@ -30,8 +30,6 @@ const DEFAULT_LEAD_TIME_MS = 3_000;
 const ACCEPTANCE_BEFORE_TARGET_MS = 1_000;
 const ACCEPTANCE_AFTER_TARGET_MS = 1_500;
 const MAX_CLOCK_RTT_MS = 2_000;
-export const MAX_COMPENSATED_RTT_MS = 400;
-export const MAX_COMPENSATED_ONE_WAY_DELAY_MS = 100;
 const MAX_CLOCK_OFFSET_MS = 5 * 60_000;
 const MAX_CLOCK_SAMPLES = 9;
 const MAX_GENERATION_ATTEMPTS = 1_000;
@@ -454,7 +452,7 @@ export class LaunchCoordinator {
     return { ...event };
   }
 
-  submit(participantId: string, rawEvent: unknown, receivedAtMs = this.#dependencies.now(), serverObservedRttMs?: number | null): SubmitLaunchResult {
+  submit(participantId: string, rawEvent: unknown, receivedAtMs = this.#dependencies.now(), _diagnosticObservedRttMs?: number | null): SubmitLaunchResult {
     let tapEvent: ReturnType<typeof launchTapEventSchema.parse>;
     try {
       tapEvent = launchTapEventSchema.parse(rawEvent);
@@ -486,8 +484,7 @@ export class LaunchCoordinator {
       throw new LaunchError("OUTSIDE_ACCEPTANCE_WINDOW");
     }
 
-    const gradingTimeMs = this.#serverObservedTap(received, serverObservedRttMs);
-    const judgement = judgeLaunch(gradingTimeMs - state.schedule.serverTargetTimeMs);
+    const judgement = judgeLaunch(received - state.schedule.serverTargetTimeMs);
     const expiresAt = this.#expirationFrom(retentionNow);
     const stagedServerEventIds = new Set<string>();
     const privateEvent = this.#createPrivateEvent(
@@ -733,12 +730,6 @@ export class LaunchCoordinator {
 
   #addActiveServerEventIds(stagedServerEventIds: ReadonlySet<string>): void {
     for (const eventId of stagedServerEventIds) this.#activeServerEventIds.add(eventId);
-  }
-
-  #serverObservedTap(receivedAtMs: number, observedRttMs?: number | null): number {
-    if (observedRttMs === undefined || observedRttMs === null || !Number.isFinite(observedRttMs) || observedRttMs < 0 || observedRttMs > MAX_COMPENSATED_RTT_MS) return receivedAtMs;
-    const compensationMs = Math.min(observedRttMs / 2, MAX_COMPENSATED_ONE_WAY_DELAY_MS);
-    return Math.max(0, receivedAtMs - compensationMs);
   }
 
   #expirationFrom(nowMs: number): number {

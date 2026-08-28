@@ -8,7 +8,6 @@ import {
   ClockOffsetEstimator,
   LAUNCH_MULTIPLIER,
   LAUNCH_WINDOWS_MS,
-  MAX_COMPENSATED_RTT_MS,
   LaunchCoordinator,
   LaunchError,
   estimateClockOffset,
@@ -325,43 +324,20 @@ describe("LaunchCoordinator scheduling", () => {
 });
 
 describe("LaunchCoordinator submissions and result privacy", () => {
-  it("client timestamp is diagnostic only and cannot improve the authoritative grade", () => {
-    for (const clientTimeMs of [1, 4_000, 99_999, Number.MAX_SAFE_INTEGER]) {
-      const { coordinator, schedule } = makeHarness();
-      schedule();
-      const submitted = coordinator.submit("p1", tap({ clientTimeMs }), 4_200, 40);
-      expect(submitted.event.grade).not.toBe("Perfect");
-    }
-  });
-
-  it("caps compensation from server-observed RTT and never trusts client offset", () => {
-    expect(MAX_COMPENSATED_RTT_MS).toBe(400);
-
+  it("固定server receivedAt時，任意clientTime及observed RTT都不會改變grade", () => {
     const cases = [
-      { rtt: 80, receivedAtMs: 4_040, grade: "Perfect" },
-      { rtt: 400, receivedAtMs: 4_250, grade: "Good" },
-      { rtt: 401, receivedAtMs: 4_200, grade: "Miss" },
-      { rtt: 800, receivedAtMs: 4_800, grade: "Miss" },
-      { rtt: 80, receivedAtMs: 4_091, grade: "Great" },
-      { rtt: 80.5, receivedAtMs: 4_090, grade: "Great" },
+      { delta: 45, grade: "Perfect" }, { delta: 46, grade: "Great" },
+      { delta: 100, grade: "Great" }, { delta: 101, grade: "Good" },
+      { delta: 180, grade: "Good" }, { delta: 181, grade: "Miss" },
     ] as const;
-    for (const { rtt, receivedAtMs, grade } of cases) {
-      const coordinator = new LaunchCoordinator({
-        now: () => 1_000,
-        createNonce: () => "nonce-1",
-        createServerEventId: (() => {
-          let sequence = 0;
-          return () =>
-            `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`;
-        })(),
-      });
-      coordinator.schedule({
-        roomId: "room-1",
-        matchId: "match-1",
-        roundId: "round-1",
-        players: [PLAYER_1, PLAYER_2],
-      });
-      expect(coordinator.submit("p1", tap({ clientTimeMs: Number.MAX_SAFE_INTEGER }), receivedAtMs, rtt).event.grade).toBe(grade);
+    for (const { delta, grade } of cases) {
+      for (const clientTimeMs of [1, 4_000, 99_999, Number.MAX_SAFE_INTEGER]) {
+        for (const observedRttMs of [null, 0, 40, 200, 2_000, 99_999]) {
+          const { coordinator, schedule } = makeHarness();
+          schedule();
+          expect(coordinator.submit("p1", tap({ clientTimeMs }), 4_000 + delta, observedRttMs).event.grade).toBe(grade);
+        }
+      }
     }
   });
 
@@ -373,10 +349,10 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     );
   });
 
-  it("正常低 RTT 的準時收件仍可獲 Perfect", () => {
+  it("準時server收件可獲Perfect且RTT不作補償", () => {
     const { coordinator, schedule } = makeHarness();
     schedule();
-    expect(coordinator.submit("p1", tap({ clientTimeMs: 99_999 }), 4_040, 80).event.grade).toBe("Perfect");
+    expect(coordinator.submit("p1", tap({ clientTimeMs: 99_999 }), 4_040, 2_000).event.grade).toBe("Perfect");
   });
 
   it.each([
