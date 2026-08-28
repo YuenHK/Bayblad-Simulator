@@ -14,7 +14,8 @@ export default defineConfig({
   dbCredentials: {
     url:
       process.env.DATABASE_URL ??
-      "postgres://steam_top:steam_top@127.0.0.1:5432/steam_top",
+      // drizzle generate/check only; production must always inject DATABASE_URL.
+      "postgresql://localhost/steam_top_schema_generation",
   },
   strict: true,
   verbose: true,
