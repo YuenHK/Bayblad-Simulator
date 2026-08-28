@@ -1,156 +1,96 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { io } from "socket.io-client";
+import { stopChildCleanly } from "./child-process.mjs";
 
-const PORT = 4184;
-const URL = `http://127.0.0.1:${PORT}`;
-const SECRET = "steam-top-load-only";
-const deadline = (ms) => Date.now() + ms;
-const retryDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const SECRET = "steam-top-load-only", CYCLES = Number(process.env.LOAD_CYCLES ?? 3);
+const MAX_MS = Number(process.env.LOAD_MAX_SCENARIO_MS ?? 60_000);
+const HEAP_SPAN = Number(process.env.LOAD_MAX_STEADY_HEAP_SPAN_MIB ?? 24) * 1024 * 1024;
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const cmd = (type, fields = {}) => ({ type, protocolVersion: 1, eventId: randomUUID(), ...fields });
 
-async function poll(description, check, timeoutMs = 10_000) {
-  const until = deadline(timeoutMs);
-  let lastError;
-  while (Date.now() < until) {
-    try { const value = await check(); if (value) return value; }
-    catch (error) { lastError = error; }
-    await retryDelay(25);
-  }
-  throw new Error(`Timed out waiting for ${description}${lastError ? `: ${lastError}` : ""}`);
+async function poll(label, fn, timeout = 15_000) {
+  const end = Date.now() + timeout; let error;
+  while (Date.now() < end) { try { const value = await fn(); if (value) return value; } catch (cause) { error = cause; } await delay(25); }
+  throw new Error(`Timed out: ${label}${error ? `: ${error}` : ""}`);
 }
-
-function command(type, fields = {}) {
-  return { type, protocolVersion: 1, eventId: randomUUID(), ...fields };
+function collector(socket, label) {
+  const events = [], waiters = [];
+  socket.on("server.event", (event) => { events.push(event); for (const waiter of [...waiters]) if (waiter.test(event)) { waiters.splice(waiters.indexOf(waiter), 1); clearTimeout(waiter.timer); waiter.resolve(event); } });
+  return { events, next(test, timeout = 60_000) { const old = events.find(test); if (old) return Promise.resolve(old); return new Promise((resolve, reject) => { const waiter = { test, resolve, timer: setTimeout(() => { waiters.splice(waiters.indexOf(waiter), 1); reject(new Error(`${label} timeout; recent=${events.slice(-10).map((e) => e.type)}`)); }, timeout) }; waiters.push(waiter); }); } };
 }
-
-function collect(socket, label) {
-  const events = [];
-  const waiters = [];
-  socket.on("server.event", (event) => {
-    events.push(event);
-    for (const waiter of [...waiters]) {
-      if (!waiter.predicate(event)) continue;
-      waiters.splice(waiters.indexOf(waiter), 1);
-      clearTimeout(waiter.timer);
-      waiter.resolve(event);
-    }
+async function startServer() {
+  const child = spawn("pnpm", ["--filter", "@steam-top/server", "exec", "node", "--expose-gc", "--import", "tsx", "../../tests/support/realtime-server.ts"], { cwd: process.cwd(), env: { ...process.env, NODE_ENV: "test", BATTLE_ENGINE: "real", TEST_REALTIME_PORT: "0", TEST_CONTROL_SECRET: SECRET }, stdio: ["ignore", "pipe", "pipe"] });
+  let output = "", buffer = "", resolveReady, rejectReady;
+  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  const timer = setTimeout(() => rejectReady(new Error(`ready timeout\n${output}`)), 15_000);
+  child.stdout.on("data", (chunk) => { const text = String(chunk); output += text; buffer += text; for (;;) { const at = buffer.indexOf("\n"); if (at < 0) break; const line = buffer.slice(0, at).trim(); buffer = buffer.slice(at + 1); try { const parsed = JSON.parse(line); if (parsed.type === "ready") { clearTimeout(timer); resolveReady(parsed); } } catch {} } });
+  child.stderr.on("data", (chunk) => { output += String(chunk); });
+  child.once("exit", (code, signal) => { if (code !== 0) rejectReady(new Error(`early exit ${code}/${signal}\n${output}`)); });
+  const info = await ready; return { child, url: info.url, output: () => output };
+}
+async function stopServer(server) {
+  await stopChildCleanly(server.child, {
+    requestGraceful: async () => (await fetch(`${server.url}/__test/shutdown`, { method: "POST", headers: { "x-test-secret": SECRET } })).ok,
+    timeoutMs: 5_000,
+    diagnostics: server.output,
   });
-  return {
-    events,
-    next(predicate, timeoutMs = 10_000) {
-      const existing = events.find(predicate);
-      if (existing) return Promise.resolve(existing);
-      return new Promise((resolve, reject) => {
-        const waiter = { predicate, resolve, timer: setTimeout(() => {
-          waiters.splice(waiters.indexOf(waiter), 1);
-          reject(new Error(`${label} timed out; recent events=${events.slice(-8).map((event) => event.type).join(",")}`));
-        }, timeoutMs) };
-        waiters.push(waiter);
-      });
-    },
-  };
 }
-
-async function connect(name) {
-  const socket = io(URL, { transports: ["websocket"], reconnection: false, auth: { displayName: name } });
-  const stream = collect(socket, name);
+async function connect(url, name) {
+  const socket = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: name } }), stream = collector(socket, name);
   await new Promise((resolve, reject) => { socket.once("connect", resolve); socket.once("connect_error", reject); });
-  const welcome = stream.next((event) => event.type === "protocol.welcome");
-  socket.emit("client.event", { type: "protocol.hello", eventId: randomUUID(), supportedVersions: [1] });
+  const welcome = stream.next((e) => e.type === "protocol.welcome"); socket.emit("client.event", { type: "protocol.hello", eventId: randomUUID(), supportedVersions: [1] });
   return { socket, stream, token: (await welcome).sessionToken, name };
 }
+function design(name, attack) {
+  const layer = (position, shape, diameterMm, color, points = 6) => ({ id: randomUUID(), position, shape, points, diameterMm, cornerRoundness: 0.5, rotationDeg: 0, color });
+  return attack ? { id: randomUUID(), name, layers: [layer("top", "star", 48, "#2563eb", 8), layer("middle", "polygon", 60, "#60a5fa"), layer("bottom", "circle", 52, "#1d4ed8")], screwLayout: { count: 4, radiusMm: 15, rotationDeg: 0 }, metalDiscDiameterMm: 40 } : { id: randomUUID(), name, layers: [layer("top", "circle", 32, "#e34d59"), layer("middle", "circle", 40, "#f59e0b"), layer("bottom", "circle", 42, "#b45309")], screwLayout: { count: 4, radiusMm: 12, rotationDeg: 0 }, metalDiscDiameterMm: 0 };
+}
+async function control(url, path, data) { const response = await fetch(`${url}${path}`, { method: data ? "POST" : "GET", headers: { "x-test-secret": SECRET, ...(data ? { "content-type": "application/json" } : {}) }, ...(data ? { body: JSON.stringify(data) } : {}) }); if (!response.ok) throw new Error(`${path}: ${response.status}`); return response.json(); }
+const stats = (url, gc = false) => control(url, `/__test/stats${gc ? "?gc=1" : ""}`);
+async function upload(url, client, body) { const response = await fetch(`${url}/api/designs`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${client.token}` }, body: JSON.stringify(body) }); if (!response.ok) throw new Error(`upload ${response.status}: ${await response.text()}`); return (await response.json()).designId; }
+async function advanceTo(url, target) { const current = await stats(url); await control(url, "/__test/advance", { ms: Math.max(0, Math.ceil(target - current.nowMs)) }); }
 
-function design(name, diameterMm) {
-  const layer = (position, shape, diameter, color) => ({ id: randomUUID(), position, shape, points: 6, diameterMm: diameter, cornerRoundness: 0.5, rotationDeg: 0, color });
-  return {
-    id: randomUUID(), name,
-    layers: [layer("top", "circle", diameterMm, "#2563eb"), layer("middle", "polygon", 55, "#60a5fa"), layer("bottom", "circle", 48, "#1d4ed8")],
-    screwLayout: { count: 4, radiusMm: 15, rotationDeg: 0 }, metalDiscDiameterMm: 0,
-  };
+async function cycle(url, clients, players, index) {
+  const before = await stats(url), roomP = players[0].stream.next((e) => e.type === "room.snapshot" && e.name === `Load cycle ${index}`);
+  players[0].socket.emit("client.event", cmd("room.create", { name: `Load cycle ${index}` })); const room = await roomP;
+  await Promise.all(clients.slice(1).map((client, i) => { const joined = client.stream.next((e) => e.type === "room.snapshot" && e.roomId === room.roomId); client.socket.emit("client.event", cmd("room.join", { roomId: room.roomId, role: i === 0 ? "player" : "spectator" })); return joined; }));
+  const ids = await Promise.all(players.map((player, i) => upload(url, player, design(`${index}-${i}`, i === 0))));
+  players.forEach((player, i) => player.socket.emit("client.event", cmd("player.ready", { roomId: room.roomId, designId: ids[i] })));
+  const seen = new Set(); let finished;
+  for (;;) {
+    const event = await players[0].stream.next((e) => e.roomId === room.roomId && (e.type === "match.finished" || e.type === "match.cancelled" || (e.type === "launch.schedule" && !seen.has(e.roundId))));
+    if (event.type === "match.cancelled") throw new Error(`formal match cancelled: ${event.reason}`);
+    if (event.type === "match.finished") { finished = event; break; }
+    seen.add(event.roundId); await advanceTo(url, event.serverTargetTimeMs);
+    players.forEach((player) => player.socket.emit("client.event", cmd("launch.tap", { roomId: room.roomId, roundId: event.roundId, nonce: event.nonce, clientTimeMs: Date.now() })));
+  }
+  const finals = await Promise.all(clients.map((client) => client.stream.next((e) => e.type === "match.finished" && e.matchId === finished.matchId)));
+  if (new Set(finals.map((e) => e.matchId)).size !== 1) throw new Error("final matchId mismatch");
+  const after = await stats(url), rounds = after.observedRounds.slice(before.observedRounds.length).filter((r) => r.matchId === finished.matchId);
+  if (after.engineKind !== "real" || after.physicsModelVersion !== "2.0.0" || rounds.some((r) => r.modelVersion !== "2.0.0")) throw new Error("not formal Planck 2.0.0");
+  if (after.simulationCount - before.simulationCount !== rounds.length) throw new Error("simulation/attempt mismatch");
+  if (rounds.filter((r) => r.winner !== "draw").length !== finished.roundWinners.length) throw new Error("non-draw mismatch");
+  const broadcasts = rounds.reduce((sum, r) => sum + r.frameCount, 0);
+  if (after.frameBroadcastOperations - before.frameBroadcastOperations !== broadcasts) throw new Error("broadcast operations multiplied");
+  for (const round of rounds) for (const client of clients) { const final = client.stream.events.filter((e) => e.type === "battle.frame" && e.roundId === round.roundId).at(-1); if (!final || final.tick !== round.finalTick) throw new Error(`${client.name} missed ${round.roundId} final tick`); }
+  clients.forEach((client) => client.socket.emit("client.event", cmd("room.leave", { roomId: room.roomId }))); await control(url, "/__test/advance", { ms: 120_001 });
+  const cleaned = await poll(`cycle ${index} cleanup`, async () => { const s = await stats(url, true); return s.rooms === 0 && s.matches === 0 && s.bindings === 0 && s.terminalMatches === 0 && s.timers === 0 && s.engine.cache === 0 && s.engine.running === 0 && s.engine.queued === 0 && s.designs.total === 0 ? s : false; });
+  return { attempts: rounds.length, nonDrawRounds: finished.roundWinners.length, frames: rounds.map((r) => r.frameCount), ticks: rounds.map((r) => r.finalTick), broadcasts, heap: cleaned.heapUsed };
 }
 
-async function upload(client, body) {
-  const response = await fetch(`${URL}/api/designs`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${client.token}` }, body: JSON.stringify(body) });
-  if (!response.ok) throw new Error(`design upload failed: ${response.status} ${await response.text()}`);
-  return (await response.json()).designId;
-}
-
-async function stats() {
-  const response = await fetch(`${URL}/__test/stats`, { headers: { "x-test-secret": SECRET } });
-  if (!response.ok) throw new Error(`stats failed: ${response.status}`);
-  return response.json();
-}
-
-async function tapRound(players, schedule) {
-  const waitMs = Math.max(0, schedule.serverTargetTimeMs - Date.now());
-  if (waitMs) await retryDelay(waitMs);
-  for (const player of players) player.socket.emit("client.event", command("launch.tap", {
-    roomId: schedule.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: Date.now(),
-  }));
-}
-
-const server = spawn("pnpm", ["--filter", "@steam-top/server", "exec", "tsx", "../../tests/support/realtime-server.ts"], {
-  cwd: process.cwd(), env: { ...process.env, NODE_ENV: "test", TEST_REALTIME_PORT: String(PORT), TEST_CONTROL_SECRET: SECRET }, stdio: ["ignore", "pipe", "pipe"],
-});
-let serverLog = "";
-server.stdout.on("data", (chunk) => { serverLog += chunk; });
-server.stderr.on("data", (chunk) => { serverLog += chunk; });
-const clients = [];
-const startedAt = Date.now();
-
+let server, failure; const clients = [];
 try {
-  await poll("test server health", async () => (await fetch(`${URL}/health`)).ok);
-  const baseline = await stats();
-  const players = await Promise.all([connect("Load-player-1"), connect("Load-player-2")]);
-  clients.push(...players);
-  const ownerRoomPromise = players[0].stream.next((event) => event.type === "room.snapshot");
-  players[0].socket.emit("client.event", command("room.create", { name: "20 spectators" }));
-  const room = await ownerRoomPromise;
-  const peerRoom = players[1].stream.next((event) => event.type === "room.snapshot" && event.roomId === room.roomId);
-  players[1].socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
-  await peerRoom;
-
-  const spectators = await Promise.all(Array.from({ length: 20 }, (_, index) => connect(`Load-spectator-${index + 1}`)));
-  clients.push(...spectators);
-  await Promise.all(spectators.map(async (spectator) => {
-    const joined = spectator.stream.next((event) => event.type === "room.snapshot" && event.roomId === room.roomId);
-    spectator.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "spectator" }));
-    await joined;
-  }));
-
-  const designIds = await Promise.all([upload(players[0], design("Load A", 40)), upload(players[1], design("Load B", 42))]);
-  const firstSchedule = spectators[0].stream.next((event) => event.type === "launch.schedule");
-  players.forEach((player, index) => player.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: designIds[index] })));
-  const schedule1 = await firstSchedule;
-  await tapRound(players, schedule1);
-  const schedule2 = await spectators[0].stream.next((event) => event.type === "launch.schedule" && event.roundId !== schedule1.roundId, 15_000);
-  await tapRound(players, schedule2);
-
-  const finalEvents = await Promise.all(clients.map((client) => client.stream.next((event) => event.type === "match.finished", 15_000)));
-  const finalFrames = clients.map((client) => client.stream.events.filter((event) => event.type === "battle.frame").at(-1));
-  if (finalFrames.some((frame) => !frame)) throw new Error("at least one client missed the reliable final frame");
-  const matchIds = new Set([...finalEvents.map((event) => event.matchId), ...finalFrames.map((event) => event.matchId)]);
-  const ticks = new Set(finalFrames.map((event) => event.tick));
-  if (matchIds.size !== 1 || ticks.size !== 1) throw new Error(`inconsistent clients: matchIds=${[...matchIds]} ticks=${[...ticks]}`);
-
-  const loaded = await stats();
-  if (loaded.simulationCount !== 2) throw new Error(`expected 2 simulations, got ${loaded.simulationCount}`);
-  if (loaded.frameBroadcastOperations !== 6) throw new Error(`expected 6 frame broadcasts, got ${loaded.frameBroadcastOperations}`);
-  const elapsedMs = Date.now() - startedAt;
-  if (elapsedMs > 20_000) throw new Error(`load run too slow: ${elapsedMs}ms`);
-  if (loaded.heapUsed - baseline.heapUsed > 100 * 1024 * 1024) throw new Error(`heap grew by more than 100 MiB`);
-
-  clients.forEach((client) => client.socket.disconnect());
-  const drained = await poll("socket connections and transport handles to drain", async () => {
-    const value = await stats();
-    return value.connections === 0 && value.activeHandles <= baseline.activeHandles + 10 ? value : false;
-  });
-  console.info(JSON.stringify({ spectators: 20, players: 2, rounds: loaded.simulationCount, frameBroadcastOperations: loaded.frameBroadcastOperations, finalTick: [...ticks][0], elapsedMs, heapDeltaMiB: Number(((loaded.heapUsed - baseline.heapUsed) / 1024 / 1024).toFixed(2)), drainedConnections: drained.connections }));
-} catch (error) {
-  console.error(serverLog);
-  throw error;
-} finally {
-  clients.forEach((client) => client.socket.disconnect());
-  server.kill("SIGTERM");
-  await Promise.race([new Promise((resolve) => server.once("exit", resolve)), retryDelay(3_000)]);
-}
+  server = await startServer(); const cold = await stats(server.url, true), started = Date.now();
+  const players = await Promise.all([connect(server.url, "Load-player-1"), connect(server.url, "Load-player-2")]), spectators = await Promise.all(Array.from({ length: 20 }, (_, i) => connect(server.url, `Load-spectator-${i + 1}`))); clients.push(...players, ...spectators);
+  const connected = await stats(server.url, true), results = []; for (let i = 1; i <= CYCLES; i += 1) results.push(await cycle(server.url, clients, players, i));
+  const elapsedMs = Date.now() - started, heaps = results.map((r) => r.heap), deltas = heaps.slice(1).map((h, i) => h - heaps[i]);
+  if (elapsedMs > MAX_MS) throw new Error(`scenario ${elapsedMs}ms > ${MAX_MS}ms`);
+  if (Math.max(...heaps) - Math.min(...heaps) > HEAP_SPAN || (deltas.length > 1 && deltas.every((d) => d > 4 * 1024 * 1024))) throw new Error(`linear/unbounded heap: ${heaps}`);
+  clients.forEach((c) => c.socket.disconnect()); await control(server.url, "/__test/advance", { ms: 120_001 });
+  const final = await poll("disconnect cleanup", async () => { const s = await stats(server.url, true); return s.connections === 0 && s.sessions === 0 && s.rooms === 0 && s.matches === 0 && s.bindings === 0 && s.timers === 0 && s.engine.cache === 0 && s.designs.total === 0 ? s : false; });
+  if (final.heapUsed > connected.heapUsed + HEAP_SPAN) throw new Error("post-disconnect heap remained high");
+  console.info(JSON.stringify({ engineKind: final.engineKind, physicsModelVersion: final.physicsModelVersion, cycles: results.map(({ heap, ...r }) => r), elapsedMs, heapMiB: { cold: +(cold.heapUsed / 1048576).toFixed(2), connected: +(connected.heapUsed / 1048576).toFixed(2), steady: heaps.map((h) => +(h / 1048576).toFixed(2)), final: +(final.heapUsed / 1048576).toFixed(2) }, finalCounts: { connections: final.connections, sessions: final.sessions, rooms: final.rooms, matches: final.matches, bindings: final.bindings, timers: final.timers, designs: final.designs.total, cache: final.engine.cache } }));
+} catch (error) { failure = error; }
+finally { clients.forEach((c) => c.socket.disconnect()); if (server) try { await stopServer(server); } catch (error) { failure = failure ? new AggregateError([failure, error]) : error; } }
+if (failure) throw failure;

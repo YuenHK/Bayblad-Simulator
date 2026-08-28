@@ -10,7 +10,7 @@
     "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.e2e.json && tsc --noEmit -p tsconfig.integration.json",
     "test": "pnpm -r test && vitest run tests/integration",
     "test:e2e": "playwright test",
-    "test:load": "node tests/load/spectators.mjs"
+    "test:load": "node --test tests/load/child-process.test.mjs && node tests/load/spectators.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
