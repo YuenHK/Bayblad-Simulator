@@ -268,6 +268,38 @@ export const viewerSchema = z
   .strict();
 export type Viewer = z.infer<typeof viewerSchema>;
 
+export type ViewerStateSource = {
+  readonly ownerParticipantId: ParticipantId;
+  readonly player1: RoomSeat;
+  readonly player2: RoomSeat;
+  readonly spectators: readonly ParticipantSummary[];
+};
+
+export const deriveViewerState = (
+  roomState: ViewerStateSource,
+  participantId: string,
+): Viewer => {
+  const normalizedParticipantId = participantIdSchema.parse(participantId);
+  const locations: ViewerRole[] = [];
+  if (roomState.player1?.participantId === normalizedParticipantId) {
+    locations.push("player1");
+  }
+  if (roomState.player2?.participantId === normalizedParticipantId) {
+    locations.push("player2");
+  }
+  for (const spectator of roomState.spectators) {
+    if (spectator.participantId === normalizedParticipantId) locations.push("spectator");
+  }
+  if (locations.length !== 1) {
+    throw new Error("Participant must appear in exactly one room location");
+  }
+  return {
+    participantId: normalizedParticipantId,
+    role: locations[0]!,
+    isOwner: normalizedParticipantId === roomState.ownerParticipantId,
+  };
+};
+
 export const roomSnapshotEventSchema = z
   .object({
     type: z.literal("room.snapshot"),
@@ -277,7 +309,6 @@ export const roomSnapshotEventSchema = z
     ownerParticipantId: participantIdSchema,
     phase: phaseSchema,
     revision: safeNonnegativeIntegerSchema,
-    viewerRevision: safeNonnegativeIntegerSchema,
     player1: roomSeatSchema,
     player2: roomSeatSchema,
     spectators: z.array(spectatorSchema),
@@ -307,23 +338,23 @@ export const roomSnapshotEventSchema = z
       });
     }
 
-    const viewerLocations = locations.filter(
-      (location) => location.participantId === room.viewer.participantId,
-    );
-    if (viewerLocations.length !== 1 || viewerLocations[0]?.role !== room.viewer.role) {
+    try {
+      const derivedViewer = deriveViewerState(room, room.viewer.participantId);
+      if (
+        derivedViewer.role !== room.viewer.role ||
+        derivedViewer.isOwner !== room.viewer.isOwner
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Viewer state must match the participant's room location and ownership",
+          path: ["viewer"],
+        });
+      }
+    } catch {
       context.addIssue({
         code: "custom",
-        message: "Viewer role must match exactly one room location",
-        path: ["viewer", "role"],
-      });
-    }
-
-    const viewerIsOwner = room.viewer.participantId === room.ownerParticipantId;
-    if (room.viewer.isOwner !== viewerIsOwner) {
-      context.addIssue({
-        code: "custom",
-        message: "Viewer ownership flag must match the owner participant id",
-        path: ["viewer", "isOwner"],
+        message: "Viewer must appear in exactly one room location",
+        path: ["viewer"],
       });
     }
   });
@@ -389,26 +420,6 @@ export const roomDeltaEventSchema = z
     const hasStateChange = Object.values(delta.patch).some((value) => value !== undefined);
     if (!hasStateChange && joinedIds.length === 0 && leftIds.length === 0) {
       context.addIssue({ code: "custom", message: "Room delta must contain at least one change" });
-    }
-  });
-
-export const roomViewerDeltaEventSchema = z
-  .object({
-    type: z.literal("room.viewer.delta"),
-    roomId: correlationIdSchema,
-    baseViewerRevision: safeNonnegativeIntegerSchema,
-    viewerRevision: safeNonnegativeIntegerSchema,
-    viewer: viewerSchema,
-    ...serverEnvelopeShape,
-  })
-  .strict()
-  .superRefine((delta, context) => {
-    if (delta.viewerRevision !== delta.baseViewerRevision + 1) {
-      context.addIssue({
-        code: "custom",
-        message: "Viewer revision must immediately follow its base revision",
-        path: ["viewerRevision"],
-      });
     }
   });
 
@@ -599,7 +610,6 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   lobbySnapshotEventSchema,
   roomSnapshotEventSchema,
   roomDeltaEventSchema,
-  roomViewerDeltaEventSchema,
   launchScheduleEventSchema,
   launchResultPrivateEventSchema,
   launchResultSpectatorEventSchema,
@@ -616,7 +626,6 @@ export const playerServerEventSchema = z.discriminatedUnion("type", [
   lobbySnapshotEventSchema,
   roomSnapshotEventSchema,
   roomDeltaEventSchema,
-  roomViewerDeltaEventSchema,
   launchScheduleEventSchema,
   launchResultPrivateEventSchema,
   battleFrameEventSchema,
@@ -632,7 +641,6 @@ export const spectatorServerEventSchema = z.discriminatedUnion("type", [
   lobbySnapshotEventSchema,
   roomSnapshotEventSchema,
   roomDeltaEventSchema,
-  roomViewerDeltaEventSchema,
   launchScheduleEventSchema,
   launchResultSpectatorEventSchema,
   battleFrameEventSchema,
@@ -648,7 +656,6 @@ export type ProtocolUnsupportedEvent = z.infer<typeof protocolUnsupportedEventSc
 export type LobbySnapshotEvent = z.infer<typeof lobbySnapshotEventSchema>;
 export type RoomSnapshotEvent = z.infer<typeof roomSnapshotEventSchema>;
 export type RoomDeltaEvent = z.infer<typeof roomDeltaEventSchema>;
-export type RoomViewerDeltaEvent = z.infer<typeof roomViewerDeltaEventSchema>;
 export type LaunchScheduleEvent = z.infer<typeof launchScheduleEventSchema>;
 export type LaunchResultPrivateEvent = z.infer<typeof launchResultPrivateEventSchema>;
 export type LaunchResultSpectatorEvent = z.infer<typeof launchResultSpectatorEventSchema>;
