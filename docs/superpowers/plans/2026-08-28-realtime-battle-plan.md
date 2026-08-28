@@ -283,9 +283,14 @@ git commit -m "feat: simulate deterministic server-side top battles"
 
 ```ts
 it("scores 50g versus 40g at 2:1", () => {
-  const result = scoreMatch({ massA: 50, massB: 40, roundWinners: ["A", "B", "A"] });
-  expect(result.A).toEqual({ battlePoints: 2, challengePoints: 0, total: 2 });
-  expect(result.B).toEqual({ battlePoints: 1, challengePoints: 0.5, total: 1.5 });
+  const result = scoreMatch({
+    player1MassG: 50,
+    player2MassG: 40,
+    roundWinners: ["player1", "player2", "player1"]
+  });
+  expect(result.winner).toBe("player1");
+  expect(result.player1).toEqual({ battlePoints: 2, challengePoints: 0, total: 2 });
+  expect(result.player2).toEqual({ battlePoints: 1, challengePoints: 0.5, total: 1.5 });
 });
 ```
 
@@ -297,11 +302,13 @@ it("scores 50g versus 40g at 2:1", () => {
 
 - [ ] **步驟 3：實作純函式計分**
 
-```ts
-export const challengePoints = (differenceG: number) => Math.min(Math.max(differenceG, 0) * 0.05, 0.5);
-```
+`scoreMatch` 以 strict Zod schema 一次解析輸入，只接受 2:0 或 2:1；平局重賽不加入
+`roundWinners`。欄位和勝方一律沿用 protocol 的 `player1`／`player2` 命名，結果為不可變物件。
 
-`scoreMatch` 只接受 2:0 或 2:1；平局重賽不加入 round winners。
+Domain 會產生高精度模擬重量，但沒有另訂磅秤精度。因此計分邊界明確採用 1 mg（0.001 g）
+量化：先把兩位玩家的重量轉為整數毫克，再以整數重量差計算
+`min(重量差（g）× 0.05, 0.5)`。這可保留 9.999 g／10 g 的上限邊界，並避免二進制
+浮點乘法造成分數尾數。
 
 - [ ] **步驟 4：執行測試並 Commit**
 
