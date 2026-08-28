@@ -1,8 +1,21 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { DesignerPage } from "./DesignerPage";
+
+afterEach(() => {
+  Reflect.deleteProperty(document, "elementFromPoint");
+});
+
+function stubElementFromPoint(
+  resolve: (x: number, y: number) => Element | null,
+): void {
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: resolve,
+  });
+}
 
 async function replaceNumber(
   user: ReturnType<typeof userEvent.setup>,
@@ -100,17 +113,21 @@ describe("DesignerPage", () => {
 
     await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
     await replaceNumber(user, "直徑（mm）", "42");
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: "拖動中層以重新排序" }),
-      { pointerId: 7 },
-    );
-    fireEvent.pointerEnter(screen.getAllByRole("listitem")[0]!, {
-      pointerId: 7,
+    const targetLayer = screen.getAllByRole("listitem")[0]!;
+    const sourceHandle = screen.getByRole("button", {
+      name: "拖動中層以重新排序",
     });
-    fireEvent.pointerUp(
-      screen.getByRole("button", { name: "拖動頂層以重新排序" }),
-      { pointerId: 7 },
+    expect(sourceHandle).toHaveAttribute("data-source-layer-id", idsBefore[1]);
+    stubElementFromPoint((x, y) =>
+      x === 24 && y === 18 ? targetLayer : null,
     );
+    fireEvent.pointerDown(sourceHandle, { pointerId: 7 });
+    fireEvent.pointerMove(sourceHandle, {
+      pointerId: 7,
+      clientX: 24,
+      clientY: 18,
+    });
+    fireEvent.pointerUp(sourceHandle, { pointerId: 7 });
 
     const summaries = screen.getAllByRole("listitem");
     expect(within(summaries[0]!).getByText("42 mm")).toBeVisible();
@@ -133,9 +150,20 @@ describe("DesignerPage", () => {
       name: "拖動頂層以重新排序",
     });
 
+    stubElementFromPoint(() => null);
     fireEvent.pointerDown(topHandle, { pointerId: 9 });
+    fireEvent.pointerMove(topHandle, {
+      pointerId: 9,
+      clientX: 12,
+      clientY: 12,
+    });
     fireEvent.pointerCancel(topHandle, { pointerId: 9 });
-    fireEvent.pointerMove(screen.getAllByRole("listitem")[2]!, { pointerId: 9 });
+    stubElementFromPoint(() => screen.getAllByRole("listitem")[2]!);
+    fireEvent.pointerMove(topHandle, {
+      pointerId: 9,
+      clientX: 90,
+      clientY: 90,
+    });
 
     const idsAfter = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),

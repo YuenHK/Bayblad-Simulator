@@ -1,5 +1,5 @@
 import type { RuleIssueCode } from "@steam-top/domain";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AssemblyControls } from "./AssemblyControls";
 import { LayerControls } from "./LayerControls";
@@ -41,6 +41,10 @@ export function DesignerPage() {
   );
   const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null);
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
+  const dragCapture = useRef<{
+    element: HTMLButtonElement;
+    pointerId: number;
+  } | null>(null);
   const selectedLayer = design.layers.find(
     (layer) => layer.id === selectedLayerId,
   ) ?? design.layers[0];
@@ -60,8 +64,16 @@ export function DesignerPage() {
   ) => {
     event.preventDefault();
     event.stopPropagation();
+    dragCapture.current = {
+      element: event.currentTarget,
+      pointerId: event.pointerId,
+    };
     if (typeof event.currentTarget.setPointerCapture === "function") {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Some test environments and older browsers expose but do not support capture.
+      }
     }
     setDraggingLayerId(layerId);
     setDragOverLayerId(layerId);
@@ -83,18 +95,53 @@ export function DesignerPage() {
     setDragOverLayerId(targetId);
   };
 
-  const endDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
-    event.preventDefault();
+  const moveCapturedPointer = (
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
     if (
-      typeof event.currentTarget.hasPointerCapture === "function" &&
-      event.currentTarget.hasPointerCapture(event.pointerId) &&
-      typeof event.currentTarget.releasePointerCapture === "function"
+      draggingLayerId === null ||
+      typeof document.elementFromPoint !== "function"
     ) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
     }
+    const hitElement = document.elementFromPoint(event.clientX, event.clientY);
+    const targetLayer = hitElement?.closest<HTMLElement>("[data-layer-id]");
+    const targetId = targetLayer?.dataset.layerId;
+    if (targetId !== undefined) moveDraggedLayer(targetId);
+  };
+
+  const finishDrag = () => {
+    const capture = dragCapture.current;
+    if (
+      capture !== null &&
+      typeof capture.element.releasePointerCapture === "function"
+    ) {
+      try {
+        capture.element.releasePointerCapture(capture.pointerId);
+      } catch {
+        // Pointer cancellation may release capture before the cleanup handler runs.
+      }
+    }
+    dragCapture.current = null;
     setDraggingLayerId(null);
     setDragOverLayerId(null);
   };
+
+  const endDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    finishDrag();
+  };
+
+  useEffect(() => {
+    if (draggingLayerId === null) return;
+    const finishFromWindow = () => finishDrag();
+    window.addEventListener("pointerup", finishFromWindow);
+    window.addEventListener("pointercancel", finishFromWindow);
+    return () => {
+      window.removeEventListener("pointerup", finishFromWindow);
+      window.removeEventListener("pointercancel", finishFromWindow);
+    };
+  }, [draggingLayerId]);
 
   return (
     <main className="designer-shell">
@@ -118,8 +165,6 @@ export function DesignerPage() {
                     ? "is-drag-target"
                     : "",
                 ].filter(Boolean).join(" ")}
-                onPointerEnter={() => moveDraggedLayer(layer.id)}
-                onPointerMove={() => moveDraggedLayer(layer.id)}
               >
                 <div className="layer-summary">
                   <strong>{POSITION_LABELS[layer.position]}</strong>
@@ -129,9 +174,11 @@ export function DesignerPage() {
                 <button
                   type="button"
                   className="drag-handle"
+                  data-source-layer-id={layer.id}
                   aria-label={`拖動${POSITION_LABELS[layer.position]}以重新排序`}
                   aria-pressed={draggingLayerId === layer.id}
                   onPointerDown={(event) => beginDrag(event, layer.id)}
+                  onPointerMove={moveCapturedPointer}
                   onPointerUp={endDrag}
                   onPointerCancel={endDrag}
                   onClick={(event) => event.preventDefault()}
