@@ -31,7 +31,7 @@ export type DesignValidation = Readonly<{
 
 const MAX_DIAMETER_MM = 60;
 const MAX_HEIGHT_MM = 40;
-const MAX_WEIGHT_G = 60;
+export const MAX_MASS_G = 60;
 const EPSILON = 1e-9;
 const FULL_TURN = Math.PI * 2;
 
@@ -47,7 +47,7 @@ export function validateMassLimit(totalMassG: number): RuleIssue[] {
   if (!Number.isFinite(totalMassG)) {
     throw new TypeError("totalMassG must be finite");
   }
-  return totalMassG > MAX_WEIGHT_G
+  return totalMassG > MAX_MASS_G
     ? [
         globalIssue(
           "WEIGHT_OVER_60",
