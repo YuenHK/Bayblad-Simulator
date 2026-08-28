@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { clientEventSchema, serverEventSchema } from "./events";
+import {
+  clientEventSchema,
+  playerServerEventSchema,
+  protocolHelloEventSchema,
+  serverEventSchema,
+  spectatorServerEventSchema,
+  v1CommandEventSchema,
+} from "./events";
 
 const eventId = "550e8400-e29b-41d4-a716-446655440000";
 const serverEventId = "8db11fe0-aca6-45d8-8cf3-13fd42232885";
@@ -163,9 +170,37 @@ describe("clientEventSchema", () => {
       clientEventSchema.safeParse({
         type: "protocol.hello",
         eventId,
-        supportedVersions: [2],
+        supportedVersions: [1, 2],
       }).success,
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("bounds and deduplicates advertised protocol versions", () => {
+    for (const supportedVersions of [
+      [1, 1],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      [0],
+      [256],
+      [Number.MAX_SAFE_INTEGER + 1],
+      [1.5],
+    ]) {
+      expect(
+        protocolHelloEventSchema.safeParse({
+          type: "protocol.hello",
+          eventId,
+          supportedVersions,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("keeps handshake and v1 command schemas mutually exclusive", () => {
+    const hello = { type: "protocol.hello", eventId, supportedVersions: [1, 2] };
+    const command = clientCases[6].valid;
+    expect(protocolHelloEventSchema.safeParse(hello).success).toBe(true);
+    expect(v1CommandEventSchema.safeParse(hello).success).toBe(false);
+    expect(v1CommandEventSchema.safeParse(command).success).toBe(true);
+    expect(protocolHelloEventSchema.safeParse(command).success).toBe(false);
   });
 
   it("requires a UUID event id and rejects unknown fields", () => {
@@ -202,6 +237,20 @@ describe("clientEventSchema", () => {
     ]) {
       expect(clientEventSchema.safeParse({ ...tap, clientTimeMs }).success).toBe(false);
     }
+  });
+
+  it("normalizes safe public room names and rejects dangerous controls", () => {
+    const create = clientCases[1].valid;
+    expect(
+      clientEventSchema.parse({ ...create, name: "  Cafe\u0301 🌟  " }),
+    ).toMatchObject({ name: "Café 🌟" });
+
+    for (const name of ["line\nbreak", "hidden\u0085control", "safe\u202ename", "x\u2066y"]) {
+      expect(clientEventSchema.safeParse({ ...create, name }).success).toBe(false);
+    }
+    expect(clientEventSchema.safeParse({ ...create, name: "繁體中文 🌀" }).success).toBe(
+      true,
+    );
   });
 });
 
@@ -367,7 +416,56 @@ const serverCases = [
       ...serverEnvelope,
     },
   },
+  {
+    type: "room.state.delta",
+    value: {
+      type: "room.state.delta",
+      roomId: "room-1",
+      revision: 10,
+      patch: {
+        ownerParticipantId: "p2",
+        phase: "waiting",
+        player1: { ...occupiedSeat, ready: false },
+        player2: null,
+        spectatorCount: 2,
+        name: "更新房間",
+      },
+      ...serverEnvelope,
+    },
+  },
+  {
+    type: "room.viewer.delta",
+    value: {
+      type: "room.viewer.delta",
+      roomId: "room-1",
+      revision: 10,
+      viewer: { participantId: "p2", isOwner: true, role: "spectator" },
+      ...serverEnvelope,
+    },
+  },
 ] as const;
+
+const maximumParticipantId = "p".repeat(32);
+const maximumDisplayName = "觀".repeat(80);
+const maximumSpectators = Array.from({ length: 500 }, (_, index) => ({
+  participantId: `s${index}`.padEnd(32, "x"),
+  displayName: maximumDisplayName,
+}));
+const maximumRoomSnapshot = {
+  ...roomSnapshot,
+  name: "房".repeat(30),
+  ownerParticipantId: maximumParticipantId,
+  player1: {
+    ...occupiedSeat,
+    participantId: maximumParticipantId,
+    displayName: maximumDisplayName,
+  },
+  spectators: maximumSpectators,
+  viewer: {
+    ...roomSnapshot.viewer,
+    participantId: maximumParticipantId,
+  },
+};
 
 describe("serverEventSchema", () => {
   it.each(serverCases)("accepts a valid $type event", ({ value }) => {
@@ -435,6 +533,30 @@ describe("serverEventSchema", () => {
     ).toBe(false);
   });
 
+  it("normalizes safe display names and rejects display-name controls", () => {
+    expect(
+      serverEventSchema.parse({
+        ...roomSnapshot,
+        player1: { ...occupiedSeat, displayName: "Cafe\u0301 🌟" },
+      }),
+    ).toMatchObject({ player1: { displayName: "Café 🌟" } });
+
+    for (const displayName of ["bad\nname", "bad\u009fname", "bad\u202dname", "bad\u2069name"]) {
+      expect(
+        serverEventSchema.safeParse({
+          ...roomSnapshot,
+          spectators: [{ participantId: "s1", displayName }],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      serverEventSchema.safeParse({
+        ...roomSnapshot,
+        spectators: [{ participantId: "s1", displayName: "學生 🪀" }],
+      }).success,
+    ).toBe(true);
+  });
+
   it("keeps spectator names out of lobby snapshots", () => {
     expect(
       serverEventSchema.safeParse({
@@ -476,6 +598,88 @@ describe("serverEventSchema", () => {
     ).toBe(true);
   });
 
+  it("requires unique room participants and a role-matched viewer", () => {
+    const invalidSnapshots = [
+      {
+        ...roomSnapshot,
+        player2: { ...occupiedSeat, participantId: "p1" },
+      },
+      {
+        ...roomSnapshot,
+        spectators: [{ participantId: "p1", displayName: "Duplicate" }],
+      },
+      {
+        ...roomSnapshot,
+        viewer: { ...roomSnapshot.viewer, participantId: "missing" },
+      },
+      {
+        ...roomSnapshot,
+        viewer: { ...roomSnapshot.viewer, role: "spectator" },
+      },
+      {
+        ...roomSnapshot,
+        viewer: { ...roomSnapshot.viewer, isOwner: false },
+      },
+      {
+        ...roomSnapshot,
+        ownerParticipantId: "disconnected-owner",
+        viewer: { ...roomSnapshot.viewer, isOwner: true },
+      },
+    ];
+    for (const snapshot of invalidSnapshots) {
+      expect(serverEventSchema.safeParse(snapshot).success).toBe(false);
+    }
+
+    expect(
+      serverEventSchema.safeParse({
+        ...roomSnapshot,
+        ownerParticipantId: "disconnected-owner",
+        viewer: { ...roomSnapshot.viewer, isOwner: false },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires internally consistent presence deltas", () => {
+    const delta = serverCases[3].value;
+    expect(
+      serverEventSchema.safeParse({
+        ...delta,
+        joined: [delta.joined[0], delta.joined[0]],
+      }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({
+        ...delta,
+        leftParticipantIds: ["s1", "s1"],
+      }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({ ...delta, leftParticipantIds: ["s2"] }).success,
+    ).toBe(false);
+  });
+
+  it("expresses room state and viewer changes without broadcasting the roster", () => {
+    const stateDelta = serverCases[12].value;
+    const viewerDelta = serverCases[13].value;
+    expect(serverEventSchema.safeParse(stateDelta).success).toBe(true);
+    expect(serverEventSchema.safeParse(viewerDelta).success).toBe(true);
+    expect(new TextEncoder().encode(JSON.stringify(stateDelta)).byteLength).toBeLessThan(2_048);
+    expect(new TextEncoder().encode(JSON.stringify(viewerDelta)).byteLength).toBeLessThan(2_048);
+    expect(serverEventSchema.safeParse({ ...stateDelta, patch: {} }).success).toBe(false);
+    expect(
+      serverEventSchema.safeParse({ ...stateDelta, patch: { phase: undefined } }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({
+        ...stateDelta,
+        patch: { ...stateDelta.patch, spectators: roomSnapshot.spectators },
+      }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({ ...viewerDelta, spectators: roomSnapshot.spectators }).success,
+    ).toBe(false);
+  });
+
   it("carries full room, match, and round correlation ids", () => {
     for (const event of [launchSchedule, launchPrivate, serverCases[6].value, battleFrame]) {
       for (const field of ["roomId", "matchId", "roundId"] as const) {
@@ -498,25 +702,25 @@ describe("serverEventSchema", () => {
   });
 
   it("accepts 500 spectators without a product array maximum", () => {
-    const spectators = Array.from({ length: 500 }, (_, index) => ({
-      participantId: `s${index}`,
-      displayName: `S${index}`,
-    }));
-    const snapshot = serverEventSchema.parse({ ...roomSnapshot, spectators });
+    const snapshot = serverEventSchema.parse(maximumRoomSnapshot);
     expect(snapshot.type).toBe("room.snapshot");
-    expect(JSON.stringify(snapshot).length).toBeLessThan(100_000);
+    expect(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength).toBeLessThan(
+      200 * 1_024,
+    );
   });
 
-  it("uses compact presence deltas after the full snapshot", () => {
-    const spectators = Array.from({ length: 500 }, (_, index) => ({
-      participantId: `s${index}`,
-      displayName: `S${index}`,
-    }));
-    const fullSnapshot = serverEventSchema.parse({ ...roomSnapshot, spectators });
-    const delta = serverEventSchema.parse(serverCases[3].value);
-    expect(JSON.stringify(delta).length * 10).toBeLessThan(
-      JSON.stringify(fullSnapshot).length,
-    );
+  it("uses compact deltas instead of rebroadcasting the full roster", () => {
+    const fullSnapshot = serverEventSchema.parse(maximumRoomSnapshot);
+    const fullBytes = new TextEncoder().encode(JSON.stringify(fullSnapshot)).byteLength;
+    for (const deltaValue of [
+      serverCases[3].value,
+      serverCases[12].value,
+      serverCases[13].value,
+    ]) {
+      const delta = serverEventSchema.parse(deltaValue);
+      const deltaBytes = new TextEncoder().encode(JSON.stringify(delta)).byteLength;
+      expect(deltaBytes * 10).toBeLessThan(fullBytes);
+    }
   });
 
   it("rejects invalid server times, counters, and frame numbers", () => {
@@ -643,5 +847,18 @@ describe("serverEventSchema", () => {
         player1: { ...roomSnapshot.player1, secret: "must not leak" },
       }).success,
     ).toBe(false);
+  });
+
+  it("separates private player and spectator launch-result audiences", () => {
+    expect(playerServerEventSchema.safeParse(launchPrivate).success).toBe(true);
+    expect(playerServerEventSchema.safeParse(serverCases[6].value).success).toBe(false);
+    expect(spectatorServerEventSchema.safeParse(serverCases[6].value).success).toBe(true);
+    expect(spectatorServerEventSchema.safeParse(launchPrivate).success).toBe(false);
+
+    const commonEvents = serverCases.filter((_, index) => index !== 5 && index !== 6);
+    for (const { value } of commonEvents) {
+      expect(playerServerEventSchema.safeParse(value).success).toBe(true);
+      expect(spectatorServerEventSchema.safeParse(value).success).toBe(true);
+    }
   });
 });
