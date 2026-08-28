@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { makeDefaultDesign } from "./design";
 import {
   ASSEMBLY,
+  CUTOUT_CIRCLE_SEGMENTS,
   MATERIALS,
   calculateMassProperties,
   calculatePerforatedLayerMassProperties,
@@ -16,6 +17,16 @@ describe("mass constants", () => {
       metalDensityGPerMm3: 0.00785,
       metalDiscThicknessMm: 1,
     });
+  });
+
+  it("bounds the inscribed circle approximation area error below 0.003%", () => {
+    const relativeArea =
+      (CUTOUT_CIRCLE_SEGMENTS *
+        Math.sin((Math.PI * 2) / CUTOUT_CIRCLE_SEGMENTS)) /
+      (Math.PI * 2);
+
+    expect(CUTOUT_CIRCLE_SEGMENTS).toBeGreaterThanOrEqual(512);
+    expect(1 - relativeArea).toBeLessThan(0.00003);
   });
 });
 
@@ -76,6 +87,71 @@ describe("calculatePerforatedLayerMassProperties", () => {
         1,
       ),
     ).toThrow(/geometry/i);
+  });
+
+  it("deducts only the portion of a circular cutout inside the layer", () => {
+    const square = [
+      { x: -10, y: -10 },
+      { x: 10, y: -10 },
+      { x: 10, y: 10 },
+      { x: -10, y: 10 },
+    ];
+    const result = calculatePerforatedLayerMassProperties(
+      square,
+      [{ center: { x: 10, y: 0 }, radiusMm: 2 }],
+      1,
+      1,
+    );
+    const removedArea = 400 - result.totalMassG;
+    const remainingPolarAtOrigin =
+      result.polarMomentGmm2 +
+      result.totalMassG *
+        (result.centerOfMassMm.x ** 2 + result.centerOfMassMm.y ** 2);
+    const removedPolarAtOrigin = 80_000 / 3 - remainingPolarAtOrigin;
+    const fullCirclePolarAtOrigin = Math.PI * 2 ** 4 / 2 + Math.PI * 2 ** 2 * 10 ** 2;
+
+    expect(removedArea).toBeGreaterThan(0);
+    expect(removedArea).toBeLessThan(Math.PI * 2 ** 2);
+    expect(removedArea).toBeCloseTo(Math.PI * 2 ** 2 / 2, 3);
+    expect(removedPolarAtOrigin).toBeGreaterThan(0);
+    expect(removedPolarAtOrigin).toBeLessThan(fullCirclePolarAtOrigin);
+  });
+
+  it("does not deduct overlapping circular cutouts twice", () => {
+    const square = [
+      { x: -10, y: -10 },
+      { x: 10, y: -10 },
+      { x: 10, y: 10 },
+      { x: -10, y: 10 },
+    ];
+    const cutout = { center: { x: 0, y: 0 }, radiusMm: 2 };
+
+    const duplicated = calculatePerforatedLayerMassProperties(
+      square,
+      [cutout, cutout],
+      1,
+      1,
+    );
+    const single = calculatePerforatedLayerMassProperties(
+      square,
+      [cutout],
+      1,
+      1,
+    );
+
+    expect(duplicated.totalMassG).toBeCloseTo(single.totalMassG, 3);
+    expect(duplicated.centerOfMassMm.x).toBeCloseTo(
+      single.centerOfMassMm.x,
+      10,
+    );
+    expect(duplicated.centerOfMassMm.y).toBeCloseTo(
+      single.centerOfMassMm.y,
+      10,
+    );
+    expect(duplicated.polarMomentGmm2).toBeCloseTo(
+      single.polarMomentGmm2,
+      2,
+    );
   });
 });
 
@@ -146,5 +222,38 @@ describe("calculateMassProperties", () => {
     expect(result.totalMassG).toBeGreaterThanOrEqual(0);
     expect(result.polarMomentGmm2).toBeGreaterThanOrEqual(0);
     expect(design).toEqual(before);
+  });
+
+  it("changes continuously when screw holes cross a layer boundary", () => {
+    const makeBoundaryDesign = (radiusMm: number) => {
+      const design = makeDefaultDesign();
+      return {
+        ...design,
+        layers: design.layers.map((layer) => ({
+          ...layer,
+          shape: "circle" as const,
+          diameterMm: 40,
+        })) as typeof design.layers,
+        screwLayout: { count: 4, radiusMm, rotationDeg: 0 },
+        metalDiscDiameterMm: 0,
+      };
+    };
+    const fullFitBoundaryMm =
+      20 - ASSEMBLY.screwHoleRadiusMm / Math.cos(Math.PI / 64);
+    const justInside = calculateMassProperties(
+      makeBoundaryDesign(fullFitBoundaryMm - 0.0005),
+    );
+    const justOutside = calculateMassProperties(
+      makeBoundaryDesign(fullFitBoundaryMm + 0.0005),
+    );
+
+    expect(Math.abs(justOutside.totalMassG - justInside.totalMassG)).toBeLessThan(
+      0.001,
+    );
+    expect(
+      Math.abs(
+        justOutside.polarMomentGmm2 - justInside.polarMomentGmm2,
+      ),
+    ).toBeLessThan(1);
   });
 });

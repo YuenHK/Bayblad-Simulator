@@ -1,3 +1,10 @@
+import {
+  intersection,
+  union,
+  type MultiPolygon,
+  type Polygon,
+} from "polygon-clipping";
+
 import { designSchema, type TopDesign } from "./design";
 import { makeLayerVertices, type Point } from "./geometry";
 
@@ -38,6 +45,13 @@ type PolygonSection = Readonly<{
 
 const EPSILON = 1e-9;
 const FULL_TURN = Math.PI * 2;
+
+/**
+ * Partial circular holes are clipped as inscribed regular polygons. At 512
+ * sides their area error is below 0.003%, while fully contained, disjoint holes
+ * continue to use exact circle formulae.
+ */
+export const CUTOUT_CIRCLE_SEGMENTS = 512;
 
 function assertFinitePositive(value: number, name: string): void {
   if (!Number.isFinite(value) || value <= 0) {
@@ -184,6 +198,149 @@ function circleFitsInsidePolygon(
   return minimumDistance + EPSILON >= cutout.radiusMm;
 }
 
+type RemovedSection = Readonly<{
+  areaMm2: number;
+  firstMomentXmm3: number;
+  firstMomentYmm3: number;
+  polarSecondMomentAtOriginMm4: number;
+}>;
+
+function exactCircularSection(cutouts: readonly CircularCutout[]): RemovedSection {
+  return cutouts.reduce<RemovedSection>(
+    (section, cutout) => {
+      const areaMm2 = Math.PI * cutout.radiusMm ** 2;
+      return {
+        areaMm2: section.areaMm2 + areaMm2,
+        firstMomentXmm3:
+          section.firstMomentXmm3 + areaMm2 * cutout.center.x,
+        firstMomentYmm3:
+          section.firstMomentYmm3 + areaMm2 * cutout.center.y,
+        polarSecondMomentAtOriginMm4:
+          section.polarSecondMomentAtOriginMm4 +
+          (Math.PI * cutout.radiusMm ** 4) / 2 +
+          areaMm2 * (cutout.center.x ** 2 + cutout.center.y ** 2),
+      };
+    },
+    {
+      areaMm2: 0,
+      firstMomentXmm3: 0,
+      firstMomentYmm3: 0,
+      polarSecondMomentAtOriginMm4: 0,
+    },
+  );
+}
+
+function cutoutsAreDisjoint(cutouts: readonly CircularCutout[]): boolean {
+  for (let leftIndex = 0; leftIndex < cutouts.length; leftIndex += 1) {
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < cutouts.length;
+      rightIndex += 1
+    ) {
+      const left = cutouts[leftIndex];
+      const right = cutouts[rightIndex];
+      if (left === undefined || right === undefined) {
+        continue;
+      }
+      if (
+        Math.sqrt(squaredDistance(left.center, right.center)) + EPSILON <
+        left.radiusMm + right.radiusMm
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function circlePolygon(cutout: CircularCutout): Polygon {
+  return [
+    Array.from({ length: CUTOUT_CIRCLE_SEGMENTS }, (_, index) => {
+      const angle = (index / CUTOUT_CIRCLE_SEGMENTS) * FULL_TURN;
+      return [
+        cutout.center.x + Math.cos(angle) * cutout.radiusMm,
+        cutout.center.y + Math.sin(angle) * cutout.radiusMm,
+      ];
+    }),
+  ];
+}
+
+function polygonFromVertices(vertices: readonly Point[]): Polygon {
+  return [vertices.map(({ x, y }) => [x, y])];
+}
+
+function multiPolygonSection(multiPolygon: MultiPolygon): RemovedSection {
+  let areaMm2 = 0;
+  let firstMomentXmm3 = 0;
+  let firstMomentYmm3 = 0;
+  let polarSecondMomentAtOriginMm4 = 0;
+
+  for (const polygon of multiPolygon) {
+    for (let ringIndex = 0; ringIndex < polygon.length; ringIndex += 1) {
+      const ring = polygon[ringIndex];
+      if (ring === undefined || ring.length < 3) {
+        continue;
+      }
+      const section = polygonSection(
+        ring.map(([x, y]) => ({ x, y })),
+      );
+      const sign = ringIndex === 0 ? 1 : -1;
+      areaMm2 += sign * section.areaMm2;
+      firstMomentXmm3 +=
+        sign * section.areaMm2 * section.centroidMm.x;
+      firstMomentYmm3 +=
+        sign * section.areaMm2 * section.centroidMm.y;
+      polarSecondMomentAtOriginMm4 +=
+        sign * section.polarSecondMomentAtOriginMm4;
+    }
+  }
+
+  if (
+    !Number.isFinite(areaMm2) ||
+    !Number.isFinite(firstMomentXmm3) ||
+    !Number.isFinite(firstMomentYmm3) ||
+    !Number.isFinite(polarSecondMomentAtOriginMm4) ||
+    areaMm2 < -EPSILON ||
+    polarSecondMomentAtOriginMm4 < -EPSILON
+  ) {
+    throw new RangeError("Invalid geometry: clipped cutout properties are not finite");
+  }
+
+  return {
+    areaMm2: Math.max(0, areaMm2),
+    firstMomentXmm3,
+    firstMomentYmm3,
+    polarSecondMomentAtOriginMm4: Math.max(
+      0,
+      polarSecondMomentAtOriginMm4,
+    ),
+  };
+}
+
+function clippedCutoutSection(
+  vertices: readonly Point[],
+  cutouts: readonly CircularCutout[],
+): RemovedSection {
+  if (cutouts.length === 0) {
+    return exactCircularSection([]);
+  }
+  if (
+    cutoutsAreDisjoint(cutouts) &&
+    cutouts.every((cutout) => circleFitsInsidePolygon(cutout, vertices))
+  ) {
+    return exactCircularSection(cutouts);
+  }
+
+  const circlePolygons = cutouts.map(circlePolygon);
+  const firstCircle = circlePolygons[0];
+  if (firstCircle === undefined) {
+    return exactCircularSection([]);
+  }
+  const combinedCutouts = union(firstCircle, ...circlePolygons.slice(1));
+  const clipped = intersection(polygonFromVertices(vertices), combinedCutouts);
+  return multiPolygonSection(clipped);
+}
+
 export function calculatePerforatedLayerMassProperties(
   vertices: readonly Point[],
   cutouts: readonly CircularCutout[],
@@ -193,22 +350,19 @@ export function calculatePerforatedLayerMassProperties(
   assertFinitePositive(thicknessMm, "thicknessMm");
   assertFinitePositive(densityGPerMm3, "densityGPerMm3");
   const section = polygonSection(vertices);
-  let netArea = section.areaMm2;
-  let firstMomentX = section.areaMm2 * section.centroidMm.x;
-  let firstMomentY = section.areaMm2 * section.centroidMm.y;
-  let polarAtOrigin = section.polarSecondMomentAtOriginMm4;
-
   for (const cutout of cutouts) {
     assertFinitePoint(cutout.center);
     assertFinitePositive(cutout.radiusMm, "cutout radiusMm");
-    const area = Math.PI * cutout.radiusMm ** 2;
-    netArea -= area;
-    firstMomentX -= area * cutout.center.x;
-    firstMomentY -= area * cutout.center.y;
-    polarAtOrigin -=
-      (Math.PI * cutout.radiusMm ** 4) / 2 +
-      area * (cutout.center.x ** 2 + cutout.center.y ** 2);
   }
+  const removed = clippedCutoutSection(vertices, cutouts);
+  const netArea = section.areaMm2 - removed.areaMm2;
+  const firstMomentX =
+    section.areaMm2 * section.centroidMm.x - removed.firstMomentXmm3;
+  const firstMomentY =
+    section.areaMm2 * section.centroidMm.y - removed.firstMomentYmm3;
+  const polarAtOrigin =
+    section.polarSecondMomentAtOriginMm4 -
+    removed.polarSecondMomentAtOriginMm4;
 
   if (
     !Number.isFinite(netArea) ||
@@ -273,7 +427,7 @@ export function calculateMassProperties(input: TopDesign): MassProperties {
     const vertices = makeLayerVertices(layer);
     const cutouts: CircularCutout[] = [
       { center: { x: 0, y: 0 }, radiusMm: ASSEMBLY.axleHoleRadiusMm },
-      ...screws.filter((cutout) => circleFitsInsidePolygon(cutout, vertices)),
+      ...screws,
     ];
     return calculatePerforatedLayerMassProperties(
       vertices,
