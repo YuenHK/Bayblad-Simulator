@@ -1,4 +1,9 @@
-import { ASSEMBLY, makeLayerVertices, type Layer, type TopDesign } from "@steam-top/domain";
+import {
+  ASSEMBLY,
+  makeLayerVertices,
+  type Layer,
+  type TopDesign,
+} from "@steam-top/domain";
 
 const FULL_TURN = Math.PI * 2;
 

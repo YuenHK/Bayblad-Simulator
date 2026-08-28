@@ -28,6 +28,26 @@ async function replaceNumber(
 }
 
 describe("DesignerPage", () => {
+  it("3D chunk 首次載入失敗後，切走再進入會用新 lazy instance 重試", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const loader = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary chunk failure"))
+      .mockResolvedValue({
+        default: () => <p>3D 重試成功</p>,
+      });
+    const user = userEvent.setup();
+    render(<DesignerPage load3DPreview={loader} />);
+
+    await user.click(screen.getByRole("tab", { name: "3D 預覽" }));
+    expect(await screen.findByText("裝置未能啟用 3D，已顯示分解圖")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "俯視圖" }));
+    await user.click(screen.getByRole("tab", { name: "3D 預覽" }));
+
+    expect(await screen.findByText("3D 重試成功")).toBeVisible();
+    expect(loader).toHaveBeenCalledTimes(2);
+    consoleError.mockRestore();
+  });
+
   it("初始顯示俯視圖，可用鍵盤切換分解圖和 3D 預覽", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);

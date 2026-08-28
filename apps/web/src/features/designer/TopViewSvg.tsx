@@ -1,6 +1,7 @@
 import type { TopDesign } from "@steam-top/domain";
 
-import { layerPath, PREVIEW_HOLES, PREVIEW_VIEW_BOX, screwCenters } from "./previewGeometry";
+import { layerPath, PREVIEW_HOLES, PREVIEW_VIEW_BOX } from "./previewGeometry";
+import { SvgCutoutMask } from "./SvgCutoutMask";
 
 export type TopViewSvgProps = Readonly<{ design: TopDesign }>;
 
@@ -10,6 +11,7 @@ const LAYER_OPACITY = { top: 0.72, middle: 0.58, bottom: 0.48 } as const;
 export function TopViewSvg({ design }: TopViewSvgProps) {
   const titleId = `${design.id}-top-view-title`;
   const descId = `${design.id}-top-view-desc`;
+  const maskId = `${design.id}-acrylic-cutouts`;
 
   return (
     <svg
@@ -22,6 +24,9 @@ export function TopViewSvg({ design }: TopViewSvgProps) {
     >
       <title id={titleId}>陀螺俯視圖</title>
       <desc id={descId}>頂層、中層、底層亞加力膠及共用螺絲孔的對齊位置</desc>
+      <defs>
+        <SvgCutoutMask design={design} id={maskId} />
+      </defs>
 
       {design.metalDiscDiameterMm > 0 ? (
         <circle
@@ -51,30 +56,16 @@ export function TopViewSvg({ design }: TopViewSvgProps) {
           stroke={layer.color}
           strokeWidth="0.7"
           vectorEffect="non-scaling-stroke"
+          mask={`url(#${maskId})`}
         />
       ))}
 
-      <g aria-label={`共用螺絲孔：${design.screwLayout.count} 個`}>
-        {screwCenters(design).map(({ x, y }, index) => (
-          <circle
-            key={index}
-            data-testid="screw-hole"
-            cx={x}
-            cy={y}
-            r={PREVIEW_HOLES.screwRadiusMm}
-            fill="#ffffff"
-            stroke="#344054"
-            strokeWidth="0.55"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-      </g>
-      <g data-testid="axle-hole" aria-label="中央軸心">
+      <g data-testid="axle-marker" aria-label="中央軸心">
         <circle
           cx="0"
           cy="0"
           r={PREVIEW_HOLES.axleRadiusMm}
-          fill="#ffffff"
+          fill="none"
           stroke="#172033"
           strokeWidth="0.7"
           vectorEffect="non-scaling-stroke"
