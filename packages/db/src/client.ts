@@ -16,6 +16,7 @@ export type DatabaseClientConfig = Readonly<{
   idleTimeoutSeconds?: number;
   connectTimeoutSeconds?: number;
   applicationName?: string;
+  allowInsecure?: boolean;
 }>;
 
 type SqlOptions = Partial<Options<Record<string, PostgresType>>>;
@@ -40,10 +41,24 @@ function requirePositiveInteger(value: number, name: string): number {
 /** Creates a lazy postgres.js pool. Importing this module never opens a DB. */
 export function createDatabaseClient(
   config: DatabaseClientConfig,
-  dependencies: Readonly<{ createSqlClient?: SqlClientFactory }> = {},
+  dependencies: Readonly<{
+    createSqlClient?: SqlClientFactory;
+    runtimeEnvironment?: string;
+  }> = {},
 ): DatabaseClient {
   if (config.url.trim().length === 0) {
     throw new TypeError("Database URL must not be blank");
+  }
+  const secureTransport = config.ssl !== undefined && config.ssl !== false;
+  if (!secureTransport && config.allowInsecure !== true) {
+    throw new Error("TLS is required unless allowInsecure is explicitly enabled");
+  }
+  if (
+    !secureTransport &&
+    config.allowInsecure === true &&
+    (dependencies.runtimeEnvironment ?? process.env.NODE_ENV) === "production"
+  ) {
+    throw new Error("Insecure database connections are forbidden in production");
   }
   const options: SqlOptions = {
     ssl: config.ssl ?? false,
@@ -79,4 +94,5 @@ export function createDatabaseClient(
 
 export { matchWithDetails } from "./queries";
 export * from "./authority";
+export * from "./persistence";
 export * from "./schema";

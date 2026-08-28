@@ -79,6 +79,26 @@ describe("persistent PostgreSQL schema", () => {
       tableConfig(table).columns.map(({ name }) => name),
     );
     expect(allColumnNames.some((name) => name.includes("mac"))).toBe(false);
+    for (const table of diagnosticTables) {
+      expect(tableConfig(table).columns.map(({ name }) => name)).toContain(
+        "diagnostics_expires_at",
+      );
+    }
+  });
+
+  it("bounds student PII fields and does not duplicate canonical designs as JSON", () => {
+    for (const [column, sqlType] of [
+      [schema.identities.displayName, "varchar(80)"],
+      [schema.identities.studentName, "varchar(80)"],
+      [schema.identities.className, "varchar(30)"],
+      [schema.identities.studentNumber, "varchar(30)"],
+      [schema.identities.deviceName, "varchar(128)"],
+    ] as const) {
+      expect(column.getSQLType()).toBe(sqlType);
+    }
+    expect(tableConfig(schema.designs).columns.map(({ name }) => name)).not.toEqual(
+      expect.arrayContaining(["canonical_json", "performance_json"]),
+    );
   });
 
   it("declares database checks and indexes for canonical designs and completed matches", () => {
@@ -112,7 +132,9 @@ describe("persistent PostgreSQL schema", () => {
     expect(tableConfig(schema.matches).checks.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "matches_completed_score_shape",
+        "matches_battle_points_range",
         "matches_challenge_points_range",
+        "matches_round_winners_shape",
         "matches_totals_consistent",
         "matches_distinct_player_identities",
         "matches_model_versions_nonblank",
@@ -128,6 +150,7 @@ describe("persistent PostgreSQL schema", () => {
         "rounds_authority_key_hash_format",
         "rounds_input_fingerprint_format",
         "rounds_physics_model_version_nonblank",
+        "rounds_battle_result_shape",
       ]),
     );
 
@@ -149,6 +172,7 @@ describe("persistent PostgreSQL schema", () => {
     expect(roundIndexConfig).toEqual(
       expect.arrayContaining([
         { name: "rounds_authority_key_hash_uidx", unique: true },
+        { name: "rounds_match_external_round_id_uidx", unique: true },
         { name: "rounds_input_fingerprint_idx", unique: false },
       ]),
     );
@@ -257,6 +281,26 @@ describe("persistent PostgreSQL schema", () => {
     expect(end).toHaveBeenCalledTimes(1);
   });
 
+  it("requires TLS unless development explicitly opts into an insecure connection", () => {
+    const createSqlClient = vi.fn(() => {
+      throw new Error("must not connect");
+    });
+    expect(() => createDatabaseClient(
+      { url: "postgresql://localhost/simulator" },
+      { createSqlClient: createSqlClient as unknown as SqlClientFactory },
+    )).toThrow("TLS is required");
+    expect(createSqlClient).not.toHaveBeenCalled();
+
+    expect(() => createDatabaseClient(
+      { url: "postgresql://localhost/simulator", allowInsecure: true },
+      {
+        createSqlClient: createSqlClient as unknown as SqlClientFactory,
+        runtimeEnvironment: "production",
+      },
+    )).toThrow("Insecure database connections are forbidden in production");
+    expect(createSqlClient).not.toHaveBeenCalled();
+  });
+
   it("commits generated SQL containing constraints, FKs, indexes and no credential", () => {
     const migrationDirectory = fileURLToPath(
       new URL("../../../drizzle", import.meta.url),
@@ -264,7 +308,7 @@ describe("persistent PostgreSQL schema", () => {
     const migrationFiles = readdirSync(migrationDirectory)
       .filter((name) => name.endsWith(".sql"))
       .sort();
-    expect(migrationFiles.length).toBeGreaterThan(0);
+    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql"]);
     const sql = migrationFiles
       .map((name) => readFileSync(`${migrationDirectory}/${name}`, "utf8"))
       .join("\n");
@@ -273,6 +317,13 @@ describe("persistent PostgreSQL schema", () => {
     expect(sql).toContain('CREATE TABLE "rounds"');
     expect(sql).toContain("matches_completed_score_shape");
     expect(sql).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(sql).toContain('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');
+    expect(sql).toContain("rounds_authority_key_matches_correlation");
+    expect(sql).toContain("steam_top.allow_audited_delete");
+    expect(sql).toContain("completed_matches_are_immutable");
+    expect(sql).toContain("completed_rounds_are_immutable");
+    expect(sql).toContain("eligible_designs_are_immutable");
+    expect(sql).toContain("set_row_updated_at");
     expect(sql).toContain("designs_battle_eligible_three_layers");
     expect(sql).toContain("room_participants_active_player_seat_uidx");
     expect(sql).toContain("ON DELETE set null");
@@ -288,5 +339,14 @@ describe("persistent PostgreSQL schema", () => {
       /postgres(?:ql)?:\/\/[^\s/:]+:[^\s/@]+@/i,
     );
     expect(config).toContain("postgresql://localhost/steam_top_schema_generation");
+
+    const metadataFiles = readdirSync(`${migrationDirectory}/meta`).sort();
+    expect(metadataFiles).toEqual(["0000_snapshot.json", "_journal.json"]);
+    const journal = JSON.parse(
+      readFileSync(`${migrationDirectory}/meta/_journal.json`, "utf8"),
+    ) as { entries: Array<{ tag: string }> };
+    expect(journal.entries).toEqual([
+      expect.objectContaining({ tag: "0000_steam_top_pre_first_deploy" }),
+    ]);
   });
 });

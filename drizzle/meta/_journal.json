@@ -5,36 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1787940726317,
-      "tag": "0000_aberrant_whizzer",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1787940785645,
-      "tag": "0001_warm_nehzno",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1787940886162,
-      "tag": "0002_short_newton_destine",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1787941383610,
-      "tag": "0003_shiny_smiling_tiger",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1787941389800,
-      "tag": "0004_enforce_eligible_design_layers",
+      "when": 1787942336587,
+      "tag": "0000_steam_top_pre_first_deploy",
       "breakpoints": true
     }
   ]

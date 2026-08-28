@@ -5,11 +5,13 @@
   "exports": {
     ".": "./src/client.ts",
     "./authority": "./src/authority.ts",
+    "./persistence": "./src/persistence.ts",
     "./queries": "./src/queries.ts",
     "./schema": "./src/schema.ts"
   },
   "scripts": {
     "test": "vitest run",
+    "test:postgres": "node -e \"if (!process.env.TEST_DATABASE_URL) { console.error('TEST_DATABASE_URL is required'); process.exit(1) }\" && vitest run src/schema.postgres.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
     "lint": "tsc --noEmit",
@@ -17,8 +19,11 @@
     "db:check": "drizzle-kit check --config ../../drizzle.config.ts"
   },
   "dependencies": {
+    "@steam-top/domain": "workspace:*",
+    "@steam-top/protocol": "workspace:*",
     "drizzle-orm": "0.45.2",
-    "postgres": "3.4.9"
+    "postgres": "3.4.9",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "26.4.0",

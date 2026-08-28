@@ -118,12 +118,21 @@ importers:
 
   packages/db:
     dependencies:
+      '@steam-top/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@steam-top/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(postgres@3.4.9)
       postgres:
         specifier: 3.4.9
         version: 3.4.9
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/node':
         specifier: 26.4.0

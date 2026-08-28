@@ -1,3 +1,0 @@
-ALTER TABLE "designs" ADD COLUMN "battle_eligible" boolean DEFAULT false NOT NULL;--> statement-breakpoint
-ALTER TABLE "designs" ADD COLUMN "validation_issues" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "designs" ADD CONSTRAINT "designs_battle_eligibility_consistent" CHECK (jsonb_typeof("designs"."validation_issues") = 'array' and (not "designs"."battle_eligible" or jsonb_array_length("designs"."validation_issues") = 0));
