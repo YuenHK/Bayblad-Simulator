@@ -6,6 +6,7 @@ import {
   BATTLE_ANGULAR_SPEED_MIN,
   BATTLE_POSITION_MAX_MM,
   BATTLE_POSITION_MIN_MM,
+  deriveViewerState,
   LAUNCH_MULTIPLIER_MAX,
   LAUNCH_MULTIPLIER_MIN,
   clientEventSchema,
@@ -304,7 +305,6 @@ const roomSnapshot = {
   ownerParticipantId: "p1",
   phase: "launch",
   revision: 8,
-  viewerRevision: 3,
   player1: occupiedSeat,
   player2: null,
   spectators: [{ participantId: "s1", displayName: "Spectator" }],
@@ -436,17 +436,6 @@ const serverCases = [
       code: "ROOM_CLOSED",
       message: "Room closed",
       causedByEventId: eventId,
-      ...serverEnvelope,
-    },
-  },
-  {
-    type: "room.viewer.delta",
-    value: {
-      type: "room.viewer.delta",
-      roomId: "room-1",
-      baseViewerRevision: 3,
-      viewerRevision: 4,
-      viewer: { participantId: "p2", isOwner: true, role: "spectator" },
       ...serverEnvelope,
     },
   },
@@ -729,15 +718,12 @@ describe("serverEventSchema", () => {
     ).toBe(false);
   });
 
-  it("expresses an atomic room move and independent viewer change", () => {
+  it("expresses an atomic room move without transmitting viewer identity", () => {
     const sharedDelta = serverCases[3].value;
-    const viewerDelta = serverCases[12].value;
     expect(serverEventSchema.safeParse(sharedDelta).success).toBe(true);
-    expect(serverEventSchema.safeParse(viewerDelta).success).toBe(true);
     expect(sharedDelta.patch.player2?.participantId).toBe("s1");
     expect(sharedDelta.leftParticipantIds).toEqual(["s1"]);
     expect(new TextEncoder().encode(JSON.stringify(sharedDelta)).byteLength).toBeLessThan(2_048);
-    expect(new TextEncoder().encode(JSON.stringify(viewerDelta)).byteLength).toBeLessThan(2_048);
     expect(
       serverEventSchema.safeParse({
         ...sharedDelta,
@@ -761,9 +747,6 @@ describe("serverEventSchema", () => {
       }).success,
     ).toBe(false);
     expect(
-      serverEventSchema.safeParse({ ...viewerDelta, spectators: roomSnapshot.spectators }).success,
-    ).toBe(false);
-    expect(
       serverEventSchema.safeParse({ ...sharedDelta, viewer: roomSnapshot.viewer }).success,
     ).toBe(false);
     expect(
@@ -772,9 +755,19 @@ describe("serverEventSchema", () => {
     expect(
       serverEventSchema.safeParse({ ...sharedDelta, type: "room.state.delta" }).success,
     ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({
+        type: "room.viewer.delta",
+        roomId: "room-1",
+        baseViewerRevision: 3,
+        viewerRevision: 4,
+        viewer: roomSnapshot.viewer,
+        ...serverEnvelope,
+      }).success,
+    ).toBe(false);
   });
 
-  it("requires sequential shared and viewer revisions without conflating them", () => {
+  it("requires sequential shared revisions", () => {
     const sharedDelta = serverCases[3].value;
     expect(serverEventSchema.safeParse(sharedDelta).success).toBe(true);
     expect(
@@ -787,22 +780,82 @@ describe("serverEventSchema", () => {
     for (const revision of [8, 10]) {
       expect(serverEventSchema.safeParse({ ...sharedDelta, revision }).success).toBe(false);
     }
+  });
 
-    const viewerDelta = serverCases[12].value;
-    expect(serverEventSchema.safeParse(viewerDelta).success).toBe(true);
+  it("derives the same participant's viewer state after an atomic move", () => {
+    const moveDelta = serverEventSchema.parse({
+      ...serverCases[3].value,
+      patch: {
+        ownerParticipantId: "s1",
+        player1: null,
+        spectatorCount: 2,
+      },
+      joined: [{ participantId: "p1", displayName: "Player 1" }],
+      leftParticipantIds: [],
+    });
+    expect(moveDelta.type).toBe("room.delta");
+    if (moveDelta.type !== "room.delta") throw new Error("Expected room.delta");
+
+    const nextState = {
+      ownerParticipantId:
+        moveDelta.patch.ownerParticipantId ?? roomSnapshot.ownerParticipantId,
+      player1:
+        moveDelta.patch.player1 === undefined
+          ? roomSnapshot.player1
+          : moveDelta.patch.player1,
+      player2:
+        moveDelta.patch.player2 === undefined
+          ? roomSnapshot.player2
+          : moveDelta.patch.player2,
+      spectators: [
+        ...roomSnapshot.spectators.filter(
+          (spectator) => !moveDelta.leftParticipantIds.includes(spectator.participantId),
+        ),
+        ...moveDelta.joined,
+      ],
+    };
+    const viewer = deriveViewerState(nextState, roomSnapshot.viewer.participantId);
+    expect(viewer).toEqual({ participantId: "p1", role: "spectator", isOwner: false });
+    expect(viewer.participantId).toBe(roomSnapshot.viewer.participantId);
+    expect(deriveViewerState(nextState, "s1")).toEqual({
+      participantId: "s1",
+      role: "spectator",
+      isOwner: true,
+    });
+
     expect(
       serverEventSchema.safeParse({
-        ...viewerDelta,
-        baseViewerRevision: 4,
-        viewerRevision: 5,
+        ...roomSnapshot,
+        revision: moveDelta.revision,
+        ownerParticipantId: nextState.ownerParticipantId,
+        player1: nextState.player1,
+        player2: nextState.player2,
+        spectators: nextState.spectators,
+        viewer,
       }).success,
     ).toBe(true);
-    for (const viewerRevision of [3, 5]) {
-      expect(serverEventSchema.safeParse({ ...viewerDelta, viewerRevision }).success).toBe(
-        false,
-      );
-    }
-    expect(sharedDelta.revision).not.toBe(viewerDelta.viewerRevision);
+  });
+
+  it("refuses to derive a missing or duplicated participant", () => {
+    const state = {
+      ownerParticipantId: roomSnapshot.ownerParticipantId,
+      player1: roomSnapshot.player1,
+      player2: roomSnapshot.player2,
+      spectators: roomSnapshot.spectators,
+    };
+    expect(() => deriveViewerState(state, "missing")).toThrow();
+    expect(() =>
+      deriveViewerState(
+        {
+          ...state,
+          spectators: [
+            ...state.spectators,
+            { participantId: "p1", displayName: "Duplicate" },
+          ],
+        },
+        "p1",
+      ),
+    ).toThrow();
   });
 
   it("carries full room, match, and round correlation ids", () => {
@@ -824,11 +877,6 @@ describe("serverEventSchema", () => {
     for (const sequence of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(serverEventSchema.safeParse({ ...battleFrame, sequence }).success).toBe(false);
     }
-    for (const viewerRevision of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-      expect(
-        serverEventSchema.safeParse({ ...roomSnapshot, viewerRevision }).success,
-      ).toBe(false);
-    }
   });
 
   it("accepts 500 spectators without a product array maximum", () => {
@@ -842,10 +890,7 @@ describe("serverEventSchema", () => {
   it("uses compact deltas instead of rebroadcasting the full roster", () => {
     const fullSnapshot = serverEventSchema.parse(maximumRoomSnapshot);
     const fullBytes = new TextEncoder().encode(JSON.stringify(fullSnapshot)).byteLength;
-    for (const deltaValue of [
-      serverCases[3].value,
-      serverCases[12].value,
-    ]) {
+    for (const deltaValue of [serverCases[3].value]) {
       const delta = serverEventSchema.parse(deltaValue);
       const deltaBytes = new TextEncoder().encode(JSON.stringify(delta)).byteLength;
       expect(deltaBytes * 10).toBeLessThan(fullBytes);
