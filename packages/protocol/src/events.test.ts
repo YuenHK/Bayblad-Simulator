@@ -103,8 +103,18 @@ const clientCases = [
   },
   {
     type: "clock.ping",
-    valid: { type: "clock.ping", pingId: "ping-1", clientSendTimeMs: 1_000, ...clientEnvelope },
-    invalid: { type: "clock.ping", pingId: "", clientSendTimeMs: -1, ...clientEnvelope },
+    valid: { type: "clock.ping", pingId: "ping-1", clientSentAtMs: 1_000, ...clientEnvelope },
+    invalid: { type: "clock.ping", pingId: "", clientSentAtMs: -1, ...clientEnvelope },
+  },
+  {
+    type: "clock.ack",
+    valid: { type: "clock.ack", pingId: "ping-1", ...clientEnvelope },
+    invalid: { type: "clock.ack", pingId: "", ...clientEnvelope },
+  },
+  {
+    type: "room.departed.ack",
+    valid: { type: "room.departed.ack", departureId: eventId, ...clientEnvelope },
+    invalid: { type: "room.departed.ack", departureId: "not-a-uuid", ...clientEnvelope },
   },
   {
     type: "room.leave",
@@ -178,7 +188,7 @@ describe("clientEventSchema", () => {
   });
 
   it("requires protocol version 1 on commands", () => {
-    const close = clientCases[8].valid;
+    const close = clientCases[10].valid;
     const { protocolVersion: _version, ...withoutVersion } = close;
     expect(clientEventSchema.safeParse(withoutVersion).success).toBe(false);
     expect(
@@ -258,6 +268,12 @@ describe("clientEventSchema", () => {
     ]) {
       expect(clientEventSchema.safeParse({ ...tap, clientTimeMs }).success).toBe(false);
     }
+  });
+
+  it("拒絕客戶端偽造任何 server clock fields", () => {
+    const ping = clientCases[6].valid;
+    expect(clientEventSchema.safeParse({ ...ping, serverReceiveTimeMs: 1, serverSendTimeMs: 2 }).success).toBe(false);
+    expect(clientEventSchema.safeParse({ ...ping, previousSample: { serverReceivedAtMs: 1 } }).success).toBe(false);
   });
 
   it("normalizes safe public room names and rejects dangerous controls", () => {
@@ -535,14 +551,14 @@ describe("handshake server events", () => {
 describe("serverEventSchema", () => {
   it("接受 strict clock.pong 與 authoritative room.departed", () => {
     expect(serverEventSchema.safeParse({
-      type: "clock.pong", pingId: "ping-1", clientSendTimeMs: 1_000,
+      type: "clock.pong", pingId: "ping-1", clientSentAtMs: 1_000,
       serverReceiveTimeMs: 6_025, serverSendTimeMs: 6_026, ...serverEnvelope,
     }).success).toBe(true);
     expect(serverEventSchema.safeParse({
-      type: "room.departed", roomId: "room-1", reason: "closed", ...serverEnvelope,
+      type: "room.departed", departureId: clientEnvelope.eventId, roomId: "room-1", reason: "closed", ...serverEnvelope,
     }).success).toBe(true);
     expect(serverEventSchema.safeParse({
-      type: "room.departed", roomId: "room-1", reason: "unknown", ...serverEnvelope,
+      type: "room.departed", departureId: clientEnvelope.eventId, roomId: "room-1", reason: "unknown", ...serverEnvelope,
     }).success).toBe(false);
   });
   it.each(serverCases)("accepts a valid $type event", ({ value }) => {

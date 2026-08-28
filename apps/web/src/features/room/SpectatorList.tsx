@@ -14,7 +14,7 @@ export function SpectatorList({ spectators }: Readonly<{ spectators: readonly Sp
   return (
     <section className="spectator-panel" aria-labelledby="spectator-heading">
       <h3 id="spectator-heading">{spectators.length} 位觀眾</h3>
-      <ul className="spectator-list" aria-label="觀眾玩家" aria-rowcount={spectators.length} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+      <ul className="spectator-list" tabIndex={0} aria-label={`觀眾玩家，共 ${spectators.length} 人；可用方向鍵或 Page Down 捲動`} aria-rowcount={spectators.length} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
         <li aria-hidden="true" className="spectator-spacer" style={{ height: spectators.length * ROW_HEIGHT }} />
         {visible.map((person, offset) => <li key={person.participantId} aria-posinset={start + offset + 1} aria-setsize={spectators.length} style={{ position: "absolute", top: (start + offset) * ROW_HEIGHT, left: 0, right: 0, height: ROW_HEIGHT }}>{person.displayName}</li>)}
       </ul>

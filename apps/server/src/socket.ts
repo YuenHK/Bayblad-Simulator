@@ -18,7 +18,7 @@ import { Server, type Socket } from "socket.io";
 import { DesignRegistry } from "./design-registry";
 import type { BattleEnginePort, ClientKeyResolver } from "./app";
 import { TokenBucketLimiter } from "./rate-limit";
-import { ClockOffsetEstimator, LaunchCoordinator, type LaunchJudgement } from "./battle/launch";
+import { LaunchCoordinator, type LaunchJudgement } from "./battle/launch";
 import { scoreMatch as defaultScoreMatch } from "./battle/scoring";
 import type { ScoreMatchInput, MatchScoreResult } from "./battle/scoring";
 import { RoomService } from "./rooms/room-service";
@@ -33,8 +33,10 @@ type Session = {
   events: Map<string, string>;
   disconnectedAt: number | null;
   lastActiveAt: number;
-  clock: ClockOffsetEstimator;
-  pendingDepartures: Map<string, "closed" | "expired" | "removed">;
+  clockChallenges: Map<string, Readonly<{ serverSentAtMs: number; expiresAtMs: number }>>;
+  clockPingIds: Map<string, number>;
+  observedRtts: number[];
+  pendingDepartures: Map<string, Readonly<{ event: Extract<ServerEvent, { type: "room.departed" }>; expiresAtMs: number }>>;
 };
 
 export type FrameScheduler = (
@@ -107,7 +109,7 @@ type MatchState = {
 type TerminalMatchState = Readonly<{
   roomId: string;
   matchId: string;
-  participantSessionIds: readonly [string, string];
+  memberships: readonly Readonly<{ participantId: string; sessionId: string }>[];
   battleStarted: BattleStartedEvent;
   checkpoint: Extract<ServerEvent, { type: "battle.checkpoint" }>;
   latestFrame: BattleFrameEvent;
@@ -119,6 +121,16 @@ function randomToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+
+const CLOCK_CHALLENGE_TTL_MS = 10_000;
+const DEPARTURE_TTL_MS = 120_000;
+const MAX_PENDING_OUTCOMES = 64;
+const median = (values: readonly number[]): number | null => {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+};
 
 const defaultFrameScheduler: FrameScheduler = (delayMs, signal) =>
   new Promise<void>((resolve, reject) => {
@@ -256,6 +268,7 @@ export class RealtimeGateway {
     bindings: number;
     matches: number;
     terminalMatches: number;
+    pendingDepartures: number;
     frameBroadcastOperations: number;
     connections: number;
     newSessionClientBuckets: number;
@@ -267,6 +280,7 @@ export class RealtimeGateway {
       bindings: [...this.#sessionIdsByParticipant.values()].reduce((sum, map) => sum + map.size, 0),
       matches: this.#matches.size,
       terminalMatches: this.#terminalMatches.size,
+      pendingDepartures: [...this.#sessionsById.values()].reduce((sum, session) => sum + session.pendingDepartures.size, 0),
       frameBroadcastOperations: this.#frameBroadcastOperations,
       connections: [...this.#connectionsByIp.values()].reduce((sum, count) => sum + count, 0),
       newSessionClientBuckets: this.#newSessionByClientLimiter.size,
@@ -332,11 +346,8 @@ export class RealtimeGateway {
       const nextRevision = afterSweep.get(roomId);
       if (nextRevision === undefined) {
         lobbyChanged = true;
-        this.#emitToRoom(roomId, {
-          type: "room.departed", roomId, reason: "expired",
-          protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId(),
-        });
-        this.#cleanupRoom(roomId, "expired");
+        this.#departWholeRoom(roomId, "expired");
+        this.#cleanupRoom(roomId);
       } else if (nextRevision !== revision) {
         lobbyChanged = true;
         this.#syncBindings(roomId);
@@ -349,6 +360,7 @@ export class RealtimeGateway {
       if (!this.#rooms.hasRoom(roomId)) this.#cancelMatch(roomId, match);
     }
     for (const session of [...this.#sessionsById.values()]) {
+      this.#pruneSessionOutcomes(session, nowMs);
       if (session.socketIds.size === 0 && session.disconnectedAt !== null && nowMs - session.disconnectedAt >= 120_000) {
         this.#expireSession(session);
       }
@@ -436,13 +448,8 @@ export class RealtimeGateway {
           serverEventId: this.#createServerEventId(),
         });
         this.#emit(socket, this.#rooms.lobbySnapshot());
-        for (const [roomId, reason] of session.pendingDepartures) {
-          this.#emit(socket, {
-            type: "room.departed", roomId, reason,
-            protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId(),
-          });
-        }
-        session.pendingDepartures.clear();
+        this.#pruneSessionOutcomes(session, this.#now());
+        for (const { event } of session.pendingDepartures.values()) this.#emit(socket, event);
         for (const roomId of [...session.roomIds]) {
           if (!this.#rooms.hasRoom(roomId)) {
             session.roomIds.delete(roomId);
@@ -528,7 +535,9 @@ export class RealtimeGateway {
       events: new Map(),
       disconnectedAt: null,
       lastActiveAt: now,
-      clock: new ClockOffsetEstimator(),
+      clockChallenges: new Map(),
+      clockPingIds: new Map(),
+      observedRtts: [],
       pendingDepartures: new Map(),
     };
     this.#sessionsByToken.set(session.token, session);
@@ -583,7 +592,8 @@ export class RealtimeGateway {
       "EVENT_ID_CONFLICT", "INVALID_TAP", "SCHEDULE_MISMATCH", "UNKNOWN_PARTICIPANT",
       "OUTSIDE_ACCEPTANCE_WINDOW", "ALREADY_SUBMITTED", "ROUND_CLOSED",
       "ROOM_QUOTA_EXCEEDED", "SERVER_CAPACITY",
-      "SESSION_CAPACITY", "SESSION_RATE_LIMITED", "INVALID_CLOCK_SAMPLE",
+      "SESSION_CAPACITY", "SESSION_RATE_LIMITED", "INVALID_CLOCK_SAMPLE", "ALREADY_IN_ROOM",
+      "CLOCK_PING_REPLAY", "CLOCK_CHALLENGE_INVALID",
     ]);
     return allowed.has(candidate) ? candidate : "COMMAND_FAILED";
   }
@@ -597,6 +607,7 @@ export class RealtimeGateway {
       return;
     }
     if (event.type === "room.create") {
+      if (session.roomIds.size > 0) throw Object.assign(new Error("ALREADY_IN_ROOM"), { code: "ALREADY_IN_ROOM" });
       if (session.ownedRoomIds.size >= this.#maxOwnedRoomsPerSession) {
         throw Object.assign(new Error("ROOM_QUOTA_EXCEEDED"), { code: "ROOM_QUOTA_EXCEEDED" });
       }
@@ -611,6 +622,7 @@ export class RealtimeGateway {
       this.#emit(socket, this.#rooms.snapshot(membership.roomId, session.id));
       this.#broadcastLobby();
     } else if (event.type === "room.join") {
+      if (session.roomIds.size > 0) throw Object.assign(new Error("ALREADY_IN_ROOM"), { code: "ALREADY_IN_ROOM" });
       const roomId = this.#rooms.resolveRoomReference(event.roomId);
       if (!roomId) throw Object.assign(new Error("ROOM_NOT_FOUND"), { code: "ROOM_NOT_FOUND" });
       const membership = this.#rooms.join(roomId, this.#user(session), event.role);
@@ -636,11 +648,8 @@ export class RealtimeGateway {
       this.#rooms.close(event.roomId, session.id);
       const match = this.#matches.get(event.roomId);
       if (match) this.#cancelMatch(event.roomId, match);
-      this.#emitToRoom(event.roomId, {
-        type: "room.departed", roomId: event.roomId, reason: "closed",
-        protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId(),
-      });
-      this.#cleanupRoom(event.roomId, "closed");
+      this.#departWholeRoom(event.roomId, "closed");
+      this.#cleanupRoom(event.roomId);
       this.#broadcastLobby();
     } else if (event.type === "room.leave") {
       const beforeLeave = this.#rooms.snapshot(event.roomId, session.id);
@@ -649,10 +658,13 @@ export class RealtimeGateway {
       }
       const participantId = this.#participantForSession(event.roomId, session.id);
       this.#rooms.leave(event.roomId, session.id);
-      this.#emitToSession(session.id, {
+      const departure = {
         type: "room.departed", roomId: event.roomId, reason: "left",
+        departureId: this.#createServerEventId(),
         protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId(),
-      });
+      } as const;
+      this.#queueDeparture(session, departure);
+      this.#emitToSession(session.id, departure);
       this.#sessionIdsByParticipant.get(event.roomId)?.delete(participantId);
       session.roomIds.delete(event.roomId);
       session.ownedRoomIds.delete(event.roomId);
@@ -670,20 +682,38 @@ export class RealtimeGateway {
       } else this.#cleanupRoom(event.roomId);
       this.#broadcastLobby();
     } else if (event.type === "clock.ping") {
-      if (event.previousSample) session.clock.addSample(event.previousSample);
+      this.#pruneSessionOutcomes(session, receivedAtMs);
+      if (session.clockPingIds.has(event.pingId)) throw Object.assign(new Error("CLOCK_PING_REPLAY"), { code: "CLOCK_PING_REPLAY" });
       const serverSentAtMs = Math.max(receivedAtMs, this.#now());
+      session.clockPingIds.set(event.pingId, serverSentAtMs + CLOCK_CHALLENGE_TTL_MS);
+      session.clockChallenges.set(event.pingId, { serverSentAtMs, expiresAtMs: serverSentAtMs + CLOCK_CHALLENGE_TTL_MS });
       this.#emit(socket, {
-        type: "clock.pong", pingId: event.pingId, clientSendTimeMs: event.clientSendTimeMs,
+        type: "clock.pong", pingId: event.pingId, clientSentAtMs: event.clientSentAtMs,
         serverReceiveTimeMs: receivedAtMs, serverSendTimeMs: serverSentAtMs,
         protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId(),
       });
+    } else if (event.type === "clock.ack") {
+      this.#pruneSessionOutcomes(session, receivedAtMs);
+      const challenge = session.clockChallenges.get(event.pingId);
+      if (!challenge) {
+        if (!session.clockPingIds.has(event.pingId)) throw Object.assign(new Error("CLOCK_CHALLENGE_INVALID"), { code: "CLOCK_CHALLENGE_INVALID" });
+      } else {
+        session.clockChallenges.delete(event.pingId);
+        const rttMs = receivedAtMs - challenge.serverSentAtMs;
+        if (rttMs >= 0 && rttMs <= 2_000) {
+          session.observedRtts.push(rttMs);
+          if (session.observedRtts.length > 9) session.observedRtts.shift();
+        }
+      }
+    } else if (event.type === "room.departed.ack") {
+      session.pendingDepartures.delete(event.departureId);
     } else if (event.type === "launch.tap") {
       const match = this.#matches.get(event.roomId);
       if (!match || match.currentRoundId !== event.roundId) {
         throw Object.assign(new Error("NO_ACTIVE_LAUNCH"), { code: "NO_ACTIVE_LAUNCH" });
       }
       const participantId = this.#participantForSession(event.roomId, session.id);
-      this.#launch.submit(participantId, event, this.#now(), session.clock.estimate());
+      this.#launch.submit(participantId, event, receivedAtMs, median(session.observedRtts));
       this.#flushLaunch(event.roomId, match);
     }
     session.events.set(event.eventId, fingerprint);
@@ -993,19 +1023,41 @@ export class RealtimeGateway {
     }
   }
 
-  #cleanupRoom(roomId: string, reason?: "closed" | "expired" | "removed"): void {
+  #cleanupRoom(roomId: string): void {
     const match = this.#matches.get(roomId);
     if (match) this.#cancelMatch(roomId, match);
     this.#terminalMatches.delete(roomId);
     this.#sessionIdsByParticipant.delete(roomId);
     for (const session of this.#sessionsById.values()) {
-      if (reason && session.roomIds.has(roomId)) session.pendingDepartures.set(roomId, reason);
       session.roomIds.delete(roomId);
       session.ownedRoomIds.delete(roomId);
     }
     this.io.in(`room:${roomId}`).socketsLeave([
       `room:${roomId}`, `room:${roomId}:player1`, `room:${roomId}:player2`, `room:${roomId}:spectator`,
     ]);
+  }
+
+  #departWholeRoom(roomId: string, reason: "closed" | "expired" | "removed"): void {
+    const event = {
+      type: "room.departed", departureId: this.#createServerEventId(), roomId, reason,
+      protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId(),
+    } as const;
+    for (const session of this.#sessionsById.values()) {
+      if (session.roomIds.has(roomId)) this.#queueDeparture(session, event);
+    }
+    this.#emitToRoom(roomId, event);
+  }
+
+  #queueDeparture(session: Session, event: Extract<ServerEvent, { type: "room.departed" }>): void {
+    this.#pruneSessionOutcomes(session, this.#now());
+    while (session.pendingDepartures.size >= MAX_PENDING_OUTCOMES) session.pendingDepartures.delete(session.pendingDepartures.keys().next().value!);
+    session.pendingDepartures.set(event.departureId, { event: structuredClone(event), expiresAtMs: this.#now() + DEPARTURE_TTL_MS });
+  }
+
+  #pruneSessionOutcomes(session: Session, nowMs: number): void {
+    for (const [pingId, expiresAtMs] of session.clockPingIds) if (expiresAtMs <= nowMs) session.clockPingIds.delete(pingId);
+    for (const [pingId, challenge] of session.clockChallenges) if (challenge.expiresAtMs <= nowMs) session.clockChallenges.delete(pingId);
+    for (const [departureId, pending] of session.pendingDepartures) if (pending.expiresAtMs <= nowMs) session.pendingDepartures.delete(departureId);
   }
 
   #participantForSession(roomId: string, sessionId: string): string {
@@ -1018,7 +1070,9 @@ export class RealtimeGateway {
     const match = this.#matches.get(roomId);
     if (!match) {
       const terminal = this.#terminalMatches.get(roomId);
-      if (!terminal || terminal.expiresAtMs <= this.#now() || !terminal.participantSessionIds.includes(sessionId)) return;
+      const participantId = [...(this.#sessionIdsByParticipant.get(roomId) ?? [])].find(([, boundSessionId]) => boundSessionId === sessionId)?.[0];
+      if (!terminal || terminal.expiresAtMs <= this.#now() || !participantId ||
+        !terminal.memberships.some((membership) => membership.sessionId === sessionId && membership.participantId === participantId)) return;
       this.#emit(socket, terminal.battleStarted);
       this.#emit(socket, terminal.checkpoint);
       this.#emit(socket, terminal.latestFrame);
@@ -1068,7 +1122,7 @@ export class RealtimeGateway {
     this.#terminalMatches.set(roomId, {
       roomId,
       matchId: match.matchId,
-      participantSessionIds: [match.players[0].sessionId, match.players[1].sessionId],
+      memberships: [...(this.#sessionIdsByParticipant.get(roomId) ?? [])].map(([participantId, sessionId]) => ({ participantId, sessionId })),
       battleStarted: structuredClone(match.battleStarted),
       checkpoint: {
         type: "battle.checkpoint", roomId, matchId: match.matchId,

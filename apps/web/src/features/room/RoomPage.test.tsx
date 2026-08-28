@@ -59,7 +59,9 @@ describe("RoomPage", () => {
     expect(screen.getAllByText("玩家一").length).toBeGreaterThan(0);
     expect(screen.getAllByText("玩家二").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "500 位觀眾" })).toBeVisible();
-    const list = screen.getByRole("list", { name: "觀眾玩家" });
+    const list = screen.getByRole("list", { name: /觀眾玩家，共 500 人/ });
+    list.focus();
+    expect(list).toHaveFocus();
     expect(within(list).getAllByRole("listitem").length).toBeLessThanOrEqual(60);
     Object.defineProperty(list, "scrollTop", { configurable: true, value: 22_000 });
     fireEvent.scroll(list);

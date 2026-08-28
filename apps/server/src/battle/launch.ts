@@ -31,13 +31,10 @@ const ACCEPTANCE_BEFORE_TARGET_MS = 1_000;
 const ACCEPTANCE_AFTER_TARGET_MS = 1_500;
 const MAX_CLOCK_RTT_MS = 2_000;
 export const MAX_COMPENSATED_RTT_MS = 400;
-export const MAX_COMPENSATED_ONE_WAY_DELAY_MS = 250;
+export const MAX_COMPENSATED_ONE_WAY_DELAY_MS = 100;
 const MAX_CLOCK_OFFSET_MS = 5 * 60_000;
 const MAX_CLOCK_SAMPLES = 9;
 const MAX_GENERATION_ATTEMPTS = 1_000;
-const MIN_TRUSTED_CLOCK_SAMPLES = 3;
-const MAX_CLOCK_ESTIMATE_AGE_MS = 30_000;
-const CLOCK_NEGATIVE_DELAY_JITTER_MS = 20;
 const DEFAULT_REPLAY_PROTECTION_MS = 10 * 60_000;
 const MIN_REPLAY_PROTECTION_MS = 2 * 60_000;
 const GRADES = ["Perfect", "Great", "Good", "Miss"] as const;
@@ -265,7 +262,6 @@ export type LaunchCoordinatorDependencies = Readonly<{
   now: () => number;
   createNonce: () => string;
   createServerEventId: () => string;
-  getClockEstimate: (participantId: string) => ClockEstimate | null;
   leadTimeMs: number;
   acceptanceBeforeTargetMs: number;
   acceptanceAfterTargetMs: number;
@@ -305,7 +301,6 @@ const defaultCoordinatorDependencies: LaunchCoordinatorDependencies = {
   now: () => Date.now(),
   createNonce: () => crypto.randomUUID(),
   createServerEventId: () => crypto.randomUUID(),
-  getClockEstimate: () => null,
   leadTimeMs: DEFAULT_LEAD_TIME_MS,
   acceptanceBeforeTargetMs: ACCEPTANCE_BEFORE_TARGET_MS,
   acceptanceAfterTargetMs: ACCEPTANCE_AFTER_TARGET_MS,
@@ -328,12 +323,6 @@ const safeTimeSubtract = (left: number, right: number): number => {
     throw new LaunchError("INVALID_SCHEDULE");
   }
   return left - right;
-};
-
-const safeCorrectedTime = (clientTimeMs: number, offsetMs: number): number | null => {
-  if (!Number.isSafeInteger(offsetMs)) return null;
-  const result = clientTimeMs + offsetMs;
-  return isSafeNonnegativeInteger(result) ? result : null;
 };
 
 const clonePrivate = (event: LaunchResultPrivateEvent): LaunchResultPrivateEvent => ({ ...event });
@@ -465,7 +454,7 @@ export class LaunchCoordinator {
     return { ...event };
   }
 
-  submit(participantId: string, rawEvent: unknown, receivedAtMs = this.#dependencies.now(), clockEstimate?: ClockEstimate | null): SubmitLaunchResult {
+  submit(participantId: string, rawEvent: unknown, receivedAtMs = this.#dependencies.now(), serverObservedRttMs?: number | null): SubmitLaunchResult {
     let tapEvent: ReturnType<typeof launchTapEventSchema.parse>;
     try {
       tapEvent = launchTapEventSchema.parse(rawEvent);
@@ -497,13 +486,7 @@ export class LaunchCoordinator {
       throw new LaunchError("OUTSIDE_ACCEPTANCE_WINDOW");
     }
 
-    const correctedServerTapMs = this.#trustedCorrectedTap(
-      tapEvent.clientTimeMs,
-      received,
-      state,
-      clockEstimate === undefined ? this.#dependencies.getClockEstimate(participantId) : clockEstimate,
-    );
-    const gradingTimeMs = correctedServerTapMs ?? received;
+    const gradingTimeMs = this.#serverObservedTap(received, serverObservedRttMs);
     const judgement = judgeLaunch(gradingTimeMs - state.schedule.serverTargetTimeMs);
     const expiresAt = this.#expirationFrom(retentionNow);
     const stagedServerEventIds = new Set<string>();
@@ -752,47 +735,10 @@ export class LaunchCoordinator {
     for (const eventId of stagedServerEventIds) this.#activeServerEventIds.add(eventId);
   }
 
-  #trustedCorrectedTap(
-    clientTimeMs: number,
-    receivedAtMs: number,
-    state: RoundState,
-    estimate: ClockEstimate | null,
-  ): number | null {
-    if (!estimate) return null;
-    if (
-      !Number.isSafeInteger(estimate.offsetMs) ||
-      Math.abs(estimate.offsetMs) > MAX_CLOCK_OFFSET_MS ||
-      !isSafeNonnegativeInteger(estimate.sampleCount) ||
-      estimate.sampleCount < MIN_TRUSTED_CLOCK_SAMPLES ||
-      !Number.isFinite(estimate.medianRttMs) ||
-      estimate.medianRttMs < 0 ||
-      estimate.medianRttMs > MAX_COMPENSATED_RTT_MS ||
-      !isSafeNonnegativeInteger(estimate.measuredAtServerMs) ||
-      estimate.measuredAtServerMs > receivedAtMs ||
-      receivedAtMs - estimate.measuredAtServerMs > MAX_CLOCK_ESTIMATE_AGE_MS
-    ) {
-      return null;
-    }
-    const correctedTapMs = safeCorrectedTime(clientTimeMs, estimate.offsetMs);
-    if (
-      correctedTapMs === null ||
-      correctedTapMs < state.earliestAcceptedAtMs ||
-      correctedTapMs > state.deadlineMs
-    ) {
-      return null;
-    }
-    const oneWayDelayMs = receivedAtMs - correctedTapMs;
-    const maximumDelayMs = Math.min(
-      estimate.medianRttMs / 2 + 50,
-      MAX_COMPENSATED_ONE_WAY_DELAY_MS,
-    );
-    if (
-      oneWayDelayMs < -CLOCK_NEGATIVE_DELAY_JITTER_MS ||
-      oneWayDelayMs > maximumDelayMs
-    ) {
-      return null;
-    }
-    return correctedTapMs;
+  #serverObservedTap(receivedAtMs: number, observedRttMs?: number | null): number {
+    if (observedRttMs === undefined || observedRttMs === null || !Number.isFinite(observedRttMs) || observedRttMs < 0 || observedRttMs > MAX_COMPENSATED_RTT_MS) return receivedAtMs;
+    const compensationMs = Math.min(observedRttMs / 2, MAX_COMPENSATED_ONE_WAY_DELAY_MS);
+    return Math.max(0, receivedAtMs - compensationMs);
   }
 
   #expirationFrom(nowMs: number): number {
