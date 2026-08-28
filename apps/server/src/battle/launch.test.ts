@@ -8,6 +8,7 @@ import {
   ClockOffsetEstimator,
   LAUNCH_MULTIPLIER,
   LAUNCH_WINDOWS_MS,
+  MAX_COMPENSATED_RTT_MS,
   LaunchCoordinator,
   LaunchError,
   estimateClockOffset,
@@ -347,6 +348,38 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     expect(submitted.event.grade).toBe("Perfect");
   });
 
+  it("caps trusted compensation at 400ms RTT and half-RTT plus jitter", () => {
+    expect(MAX_COMPENSATED_RTT_MS).toBe(400);
+
+    const cases = [
+      { rtt: 80, receivedAtMs: 4_040, grade: "Perfect" },
+      { rtt: 400, receivedAtMs: 4_250, grade: "Perfect" },
+      { rtt: 401, receivedAtMs: 4_200, grade: "Miss" },
+      { rtt: 800, receivedAtMs: 4_800, grade: "Miss" },
+      { rtt: 80, receivedAtMs: 4_091, grade: "Great" },
+      { rtt: 80.5, receivedAtMs: 4_090, grade: "Perfect" },
+    ] as const;
+    for (const { rtt, receivedAtMs, grade } of cases) {
+      const coordinator = new LaunchCoordinator({
+        now: () => 1_000,
+        createNonce: () => "nonce-1",
+        createServerEventId: (() => {
+          let sequence = 0;
+          return () =>
+            `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`;
+        })(),
+        getClockEstimate: () => clockEstimate(0, { medianRttMs: rtt }),
+      });
+      coordinator.schedule({
+        roomId: "room-1",
+        matchId: "match-1",
+        roundId: "round-1",
+        players: [PLAYER_1, PLAYER_2],
+      });
+      expect(coordinator.submit("p1", tap(), receivedAtMs).event.grade).toBe(grade);
+    }
+  });
+
   it("does not award Perfect from an untrusted client timestamp", () => {
     const { coordinator, schedule } = makeHarness();
     schedule();
@@ -400,7 +433,7 @@ describe("LaunchCoordinator submissions and result privacy", () => {
       p1: clockEstimate(0, { medianRttMs: 100 }),
     });
     schedule();
-    expect(coordinator.submit("p1", tap(), 4_101).event.grade).toBe("Perfect");
+    expect(coordinator.submit("p1", tap(), 4_100).event.grade).toBe("Perfect");
   });
 
   it.each([
@@ -537,6 +570,7 @@ describe("LaunchCoordinator submissions and result privacy", () => {
       closed: false,
       submittedParticipantIds: ["p1"],
     });
+    expect(coordinator.replayProtectionCounts.activeServerEventIds).toBe(2);
 
     generatedIds = [player2Id, spectatorId];
     fallbackId = spectatorId;
@@ -823,6 +857,8 @@ describe("LaunchCoordinator bounded replay protection and safe arithmetic", () =
       issuedServerEventIds: 4,
       replayEvents: 1,
       activeRounds: 0,
+      activeNonces: 0,
+      activeServerEventIds: 0,
     });
     expect(coordinator.submit("p1", tap(), 4_000)).toEqual({ ...first, replayed: true });
 
@@ -835,6 +871,8 @@ describe("LaunchCoordinator bounded replay protection and safe arithmetic", () =
       issuedServerEventIds: 0,
       replayEvents: 0,
       activeRounds: 0,
+      activeNonces: 0,
+      activeServerEventIds: 0,
     });
   });
 
@@ -877,6 +915,8 @@ describe("LaunchCoordinator bounded replay protection and safe arithmetic", () =
       issuedServerEventIds: 0,
       replayEvents: 0,
       activeRounds: 0,
+      activeNonces: 0,
+      activeServerEventIds: 0,
     });
   });
 
@@ -924,5 +964,83 @@ describe("LaunchCoordinator bounded replay protection and safe arithmetic", () =
         players: [PLAYER_1, PLAYER_2],
       }),
     ).toThrow(new LaunchError("SERVER_EVENT_ID_GENERATION_FAILED"));
+  });
+
+  it("tracks active identifiers and removes them only when a closed round is cleaned", () => {
+    const { coordinator, schedule, setNow } = makeHarness();
+    schedule();
+    expect(coordinator.replayProtectionCounts).toMatchObject({
+      activeRounds: 1,
+      activeNonces: 1,
+      activeServerEventIds: 1,
+    });
+    setNow(5_501);
+    coordinator.finalizeExpired();
+    expect(coordinator.replayProtectionCounts).toMatchObject({
+      activeRounds: 1,
+      activeNonces: 1,
+      activeServerEventIds: 4,
+    });
+    coordinator.cleanupRound("room-1", "round-1");
+    expect(coordinator.replayProtectionCounts).toMatchObject({
+      activeRounds: 0,
+      activeNonces: 0,
+      activeServerEventIds: 0,
+      issuedNonces: 1,
+      issuedServerEventIds: 4,
+    });
+  });
+
+  it("rejects collisions through O(1) active indexes with many active rounds", () => {
+    let now = 1_000;
+    let nonceSequence = 0;
+    let eventSequence = 0;
+    const activeIds: string[] = [];
+    let collisionMode = false;
+    let collisionCalls = 0;
+    const freshId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const coordinator = new LaunchCoordinator({
+      now: () => now,
+      createNonce: () => `nonce-${++nonceSequence}`,
+      createServerEventId: () => {
+        if (collisionMode) {
+          collisionCalls += 1;
+          return collisionCalls <= activeIds.length
+            ? activeIds[collisionCalls - 1]!
+            : freshId;
+        }
+        eventSequence += 1;
+        const id = `00000000-0000-4000-8000-${String(eventSequence).padStart(12, "0")}`;
+        activeIds.push(id);
+        return id;
+      },
+      replayProtectionMs: 120_000,
+    });
+    for (let index = 0; index < 500; index += 1) {
+      coordinator.schedule({
+        roomId: `room-${index}`,
+        matchId: `match-${index}`,
+        roundId: `round-${index}`,
+        players: [PLAYER_1, PLAYER_2],
+      });
+    }
+    expect(coordinator.replayProtectionCounts).toMatchObject({
+      activeRounds: 500,
+      activeNonces: 500,
+      activeServerEventIds: 500,
+    });
+    now = 121_001;
+    coordinator.pruneExpiredReplayProtection(now);
+    expect(coordinator.replayProtectionCounts.issuedServerEventIds).toBe(0);
+    collisionMode = true;
+    expect(
+      coordinator.schedule({
+        roomId: "room-final",
+        matchId: "match-final",
+        roundId: "round-final",
+        players: [PLAYER_1, PLAYER_2],
+      }).serverEventId,
+    ).toBe(freshId);
+    expect(collisionCalls).toBe(501);
   });
 });

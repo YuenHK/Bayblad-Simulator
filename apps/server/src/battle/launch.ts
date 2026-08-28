@@ -30,13 +30,14 @@ const DEFAULT_LEAD_TIME_MS = 3_000;
 const ACCEPTANCE_BEFORE_TARGET_MS = 1_000;
 const ACCEPTANCE_AFTER_TARGET_MS = 1_500;
 const MAX_CLOCK_RTT_MS = 2_000;
+export const MAX_COMPENSATED_RTT_MS = 400;
+export const MAX_COMPENSATED_ONE_WAY_DELAY_MS = 250;
 const MAX_CLOCK_OFFSET_MS = 5 * 60_000;
 const MAX_CLOCK_SAMPLES = 9;
 const MAX_GENERATION_ATTEMPTS = 1_000;
 const MIN_TRUSTED_CLOCK_SAMPLES = 3;
 const MAX_CLOCK_ESTIMATE_AGE_MS = 30_000;
 const CLOCK_NEGATIVE_DELAY_JITTER_MS = 20;
-const MAX_PLAUSIBLE_ONE_WAY_DELAY_MS = 1_000;
 const DEFAULT_REPLAY_PROTECTION_MS = 10 * 60_000;
 const MIN_REPLAY_PROTECTION_MS = 2 * 60_000;
 const GRADES = ["Perfect", "Great", "Good", "Miss"] as const;
@@ -347,6 +348,8 @@ export class LaunchCoordinator {
   // Time-bounded replay protection. Persistence/rotation belongs to server deployment.
   readonly #issuedNonces = new Map<string, number>();
   readonly #issuedServerEventIds = new Map<string, number>();
+  readonly #activeNonces = new Set<string>();
+  readonly #activeServerEventIds = new Set<string>();
   readonly #events = new Map<string, EventRecord>();
   #lastObservedServerTimeMs = 0;
 
@@ -376,12 +379,16 @@ export class LaunchCoordinator {
     issuedServerEventIds: number;
     replayEvents: number;
     activeRounds: number;
+    activeNonces: number;
+    activeServerEventIds: number;
   }> {
     return {
       issuedNonces: this.#issuedNonces.size,
       issuedServerEventIds: this.#issuedServerEventIds.size,
       replayEvents: this.#events.size,
       activeRounds: this.#rounds.size,
+      activeNonces: this.#activeNonces.size,
+      activeServerEventIds: this.#activeServerEventIds.size,
     };
   }
 
@@ -442,6 +449,8 @@ export class LaunchCoordinator {
 
     this.#issuedNonces.set(nonce, expiresAt);
     this.#commitServerEventIds(stagedServerEventIds, expiresAt);
+    this.#activeNonces.add(nonce);
+    this.#addActiveServerEventIds(stagedServerEventIds);
     this.#rounds.set(key, {
       schedule: event,
       earliestAcceptedAtMs,
@@ -511,6 +520,7 @@ export class LaunchCoordinator {
         : null;
 
     this.#commitServerEventIds(stagedServerEventIds, expiresAt);
+    this.#addActiveServerEventIds(stagedServerEventIds);
     state.results.set(participantId, privateEvent);
     state.pendingPrivateResults.set(participantId, privateEvent);
     this.#events.set(tapEvent.eventId, {
@@ -562,6 +572,7 @@ export class LaunchCoordinator {
     }
 
     this.#commitServerEventIds(stagedServerEventIds, expiresAt);
+    this.#addActiveServerEventIds(stagedServerEventIds);
     for (const { state, generated, spectatorEvent } of plans) {
       for (const event of generated) {
         state.results.set(event.participantId, event);
@@ -613,6 +624,14 @@ export class LaunchCoordinator {
     const state = this.#rounds.get(key);
     if (!state) return false;
     if (!state.closed) throw new LaunchError("ROUND_NOT_CLOSED");
+    this.#activeNonces.delete(state.schedule.nonce);
+    this.#activeServerEventIds.delete(state.schedule.serverEventId);
+    if (state.spectatorResult) {
+      this.#activeServerEventIds.delete(state.spectatorResult.serverEventId);
+    }
+    for (const event of state.results.values()) {
+      this.#activeServerEventIds.delete(event.serverEventId);
+    }
     this.#rounds.delete(key);
     return true;
   }
@@ -691,7 +710,7 @@ export class LaunchCoordinator {
       if (
         correlationIdSchema.safeParse(candidate).success &&
         !this.#issuedNonces.has(candidate) &&
-        ![...this.#rounds.values()].some((state) => state.schedule.nonce === candidate)
+        !this.#activeNonces.has(candidate)
       ) {
         return candidate;
       }
@@ -705,7 +724,7 @@ export class LaunchCoordinator {
       if (
         eventIdSchema.safeParse(candidate).success &&
         !this.#issuedServerEventIds.has(candidate) &&
-        !this.#serverEventIdIsActive(candidate) &&
+        !this.#activeServerEventIds.has(candidate) &&
         !stagedServerEventIds.has(candidate)
       ) {
         stagedServerEventIds.add(candidate);
@@ -715,21 +734,14 @@ export class LaunchCoordinator {
     throw new LaunchError("SERVER_EVENT_ID_GENERATION_FAILED");
   }
 
-  #serverEventIdIsActive(candidate: string): boolean {
-    for (const state of this.#rounds.values()) {
-      if (state.schedule.serverEventId === candidate) return true;
-      if (state.spectatorResult?.serverEventId === candidate) return true;
-      if ([...state.results.values()].some((event) => event.serverEventId === candidate)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   #commitServerEventIds(stagedServerEventIds: ReadonlySet<string>, expiresAt: number): void {
     for (const eventId of stagedServerEventIds) {
       this.#issuedServerEventIds.set(eventId, expiresAt);
     }
+  }
+
+  #addActiveServerEventIds(stagedServerEventIds: ReadonlySet<string>): void {
+    for (const eventId of stagedServerEventIds) this.#activeServerEventIds.add(eventId);
   }
 
   #trustedCorrectedTap(
@@ -746,7 +758,7 @@ export class LaunchCoordinator {
       estimate.sampleCount < MIN_TRUSTED_CLOCK_SAMPLES ||
       !Number.isFinite(estimate.medianRttMs) ||
       estimate.medianRttMs < 0 ||
-      estimate.medianRttMs > MAX_CLOCK_RTT_MS ||
+      estimate.medianRttMs > MAX_COMPENSATED_RTT_MS ||
       !isSafeNonnegativeInteger(estimate.measuredAtServerMs) ||
       estimate.measuredAtServerMs > receivedAtMs ||
       receivedAtMs - estimate.measuredAtServerMs > MAX_CLOCK_ESTIMATE_AGE_MS
@@ -763,8 +775,8 @@ export class LaunchCoordinator {
     }
     const oneWayDelayMs = receivedAtMs - correctedTapMs;
     const maximumDelayMs = Math.min(
-      estimate.medianRttMs + 50,
-      MAX_PLAUSIBLE_ONE_WAY_DELAY_MS,
+      estimate.medianRttMs / 2 + 50,
+      MAX_COMPENSATED_ONE_WAY_DELAY_MS,
     );
     if (
       oneWayDelayMs < -CLOCK_NEGATIVE_DELAY_JITTER_MS ||
