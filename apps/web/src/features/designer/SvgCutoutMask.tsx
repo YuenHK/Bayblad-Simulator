@@ -2,6 +2,9 @@ import type { TopDesign } from "@steam-top/domain";
 
 import { PREVIEW_HOLES, screwCenters } from "./previewGeometry";
 
+const MASK_EXTENT_MM = 42;
+const MASK_SIZE_MM = MASK_EXTENT_MM * 2;
+
 export function SvgCutoutMask({
   design,
   id,
@@ -14,12 +17,18 @@ export function SvgCutoutMask({
       id={id}
       data-testid="acrylic-cutout-mask"
       maskUnits="userSpaceOnUse"
-      x="-34"
-      y="-34"
-      width="68"
-      height="68"
+      x={-MASK_EXTENT_MM}
+      y={-MASK_EXTENT_MM}
+      width={MASK_SIZE_MM}
+      height={MASK_SIZE_MM}
     >
-      <rect x="-34" y="-34" width="68" height="68" fill="white" />
+      <rect
+        x={-MASK_EXTENT_MM}
+        y={-MASK_EXTENT_MM}
+        width={MASK_SIZE_MM}
+        height={MASK_SIZE_MM}
+        fill="white"
+      />
       <circle
         data-testid="axle-hole"
         cx="0"

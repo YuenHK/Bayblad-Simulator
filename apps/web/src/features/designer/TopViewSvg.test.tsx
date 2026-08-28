@@ -128,6 +128,36 @@ describe("TopViewSvg", () => {
     }
   });
 
+  it("mask 範圍覆蓋 80 mm 草稿層，不會額外裁成平邊", () => {
+    const source = designFixture();
+    const design: TopDesign = {
+      ...source,
+      layers: source.layers.map((layer) => ({
+        ...layer,
+        shape: "circle",
+        diameterMm: 80,
+      })) as TopDesign["layers"],
+    };
+    render(<TopViewSvg design={design} />);
+
+    const mask = screen.getByTestId("acrylic-cutout-mask");
+    const maskX = Number(mask.getAttribute("x"));
+    const maskWidth = Number(mask.getAttribute("width"));
+    const pathCoordinates = screen.getAllByTestId("layer-path")[0]!
+      .getAttribute("d")!
+      .match(/-?\d+(?:\.\d+)?/g)!
+      .map(Number);
+    const maximumRadius = Math.max(...pathCoordinates.map(Math.abs));
+
+    expect(maximumRadius).toBe(40);
+    expect(maskX).toBeLessThanOrEqual(-(maximumRadius + 0.4));
+    expect(maskX + maskWidth).toBeGreaterThanOrEqual(maximumRadius + 0.4);
+    expect(mask.querySelector("rect")).toHaveAttribute(
+      "width",
+      mask.getAttribute("width"),
+    );
+  });
+
   it("沒有金屬碟時不畫，有金屬碟時只畫一個置中無孔圓", () => {
     const design = designFixture();
     const { rerender } = render(<TopViewSvg design={design} />);
@@ -172,6 +202,27 @@ describe("ExplodedView", () => {
     expect(screen.getByText("中層")).toBeVisible();
     expect(screen.getByText("底層")).toBeVisible();
     expect(screen.getByText("金屬碟")).toBeVisible();
+  });
+
+  it("完整顯示 80 mm 草稿層而不受 cutout mask 裁切", () => {
+    const source = designFixture();
+    const design: TopDesign = {
+      ...source,
+      layers: source.layers.map((layer) => ({
+        ...layer,
+        shape: "circle",
+        diameterMm: 80,
+      })) as TopDesign["layers"],
+    };
+    render(<ExplodedView design={design} />);
+
+    const graphic = screen.getByRole("img", { name: "陀螺分解圖" });
+    const mask = within(graphic).getByTestId("acrylic-cutout-mask");
+    expect(mask).toHaveAttribute("x", "-42");
+    expect(mask).toHaveAttribute("y", "-42");
+    expect(mask).toHaveAttribute("width", "84");
+    expect(mask).toHaveAttribute("height", "84");
+    expect(within(graphic).getAllByTestId("exploded-layer")).toHaveLength(3);
   });
 });
 
