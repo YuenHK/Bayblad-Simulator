@@ -20,8 +20,28 @@ export type BuildAppOptions = Readonly<{
   launch?: LaunchCoordinator;
   now?: () => number;
   seedFactory?: () => number;
+  createServerEventId?: () => string;
+  createSessionId?: () => string;
+  createSessionToken?: () => string;
   frameScheduler?: FrameScheduler;
   scoreMatch?: MatchScorer;
+  allowedOrigins?: readonly string[];
+  allowMissingOrigin?: boolean;
+  bodyLimit?: number;
+  maxHttpBufferSize?: number;
+  handshakeTimeoutMs?: number;
+  rateLimitBurst?: number;
+  rateLimitRefillPerSecond?: number;
+  maxConnections?: number;
+  maxConnectionsPerIp?: number;
+  maxRooms?: number;
+  maxOwnedRoomsPerSession?: number;
+  maxDesigns?: number;
+  maxDesignsPerSession?: number;
+  designTtlMs?: number;
+  maxMatchAttempts?: number;
+  lobbyDebounceMs?: number;
+  logError?: (error: unknown) => void;
   sweepIntervalMs?: number;
 }>;
 
@@ -31,9 +51,21 @@ export type BuiltApp = FastifyInstance & Readonly<{
 }>;
 
 export function buildApp(options: BuildAppOptions): BuiltApp {
-  const app = Fastify({ logger: false, forceCloseConnections: true });
+  if (process.env.NODE_ENV === "production" && !options.allowedOrigins?.length) {
+    throw new TypeError("Production composition requires allowedOrigins");
+  }
+  const app = Fastify({
+    logger: false,
+    forceCloseConnections: true,
+    bodyLimit: options.bodyLimit ?? 64 * 1_024,
+  });
   const rooms = options.rooms ?? new RoomService(options.now ? { now: options.now } : {});
-  const designs = options.designs ?? new DesignRegistry();
+  const designs = options.designs ?? new DesignRegistry({
+    ...(options.now ? { now: options.now } : {}),
+    maxGlobal: options.maxDesigns ?? 2_000,
+    maxPerOwner: options.maxDesignsPerSession ?? 20,
+    ttlMs: options.designTtlMs ?? 24 * 60 * 60_000,
+  });
   const battleEngine = options.battleEngine ?? (options.resultRepository
     ? new BattleEngine({ resultRepository: options.resultRepository })
     : undefined);
@@ -45,8 +77,24 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     launch: options.launch ?? new LaunchCoordinator(options.now ? { now: options.now } : {}),
     ...(options.now ? { now: options.now } : {}),
     ...(options.seedFactory ? { seedFactory: options.seedFactory } : {}),
+    ...(options.createServerEventId ? { createServerEventId: options.createServerEventId } : {}),
+    ...(options.createSessionId ? { createSessionId: options.createSessionId } : {}),
+    ...(options.createSessionToken ? { createSessionToken: options.createSessionToken } : {}),
     ...(options.frameScheduler ? { frameScheduler: options.frameScheduler } : {}),
     ...(options.scoreMatch ? { scoreMatch: options.scoreMatch } : {}),
+    allowedOrigins: options.allowedOrigins ?? [],
+    allowMissingOrigin: options.allowMissingOrigin ?? process.env.NODE_ENV !== "production",
+    maxHttpBufferSize: options.maxHttpBufferSize ?? 64 * 1_024,
+    handshakeTimeoutMs: options.handshakeTimeoutMs ?? 10_000,
+    rateLimitBurst: options.rateLimitBurst ?? 30,
+    rateLimitRefillPerSecond: options.rateLimitRefillPerSecond ?? 10,
+    maxConnections: options.maxConnections ?? 5_000,
+    maxConnectionsPerIp: options.maxConnectionsPerIp ?? 500,
+    maxRooms: options.maxRooms ?? 1_000,
+    maxOwnedRoomsPerSession: options.maxOwnedRoomsPerSession ?? 3,
+    maxMatchAttempts: options.maxMatchAttempts ?? 5,
+    lobbyDebounceMs: options.lobbyDebounceMs ?? (process.env.NODE_ENV === "test" ? 0 : 50),
+    ...(options.logError ? { logError: options.logError } : {}),
   });
   app.decorate("realtimeGateway", gateway);
   app.decorate("battleEngine", battleEngine);
@@ -65,7 +113,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       });
     } catch (error) {
       if (error instanceof DesignRegistryError) {
-        return reply.code(422).send({ error: error.code });
+        return reply.code(error.code === "DESIGN_QUOTA_EXCEEDED" ? 429 : 422).send({ error: error.code });
       }
       throw error;
     }

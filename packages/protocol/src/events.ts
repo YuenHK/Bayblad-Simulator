@@ -641,6 +641,15 @@ export const matchFinishedEventSchema = z
     }
   });
 
+export const matchCancelledEventSchema = z.object({
+  type: z.literal("match.cancelled"),
+  roomId: correlationIdSchema,
+  matchId: correlationIdSchema,
+  reason: z.enum(["attempt-limit", "server-error"]),
+  ...serverEnvelopeShape,
+}).strict();
+export type MatchCancelledEvent = z.infer<typeof matchCancelledEventSchema>;
+
 export const commandAckEventSchema = z
   .object({
     type: z.literal("command.ack"),
@@ -674,6 +683,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   battleFrameEventSchema,
   roundFinishedEventSchema,
   matchFinishedEventSchema,
+  matchCancelledEventSchema,
   commandAckEventSchema,
   errorEventSchema,
 ]);
@@ -691,6 +701,7 @@ export const playerServerEventSchema = z.discriminatedUnion("type", [
   battleFrameEventSchema,
   roundFinishedEventSchema,
   matchFinishedEventSchema,
+  matchCancelledEventSchema,
   commandAckEventSchema,
   errorEventSchema,
 ]);
@@ -708,6 +719,7 @@ export const spectatorServerEventSchema = z.discriminatedUnion("type", [
   battleFrameEventSchema,
   roundFinishedEventSchema,
   matchFinishedEventSchema,
+  matchCancelledEventSchema,
   commandAckEventSchema,
   errorEventSchema,
 ]);

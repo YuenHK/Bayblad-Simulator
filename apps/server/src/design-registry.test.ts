@@ -47,4 +47,54 @@ describe("DesignRegistry", () => {
     expect(visual).not.toHaveProperty("ownerSessionId");
     expect(visual).not.toHaveProperty("performance");
   });
+
+  it("bounds per-owner/global storage, retries UUID collisions, and never evicts pinned designs", () => {
+    let now = 0;
+    const ids = [
+      "10000000-0000-4000-8000-000000000010",
+      "10000000-0000-4000-8000-000000000010",
+      "10000000-0000-4000-8000-000000000011",
+      "10000000-0000-4000-8000-000000000012",
+    ];
+    const registry = new DesignRegistry({
+      now: () => now,
+      createDesignId: () => ids.shift()!,
+      maxGlobal: 2,
+      maxPerOwner: 2,
+      ttlMs: 100,
+    });
+    const first = registry.register("a", makeDefaultDesign());
+    const second = registry.register("a", makeDefaultDesign());
+    expect(second.designId).not.toBe(first.designId);
+    expect(() => registry.register("a", makeDefaultDesign())).toThrowError(
+      new DesignRegistryError("DESIGN_QUOTA_EXCEEDED"),
+    );
+    registry.pin("a", first.designId);
+    now = 101;
+    expect(registry.register("b", makeDefaultDesign()).designId).toBe("10000000-0000-4000-8000-000000000012");
+    expect(registry.requireOwned("a", first.designId).designId).toBe(first.designId);
+    registry.unpin("a", first.designId);
+    expect(registry.cleanupOwner("a")).toBe(1);
+    expect(registry.debugCounts()).toEqual({ total: 1, owners: 1, pinned: 0 });
+  });
+
+  it("evicts the least recently used unpinned design at global capacity", () => {
+    let now = 0;
+    let sequence = 20;
+    const registry = new DesignRegistry({
+      now: () => now,
+      createDesignId: () => `10000000-0000-4000-8000-${String(sequence++).padStart(12, "0")}`,
+      maxGlobal: 2,
+      ttlMs: 10_000,
+    });
+    const oldest = registry.register("a", makeDefaultDesign());
+    now = 1;
+    const kept = registry.register("b", makeDefaultDesign());
+    now = 2;
+    registry.requireOwned("a", oldest.designId);
+    now = 3;
+    registry.register("c", makeDefaultDesign());
+    expect(registry.requireOwned("a", oldest.designId).designId).toBe(oldest.designId);
+    expect(() => registry.requireOwned("b", kept.designId)).toThrowError(new DesignRegistryError("DESIGN_NOT_FOUND"));
+  });
 });

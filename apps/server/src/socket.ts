@@ -26,6 +26,7 @@ type Session = {
   token: string;
   displayName: string;
   roomIds: Set<string>;
+  ownedRoomIds: Set<string>;
   socketIds: Set<string>;
   events: Map<string, string>;
   disconnectedAt: number | null;
@@ -49,6 +50,19 @@ export type RealtimeDependencies = Readonly<{
   createSessionToken?: () => string;
   frameScheduler?: FrameScheduler;
   scoreMatch?: MatchScorer;
+  allowedOrigins: readonly string[];
+  allowMissingOrigin: boolean;
+  maxHttpBufferSize: number;
+  handshakeTimeoutMs: number;
+  rateLimitBurst: number;
+  rateLimitRefillPerSecond: number;
+  maxConnections: number;
+  maxConnectionsPerIp: number;
+  maxRooms: number;
+  maxOwnedRoomsPerSession: number;
+  maxMatchAttempts: number;
+  lobbyDebounceMs: number;
+  logError?: (error: unknown) => void;
 }>; 
 
 type MatchState = {
@@ -113,9 +127,24 @@ export class RealtimeGateway {
   readonly #createSessionToken: () => string;
   readonly #frameScheduler: FrameScheduler;
   readonly #scoreMatch: MatchScorer;
+  readonly #handshakeTimeoutMs: number;
+  readonly #rateLimitBurst: number;
+  readonly #rateLimitRefillPerMs: number;
+  readonly #maxConnections: number;
+  readonly #maxConnectionsPerIp: number;
+  readonly #maxRooms: number;
+  readonly #maxOwnedRoomsPerSession: number;
+  readonly #maxMatchAttempts: number;
+  readonly #lobbyDebounceMs: number;
+  readonly #logError: (error: unknown) => void;
   readonly #sessionsByToken = new Map<string, Session>();
+  readonly #sessionsById = new Map<string, Session>();
   readonly #sessionIdsByParticipant = new Map<string, Map<string, string>>();
   readonly #matches = new Map<string, MatchState>();
+  readonly #connectionsByIp = new Map<string, number>();
+  #lobbyTimer: ReturnType<typeof setTimeout> | null = null;
+  #lobbyPending = false;
+  #frameBroadcastOperations = 0;
 
   constructor(server: HttpServer, dependencies: RealtimeDependencies) {
     this.#rooms = dependencies.rooms;
@@ -129,12 +158,54 @@ export class RealtimeGateway {
     this.#createSessionToken = dependencies.createSessionToken ?? randomToken;
     this.#frameScheduler = dependencies.frameScheduler ?? defaultFrameScheduler;
     this.#scoreMatch = dependencies.scoreMatch ?? defaultScoreMatch;
-    this.io = new Server(server, { cors: { origin: false } });
+    this.#handshakeTimeoutMs = dependencies.handshakeTimeoutMs;
+    this.#rateLimitBurst = dependencies.rateLimitBurst;
+    this.#rateLimitRefillPerMs = dependencies.rateLimitRefillPerSecond / 1_000;
+    this.#maxConnections = dependencies.maxConnections;
+    this.#maxConnectionsPerIp = dependencies.maxConnectionsPerIp;
+    this.#maxRooms = dependencies.maxRooms;
+    this.#maxOwnedRoomsPerSession = dependencies.maxOwnedRoomsPerSession;
+    this.#maxMatchAttempts = dependencies.maxMatchAttempts;
+    this.#lobbyDebounceMs = dependencies.lobbyDebounceMs;
+    this.#logError = dependencies.logError ?? (() => undefined);
+    const origins = new Set(dependencies.allowedOrigins);
+    const originAllowed = (origin: string | undefined) =>
+      origin === undefined ? dependencies.allowMissingOrigin : origins.has(origin);
+    this.io = new Server(server, {
+      maxHttpBufferSize: dependencies.maxHttpBufferSize,
+      cors: {
+        origin: (origin, callback) => callback(null, originAllowed(origin)),
+        credentials: true,
+      },
+      allowRequest: (request, callback) => callback(null, originAllowed(request.headers.origin)),
+    });
     this.io.on("connection", (socket) => this.#connect(socket));
   }
 
   get activeMatchCount(): number {
     return this.#matches.size;
+  }
+
+  get debugCounts(): Readonly<{
+    sessions: number;
+    bindings: number;
+    matches: number;
+    frameBroadcastOperations: number;
+  }> {
+    return {
+      sessions: this.#sessionsById.size,
+      bindings: [...this.#sessionIdsByParticipant.values()].reduce((sum, map) => sum + map.size, 0),
+      matches: this.#matches.size,
+      frameBroadcastOperations: this.#frameBroadcastOperations,
+    };
+  }
+
+  flushLobby(): void {
+    if (this.#lobbyTimer) clearTimeout(this.#lobbyTimer);
+    this.#lobbyTimer = null;
+    if (!this.#lobbyPending) return;
+    this.#lobbyPending = false;
+    this.io.to("protocol:v1").emit("server.event", this.#rooms.lobbySnapshot());
   }
 
   sessionForBearer(value: string | undefined): Readonly<{ id: string; displayName: string }> | undefined {
@@ -144,6 +215,8 @@ export class RealtimeGateway {
   }
 
   async close(): Promise<void> {
+    if (this.#lobbyTimer) clearTimeout(this.#lobbyTimer);
+    this.#lobbyTimer = null;
     for (const [roomId, match] of this.#matches) this.#cancelMatch(roomId, match);
     await new Promise<void>((resolve) => this.io.close(() => resolve()));
   }
@@ -157,7 +230,7 @@ export class RealtimeGateway {
       }
       this.#flushLaunch(roomId, match);
     }
-    const beforeSweep = [...new Set([...this.#sessionsByToken.values()].flatMap((session) => [...session.roomIds]))];
+    const beforeSweep = new Map(this.#rooms.lobbySnapshot().rooms.map(({ id }) => [id, this.#rooms.get(id)!.revision]));
     this.#rooms.sweep();
     for (const [roomId, match] of [...this.#matches]) {
       const room = this.#rooms.get(roomId);
@@ -167,61 +240,64 @@ export class RealtimeGateway {
         this.#cancelMatch(roomId, match);
       }
     }
-    let lobbyChanged = false;
-    for (const roomId of beforeSweep) {
-      if (this.#rooms.hasRoom(roomId)) this.#broadcastRoom(roomId);
-      else {
+    const afterSweep = new Map(this.#rooms.lobbySnapshot().rooms.map(({ id }) => [id, this.#rooms.get(id)!.revision]));
+    let lobbyChanged = beforeSweep.size !== afterSweep.size;
+    for (const [roomId, revision] of beforeSweep) {
+      const nextRevision = afterSweep.get(roomId);
+      if (nextRevision === undefined) {
         lobbyChanged = true;
-        for (const session of this.#sessionsByToken.values()) session.roomIds.delete(roomId);
+        this.#cleanupRoom(roomId);
+      } else if (nextRevision !== revision) {
+        lobbyChanged = true;
+        this.#syncBindings(roomId);
+        this.#syncTransportRoles(roomId);
+        this.#broadcastRoom(roomId);
       }
     }
-    if (beforeSweep.length > 0 || lobbyChanged) this.#broadcastLobby();
+    if (lobbyChanged) this.#broadcastLobby();
     for (const [roomId, match] of [...this.#matches]) {
       if (!this.#rooms.hasRoom(roomId)) this.#cancelMatch(roomId, match);
     }
-    for (const [token, session] of this.#sessionsByToken) {
+    for (const session of [...this.#sessionsById.values()]) {
       if (session.socketIds.size === 0 && session.disconnectedAt !== null && nowMs - session.disconnectedAt >= 120_000) {
-        this.#sessionsByToken.delete(token);
+        this.#expireSession(session);
       }
     }
   }
 
   #connect(socket: Socket): void {
+    const ip = socket.handshake.address || "unknown";
+    const ipCount = this.#connectionsByIp.get(ip) ?? 0;
+    if (this.io.engine.clientsCount > this.#maxConnections || ipCount >= this.#maxConnectionsPerIp) {
+      socket.disconnect(true);
+      return;
+    }
+    this.#connectionsByIp.set(ip, ipCount + 1);
     const auth = socket.handshake.auth as Record<string, unknown>;
     const display = participantSummarySchema.safeParse({
       participantId: "identity-check",
       displayName: auth.displayName,
     });
     if (!display.success) {
+      if (ipCount === 0) this.#connectionsByIp.delete(ip);
+      else this.#connectionsByIp.set(ip, ipCount);
       socket.disconnect(true);
       return;
     }
     const requestedToken = typeof auth.sessionToken === "string" ? auth.sessionToken : undefined;
-    let session = requestedToken ? this.#sessionsByToken.get(requestedToken) : undefined;
-    let sessionStatus: "new" | "resumed" | "replaced" = requestedToken ? "replaced" : "new";
-    if (session?.disconnectedAt !== null && session?.disconnectedAt !== undefined && this.#now() - session.disconnectedAt >= 120_000) {
-      this.#sessionsByToken.delete(session.token);
-      session = undefined;
-    }
-    if (session) sessionStatus = "resumed";
-    if (!session) {
-      session = {
-        id: this.#createSessionId(),
-        token: this.#uniqueToken(),
-        displayName: display.data.displayName,
-        roomIds: new Set(),
-        socketIds: new Set(),
-        events: new Map(),
-        disconnectedAt: null,
-      };
-      this.#sessionsByToken.set(session.token, session);
-    }
-    session.disconnectedAt = null;
-    session.socketIds.add(socket.id);
+    let session: Session | null = null;
     let welcomed = false;
+    let tokens = this.#rateLimitBurst;
+    let lastRefillAt = this.#now();
+    const handshakeTimer = setTimeout(() => socket.disconnect(true), this.#handshakeTimeoutMs);
+    handshakeTimer.unref();
     socket.on("client.event", (raw: unknown) => {
       const hello = protocolHelloEventSchema.safeParse(raw);
       if (hello.success) {
+        if (welcomed) {
+          this.#error(socket, "INVALID_EVENT", "Protocol hello has already completed");
+          return;
+        }
         if (!hello.data.supportedVersions.includes(PROTOCOL_VERSION)) {
           this.#emit(socket, {
             type: "protocol.unsupported",
@@ -232,12 +308,19 @@ export class RealtimeGateway {
           });
           return;
         }
+        clearTimeout(handshakeTimer);
+        const established = this.#establishSession(display.data.displayName, requestedToken);
+        session = established.session;
+        session.disconnectedAt = null;
+        session.socketIds.add(socket.id);
+        socket.join(`session:${session.id}`);
+        socket.join("protocol:v1");
         welcomed = true;
         this.#emit(socket, {
           type: "protocol.welcome",
           selectedVersion: PROTOCOL_VERSION,
           sessionToken: session.token,
-          sessionStatus,
+          sessionStatus: established.status,
           protocolVersion: PROTOCOL_VERSION,
           serverEventId: this.#createServerEventId(),
         });
@@ -250,6 +333,7 @@ export class RealtimeGateway {
           try {
             const membership = this.#rooms.join(roomId, this.#user(session), "spectator");
             this.#bindParticipant(roomId, membership.participantId, session.id);
+            this.#joinTransportRoom(socket, session, roomId);
             this.#emit(socket, this.#rooms.snapshot(roomId, session.id));
             this.#sendCheckpoint(socket, roomId, session.id);
           } catch { /* retention may have expired between checks */ }
@@ -260,26 +344,104 @@ export class RealtimeGateway {
         this.#error(socket, "INVALID_EVENT", "Protocol hello is required");
         return;
       }
+      const now = this.#now();
+      tokens = Math.min(this.#rateLimitBurst, tokens + Math.max(0, now - lastRefillAt) * this.#rateLimitRefillPerMs);
+      lastRefillAt = now;
+      if (tokens < 1) {
+        this.#error(socket, "RATE_LIMITED", "Too many commands");
+        return;
+      }
+      tokens -= 1;
       const parsed = clientEventSchema.safeParse(raw);
       if (!parsed.success || parsed.data.type === "protocol.hello") {
         this.#error(socket, "INVALID_EVENT", "Malformed protocol event");
         return;
       }
-      void this.#command(socket, session, parsed.data).catch((error: unknown) => {
-        const code = typeof error === "object" && error !== null && "code" in error
-          ? String((error as { code: unknown }).code)
-          : "COMMAND_FAILED";
-        this.#error(socket, code, code, parsed.data.eventId);
+      void this.#command(socket, session!, parsed.data).catch((error: unknown) => {
+        this.#logError(error);
+        const code = this.#safeErrorCode(error);
+        this.#error(socket, code, code === "COMMAND_FAILED" ? "Command could not be completed" : code, parsed.data.eventId);
       });
     });
     socket.on("disconnect", () => {
-      session!.socketIds.delete(socket.id);
-      if (session!.socketIds.size > 0) return;
-      session!.disconnectedAt = this.#now();
-      for (const roomId of session!.roomIds) {
-        try { this.#rooms.disconnect(roomId, session!.id); } catch { /* already closed */ }
+      clearTimeout(handshakeTimer);
+      const remaining = Math.max(0, (this.#connectionsByIp.get(ip) ?? 1) - 1);
+      if (remaining === 0) this.#connectionsByIp.delete(ip);
+      else this.#connectionsByIp.set(ip, remaining);
+      if (!session) return;
+      session.socketIds.delete(socket.id);
+      if (session.socketIds.size > 0) return;
+      session.disconnectedAt = this.#now();
+      for (const roomId of session.roomIds) {
+        try { this.#rooms.disconnect(roomId, session.id); } catch { /* already closed */ }
       }
     });
+  }
+
+  #establishSession(
+    displayName: string,
+    requestedToken: string | undefined,
+  ): Readonly<{ session: Session; status: "new" | "resumed" | "replaced" }> {
+    let session = requestedToken ? this.#sessionsByToken.get(requestedToken) : undefined;
+    let status: "new" | "resumed" | "replaced" = requestedToken ? "replaced" : "new";
+    if (session?.disconnectedAt !== null && session?.disconnectedAt !== undefined && this.#now() - session.disconnectedAt >= 120_000) {
+      this.#expireSession(session);
+      session = undefined;
+    }
+    if (session) return { session, status: "resumed" };
+    session = {
+      id: this.#uniqueSessionId(),
+      token: this.#uniqueToken(),
+      displayName,
+      roomIds: new Set(),
+      ownedRoomIds: new Set(),
+      socketIds: new Set(),
+      events: new Map(),
+      disconnectedAt: null,
+    };
+    this.#sessionsByToken.set(session.token, session);
+    this.#sessionsById.set(session.id, session);
+    return { session, status };
+  }
+
+  #expireSession(session: Session): void {
+    this.#sessionsByToken.delete(session.token);
+    this.#sessionsById.delete(session.id);
+    this.#designs.cleanupOwner(session.id);
+    for (const [roomId, bindings] of this.#sessionIdsByParticipant) {
+      for (const [participantId, sessionId] of bindings) {
+        if (sessionId === session.id) bindings.delete(participantId);
+      }
+      if (bindings.size === 0 && !this.#matches.has(roomId)) this.#sessionIdsByParticipant.delete(roomId);
+    }
+  }
+
+  #joinTransportRoom(socket: Socket, session: Session, roomId: string): void {
+    socket.join(`room:${roomId}`);
+    socket.leave(`room:${roomId}:player1`);
+    socket.leave(`room:${roomId}:player2`);
+    socket.leave(`room:${roomId}:spectator`);
+    try {
+      const role = this.#rooms.snapshot(roomId, session.id).viewer.role;
+      socket.join(`room:${roomId}:${role}`);
+    } catch { /* membership may have been swept */ }
+  }
+
+  #safeErrorCode(error: unknown): string {
+    const candidate = typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code: unknown }).code)
+      : "COMMAND_FAILED";
+    const allowed = new Set([
+      "ROOM_NOT_FOUND", "NOT_IN_ROOM", "ROOM_FULL", "OWNER_REQUIRED",
+      "PARTICIPANT_NOT_FOUND", "SEAT_OCCUPIED", "SEATS_LOCKED", "PLAYER_REQUIRED",
+      "DESIGN_LOCKED", "PLAYERS_NOT_READY", "PARTICIPANT_DISCONNECTED",
+      "INVALID_PHASE_TRANSITION", "ROOM_ACTIVE", "DESIGN_INVALID", "DESIGN_NOT_FOUND",
+      "DESIGN_NOT_OWNED", "DESIGN_QUOTA_EXCEEDED", "RATE_LIMITED", "NO_ACTIVE_LAUNCH",
+      "EVENT_ID_CONFLICT", "INVALID_TAP", "SCHEDULE_MISMATCH", "UNKNOWN_PARTICIPANT",
+      "OUTSIDE_ACCEPTANCE_WINDOW", "ALREADY_SUBMITTED", "ROUND_CLOSED",
+      "ROOM_QUOTA_EXCEEDED", "SERVER_CAPACITY",
+    ]);
+    return allowed.has(candidate) ? candidate : "COMMAND_FAILED";
   }
 
   async #command(socket: Socket, session: Session, event: V1CommandEvent): Promise<void> {
@@ -291,21 +453,31 @@ export class RealtimeGateway {
       return;
     }
     if (event.type === "room.create") {
+      if (session.ownedRoomIds.size >= this.#maxOwnedRoomsPerSession) {
+        throw Object.assign(new Error("ROOM_QUOTA_EXCEEDED"), { code: "ROOM_QUOTA_EXCEEDED" });
+      }
+      if (this.#rooms.lobbySnapshot().rooms.length >= this.#maxRooms) {
+        throw Object.assign(new Error("SERVER_CAPACITY"), { code: "SERVER_CAPACITY" });
+      }
       const membership = this.#rooms.create(this.#user(session), event.name);
       session.roomIds.add(membership.roomId);
+      session.ownedRoomIds.add(membership.roomId);
       this.#bindParticipant(membership.roomId, membership.participantId, session.id);
+      this.#joinTransportRoom(socket, session, membership.roomId);
       this.#emit(socket, this.#rooms.snapshot(membership.roomId, session.id));
       this.#broadcastLobby();
     } else if (event.type === "room.join") {
       const membership = this.#rooms.join(event.roomId, this.#user(session), event.role);
       session.roomIds.add(event.roomId);
       this.#bindParticipant(event.roomId, membership.participantId, session.id);
+      this.#joinTransportRoom(socket, session, event.roomId);
       this.#broadcastRoom(event.roomId);
       this.#emit(socket, this.#rooms.snapshot(event.roomId, session.id));
       this.#sendCheckpoint(socket, event.roomId, session.id);
       this.#broadcastLobby();
     } else if (event.type === "room.move") {
       this.#rooms.move(event.roomId, session.id, event.target, event.subjectParticipantId);
+      this.#syncTransportRoles(event.roomId);
       this.#broadcastRoom(event.roomId);
       this.#broadcastLobby();
     } else if (event.type === "player.ready") {
@@ -318,7 +490,7 @@ export class RealtimeGateway {
       this.#rooms.close(event.roomId, session.id);
       const match = this.#matches.get(event.roomId);
       if (match) this.#cancelMatch(event.roomId, match);
-      for (const candidate of this.#sessionsByToken.values()) candidate.roomIds.delete(event.roomId);
+      this.#cleanupRoom(event.roomId);
       this.#broadcastLobby();
     } else if (event.type === "launch.tap") {
       const match = this.#matches.get(event.roomId);
@@ -337,14 +509,7 @@ export class RealtimeGateway {
   #broadcastRoom(roomId: string): void {
     if (!this.#rooms.hasRoom(roomId)) return;
     const deltas = this.#rooms.drainDeltas(roomId);
-    for (const session of this.#sessionsByToken.values()) {
-      if (!session.roomIds.has(roomId)) continue;
-      for (const socketId of session.socketIds) {
-        const socket = this.io.sockets.sockets.get(socketId);
-        if (!socket) continue;
-        for (const delta of deltas) this.#emit(socket, delta);
-      }
-    }
+    for (const delta of deltas) this.io.to(`room:${roomId}`).emit("server.event", delta);
   }
 
   #startMatchIfReady(roomId: string): void {
@@ -357,6 +522,13 @@ export class RealtimeGateway {
     if (!session1 || !session2) throw new Error("Missing authoritative participant binding");
     this.#designs.requireOwned(session1, room.player1.designId);
     this.#designs.requireOwned(session2, room.player2.designId);
+    this.#designs.pin(session1, room.player1.designId);
+    try {
+      this.#designs.pin(session2, room.player2.designId);
+    } catch (error) {
+      this.#designs.unpin(session1, room.player1.designId);
+      throw error;
+    }
     const matchId = crypto.randomUUID();
     const battleStarted: BattleStartedEvent = {
       type: "battle.started",
@@ -404,6 +576,10 @@ export class RealtimeGateway {
   }
 
   #scheduleRound(roomId: string, match: MatchState): void {
+    if (match.attempt >= this.#maxMatchAttempts) {
+      this.#cancelForAttemptLimit(roomId, match);
+      return;
+    }
     match.attempt += 1;
     match.currentRoundId = `round-${match.attempt}-${crypto.randomUUID()}`;
     match.launches.clear();
@@ -439,13 +615,7 @@ export class RealtimeGateway {
     const spectatorEvent = this.#launch.takeSpectatorResult(roomId, match.currentRoundId);
     if (spectatorEvent) {
       match.spectatorResult = spectatorEvent;
-      const room = this.#rooms.get(roomId);
-      const spectatorIds = new Set(room?.spectators.map(({ participantId }) => participantId));
-      const bindings = this.#sessionIdsByParticipant.get(roomId);
-      for (const participantId of spectatorIds) {
-        const sessionId = bindings?.get(participantId);
-        if (sessionId) this.#emitToSession(sessionId, spectatorEvent);
-      }
+      this.io.to(`room:${roomId}:spectator`).emit("server.event", spectatorEvent);
     }
     if (match.launches.size === 2 && !match.simulating) void this.#simulate(roomId, match);
   }
@@ -517,6 +687,7 @@ export class RealtimeGateway {
         this.#broadcastLobby();
         this.#launch.cleanupRound(roomId, roundId);
         this.#battleEngine.cleanup(match.matchId, roundId);
+        this.#unpinMatchDesigns(match);
         this.#matches.delete(roomId);
         return;
       }
@@ -553,8 +724,23 @@ export class RealtimeGateway {
     match.generation += 1;
     match.controller?.abort();
     if (match.currentRoundId) this.#battleEngine.cleanup(match.matchId, match.currentRoundId);
+    this.#unpinMatchDesigns(match);
     this.#matches.delete(roomId);
-    this.#sessionIdsByParticipant.delete(roomId);
+  }
+
+  #cancelForAttemptLimit(roomId: string, match: MatchState): void {
+    this.#emitToRoom(roomId, {
+      type: "match.cancelled", roomId, matchId: match.matchId, reason: "attempt-limit",
+      protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId(),
+    });
+    try { this.#rooms.cancelMatch(roomId); } catch { /* room was concurrently removed */ }
+    this.#cancelMatch(roomId, match);
+    this.#broadcastRoom(roomId);
+    this.#broadcastLobby();
+  }
+
+  #unpinMatchDesigns(match: MatchState): void {
+    for (const player of match.players) this.#designs.unpin(player.sessionId, player.designId);
   }
 
   #bindParticipant(roomId: string, participantId: string, sessionId: string): void {
@@ -573,6 +759,44 @@ export class RealtimeGateway {
       if (existingSessionId === sessionId && existingId !== participantId) bindings.delete(existingId);
     }
     bindings.set(participantId, sessionId);
+  }
+
+  #syncBindings(roomId: string): void {
+    const bindings = this.#sessionIdsByParticipant.get(roomId);
+    const room = this.#rooms.get(roomId);
+    if (!bindings || !room) return;
+    const active = new Set([
+      ...(room.player1 ? [room.player1.participantId] : []),
+      ...(room.player2 ? [room.player2.participantId] : []),
+      ...room.spectators.map(({ participantId }) => participantId),
+    ]);
+    for (const participantId of bindings.keys()) if (!active.has(participantId)) bindings.delete(participantId);
+  }
+
+  #syncTransportRoles(roomId: string): void {
+    const bindings = this.#sessionIdsByParticipant.get(roomId);
+    if (!bindings) return;
+    for (const sessionId of new Set(bindings.values())) {
+      const session = this.#sessionsById.get(sessionId);
+      if (!session) continue;
+      for (const socketId of session.socketIds) {
+        const socket = this.io.sockets.sockets.get(socketId);
+        if (socket) this.#joinTransportRoom(socket, session, roomId);
+      }
+    }
+  }
+
+  #cleanupRoom(roomId: string): void {
+    const match = this.#matches.get(roomId);
+    if (match) this.#cancelMatch(roomId, match);
+    this.#sessionIdsByParticipant.delete(roomId);
+    for (const session of this.#sessionsById.values()) {
+      session.roomIds.delete(roomId);
+      session.ownedRoomIds.delete(roomId);
+    }
+    this.io.in(`room:${roomId}`).socketsLeave([
+      `room:${roomId}`, `room:${roomId}:player1`, `room:${roomId}:player2`, `room:${roomId}:spectator`,
+    ]);
   }
 
   #participantForSession(roomId: string, sessionId: string): string {
@@ -614,22 +838,19 @@ export class RealtimeGateway {
   }
 
   #emitToRoom(roomId: string, event: Record<string, unknown>): void {
-    for (const session of this.#sessionsByToken.values()) {
-      if (session.roomIds.has(roomId)) this.#emitToSession(session.id, event);
-    }
+    const channel = this.io.to(`room:${roomId}`);
+    if (event.type === "battle.frame") {
+      this.#frameBroadcastOperations += 1;
+      channel.volatile.emit("server.event", event);
+    } else channel.emit("server.event", event);
   }
 
   #emitToSession(sessionId: string, event: Record<string, unknown>): void {
-    const session = [...this.#sessionsByToken.values()].find(({ id }) => id === sessionId);
-    if (!session) return;
-    for (const socketId of session.socketIds) {
-      const socket = this.io.sockets.sockets.get(socketId);
-      if (socket) this.#emit(socket, event);
-    }
+    if (this.#sessionsById.has(sessionId)) this.io.to(`session:${sessionId}`).emit("server.event", event);
   }
 
   #emitErrorToSession(sessionId: string, code: string): void {
-    const session = [...this.#sessionsByToken.values()].find(({ id }) => id === sessionId);
+    const session = this.#sessionsById.get(sessionId);
     if (!session) return;
     for (const socketId of session.socketIds) {
       const socket = this.io.sockets.sockets.get(socketId);
@@ -638,8 +859,10 @@ export class RealtimeGateway {
   }
 
   #broadcastLobby(): void {
-    const snapshot = this.#rooms.lobbySnapshot();
-    for (const socket of this.io.sockets.sockets.values()) this.#emit(socket, snapshot);
+    this.#lobbyPending = true;
+    if (this.#lobbyTimer) return;
+    this.#lobbyTimer = setTimeout(() => this.flushLobby(), this.#lobbyDebounceMs);
+    this.#lobbyTimer.unref();
   }
 
   #user(session: Session) { return { id: session.id, displayName: session.displayName }; }
@@ -674,5 +897,13 @@ export class RealtimeGateway {
       if (token.length >= 32 && token.length <= 256 && !this.#sessionsByToken.has(token)) return token;
     }
     throw new Error("SESSION_TOKEN_GENERATION_FAILED");
+  }
+
+  #uniqueSessionId(): string {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
+      const id = this.#createSessionId();
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(id) && !this.#sessionsById.has(id)) return id;
+    }
+    throw new Error("SESSION_ID_GENERATION_FAILED");
   }
 }
