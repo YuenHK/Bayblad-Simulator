@@ -38,6 +38,12 @@ describe("RealtimeClient", () => {
     expect(estimator.serverToClientTime(7_000)).toBe(2_000);
   });
 
+  it("RTT超過400ms的clock sample不會讓同步就緒", () => {
+    const estimator = new ClientClockEstimator();
+    estimator.add({ clientSentAtMs: 1_000, serverReceivedAtMs: 6_200, serverSentAtMs: 6_201, clientReceivedAtMs: 1_402 });
+    expect(estimator.sampleCount).toBe(0);
+  });
+
   it("clock pong只供視覺 offset，client以不含server timestamps的ack回覆", () => {
     let now = 1_000;
     const transport = new FakeTransport();
@@ -45,15 +51,18 @@ describe("RealtimeClient", () => {
     client.start();
     transport.fire("connect");
     transport.fire("server.event", { type: "protocol.welcome", selectedVersion: 1, sessionToken: "s".repeat(32), sessionStatus: "new", protocolVersion: 1, serverEventId: uuid(1) });
-    const ping = transport.emitted.map(([, event]) => event as any).find((event) => event.type === "clock.ping");
+    let ping = transport.emitted.map(([, event]) => event as any).find((event) => event.type === "clock.ping");
     expect(ping).toMatchObject({ clientSentAtMs: 1_000 });
     expect(ping).not.toHaveProperty("serverReceiveTimeMs");
-    now = 1_050;
-    transport.fire("server.event", { type: "clock.pong", pingId: ping.pingId, clientSentAtMs: 1_000, serverReceiveTimeMs: 6_020, serverSendTimeMs: 6_020, protocolVersion: 1, serverEventId: uuid(2) });
-    const ack = transport.emitted.map(([, event]) => event as any).find((event) => event.type === "clock.ack");
+    for (let sample = 0; sample < 3; sample += 1) {
+      now = ping.clientSentAtMs + 51;
+      transport.fire("server.event", { type: "clock.pong", pingId: ping.pingId, clientSentAtMs: ping.clientSentAtMs, serverReceiveTimeMs: ping.clientSentAtMs + 5_025, serverSendTimeMs: ping.clientSentAtMs + 5_026, protocolVersion: 1, serverEventId: uuid(sample + 2) });
+      if (sample < 2) ping = transport.emitted.map(([, event]) => event as any).filter((event) => event.type === "clock.ping").at(-1);
+    }
+    const ack = transport.emitted.map(([, event]) => event as any).filter((event) => event.type === "clock.ack").at(-1);
     expect(ack).toMatchObject({ pingId: ping.pingId });
     expect(ack).not.toHaveProperty("serverReceiveTimeMs");
-    expect(client.getState()).toMatchObject({ clockReady: true, clockOffsetMs: 4_995 });
+    expect(client.getState()).toMatchObject({ clockReady: true, clockSamples: 3, clockOffsetMs: 5_000 });
     client.stop();
   });
 
@@ -108,6 +117,30 @@ describe("RealtimeClient", () => {
     expect(() => client.command({ type: "room.create", name: "offline" })).toThrow("目前離線"); expect(transport.emitted).toHaveLength(before);
   });
 
+  it("pending command只由matching ack完成，unrelated delta與wrong ack不會清除", async () => {
+    const transport = new FakeTransport(); const client = onlineClient(transport);
+    const pending = client.commandAsync({ type: "room.move", roomId: "room-1", target: "spectator" });
+    const command = transport.emitted.map(([, event]) => event as any).filter((event) => event.type === "room.move").at(-1);
+    transport.fire("server.event", roomDelta(uuid(5)));
+    expect(client.getState().pendingActions).toBe(1);
+    transport.fire("server.event", { type: "command.ack", causedByEventId: command.eventId, commandType: "room.join", status: "applied", protocolVersion: 1, serverEventId: uuid(6) });
+    expect(client.getState().pendingActions).toBe(1);
+    transport.fire("server.event", { type: "command.ack", causedByEventId: command.eventId, commandType: "room.move", status: "applied", protocolVersion: 1, serverEventId: uuid(7) });
+    await expect(pending).resolves.toBeUndefined();
+    expect(client.getState().pendingActions).toBe(0);
+    client.stop();
+  });
+
+  it("stop會reject所有waiter並可再次start", async () => {
+    const transport = new FakeTransport(); const client = onlineClient(transport);
+    const pending = client.commandAsync({ type: "room.move", roomId: "room-1", target: "spectator" });
+    client.stop();
+    await expect(pending).rejects.toThrow("最新伺服器狀態取代");
+    client.start(); transport.fire("connect"); transport.fire("server.event", { ...welcome("new", "n"), serverEventId: uuid(8) });
+    expect(client.getState()).toMatchObject({ status: "online", pendingActions: 0 });
+    client.stop();
+  });
+
   it("儲存被瀏覽器拒絕時仍可建立連線並接收 welcome", () => {
     const brokenStorage = { getItem: () => { throw new DOMException("denied", "SecurityError"); }, setItem: () => { throw new DOMException("full", "QuotaExceededError"); }, removeItem: () => { throw new DOMException("denied", "SecurityError"); } };
     const transport = new FakeTransport();
@@ -156,11 +189,13 @@ describe("RealtimeClient", () => {
     const retrying = client.readyWithDesign("room-1", design);
     await vi.waitFor(() => expect(readyCommands(transport)).toHaveLength(2));
     const stale = readyCommands(transport).at(-1)!;
+    transport.fire("server.event", roomDelta(uuid(7)));
+    expect(client.getState().pendingActions).toBe(1);
     transport.fire("server.event", { type: "error", code: "DESIGN_NOT_FOUND", message: "missing", causedByEventId: stale.eventId, protocolVersion: 1, serverEventId: uuid(5) });
     await vi.waitFor(() => expect(readyCommands(transport)).toHaveLength(3));
     const replacement = readyCommands(transport).at(-1)!;
     expect(replacement.designId).toBe(uuid(3));
-    transport.fire("server.event", { type: "command.ack", causedByEventId: replacement.eventId, status: "applied", protocolVersion: 1, serverEventId: uuid(6) });
+    transport.fire("server.event", { type: "command.ack", causedByEventId: replacement.eventId, commandType: "player.ready", status: "applied", protocolVersion: 1, serverEventId: uuid(6) });
     expect(await retrying).toBe(uuid(3));
     expect(fetcher).toHaveBeenCalledTimes(2);
     client.stop();
@@ -177,6 +212,53 @@ describe("RealtimeClient", () => {
     await expect(uploading).rejects.toThrow("連線已更新");
     expect(storage.get("steam-top.design-cache")).toBeNull();
     client.stop();
+  });
+
+  it("嚴格拒絕上載回應的non-string、bad uuid與extra fields", async () => {
+    const transport = new FakeTransport();
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: 123 }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: "bad-id" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ designId: uuid(2), extra: true }), { status: 201 }));
+    const client = onlineClient(transport, { fetcher });
+    for (let attempt = 0; attempt < 3; attempt += 1) await expect(client.uploadDesign(makeDefaultDesign())).rejects.toThrow("伺服器回應格式錯誤");
+    expect(readyCommands(transport)).toHaveLength(0);
+    client.stop();
+  });
+
+  it("非JSON與HTTP失敗轉換為穩定繁中訊息", async () => {
+    const transport = new FakeTransport();
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.reject(new SyntaxError("html")) } as Response)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "internal detail" }), { status: 503 }));
+    const client = onlineClient(transport, { fetcher });
+    await expect(client.uploadDesign(makeDefaultDesign())).rejects.toThrow("伺服器回應格式錯誤");
+    await expect(client.uploadDesign(makeDefaultDesign())).rejects.toThrow("上載設計失敗（HTTP 503）");
+    client.stop();
+  });
+
+  it("損壞快取當作miss並移除，不會送出malformed ready", async () => {
+    const transport = new FakeTransport(); const storage = createSafeStorage();
+    storage.set("steam-top.design-cache", JSON.stringify({ sessionToken: "s".repeat(32), fingerprint: "x", designId: 123 }));
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ designId: uuid(2) }), { status: 201 }));
+    const client = onlineClient(transport, { storage, fetcher }); const design = makeDefaultDesign();
+    const ready = client.readyWithDesign("room-1", design); await acknowledgeLatestReady(transport, uuid(4), 1);
+    expect(await ready).toBe(uuid(2)); expect(readyCommands(transport)[0]?.designId).toBe(uuid(2)); expect(fetcher).toHaveBeenCalledOnce();
+    client.stop();
+  });
+
+  it("response.json pending仍受10秒timeout控制，external abort保留AbortError", async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = createSafeStorage(); storage.set("steam-top.session-token", "s".repeat(32));
+      const pendingJson = new Promise<unknown>(() => undefined);
+      const client = new RealtimeClient({ transport: new FakeTransport(), storage, fetcher: vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => pendingJson } as Response) });
+      const timed = client.uploadDesign(makeDefaultDesign()); const timedAssertion = expect(timed).rejects.toThrow("上載設計逾時");
+      await vi.advanceTimersByTimeAsync(10_000); await timedAssertion;
+      const controller = new AbortController(); const aborted = client.uploadDesign(makeDefaultDesign(), controller.signal); controller.abort();
+      await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+      await expect(aborted).rejects.not.toThrow("逾時");
+    } finally { vi.useRealTimers(); }
   });
 
   it("新一輪 launch schedule 清除上輪 frame，避免客戶端推測新戰況", () => {
@@ -267,6 +349,9 @@ function roomSnapshot() {
     player1: { participantId: "p1", displayName: "One", ready: false, designId: null }, player2: null, spectators: [],
     viewer: { participantId: "p1", role: "player1", isOwner: true }, protocolVersion: 1, serverEventId: uuid(1) } as const;
 }
+function roomDelta(serverEventId: string) {
+  return { type: "room.delta", roomId: "room-1", baseRevision: 1, revision: 2, patch: { spectatorCount: 1 }, joined: [{ participantId: "watcher", displayName: "Watcher" }], leftParticipantIds: [], protocolVersion: 1, serverEventId } as const;
+}
 function welcome(status: "new" | "resumed" | "replaced", tokenSeed = "s") {
   return { type: "protocol.welcome", selectedVersion: 1, sessionToken: tokenSeed.repeat(32), sessionStatus: status, protocolVersion: 1, serverEventId: uuid(9) } as const;
 }
@@ -281,7 +366,7 @@ function readyCommands(transport: FakeTransport) {
 async function acknowledgeLatestReady(transport: FakeTransport, serverEventId: string, expectedCount: number) {
   await vi.waitFor(() => expect(readyCommands(transport)).toHaveLength(expectedCount));
   const ready = readyCommands(transport).at(-1)!;
-  transport.fire("server.event", { type: "command.ack", causedByEventId: ready.eventId, status: "applied", protocolVersion: 1, serverEventId });
+  transport.fire("server.event", { type: "command.ack", causedByEventId: ready.eventId, commandType: "player.ready", status: "applied", protocolVersion: 1, serverEventId });
 }
 const publicDesign = { layers: [
   { id: "l1", position: "top", shape: "circle", points: 6, diameterMm: 40, cornerRoundness: .5, rotationDeg: 0, color: "#112233" },

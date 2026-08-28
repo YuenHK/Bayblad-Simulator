@@ -599,11 +599,11 @@ describe("realtime app", () => {
     const createEvent = command("room.create", { name: "  測試房  " });
     alice.socket.emit("client.event", createEvent);
     const room = await roomSnapshot;
-    expect((await firstAck).status).toBe("applied");
+    expect(await firstAck).toMatchObject({ status: "applied", commandType: "room.create", causedByEventId: createEvent.eventId });
     expect(room.name).toBe("測試房");
     const replayAck = nextEvent(alice.socket, "command.ack");
     alice.socket.emit("client.event", createEvent);
-    expect((await replayAck).status).toBe("replayed");
+    expect(await replayAck).toMatchObject({ status: "replayed", commandType: "room.create", causedByEventId: createEvent.eventId });
 
     const response = await app.inject({
       method: "POST", url: "/api/designs",

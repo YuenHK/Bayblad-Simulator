@@ -11,6 +11,9 @@ importers:
       '@playwright/test':
         specifier: 1.62.1
         version: 1.62.1
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -75,6 +78,9 @@ importers:
       three:
         specifier: 0.185.1
         version: 0.185.1
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
     devDependencies:
       '@testing-library/jest-dom':
         specifier: 7.0.1

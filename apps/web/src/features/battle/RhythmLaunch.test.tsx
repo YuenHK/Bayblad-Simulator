@@ -6,8 +6,8 @@ describe("RhythmLaunch", () => {
   afterEach(() => vi.useRealTimers());
   it("schedule早於首個clock sample時只顯示同步並禁止tap", () => {
     const onCommand = vi.fn();
-    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "sync", serverTargetTimeMs: 3_000 }} onCommand={onCommand} clockReady={false} />);
-    expect(screen.getByText("正在同步時間", { selector: ".launch-countdown" })).toBeVisible();
+    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "sync", serverTargetTimeMs: 3_000 }} onCommand={onCommand} clockReady={false} clockSamples={1} />);
+    expect(screen.getByText("正在同步時間 1/3", { selector: ".launch-countdown" })).toBeVisible();
     expect(screen.getByRole("button", { name: "在判定線發射" })).toBeDisabled();
     expect(screen.queryByTestId("moving-marker")).not.toBeInTheDocument();
   });
@@ -21,6 +21,13 @@ describe("RhythmLaunch", () => {
     vi.advanceTimersByTime(100);
     fireEvent.pointerDown(screen.getByRole("button", { name: "在判定線發射" }));
     expect(onCommand).toHaveBeenCalledOnce();
+  });
+  it("Space在輸入或互動元素上不會攔截或發射", () => {
+    const onCommand = vi.fn();
+    render(<><input aria-label="房間碼" /><RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "nonce", serverTargetTimeMs: Date.now() + 1_000 }} onCommand={onCommand} /></>);
+    const input = screen.getByLabelText("房間碼");
+    expect(fireEvent.keyDown(input, { code: "Space" })).toBe(true);
+    expect(onCommand).not.toHaveBeenCalled();
   });
   it("重連恢復同一 nonce 不重複發射，新一輪 nonce 可再發射", () => {
     const onCommand = vi.fn();

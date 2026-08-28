@@ -173,6 +173,11 @@ export const v1CommandEventSchema = z.discriminatedUnion("type", [
   roomCloseEventSchema,
 ]);
 export type V1CommandEvent = z.infer<typeof v1CommandEventSchema>;
+export const v1CommandTypeSchema = z.enum([
+  "room.create", "room.join", "room.move", "player.ready", "launch.tap",
+  "clock.ping", "clock.ack", "room.departed.ack", "room.leave", "room.close",
+]);
+export type V1CommandType = z.infer<typeof v1CommandTypeSchema>;
 
 export const clientEventSchema = z.discriminatedUnion("type", [
   protocolHelloEventSchema,
@@ -693,6 +698,7 @@ export const commandAckEventSchema = z
   .object({
     type: z.literal("command.ack"),
     causedByEventId: eventIdSchema,
+    commandType: v1CommandTypeSchema,
     status: z.enum(["applied", "replayed"]),
     resultServerEventId: eventIdSchema.nullable().optional(),
     ...serverEnvelopeShape,

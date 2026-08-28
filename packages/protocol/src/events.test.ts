@@ -450,6 +450,7 @@ const serverCases = [
     value: {
       type: "command.ack",
       causedByEventId: eventId,
+      commandType: "room.create",
       status: "applied",
       resultServerEventId,
       ...serverEnvelope,
@@ -634,9 +635,12 @@ describe("serverEventSchema", () => {
     ).toBe(true);
     const { resultServerEventId: _resultId, ...withoutResultId } = ack;
     expect(serverEventSchema.safeParse(withoutResultId).success).toBe(true);
+    const { commandType: _commandType, ...withoutCommandType } = ack;
+    expect(serverEventSchema.safeParse(withoutCommandType).success).toBe(false);
     expect(
       serverEventSchema.safeParse({ ...ack, causedByEventId: "not-a-uuid" }).success,
     ).toBe(false);
+    expect(serverEventSchema.safeParse({ ...ack, commandType: "unknown.command" }).success).toBe(false);
   });
 
   it("prevents opponent launch data leaking in private results", () => {
