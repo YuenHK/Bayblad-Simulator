@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/client.ts",
+    "./authority": "./src/authority.ts",
     "./queries": "./src/queries.ts",
     "./schema": "./src/schema.ts"
   },

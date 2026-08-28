@@ -78,4 +78,5 @@ export function createDatabaseClient(
 }
 
 export { matchWithDetails } from "./queries";
+export * from "./authority";
 export * from "./schema";

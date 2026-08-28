@@ -299,6 +299,9 @@ export const designs = pgTable(
     performanceJson: jsonb("performance_json")
       .$type<PerformanceSnapshot>()
       .notNull(),
+    // Repositories must write a design and its layers in one transaction.
+    // A deferred PostgreSQL constraint trigger validates exact layer topology
+    // before any battle-eligible snapshot can commit.
     battleEligible: boolean("battle_eligible").notNull().default(false),
     validationIssues: jsonb("validation_issues")
       .$type<readonly string[]>()
@@ -353,6 +356,10 @@ export const designs = pgTable(
     check(
       "designs_battle_eligibility_consistent",
       sql`jsonb_typeof(${table.validationIssues}) = 'array' and (not ${table.battleEligible} or jsonb_array_length(${table.validationIssues}) = 0)`,
+    ),
+    check(
+      "designs_model_versions_nonblank",
+      sql`length(btrim(${table.schemaVersion})) > 0 and length(btrim(${table.performanceModelVersion})) > 0`,
     ),
   ],
 );
@@ -496,6 +503,11 @@ export const roomParticipants = pgTable(
       table.roomId,
       table.participantPublicId,
     ),
+    uniqueIndex("room_participants_active_player_seat_uidx")
+      .on(table.roomId, table.role)
+      .where(
+        sql`${table.leftAt} is null and ${table.role} in ('player1', 'player2')`,
+      ),
     index("room_participants_identity_joined_idx").on(
       table.identityId,
       table.joinedAt,
@@ -620,6 +632,14 @@ export const matches = pgTable(
       "matches_completed_time_order",
       sql`${table.completedAt} is null or ${table.completedAt} >= ${table.startedAt}`,
     ),
+    check(
+      "matches_model_versions_nonblank",
+      sql`length(btrim(${table.performanceModelVersion})) > 0 and length(btrim(${table.physicsModelVersion})) > 0`,
+    ),
+    check(
+      "matches_protocol_version_positive",
+      sql`${table.protocolVersion} > 0`,
+    ),
   ],
 );
 
@@ -630,6 +650,8 @@ export const rounds = pgTable(
     matchId: uuid("match_id")
       .notNull()
       .references(() => matches.id, { onDelete: "cascade" }),
+    externalRoundId: text("external_round_id").notNull(),
+    authorityKeyHash: text("authority_key_hash").notNull(),
     roundNumber: smallint("round_number").notNull(),
     attempt: smallint("attempt").notNull(),
     seed: bigint("seed", { mode: "number" }).notNull(),
@@ -659,7 +681,7 @@ export const rounds = pgTable(
       mode: "number",
     }).notNull(),
     physicsModelVersion: text("physics_model_version").notNull(),
-    resultFingerprint: text("result_fingerprint").notNull(),
+    inputFingerprint: text("input_fingerprint").notNull(),
     battleResultJson: jsonb("battle_result_json")
       .$type<BattleResultSnapshot>()
       .notNull(),
@@ -678,12 +700,8 @@ export const rounds = pgTable(
       table.roundNumber,
       table.attempt,
     ),
-    uniqueIndex("rounds_result_fingerprint_uidx").on(table.resultFingerprint),
-    index("rounds_match_number_idx").on(
-      table.matchId,
-      table.roundNumber,
-      table.attempt,
-    ),
+    uniqueIndex("rounds_authority_key_hash_uidx").on(table.authorityKeyHash),
+    index("rounds_input_fingerprint_idx").on(table.inputFingerprint),
     index("rounds_completed_at_idx").on(table.completedAt),
     index("rounds_launch_grades_idx").on(
       table.launchGradeA,
@@ -702,8 +720,16 @@ export const rounds = pgTable(
       sql`${table.launchAngularMultiplierA} between 0 and 2 and ${table.launchAngularMultiplierB} between 0 and 2 and ${table.launchLinearMultiplierA} between 0 and 2 and ${table.launchLinearMultiplierB} between 0 and 2`,
     ),
     check(
-      "rounds_result_fingerprint_format",
-      sql`${table.resultFingerprint} ~ '^[a-f0-9]{64}$'`,
+      "rounds_external_round_id_format",
+      sql`length(${table.externalRoundId}) between 1 and 128 and ${table.externalRoundId} ~ '^[A-Za-z0-9_-]+$'`,
+    ),
+    check(
+      "rounds_authority_key_hash_format",
+      sql`${table.authorityKeyHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "rounds_input_fingerprint_format",
+      sql`${table.inputFingerprint} ~ '^[a-f0-9]{64}$'`,
     ),
     check(
       "rounds_frames_strategy",
@@ -712,6 +738,10 @@ export const rounds = pgTable(
     check(
       "rounds_time_order",
       sql`${table.completedAt} >= ${table.startedAt}`,
+    ),
+    check(
+      "rounds_physics_model_version_nonblank",
+      sql`length(btrim(${table.physicsModelVersion})) > 0`,
     ),
   ],
 );
@@ -851,16 +881,36 @@ export const identitiesRelations = relations(identities, ({ one, many }) => ({
     relationName: "identityMerge",
   }),
   mergedSources: many(identities, { relationName: "identityMerge" }),
-  sessions: many(identitySessions),
-  designs: many(designs),
+  sourceLinks: many(identityLinks, { relationName: "identityLinkSource" }),
+  targetLinks: many(identityLinks, { relationName: "identityLinkTarget" }),
+  sessions: many(identitySessions, { relationName: "identitySessions" }),
+  designs: many(designs, { relationName: "ownedDesigns" }),
+  ownedRooms: many(rooms, { relationName: "ownedRooms" }),
+  roomParticipations: many(roomParticipants, {
+    relationName: "identityRoomParticipants",
+  }),
   player1Matches: many(matches, { relationName: "matchPlayer1Identity" }),
   player2Matches: many(matches, { relationName: "matchPlayer2Identity" }),
+}));
+
+export const identityLinksRelations = relations(identityLinks, ({ one }) => ({
+  sourceIdentity: one(identities, {
+    fields: [identityLinks.sourceIdentityId],
+    references: [identities.id],
+    relationName: "identityLinkSource",
+  }),
+  targetIdentity: one(identities, {
+    fields: [identityLinks.targetIdentityId],
+    references: [identities.id],
+    relationName: "identityLinkTarget",
+  }),
 }));
 
 export const identitySessionsRelations = relations(identitySessions, ({ one }) => ({
   identity: one(identities, {
     fields: [identitySessions.identityId],
     references: [identities.id],
+    relationName: "identitySessions",
   }),
 }));
 
@@ -868,8 +918,9 @@ export const designsRelations = relations(designs, ({ one, many }) => ({
   ownerIdentity: one(identities, {
     fields: [designs.ownerIdentityId],
     references: [identities.id],
+    relationName: "ownedDesigns",
   }),
-  layers: many(designLayers),
+  layers: many(designLayers, { relationName: "designLayers" }),
   player1Matches: many(matches, { relationName: "matchPlayer1Design" }),
   player2Matches: many(matches, { relationName: "matchPlayer2Design" }),
 }));
@@ -878,11 +929,42 @@ export const designLayersRelations = relations(designLayers, ({ one }) => ({
   design: one(designs, {
     fields: [designLayers.designId],
     references: [designs.id],
+    relationName: "designLayers",
   }),
 }));
 
+export const roomsRelations = relations(rooms, ({ one, many }) => ({
+  ownerIdentity: one(identities, {
+    fields: [rooms.ownerIdentityId],
+    references: [identities.id],
+    relationName: "ownedRooms",
+  }),
+  participants: many(roomParticipants, { relationName: "roomParticipants" }),
+  matches: many(matches, { relationName: "roomMatches" }),
+}));
+
+export const roomParticipantsRelations = relations(
+  roomParticipants,
+  ({ one }) => ({
+    room: one(rooms, {
+      fields: [roomParticipants.roomId],
+      references: [rooms.id],
+      relationName: "roomParticipants",
+    }),
+    identity: one(identities, {
+      fields: [roomParticipants.identityId],
+      references: [identities.id],
+      relationName: "identityRoomParticipants",
+    }),
+  }),
+);
+
 export const matchesRelations = relations(matches, ({ one, many }) => ({
-  room: one(rooms, { fields: [matches.roomId], references: [rooms.id] }),
+  room: one(rooms, {
+    fields: [matches.roomId],
+    references: [rooms.id],
+    relationName: "roomMatches",
+  }),
   player1Identity: one(identities, {
     fields: [matches.player1IdentityId],
     references: [identities.id],
@@ -903,28 +985,51 @@ export const matchesRelations = relations(matches, ({ one, many }) => ({
     references: [designs.id],
     relationName: "matchPlayer2Design",
   }),
-  rounds: many(rounds),
+  rounds: many(rounds, { relationName: "matchRounds" }),
 }));
 
 export const roundsRelations = relations(rounds, ({ one }) => ({
   match: one(matches, {
     fields: [rounds.matchId],
     references: [matches.id],
+    relationName: "matchRounds",
   }),
 }));
 
 export const adminUsersRelations = relations(adminUsers, ({ many }) => ({
-  sessions: many(adminSessions),
-  auditEntries: many(adminAudit),
-  deletionEntries: many(deletionAudit),
+  sessions: many(adminSessions, { relationName: "adminUserSessions" }),
+  auditEntries: many(adminAudit, { relationName: "adminUserAudit" }),
+  deletionEntries: many(deletionAudit, { relationName: "adminUserDeletions" }),
 }));
 
 export const adminSessionsRelations = relations(adminSessions, ({ one, many }) => ({
   adminUser: one(adminUsers, {
     fields: [adminSessions.adminUserId],
     references: [adminUsers.id],
+    relationName: "adminUserSessions",
   }),
-  auditEntries: many(adminAudit),
+  auditEntries: many(adminAudit, { relationName: "adminSessionAudit" }),
+}));
+
+export const adminAuditRelations = relations(adminAudit, ({ one }) => ({
+  adminUser: one(adminUsers, {
+    fields: [adminAudit.adminUserId],
+    references: [adminUsers.id],
+    relationName: "adminUserAudit",
+  }),
+  adminSession: one(adminSessions, {
+    fields: [adminAudit.adminSessionId],
+    references: [adminSessions.id],
+    relationName: "adminSessionAudit",
+  }),
+}));
+
+export const deletionAuditRelations = relations(deletionAudit, ({ one }) => ({
+  adminUser: one(adminUsers, {
+    fields: [deletionAudit.adminUserId],
+    references: [adminUsers.id],
+    relationName: "adminUserDeletions",
+  }),
 }));
 
 export type Identity = typeof identities.$inferSelect;

@@ -2,8 +2,14 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { drizzle } from "drizzle-orm/postgres-js";
+import {
+  createTableRelationsHelpers,
+  extractTablesRelationalConfig,
+  normalizeRelation,
+} from "drizzle-orm/relations";
 import { describe, expect, it, vi } from "vitest";
 
+import { battleAuthorityKeyHash } from "./authority";
 import {
   createDatabaseClient,
   type SqlClientFactory,
@@ -100,6 +106,7 @@ describe("persistent PostgreSQL schema", () => {
         "designs_metal_disc_placement",
         "designs_physics_values_positive",
         "designs_performance_range",
+        "designs_model_versions_nonblank",
       ]),
     );
     expect(tableConfig(schema.matches).checks.map(({ name }) => name)).toEqual(
@@ -108,6 +115,8 @@ describe("persistent PostgreSQL schema", () => {
         "matches_challenge_points_range",
         "matches_totals_consistent",
         "matches_distinct_player_identities",
+        "matches_model_versions_nonblank",
+        "matches_protocol_version_positive",
       ]),
     );
     expect(tableConfig(schema.rounds).checks.map(({ name }) => name)).toEqual(
@@ -116,7 +125,9 @@ describe("persistent PostgreSQL schema", () => {
         "rounds_attempt_positive",
         "rounds_ticks_nonnegative",
         "rounds_launch_multiplier_range",
-        "rounds_result_fingerprint_format",
+        "rounds_authority_key_hash_format",
+        "rounds_input_fingerprint_format",
+        "rounds_physics_model_version_nonblank",
       ]),
     );
 
@@ -132,6 +143,62 @@ describe("persistent PostgreSQL schema", () => {
       );
     expect(tableConfig(schema.designLayers).indexes.map(({ config }) => config.name))
       .toEqual(expect.arrayContaining(["design_layers_parameter_analytics_idx"]));
+    const roundIndexConfig = tableConfig(schema.rounds).indexes.map(
+      ({ config }) => ({ name: config.name, unique: config.unique }),
+    );
+    expect(roundIndexConfig).toEqual(
+      expect.arrayContaining([
+        { name: "rounds_authority_key_hash_uidx", unique: true },
+        { name: "rounds_input_fingerprint_idx", unique: false },
+      ]),
+    );
+    expect(roundIndexConfig.some(({ name }) => name === "rounds_match_number_idx"))
+      .toBe(false);
+    expect(tableConfig(schema.roomParticipants).indexes.map(({ config }) => config.name))
+      .toContain("room_participants_active_player_seat_uidx");
+  });
+
+  it("normalizes every declared relation and compiles the admin inverse graph", () => {
+    const relational = extractTablesRelationalConfig(
+      schema,
+      createTableRelationsHelpers,
+    );
+    for (const table of Object.values(relational.tables)) {
+      for (const relation of Object.values(table.relations)) {
+        expect(() =>
+          normalizeRelation(
+            relational.tables,
+            relational.tableNamesMap,
+            relation,
+          ),
+        ).not.toThrow();
+      }
+    }
+
+    const db = drizzle.mock({ schema });
+    const compiled = db.query.adminUsers.findMany({
+      with: {
+        sessions: { with: { auditEntries: true } },
+        auditEntries: { with: { adminSession: true, adminUser: true } },
+        deletionEntries: { with: { adminUser: true } },
+      },
+    }).toSQL();
+    expect(compiled.sql).toContain("auditEntries");
+    expect(compiled.sql).toContain("deletionEntries");
+  });
+
+  it("hashes the exact BattleEngine match/round correlation independently of input", () => {
+    const first = battleAuthorityKeyHash("match-1", "round-1");
+    const second = battleAuthorityKeyHash("match-1", "round-2");
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(first).toBe(
+      "f51a2b781772b8c4e9cbc9e5347376230b7bf0a7613c86612f3b28a96b29804c",
+    );
+    expect(second).toMatch(/^[a-f0-9]{64}$/);
+    expect(first).not.toBe(second);
+    expect(() => battleAuthorityKeyHash("match 1", "round-1")).toThrow(
+      "Invalid correlation key",
+    );
   });
 
   it("compiles one complete match query with rounds, identities and both design snapshots", () => {
@@ -205,9 +272,21 @@ describe("persistent PostgreSQL schema", () => {
     expect(sql).toContain('CREATE TABLE "matches"');
     expect(sql).toContain('CREATE TABLE "rounds"');
     expect(sql).toContain("matches_completed_score_shape");
+    expect(sql).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(sql).toContain("designs_battle_eligible_three_layers");
+    expect(sql).toContain("room_participants_active_player_seat_uidx");
     expect(sql).toContain("ON DELETE set null");
     expect(sql).toContain("ON DELETE cascade");
     expect(sql.toLowerCase()).not.toContain("fwft2026");
     expect(sql.toLowerCase()).not.toMatch(/mac[_ ]?address/);
+
+    const config = readFileSync(
+      fileURLToPath(new URL("../../../drizzle.config.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(`${config}\n${sql}`).not.toMatch(
+      /postgres(?:ql)?:\/\/[^\s/:]+:[^\s/@]+@/i,
+    );
+    expect(config).toContain("postgresql://localhost/steam_top_schema_generation");
   });
 });
