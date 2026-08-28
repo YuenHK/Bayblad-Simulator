@@ -193,6 +193,10 @@ export class RoomService {
     this.#transaction(roomId, () => this.#transitionResult(roomId, "waiting"));
   }
 
+  cancelMatch(roomId: string): void {
+    this.#transaction(roomId, () => this.#cancelMatch(roomId));
+  }
+
   disconnect(roomId: string, internalUserId: string): void {
     this.#transaction(roomId, () => this.#disconnect(roomId, internalUserId));
   }
@@ -451,6 +455,15 @@ export class RoomService {
     }
     room.phase = "launch";
     this.#emitDelta(room, { phase: "launch" }, [], []);
+  }
+
+  #cancelMatch(roomId: string): void {
+    const room = this.#room(roomId);
+    if (room.phase === "waiting") throw new RoomServiceError("INVALID_PHASE_TRANSITION");
+    room.phase = "waiting";
+    const patch: RoomStatePatch = { phase: "waiting" };
+    this.#clearReady(room, patch);
+    this.#emitDelta(room, patch, [], []);
   }
 
   #clearReady(room: Room, patch: RoomStatePatch): void {

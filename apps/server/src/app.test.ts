@@ -1,11 +1,12 @@
 import { makeDefaultDesign } from "@steam-top/domain";
 import type { ServerEvent } from "@steam-top/protocol";
 import { io, type Socket } from "socket.io-client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BattleInputs, BattleResult } from "./battle/engine";
 import { buildApp, type BattleEnginePort } from "./app";
 import { LaunchCoordinator } from "./battle/launch";
 import { scoreMatch } from "./battle/scoring";
+import { RoomService } from "./rooms/room-service";
 
 const uuid = () => crypto.randomUUID();
 const command = (type: string, fields: Record<string, unknown> = {}) => ({
@@ -77,6 +78,112 @@ describe("realtime app", () => {
   const closers: Array<() => Promise<void> | void> = [];
   afterEach(async () => {
     for (const close of closers.splice(0).reverse()) await close();
+    vi.unstubAllEnvs();
+  });
+
+  it("allocates sessions only after hello, enforces handshake timeout, quotas, rate recovery, and payload limits", async () => {
+    let now = 1_000;
+    const app = buildApp({
+      battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0,
+      handshakeTimeoutMs: 20, rateLimitBurst: 1, rateLimitRefillPerSecond: 1,
+      maxOwnedRoomsPerSession: 1, maxRooms: 1, maxDesignsPerSession: 1,
+      bodyLimit: 4_096, maxHttpBufferSize: 512,
+    });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+
+    const pending = io(url, { transports: ["websocket"], auth: { displayName: "Pending" } });
+    await new Promise<void>((resolve) => pending.once("connect", resolve));
+    expect(app.realtimeGateway.debugCounts.sessions).toBe(0);
+    await new Promise<void>((resolve) => pending.once("disconnect", () => resolve()));
+    expect(app.realtimeGateway.debugCounts.sessions).toBe(0);
+
+    const owner = await connect(url, "Owner");
+    closers.push(() => { owner.socket.close(); });
+    const created = nextEvent(owner.socket, "room.snapshot");
+    owner.socket.emit("client.event", command("room.create", { name: "Only room" }));
+    await created;
+    const rateLimited = nextEvent(owner.socket, "error");
+    owner.socket.emit("client.event", command("room.create", { name: "Too fast" }));
+    expect((await rateLimited).code).toBe("RATE_LIMITED");
+    now += 1_000;
+    const quota = nextEvent(owner.socket, "error");
+    owner.socket.emit("client.event", command("room.create", { name: "Too many" }));
+    expect((await quota).code).toBe("ROOM_QUOTA_EXCEEDED");
+    const other = await connect(url, "Other owner");
+    closers.push(() => { other.socket.close(); });
+    const full = nextEvent(other.socket, "error");
+    other.socket.emit("client.event", command("room.create", { name: "Global full" }));
+    expect((await full).code).toBe("SERVER_CAPACITY");
+
+    expect((await app.inject({
+      method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${owner.token}` }, payload: makeDefaultDesign(),
+    })).statusCode).toBe(201);
+    expect((await app.inject({
+      method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${owner.token}` }, payload: makeDefaultDesign(),
+    })).statusCode).toBe(429);
+    expect((await app.inject({ method: "POST", url: "/api/designs", payload: { padding: "x".repeat(8_192) } })).statusCode).toBe(413);
+
+    const oversized = io(url, { transports: ["websocket"], auth: { displayName: "Oversized" } });
+    closers.push(() => { oversized.close(); });
+    await new Promise<void>((resolve) => oversized.once("connect", resolve));
+    oversized.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+    await nextEvent(oversized, "protocol.welcome");
+    const disconnected = new Promise<void>((resolve) => oversized.once("disconnect", () => resolve()));
+    oversized.emit("client.event", "x".repeat(2_048));
+    await disconnected;
+  });
+
+  it("uses the same strict origin policy for websocket requests and production composition", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() => buildApp({ battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 })).toThrow(/allowedOrigins/u);
+    vi.stubEnv("NODE_ENV", "test");
+    const app = buildApp({
+      battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0,
+      allowedOrigins: ["https://school.example"], allowMissingOrigin: false,
+    });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const allowed = io(url, { transports: ["websocket"], extraHeaders: { Origin: "https://school.example" }, auth: { displayName: "Allowed" } });
+    closers.push(() => { allowed.close(); });
+    await new Promise<void>((resolve, reject) => { allowed.once("connect", resolve); allowed.once("connect_error", reject); });
+    const rejected = io(url, { transports: ["websocket"], reconnection: false, extraHeaders: { Origin: "https://evil.example" }, auth: { displayName: "Rejected" } });
+    closers.push(() => { rejected.close(); });
+    await new Promise<void>((resolve, reject) => {
+      rejected.once("connect_error", () => resolve());
+      rejected.once("connect", () => reject(new Error("Rejected origin connected")));
+    });
+    const missing = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: "Missing" } });
+    closers.push(() => { missing.close(); });
+    await new Promise<void>((resolve, reject) => {
+      missing.once("connect_error", () => resolve());
+      missing.once("connect", () => reject(new Error("Missing origin connected")));
+    });
+  });
+
+  it("maps unknown internal failures to a generic public error without leaking details", async () => {
+    const rooms = new RoomService();
+    vi.spyOn(rooms, "create").mockImplementation(() => { throw new Error("database password was exposed"); });
+    const logged: unknown[] = [];
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), rooms, sweepIntervalMs: 0, logError: (error) => logged.push(error) });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const client = await connect(`http://127.0.0.1:${address.port}`, "Safe error");
+    closers.push(() => { client.socket.close(); });
+    const failed = nextEvent(client.socket, "error");
+    client.socket.emit("client.event", command("room.create", { name: "Failure" }));
+    const event = await failed;
+    expect(event).toMatchObject({ code: "COMMAND_FAILED", message: "Command could not be completed" });
+    expect(JSON.stringify(event)).not.toContain("database password");
+    expect(logged).toHaveLength(1);
   });
 
   it("serves health and rejects unsupported or malformed protocol events without crashing", async () => {
@@ -142,7 +249,7 @@ describe("realtime app", () => {
     expect((await app.inject({ method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${alice.token}` }, payload: invalid })).statusCode).toBe(422);
   });
 
-  it("runs two players and a spectator through a private-launch best-of-three match", async () => {
+  it("runs two players and 20 spectators with O(1) frame broadcasts through a private-launch match", async () => {
     let now = 1_000;
     const engine = new FakeBattleEngine();
     const app = buildApp({
@@ -249,6 +356,7 @@ describe("realtime app", () => {
     const match = await matchFinished;
     expect(match.roundWinners).toEqual(["player1", "player1"]);
     expect(engine.simulationCount).toBe(2);
+    expect(app.realtimeGateway.debugCounts.frameBroadcastOperations).toBe(2);
     expect(app.realtimeGateway.activeMatchCount).toBe(0);
     expect(p1Events.some((event) => event.type === "launch.result.spectator")).toBe(false);
     expect(p1Events.filter((event) => event.type === "match.finished")).toHaveLength(1);
@@ -323,6 +431,85 @@ describe("realtime app", () => {
     expect(finished.roundWinners).toEqual(["player1", "player1"]);
   });
 
+  it("cancels at the bounded attempt limit without scores and permits a clean new match", async () => {
+    let now = 12_000;
+    const engine = new FakeBattleEngine();
+    engine.outcomes = ["draw", "draw", "player1", "player1"];
+    const app = buildApp({
+      battleEngine: engine, now: () => now, maxMatchAttempts: 2, sweepIntervalMs: 0,
+      launch: new LaunchCoordinator({ now: () => now, leadTimeMs: 100 }),
+    });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const p1 = await connect(url, "Limit P1");
+    const p2 = await connect(url, "Limit P2");
+    closers.push(() => { p1.socket.close(); }, () => { p2.socket.close(); });
+    const created = nextEvent(p1.socket, "room.snapshot");
+    p1.socket.emit("client.event", command("room.create", { name: "Bounded" }));
+    const room = await created;
+    const joined = nextEvent(p2.socket, "room.snapshot");
+    p2.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
+    await joined;
+    const register = async (token: string) => (await app.inject({
+      method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${token}` }, payload: makeDefaultDesign(),
+    })).json().designId as string;
+    const [d1, d2] = await Promise.all([register(p1.token), register(p2.token)]);
+    const finishedEvents: any[] = [];
+    p1.socket.on("server.event", (event) => { if (event.type === "match.finished") finishedEvents.push(event); });
+
+    const readyAndGetSchedule = async () => {
+      p1.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
+      const scheduled = nextEvent(p1.socket, "launch.schedule");
+      p2.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
+      return scheduled;
+    };
+    const play = async (schedule: any) => {
+      now = schedule.serverTargetTimeMs;
+      p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
+      p2.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
+    };
+
+    let schedule = await readyAndGetSchedule();
+    const retry = nextEvent(p1.socket, "launch.schedule");
+    await play(schedule);
+    schedule = await retry;
+    const cancelled = nextEvent(p1.socket, "match.cancelled");
+    await play(schedule);
+    const cancellation = await cancelled;
+    expect(cancellation).toMatchObject({ reason: "attempt-limit", matchId: expect.any(String) });
+    expect(cancellation).not.toHaveProperty("player1");
+    expect(engine.simulationCount).toBe(2);
+    expect(app.realtimeGateway.activeMatchCount).toBe(0);
+    expect(finishedEvents).toEqual([]);
+
+    schedule = await readyAndGetSchedule();
+    const secondRound = nextEvent(p1.socket, "launch.schedule");
+    await play(schedule);
+    schedule = await secondRound;
+    const finished = nextEvent(p1.socket, "match.finished");
+    await play(schedule);
+    expect((await finished).roundWinners).toEqual(["player1", "player1"]);
+    expect(engine.simulationCount).toBe(4);
+
+    engine.outcomes = ["throw", "throw"];
+    schedule = await readyAndGetSchedule();
+    const failure1 = nextEvent(p1.socket, "error");
+    const failureRetry = nextEvent(p1.socket, "launch.schedule");
+    await play(schedule);
+    expect((await failure1).code).toBe("BATTLE_FAILED");
+    schedule = await failureRetry;
+    const failure2 = nextEvent(p1.socket, "error");
+    const failureCancelled = nextEvent(p1.socket, "match.cancelled");
+    await play(schedule);
+    expect((await failure2).code).toBe("BATTLE_FAILED");
+    expect((await failureCancelled).reason).toBe("attempt-limit");
+    expect(engine.simulationCount).toBe(6);
+    expect(app.realtimeGateway.activeMatchCount).toBe(0);
+  });
+
   it("restores the same participant from an opaque token, then sweeps it after two minutes", async () => {
     let now = 5_000;
     const app = buildApp({ battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0 });
@@ -392,6 +579,37 @@ describe("realtime app", () => {
     replacementSocket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: activeSchedule.roundId, nonce: activeSchedule.nonce, clientTimeMs: now }));
     peer.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: activeSchedule.roundId, nonce: activeSchedule.nonce, clientTimeMs: now }));
     expect((await replacementPrivate).participantId).toBe(replacementRoom.viewer.participantId);
+  });
+
+  it("cleans room bindings, ownership quotas, sessions, and unused designs without growth", async () => {
+    let now = 30_000;
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0, maxOwnedRoomsPerSession: 1 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const owner = await connect(`http://127.0.0.1:${address.port}`, "Cleanup");
+    const design = await app.inject({
+      method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${owner.token}` }, payload: makeDefaultDesign(),
+    });
+    expect(design.statusCode).toBe(201);
+    for (let index = 0; index < 10; index += 1) {
+      const snapshot = nextEvent(owner.socket, "room.snapshot");
+      const createAck = nextEvent(owner.socket, "command.ack");
+      owner.socket.emit("client.event", command("room.create", { name: `Room ${index}` }));
+      const room = await snapshot;
+      await createAck;
+      const acknowledged = nextEvent(owner.socket, "command.ack");
+      owner.socket.emit("client.event", command("room.close", { roomId: room.roomId }));
+      await acknowledged;
+      expect(app.realtimeGateway.debugCounts.bindings).toBe(0);
+      expect(app.realtimeGateway.debugCounts.matches).toBe(0);
+    }
+    owner.socket.close();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    now += 120_001;
+    app.realtimeGateway.pump(now);
+    expect(app.realtimeGateway.debugCounts).toMatchObject({ sessions: 0, bindings: 0, matches: 0 });
   });
 
   it("paces frames at their 60 Hz ticks and gives a late spectator only the latest checkpoint", async () => {
