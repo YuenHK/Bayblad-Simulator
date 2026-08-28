@@ -1,6 +1,8 @@
 import {
   PROTOCOL_VERSION,
+  correlationIdSchema,
   deriveViewerState,
+  lobbyRoomSchema,
   lobbySnapshotEventSchema,
   participantSummarySchema,
   phaseSchema,
@@ -20,6 +22,7 @@ import {
 
 const DISCONNECT_RETENTION_MS = 120_000;
 const SCHEMA_EVENT_ID = "00000000-0000-4000-8000-000000000000";
+const ROOM_EXPIRED = Symbol("ROOM_EXPIRED");
 
 export type InternalUser = Readonly<{
   id: string;
@@ -65,7 +68,6 @@ export type PublicRoom = Readonly<{
   player2: PublicPlayerSeat | null;
   spectators: readonly PublicParticipant[];
   revision: number;
-  emptySinceMs: number | null;
 }>;
 
 export type RoomView = PublicRoom;
@@ -106,8 +108,12 @@ export type RoomServiceErrorCode =
   | "SEAT_OCCUPIED"
   | "SEATS_LOCKED"
   | "PLAYER_REQUIRED"
+  | "DESIGN_LOCKED"
+  | "PLAYERS_NOT_READY"
+  | "PARTICIPANT_DISCONNECTED"
   | "INVALID_PHASE_TRANSITION"
   | "ROOM_ACTIVE"
+  | "ROOM_ID_GENERATION_FAILED"
   | "CODE_GENERATION_FAILED";
 
 export class RoomServiceError extends Error {
@@ -124,14 +130,14 @@ const defaultDependencies: RoomServiceDependencies = {
   now: () => Date.now(),
   createRoomId: () => crypto.randomUUID(),
   createParticipantId: () => crypto.randomUUID().replaceAll("-", "").slice(0, 24),
-  createRoomCode: () => Math.random().toString(36).slice(2, 8).toUpperCase(),
+  createRoomCode: () => crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase(),
   createServerEventId: () => crypto.randomUUID(),
 };
 
 export class RoomService {
   readonly #dependencies: RoomServiceDependencies;
-  readonly #rooms = new Map<string, Room>();
-  readonly #roomIdsByCode = new Map<string, string>();
+  #rooms = new Map<string, Room>();
+  #roomIdsByCode = new Map<string, string>();
   #lobbyRevision = 0;
 
   constructor(dependencies: Partial<RoomServiceDependencies> = {}) {
@@ -139,6 +145,57 @@ export class RoomService {
   }
 
   create(user: InternalUser, roomName: string): RoomMembership {
+    return this.#transaction(null, () => this.#create(user, roomName));
+  }
+
+  join(roomId: string, user: InternalUser, role: JoinRole): RoomMembership {
+    const result = this.#transaction(roomId, () => this.#join(roomId, user, role));
+    if (result === ROOM_EXPIRED) throw new RoomServiceError("ROOM_NOT_FOUND");
+    return result;
+  }
+
+  move(
+    roomId: string,
+    actorInternalUserId: string,
+    target: MoveTarget,
+    subjectParticipantId?: string,
+  ): void {
+    this.#transaction(roomId, () =>
+      this.#move(roomId, actorInternalUserId, target, subjectParticipantId),
+    );
+  }
+
+  ready(roomId: string, internalUserId: string, designId: string): void {
+    this.#transaction(roomId, () => this.#ready(roomId, internalUserId, designId));
+  }
+
+  resetReady(roomId: string, actorInternalUserId: string, subjectParticipantId?: string): void {
+    this.#transaction(roomId, () =>
+      this.#resetReady(roomId, actorInternalUserId, subjectParticipantId),
+    );
+  }
+
+  setPhase(roomId: string, phase: Phase): void {
+    this.#transaction(roomId, () => this.#setPhase(roomId, phase));
+  }
+
+  disconnect(roomId: string, internalUserId: string): void {
+    this.#transaction(roomId, () => this.#disconnect(roomId, internalUserId));
+  }
+
+  leave(roomId: string, internalUserId: string): void {
+    this.#transaction(roomId, () => this.#leave(roomId, internalUserId));
+  }
+
+  close(roomId: string, actorInternalUserId: string): void {
+    this.#transaction(roomId, () => this.#close(roomId, actorInternalUserId));
+  }
+
+  sweep(): void {
+    this.#transaction(null, () => this.#sweep());
+  }
+
+  #create(user: InternalUser, roomName: string): RoomMembership {
     const name = roomCreateEventSchema.parse({
       type: "room.create",
       name: roomName,
@@ -146,7 +203,7 @@ export class RoomService {
       eventId: SCHEMA_EVENT_ID,
     }).name;
     const participant = this.#newParticipant(user, "player1");
-    const id = this.#dependencies.createRoomId();
+    const id = this.#uniqueRoomId();
     const code = this.#uniqueCode();
     const room: Room = {
       id,
@@ -168,7 +225,11 @@ export class RoomService {
     return Object.freeze({ roomId: id, code, participantId: participant.participantId });
   }
 
-  join(roomId: string, user: InternalUser, role: JoinRole): RoomMembership {
+  #join(
+    roomId: string,
+    user: InternalUser,
+    role: JoinRole,
+  ): RoomMembership | typeof ROOM_EXPIRED {
     const room = this.#room(roomId);
     let existing = room.participants.get(user.id);
     const now = this.#dependencies.now();
@@ -179,13 +240,13 @@ export class RoomService {
       now - existing.disconnectedAt >= DISCONNECT_RETENTION_MS
     ) {
       this.#removeParticipant(room, existing);
-      this.#markEmpty(room);
+      this.#markEmpty(room, now);
       if (
         room.emptySinceMs !== null &&
         now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
       ) {
         this.#deleteRoom(room);
-        throw new RoomServiceError("ROOM_NOT_FOUND");
+        return ROOM_EXPIRED;
       }
       existing = undefined;
     }
@@ -230,19 +291,19 @@ export class RoomService {
     return Object.freeze({ roomId, code: room.code, participantId: participant.participantId });
   }
 
-  move(
+  #move(
     roomId: string,
     actorInternalUserId: string,
     target: MoveTarget,
     subjectParticipantId?: string,
   ): void {
     const room = this.#room(roomId);
+    const actor = this.#connectedParticipant(room, actorInternalUserId);
     if (room.phase === "launch" || room.phase === "battle") {
       throw new RoomServiceError("SEATS_LOCKED");
     }
-    const actor = this.#participant(room, actorInternalUserId);
     const subject = subjectParticipantId
-      ? this.#participantByPublicId(room, subjectParticipantId)
+      ? this.#connectedParticipantByPublicId(room, subjectParticipantId)
       : actor;
     if (subject !== actor && room.ownerInternalUserId !== actorInternalUserId) {
       throw new RoomServiceError("OWNER_REQUIRED");
@@ -273,9 +334,10 @@ export class RoomService {
     );
   }
 
-  ready(roomId: string, internalUserId: string, designId: string): void {
+  #ready(roomId: string, internalUserId: string, designId: string): void {
     const room = this.#room(roomId);
-    const participant = this.#participant(room, internalUserId);
+    const participant = this.#connectedParticipant(room, internalUserId);
+    if (room.phase !== "waiting") throw new RoomServiceError("DESIGN_LOCKED");
     if (participant.role === "spectator") throw new RoomServiceError("PLAYER_REQUIRED");
     const normalizedDesignId = playerReadyEventSchema.parse({
       type: "player.ready",
@@ -284,27 +346,33 @@ export class RoomService {
       protocolVersion: PROTOCOL_VERSION,
       eventId: SCHEMA_EVENT_ID,
     }).designId;
+    if (participant.ready) {
+      if (participant.designId === normalizedDesignId) return;
+      throw new RoomServiceError("DESIGN_LOCKED");
+    }
     participant.ready = true;
     participant.designId = normalizedDesignId;
     this.#emitDelta(room, { [participant.role]: this.#seat(participant) }, [], []);
   }
 
-  resetReady(roomId: string, actorInternalUserId: string, subjectParticipantId?: string): void {
+  #resetReady(roomId: string, actorInternalUserId: string, subjectParticipantId?: string): void {
     const room = this.#room(roomId);
-    const actor = this.#participant(room, actorInternalUserId);
+    const actor = this.#connectedParticipant(room, actorInternalUserId);
+    if (room.phase !== "waiting") throw new RoomServiceError("DESIGN_LOCKED");
     const subject = subjectParticipantId
-      ? this.#participantByPublicId(room, subjectParticipantId)
+      ? this.#connectedParticipantByPublicId(room, subjectParticipantId)
       : actor;
     if (subject !== actor && room.ownerInternalUserId !== actorInternalUserId) {
       throw new RoomServiceError("OWNER_REQUIRED");
     }
     if (subject.role === "spectator") throw new RoomServiceError("PLAYER_REQUIRED");
+    if (!subject.ready && subject.designId === null) return;
     subject.ready = false;
     subject.designId = null;
     this.#emitDelta(room, { [subject.role]: this.#seat(subject) }, [], []);
   }
 
-  setPhase(roomId: string, phase: Phase): void {
+  #setPhase(roomId: string, phase: Phase): void {
     const room = this.#room(roomId);
     const nextPhase = phaseSchema.parse(phase);
     const allowed: Readonly<Record<Phase, Phase>> = {
@@ -315,6 +383,22 @@ export class RoomService {
     };
     if (allowed[room.phase] !== nextPhase) {
       throw new RoomServiceError("INVALID_PHASE_TRANSITION");
+    }
+    if (room.phase === "waiting" && nextPhase === "launch") {
+      const players = [room.player1, room.player2].map((internalUserId) =>
+        internalUserId === null ? undefined : room.participants.get(internalUserId),
+      );
+      if (
+        players.some(
+          (participant) =>
+            !participant ||
+            !participant.connected ||
+            !participant.ready ||
+            participant.designId === null,
+        )
+      ) {
+        throw new RoomServiceError("PLAYERS_NOT_READY");
+      }
     }
     room.phase = nextPhase;
     const patch: RoomStatePatch = { phase: nextPhase };
@@ -331,28 +415,34 @@ export class RoomService {
     this.#emitDelta(room, patch, [], []);
   }
 
-  disconnect(roomId: string, internalUserId: string): void {
+  #disconnect(roomId: string, internalUserId: string): void {
     const room = this.#room(roomId);
     const participant = this.#participant(room, internalUserId);
     if (!participant.connected) return;
-    participant.connected = false;
-    participant.disconnectedAt = this.#dependencies.now();
-    if (![...room.participants.values()].some((candidate) => candidate.connected)) {
-      room.emptySinceMs = this.#dependencies.now();
-    }
+    const now = this.#dependencies.now();
+    this.#markDisconnected(room, participant, now);
   }
 
-  leave(roomId: string, internalUserId: string): void {
+  #leave(roomId: string, internalUserId: string): void {
     const room = this.#room(roomId);
     const participant = this.#participant(room, internalUserId);
+    if (
+      (room.phase === "launch" || room.phase === "battle") &&
+      participant.role !== "spectator"
+    ) {
+      if (!participant.connected) return;
+      this.#markDisconnected(room, participant, this.#dependencies.now());
+      return;
+    }
+    if (!participant.connected) throw new RoomServiceError("PARTICIPANT_DISCONNECTED");
     this.#removeParticipant(room, participant);
     this.#transferOwnerIfMissing(room);
-    this.#markEmpty(room);
+    this.#markEmpty(room, this.#dependencies.now());
   }
 
-  close(roomId: string, actorInternalUserId: string): void {
+  #close(roomId: string, actorInternalUserId: string): void {
     const room = this.#room(roomId);
-    this.#participant(room, actorInternalUserId);
+    this.#connectedParticipant(room, actorInternalUserId);
     if (room.ownerInternalUserId !== actorInternalUserId) {
       throw new RoomServiceError("OWNER_REQUIRED");
     }
@@ -362,7 +452,7 @@ export class RoomService {
     this.#deleteRoom(room);
   }
 
-  sweep(): void {
+  #sweep(): void {
     const now = this.#dependencies.now();
     for (const room of [...this.#rooms.values()]) {
       for (const participant of [...room.participants.values()]) {
@@ -376,7 +466,7 @@ export class RoomService {
       }
       if (!this.#rooms.has(room.id)) continue;
       this.#transferOwnerIfMissing(room);
-      this.#markEmpty(room);
+      this.#markEmpty(room, now);
       if (
         room.emptySinceMs !== null &&
         now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
@@ -388,8 +478,7 @@ export class RoomService {
 
   snapshot(roomId: string, viewerInternalUserId: string): RoomSnapshotEvent {
     const room = this.#room(roomId);
-    const viewerParticipant = room.participants.get(viewerInternalUserId);
-    if (!viewerParticipant) throw new RoomServiceError("NOT_IN_ROOM");
+    const viewerParticipant = this.#connectedParticipant(room, viewerInternalUserId);
     const owner = room.ownerInternalUserId
       ? room.participants.get(room.ownerInternalUserId)
       : undefined;
@@ -449,7 +538,6 @@ export class RoomService {
       player2: this.#publicSeat(room, "player2"),
       spectators: room.spectators.map((id) => this.#summary(room.participants.get(id)!)),
       revision: room.revision,
-      emptySinceMs: room.emptySinceMs,
     };
   }
 
@@ -484,10 +572,26 @@ export class RoomService {
 
   #uniqueCode(): string {
     for (let attempt = 0; attempt < 1_000; attempt += 1) {
-      const code = this.#dependencies.createRoomCode();
+      const code = lobbyRoomSchema.parse({
+        id: "room-code-validation",
+        code: this.#dependencies.createRoomCode(),
+        name: "Room",
+        phase: "waiting",
+        player1: { displayName: null },
+        player2: { displayName: null },
+        spectatorCount: 0,
+      }).code;
       if (!this.#roomIdsByCode.has(code)) return code;
     }
     throw new RoomServiceError("CODE_GENERATION_FAILED");
+  }
+
+  #uniqueRoomId(): string {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
+      const roomId = correlationIdSchema.parse(this.#dependencies.createRoomId());
+      if (!this.#rooms.has(roomId)) return roomId;
+    }
+    throw new RoomServiceError("ROOM_ID_GENERATION_FAILED");
   }
 
   #room(roomId: string): Room {
@@ -507,6 +611,18 @@ export class RoomService {
       (candidate) => candidate.participantId === participantId,
     );
     if (!participant) throw new RoomServiceError("PARTICIPANT_NOT_FOUND");
+    return participant;
+  }
+
+  #connectedParticipant(room: Room, internalUserId: string): Participant {
+    const participant = this.#participant(room, internalUserId);
+    if (!participant.connected) throw new RoomServiceError("PARTICIPANT_DISCONNECTED");
+    return participant;
+  }
+
+  #connectedParticipantByPublicId(room: Room, participantId: string): Participant {
+    const participant = this.#participantByPublicId(room, participantId);
+    if (!participant.connected) throw new RoomServiceError("PARTICIPANT_DISCONNECTED");
     return participant;
   }
 
@@ -570,12 +686,18 @@ export class RoomService {
       )[0];
   }
 
-  #markEmpty(room: Room): void {
+  #markDisconnected(room: Room, participant: Participant, now: number): void {
+    participant.connected = false;
+    participant.disconnectedAt = now;
+    this.#markEmpty(room, now);
+  }
+
+  #markEmpty(room: Room, now = this.#dependencies.now()): void {
     const hasConnectedParticipant = [...room.participants.values()].some(
       (participant) => participant.connected,
     );
     if (hasConnectedParticipant) room.emptySinceMs = null;
-    else if (room.emptySinceMs === null) room.emptySinceMs = this.#dependencies.now();
+    else if (room.emptySinceMs === null) room.emptySinceMs = now;
   }
 
   #deleteRoom(room: Room): void {
@@ -603,6 +725,29 @@ export class RoomService {
       participantId: participant.participantId,
       displayName: participant.displayName,
     };
+  }
+
+  #transaction<T>(roomId: string | null, mutation: () => T): T {
+    const allRoomsBackup = roomId === null ? structuredClone(this.#rooms) : undefined;
+    const hadRoom = roomId !== null && this.#rooms.has(roomId);
+    const roomBackup =
+      roomId !== null && hadRoom ? structuredClone(this.#rooms.get(roomId)!) : undefined;
+    const roomIdsByCodeBackup = structuredClone(this.#roomIdsByCode);
+    const lobbyRevisionBackup = this.#lobbyRevision;
+    try {
+      return mutation();
+    } catch (error) {
+      if (roomId === null) {
+        this.#rooms = allRoomsBackup!;
+      } else if (hadRoom) {
+        this.#rooms.set(roomId, roomBackup!);
+      } else {
+        this.#rooms.delete(roomId);
+      }
+      this.#roomIdsByCode = roomIdsByCodeBackup;
+      this.#lobbyRevision = lobbyRevisionBackup;
+      throw error;
+    }
   }
 
   #emitDelta(

@@ -113,7 +113,6 @@ describe("RoomService membership and public state", () => {
       ownerParticipantId: room.participantId,
       phase: "waiting",
       revision: 3,
-      emptySinceMs: null,
       player1: { participantId: room.participantId, displayName: "Owner" },
       player2: { displayName: "Player" },
       spectators: [{ displayName: "Spectator" }],
@@ -121,6 +120,7 @@ describe("RoomService membership and public state", () => {
     expect(JSON.stringify(view)).not.toContain("internal-");
     expect(JSON.stringify(view)).not.toContain("pendingDeltas");
     expect(JSON.stringify(view)).not.toContain("participants");
+    expect(JSON.stringify(view)).not.toContain("emptySince");
 
     const forced = view as unknown as {
       name: string;
@@ -225,11 +225,86 @@ describe("RoomService moves, readiness, and phases", () => {
     expect(service.snapshot(room.roomId, "owner").player1).toMatchObject({ ready: false, designId: null });
   });
 
+  it("makes identical readiness and an already-reset player no-ops", () => {
+    const { service } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    service.resetReady(room.roomId, "owner");
+    expect(service.get(room.roomId)?.revision).toBe(1);
+    expect(service.drainDeltas(room.roomId)).toEqual([]);
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.drainDeltas(room.roomId);
+    const revision = service.get(room.roomId)?.revision;
+    service.ready(room.roomId, "owner", DESIGN_A);
+    expect(service.get(room.roomId)?.revision).toBe(revision);
+    expect(service.drainDeltas(room.roomId)).toEqual([]);
+    expect(() => service.ready(room.roomId, "owner", DESIGN_B)).toThrow(
+      new RoomServiceError("DESIGN_LOCKED"),
+    );
+    expect(service.get(room.roomId)?.player1).toMatchObject({
+      ready: true,
+      designId: DESIGN_A,
+    });
+    service.resetReady(room.roomId, "owner");
+    service.ready(room.roomId, "owner", DESIGN_B);
+    expect(service.get(room.roomId)?.player1).toMatchObject({
+      ready: true,
+      designId: DESIGN_B,
+    });
+  });
+
+  it("locks ready and resetReady outside waiting without changing room state", () => {
+    const { service } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    service.join(room.roomId, user("player2"), "player");
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
+    service.setPhase(room.roomId, "launch");
+    for (const phase of ["launch", "battle", "result"] as const) {
+      service.drainDeltas(room.roomId);
+      const before = service.get(room.roomId);
+      expect(() => service.ready(room.roomId, "owner", DESIGN_B)).toThrow(
+        new RoomServiceError("DESIGN_LOCKED"),
+      );
+      expect(() => service.resetReady(room.roomId, "owner")).toThrow(
+        new RoomServiceError("DESIGN_LOCKED"),
+      );
+      expect(service.get(room.roomId)).toEqual(before);
+      expect(service.drainDeltas(room.roomId)).toEqual([]);
+      if (phase === "launch") service.setPhase(room.roomId, "battle");
+      if (phase === "battle") service.setPhase(room.roomId, "result");
+    }
+  });
+
+  it("requires two connected ready players before launch with no failed-attempt mutation", () => {
+    const { service } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    const assertRejected = () => {
+      service.drainDeltas(room.roomId);
+      const before = service.get(room.roomId);
+      expect(() => service.setPhase(room.roomId, "launch")).toThrow(
+        new RoomServiceError("PLAYERS_NOT_READY"),
+      );
+      expect(service.get(room.roomId)).toEqual(before);
+      expect(service.drainDeltas(room.roomId)).toEqual([]);
+    };
+    assertRejected();
+    service.join(room.roomId, user("player2"), "player");
+    assertRejected();
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
+    service.disconnect(room.roomId, "player2");
+    assertRejected();
+    service.join(room.roomId, user("player2"), "player");
+    service.setPhase(room.roomId, "launch");
+    expect(service.get(room.roomId)?.phase).toBe("launch");
+  });
+
   it("enforces phase transitions, seat locks, and waiting readiness reset", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
     service.join(room.roomId, user("player2"), "player");
     service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
     service.setPhase(room.roomId, "launch");
     expect(() => service.move(room.roomId, "owner", "spectator")).toThrow(
       new RoomServiceError("SEATS_LOCKED"),
@@ -246,6 +321,47 @@ describe("RoomService moves, readiness, and phases", () => {
 });
 
 describe("RoomService disconnect, leave, sweep, and close", () => {
+  it("treats active seated leave as an idempotent disconnect while spectators may leave", () => {
+    const { service } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    service.join(room.roomId, user("player2"), "player");
+    service.join(room.roomId, user("spectator"), "spectator");
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
+    service.setPhase(room.roomId, "launch");
+    service.drainDeltas(room.roomId);
+    const before = service.get(room.roomId);
+    service.leave(room.roomId, "owner");
+    service.leave(room.roomId, "owner");
+    expect(service.get(room.roomId)).toEqual(before);
+    expect(service.drainDeltas(room.roomId)).toEqual([]);
+    expect(() => service.snapshot(room.roomId, "owner")).toThrow(
+      new RoomServiceError("PARTICIPANT_DISCONNECTED"),
+    );
+    service.leave(room.roomId, "spectator");
+    expect(service.get(room.roomId)?.spectators).toEqual([]);
+  });
+
+  it("rejects commands from disconnected actors and disconnected move subjects", () => {
+    const { service } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    const player2 = service.join(room.roomId, user("player2"), "player");
+    service.disconnect(room.roomId, "player2");
+    for (const command of [
+      () => service.move(room.roomId, "player2", "spectator"),
+      () => service.ready(room.roomId, "player2", DESIGN_B),
+      () => service.resetReady(room.roomId, "player2"),
+      () => service.snapshot(room.roomId, "player2"),
+      () => service.leave(room.roomId, "player2"),
+      () => service.move(room.roomId, "owner", "spectator", player2.participantId),
+    ]) {
+      expect(command).toThrow(new RoomServiceError("PARTICIPANT_DISCONNECTED"));
+    }
+    service.disconnect(room.roomId, "owner");
+    expect(() => service.close(room.roomId, "owner")).toThrow(
+      new RoomServiceError("PARTICIPANT_DISCONNECTED"),
+    );
+  });
   it("restores the same participant before timeout and does not transfer owner at 119999ms", () => {
     const { service, advance } = makeHarness();
     const room = service.create(user("owner"), "Room");
@@ -270,6 +386,17 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     const snapshot = service.snapshot(room.roomId, "owner");
     expect(snapshot.viewer.role).toBe("player1");
     expect(snapshot.ownerParticipantId).toBe(other.participantId);
+  });
+
+  it("keeps an expired empty-room deletion committed when join reports room not found", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "Room");
+    service.disconnect(room.roomId, "owner");
+    advance(120_000);
+    expect(() => service.join(room.roomId, user("owner"), "player")).toThrow(
+      new RoomServiceError("ROOM_NOT_FOUND"),
+    );
+    expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
   it("transfers a timed-out owner at the 120000ms boundary and deletes an empty room", () => {
@@ -334,8 +461,11 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
   it("allows only the owner to close waiting/result rooms", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
+    service.join(room.roomId, user("player2"), "player");
     service.join(room.roomId, user("other"), "spectator");
     expect(() => service.close(room.roomId, "other")).toThrow(new RoomServiceError("OWNER_REQUIRED"));
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
     service.setPhase(room.roomId, "launch");
     expect(() => service.close(room.roomId, "owner")).toThrow(new RoomServiceError("ROOM_ACTIVE"));
     service.setPhase(room.roomId, "battle");
@@ -346,6 +476,83 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
 });
 
 describe("RoomService deltas and lobby", () => {
+  it("rejects invalid generated room identity atomically and retries room id collisions", () => {
+    let roomIdIndex = 0;
+    let codeIndex = 0;
+    let participantIndex = 0;
+    const roomIds = ["", "room-1", "room-1", "room-1", "room-2"];
+    const codes = ["", "CODE1", "CODE2"];
+    const service = new RoomService({
+      now: () => 1_000,
+      createRoomId: () => roomIds[roomIdIndex++] ?? "room-fallback",
+      createParticipantId: () => `p${++participantIndex}`,
+      createRoomCode: () => codes[codeIndex++] ?? "FALLBACK",
+      createServerEventId: () => "00000000-0000-4000-8000-000000000001",
+    });
+    expect(() => service.create(user("invalid-id"), "Room")).toThrow();
+    expect(service.lobbySnapshot()).toMatchObject({ revision: 0, rooms: [] });
+    expect(() => service.create(user("invalid-code"), "Room")).toThrow();
+    expect(service.lobbySnapshot()).toMatchObject({ revision: 0, rooms: [] });
+    const first = service.create(user("first"), "First");
+    const second = service.create(user("second"), "Second");
+    expect(first.roomId).toBe("room-1");
+    expect(second.roomId).toBe("room-2");
+    expect(service.hasRoom(first.roomId)).toBe(true);
+    expect(service.hasRoom(second.roomId)).toBe(true);
+  });
+
+  it("rolls back join, move, ready, leave, and sweep after event schema failures", () => {
+    let now = 1_000;
+    let participant = 0;
+    let validEvents = true;
+    const service = new RoomService({
+      now: () => now,
+      createRoomId: () => "room-atomic",
+      createParticipantId: () => `p${++participant}`,
+      createRoomCode: () => "ATOMIC",
+      createServerEventId: () =>
+        validEvents ? "00000000-0000-4000-8000-000000000001" : "invalid-event-id",
+    });
+    const room = service.create(user("owner"), "Atomic");
+
+    const expectRollback = (mutation: () => void) => {
+      service.drainDeltas(room.roomId);
+      const beforeRoom = service.get(room.roomId);
+      const beforeLobbyRevision = service.lobbySnapshot().revision;
+      validEvents = false;
+      expect(mutation).toThrow();
+      validEvents = true;
+      expect(service.get(room.roomId)).toEqual(beforeRoom);
+      expect(service.lobbySnapshot().revision).toBe(beforeLobbyRevision);
+      expect(service.drainDeltas(room.roomId)).toEqual([]);
+    };
+
+    expectRollback(() => service.join(room.roomId, user("player2"), "player"));
+    const player2 = service.join(room.roomId, user("player2"), "player");
+    expect(service.drainDeltas(room.roomId)[0]).toMatchObject({ baseRevision: 1, revision: 2 });
+    expectRollback(() => service.move(room.roomId, "player2", "spectator"));
+    expectRollback(() => service.ready(room.roomId, "owner", DESIGN_A));
+    service.ready(room.roomId, "owner", DESIGN_A);
+    service.ready(room.roomId, "player2", DESIGN_B);
+    expectRollback(() => service.resetReady(room.roomId, "owner"));
+    expectRollback(() => service.setPhase(room.roomId, "launch"));
+    expectRollback(() => service.leave(room.roomId, "player2"));
+
+    service.disconnect(room.roomId, "player2");
+    now += 120_000;
+    expectRollback(() => service.sweep());
+    service.sweep();
+    const deltas = service.drainDeltas(room.roomId);
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0]).toMatchObject({
+      baseRevision: 4,
+      revision: 5,
+      leftParticipantIds: [],
+      patch: { player2: null },
+    });
+    expect(player2.participantId).not.toBe(room.participantId);
+  });
+
   it("queues protocol-valid sequential deltas but never snapshots", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
