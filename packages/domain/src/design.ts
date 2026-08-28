@@ -6,21 +6,36 @@ export const layerSchema = z.object({
   shape: z.enum(["circle", "polygon", "star", "wave"]),
   points: z.number().int().min(3).max(16),
   diameterMm: z.number().min(20).max(80),
-  roundness: z.number().min(0).max(1),
+  cornerRoundness: z.number().min(0).max(1),
   rotationDeg: z.number().min(0).max(359),
   color: z.string().regex(/^#[0-9a-f]{6}$/i),
 });
 
+const layersSchema = z
+  .tuple([
+    layerSchema.extend({ position: z.literal("top") }),
+    layerSchema.extend({ position: z.literal("middle") }),
+    layerSchema.extend({ position: z.literal("bottom") }),
+  ])
+  .superRefine((layers, context) => {
+    if (new Set(layers.map((layer) => layer.id)).size !== layers.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Layer ids must be unique",
+      });
+    }
+  });
+
 export const designSchema = z.object({
   id: z.string().min(1),
-  name: z.string().min(1).max(40),
-  layers: z.tuple([layerSchema, layerSchema, layerSchema]),
-  screwPattern: z.object({
+  name: z.string().trim().min(1).max(40),
+  layers: layersSchema,
+  screwLayout: z.object({
     count: z.number().int().min(3).max(8),
     radiusMm: z.number().min(5).max(25),
     rotationDeg: z.number().min(0).max(359),
   }),
-  metalPlateDiameterMm: z.union([
+  metalDiscDiameterMm: z.union([
     z.literal(0),
     z.number().min(10).max(55),
   ]),
@@ -40,7 +55,7 @@ export function makeDefaultDesign(): TopDesign {
         shape: "circle",
         points: 6,
         diameterMm: 40,
-        roundness: 0.5,
+        cornerRoundness: 0.5,
         rotationDeg: 0,
         color: "#2563eb",
       },
@@ -50,7 +65,7 @@ export function makeDefaultDesign(): TopDesign {
         shape: "polygon",
         points: 6,
         diameterMm: 55,
-        roundness: 0.5,
+        cornerRoundness: 0.5,
         rotationDeg: 0,
         color: "#60a5fa",
       },
@@ -60,16 +75,16 @@ export function makeDefaultDesign(): TopDesign {
         shape: "circle",
         points: 6,
         diameterMm: 48,
-        roundness: 0.5,
+        cornerRoundness: 0.5,
         rotationDeg: 0,
         color: "#bfdbfe",
       },
     ],
-    screwPattern: {
+    screwLayout: {
       count: 4,
       radiusMm: 18,
       rotationDeg: 0,
     },
-    metalPlateDiameterMm: 0,
+    metalDiscDiameterMm: 0,
   };
 }
