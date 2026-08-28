@@ -171,7 +171,7 @@ export class RealtimeClient {
     this.#transport = options.transport;
     this.#storage = options.storage ?? defaultStorage();
     this.#apiBase = (options.apiBase ?? "").replace(/\/$/u, "");
-    this.#fetch = options.fetcher ?? fetch;
+    this.#fetch = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? Date.now;
     this.#token = this.#storage.get(SESSION_KEY);
     this.#transport.auth.sessionToken = this.#token ?? undefined;

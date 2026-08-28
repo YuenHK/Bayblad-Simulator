@@ -9,11 +9,13 @@
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.e2e.json && tsc --noEmit -p tsconfig.integration.json",
     "test": "pnpm -r test && vitest run tests/integration",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:load": "node tests/load/spectators.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@types/node": "26.4.0",
+    "socket.io-client": "4.8.3",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   }
