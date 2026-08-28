@@ -60,12 +60,18 @@ importers:
       '@steam-top/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@steam-top/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       react:
         specifier: 19.2.8
         version: 19.2.8
       react-dom:
         specifier: 19.2.8
         version: 19.2.8(react@19.2.8)
+      socket.io-client:
+        specifier: 4.8.3
+        version: 4.8.3
       three:
         specifier: 0.185.1
         version: 0.185.1

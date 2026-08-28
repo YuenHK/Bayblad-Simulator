@@ -28,6 +28,19 @@ async function replaceNumber(
 }
 
 describe("DesignerPage", () => {
+  it("只有合規設計可以交給對戰流程，無效設計不會上載", async () => {
+    const onUseDesign = vi.fn();
+    const user = userEvent.setup();
+    render(<DesignerPage onUseDesign={onUseDesign} />);
+    await user.click(screen.getByRole("button", { name: "用此設計參戰" }));
+    expect(onUseDesign).toHaveBeenCalledOnce();
+    expect(onUseDesign.mock.calls[0]![0]).toMatchObject({ name: "我的陀螺" });
+
+    await replaceNumber(user, "直徑（mm）", "61");
+    const blocked = screen.getByRole("button", { name: "規格未通過，請先修正" });
+    expect(blocked).toBeDisabled();
+    expect(onUseDesign).toHaveBeenCalledOnce();
+  });
   it("3D chunk 首次載入失敗後，切走再進入會用新 lazy instance 重試", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const loader = vi.fn()

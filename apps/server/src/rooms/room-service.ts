@@ -150,6 +150,12 @@ export class RoomService {
     return this.#transaction(null, () => this.#create(user, roomName));
   }
 
+  resolveRoomReference(reference: string): string | undefined {
+    const normalized = reference.trim();
+    if (this.#rooms.has(normalized)) return normalized;
+    return this.#roomIdsByCode.get(normalized.toUpperCase());
+  }
+
   join(roomId: string, user: InternalUser, role: JoinRole): RoomMembership {
     const result = this.#transaction(roomId, () => this.#join(roomId, user, role));
     if (result === ROOM_EXPIRED) throw new RoomServiceError("ROOM_NOT_FOUND");

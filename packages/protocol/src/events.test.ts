@@ -102,6 +102,11 @@ const clientCases = [
     },
   },
   {
+    type: "room.leave",
+    valid: { type: "room.leave", roomId: "room-1", ...clientEnvelope },
+    invalid: { type: "room.leave", roomId: "", ...clientEnvelope },
+  },
+  {
     type: "room.close",
     valid: { type: "room.close", roomId: "room-1", ...clientEnvelope },
     invalid: { type: "room.close", roomId: "", ...clientEnvelope },
@@ -168,7 +173,7 @@ describe("clientEventSchema", () => {
   });
 
   it("requires protocol version 1 on commands", () => {
-    const close = clientCases[6].valid;
+    const close = clientCases[7].valid;
     const { protocolVersion: _version, ...withoutVersion } = close;
     expect(clientEventSchema.safeParse(withoutVersion).success).toBe(false);
     expect(
@@ -215,7 +220,7 @@ describe("clientEventSchema", () => {
   });
 
   it("requires a UUID event id and rejects unknown fields", () => {
-    const close = clientCases[6].valid;
+    const close = clientCases[7].valid;
     expect(clientEventSchema.safeParse({ ...close, eventId: "event-1" }).success).toBe(
       false,
     );

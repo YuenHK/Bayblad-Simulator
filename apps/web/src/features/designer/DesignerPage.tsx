@@ -55,6 +55,7 @@ type Preview3DModule = Readonly<{
 
 export type DesignerPageProps = Readonly<{
   load3DPreview?: () => Promise<Preview3DModule>;
+  onUseDesign?: (design: TopDesign) => void | Promise<void>;
 }>;
 
 const loadDefault3DPreview = async (): Promise<Preview3DModule> => {
@@ -68,6 +69,7 @@ function format(value: number, digits = 1): string {
 
 export function DesignerPage({
   load3DPreview = loadDefault3DPreview,
+  onUseDesign,
 }: DesignerPageProps = {}) {
   const { design, validation, prediction, dispatch } = useDesigner();
   const [selectedLayerId, setSelectedLayerId] = useState(
@@ -408,12 +410,15 @@ export function DesignerPage({
             disabled={!readinessValid}
             aria-label={
               readinessValid
-                ? "規格通過，可參戰"
+                ? onUseDesign ? "用此設計參戰" : "規格通過，可參戰"
                 : "規格未通過，請先修正"
             }
             aria-describedby={readinessValid ? undefined : "validation-status"}
+            onClick={() => {
+              if (readinessValid) void onUseDesign?.(design);
+            }}
           >
-            {readinessValid ? "規格通過，可參戰" : "規格未通過，請先修正"}
+            {readinessValid && onUseDesign ? "用此設計參戰" : readinessValid ? "規格通過，可參戰" : "規格未通過，請先修正"}
           </button>
         </aside>
       </div>
