@@ -1,4 +1,4 @@
-import type { TopDesign } from "@steam-top/domain";
+import { designUploadResponseSchema, type TopDesign } from "@steam-top/domain";
 import {
   PROTOCOL_VERSION,
   protocolUnsupportedEventSchema,
@@ -37,6 +37,7 @@ export type ClientClockSample = Readonly<{
 export class ClientClockEstimator {
   #samples: ClientClockSample[] = [];
   get sampleCount(): number { return this.#samples.length; }
+  get highQualitySampleCount(): number { return this.#samples.filter((sample) => sample.clientReceivedAtMs - sample.clientSentAtMs - (sample.serverSentAtMs - sample.serverReceivedAtMs) <= 400).length; }
   get offsetMs(): number {
     if (!this.#samples.length) return 0;
     const values = this.#samples.map((sample) => ((sample.serverReceivedAtMs - sample.clientSentAtMs) + (sample.serverSentAtMs - sample.clientReceivedAtMs)) / 2).sort((a, b) => a - b);
@@ -50,7 +51,7 @@ export class ClientClockEstimator {
   }
   add(sample: ClientClockSample): void {
     const rtt = sample.clientReceivedAtMs - sample.clientSentAtMs - (sample.serverSentAtMs - sample.serverReceivedAtMs);
-    if (![sample.clientSentAtMs, sample.serverReceivedAtMs, sample.serverSentAtMs, sample.clientReceivedAtMs].every(Number.isSafeInteger) || rtt < 0 || rtt > 400) return;
+    if (![sample.clientSentAtMs, sample.serverReceivedAtMs, sample.serverSentAtMs, sample.clientReceivedAtMs].every(Number.isSafeInteger) || rtt < 0 || rtt > 2_000) return;
     this.#samples.push({ ...sample });
     if (this.#samples.length > 9) this.#samples.shift();
   }
@@ -78,13 +79,13 @@ export type RealtimeState = Readonly<{
   clockRttMs: number;
   clockReady: boolean;
   clockSamples: number;
+  clockQuality: "syncing" | "good" | "degraded";
   lastError: string | null;
   pendingActions: number;
 }>;
 
 const SESSION_KEY = "steam-top.session-token";
 const DESIGN_CACHE_KEY = "steam-top.design-cache";
-const designUploadResponseSchema = z.object({ designId: z.uuid() }).strict();
 const designCacheSchema = z.object({
   sessionToken: z.string().min(32).max(256), fingerprint: z.string(), designId: z.uuid(),
 }).strict();
@@ -93,7 +94,7 @@ const initialState: RealtimeState = {
   battleStarted: null, schedule: null, privateGrade: null, spectatorGrades: null,
   frames: [], roundFinished: null, matchFinished: null, cancelledReason: null,
   attempt: 0, currentRoundId: null, departurePending: false,
-  clockOffsetMs: 0, clockRttMs: 0, clockReady: false, clockSamples: 0,
+  clockOffsetMs: 0, clockRttMs: 0, clockReady: false, clockSamples: 0, clockQuality: "syncing",
   lastError: null,
   pendingActions: 0,
 };
@@ -157,6 +158,9 @@ export class RealtimeClient {
   #token: string | null;
   #started = false;
   #clockTimer: ReturnType<typeof setInterval> | null = null;
+  #clockRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  #clockDegradeTimer: ReturnType<typeof setTimeout> | null = null;
+  #clockPingAttempts = 0;
   #pendingDepartureEventId: string | null = null;
   #lastErrorEventId: string | null = null;
 
@@ -194,22 +198,33 @@ export class RealtimeClient {
     this.#bound.clear();
     this.#transport.disconnect();
     if (this.#clockTimer) clearInterval(this.#clockTimer);
+    if (this.#clockRetryTimer) clearTimeout(this.#clockRetryTimer);
+    if (this.#clockDegradeTimer) clearTimeout(this.#clockDegradeTimer);
     this.#clearPendingActions(true);
     this.#pendingDepartureEventId = null;
     this.#clockTimer = null;
+    this.#clockRetryTimer = null; this.#clockDegradeTimer = null;
     this.#started = false;
     this.#set({ status: "offline", departurePending: false });
   }
 
   command(input: CommandInput): string {
     if (this.#state.status !== "online" || !this.#transport.connected) throw new Error("目前離線，請重新連線後再試。");
+    this.#lastErrorEventId = null;
+    this.#set({ lastError: null });
     const eventId = crypto.randomUUID();
     this.#transport.emit("client.event", { ...input, protocolVersion: PROTOCOL_VERSION, eventId } satisfies V1CommandEvent);
     if (input.type === "room.leave" || input.type === "room.close") {
       this.#pendingDepartureEventId = eventId;
       this.#set({ departurePending: true, lastError: null });
     }
-    const timer = setTimeout(() => { this.#pendingActions.delete(eventId); this.#actionWaiters.get(eventId)?.reject(new Error("操作逾時，請重試。")); this.#actionWaiters.delete(eventId); this.#lastErrorEventId = eventId; this.#set({ pendingActions: this.#pendingActions.size, lastError: "操作逾時，請重試。" }); }, 8_000);
+    const timer = setTimeout(() => {
+      this.#pendingActions.delete(eventId); this.#actionWaiters.get(eventId)?.reject(new Error("操作逾時，請重試。")); this.#actionWaiters.delete(eventId);
+      const departureTimedOut = this.#pendingDepartureEventId === eventId;
+      if (departureTimedOut) this.#pendingDepartureEventId = null;
+      this.#lastErrorEventId = eventId;
+      this.#set({ pendingActions: this.#pendingActions.size, ...(departureTimedOut ? { departurePending: false } : {}), lastError: "操作逾時，請重試。" });
+    }, 8_000);
     this.#pendingActions.set(eventId, { timer, commandType: input.type });
     this.#set({ pendingActions: this.#pendingActions.size });
     return eventId;
@@ -274,9 +289,9 @@ export class RealtimeClient {
         if (event.sessionToken) { this.#token = event.sessionToken; this.#storage.set(SESSION_KEY, event.sessionToken); this.#transport.auth.sessionToken = event.sessionToken; }
         if ((event.sessionStatus ?? "new") !== "resumed") { this.#storage.remove(DESIGN_CACHE_KEY); this.#clearAllServerState(); }
         this.#set({ status: "online", sessionStatus: event.sessionStatus ?? "new", lastError: null });
-        this.#sendClockPing();
+        this.#beginClockSync();
         if (this.#clockTimer) clearInterval(this.#clockTimer);
-        this.#clockTimer = setInterval(() => this.#sendClockPing(), 15_000);
+        this.#clockTimer = setInterval(() => { this.#clockPingAttempts = 0; this.#sendClockPing(); }, 15_000);
         break;
       case "lobby.snapshot": this.#set({ lobbyRooms: event.rooms }); break;
       case "room.snapshot": {
@@ -358,10 +373,24 @@ export class RealtimeClient {
   }
   #resetClock(): void {
     this.#clock.clear(); this.#pendingPings.clear();
-    this.#set({ clockOffsetMs: 0, clockRttMs: 0, clockReady: false, clockSamples: 0 });
+    this.#clockPingAttempts = 0;
+    if (this.#clockRetryTimer) clearTimeout(this.#clockRetryTimer);
+    if (this.#clockDegradeTimer) clearTimeout(this.#clockDegradeTimer);
+    this.#clockRetryTimer = null; this.#clockDegradeTimer = null;
+    this.#set({ clockOffsetMs: 0, clockRttMs: 0, clockReady: false, clockSamples: 0, clockQuality: "syncing" });
+  }
+  #beginClockSync(): void {
+    this.#clockPingAttempts = 0;
+    this.#sendClockPing();
+    if (this.#clockDegradeTimer) clearTimeout(this.#clockDegradeTimer);
+    this.#clockDegradeTimer = setTimeout(() => {
+      this.#clockDegradeTimer = null;
+      if (this.#state.clockQuality !== "good") this.#set({ clockReady: true, clockQuality: "degraded" });
+    }, 2_000);
   }
   #sendClockPing(): void {
-    if (this.#state.status !== "online") return;
+    if (this.#state.status !== "online" || this.#clockPingAttempts >= 5) return;
+    this.#clockPingAttempts += 1;
     const pingId = crypto.randomUUID();
     const clientSentAtMs = this.#now();
     this.#pendingPings.set(pingId, clientSentAtMs);
@@ -369,16 +398,25 @@ export class RealtimeClient {
       type: "clock.ping", pingId, clientSentAtMs,
       protocolVersion: PROTOCOL_VERSION, eventId: crypto.randomUUID(),
     } satisfies V1CommandEvent);
+    if (this.#state.clockQuality === "syncing" && this.#clockPingAttempts < 5) {
+      if (this.#clockRetryTimer) clearTimeout(this.#clockRetryTimer);
+      this.#clockRetryTimer = setTimeout(() => { this.#clockRetryTimer = null; this.#sendClockPing(); }, 400);
+    }
   }
   #acceptClockPong(event: Extract<ServerEvent, { type: "clock.pong" }>): void {
     const sent = this.#pendingPings.get(event.pingId);
     if (sent === undefined || sent !== event.clientSentAtMs) return;
     this.#pendingPings.delete(event.pingId);
+    if (this.#clockRetryTimer) clearTimeout(this.#clockRetryTimer);
+    this.#clockRetryTimer = null;
     const sample = { clientSentAtMs: sent, serverReceivedAtMs: event.serverReceiveTimeMs, serverSentAtMs: event.serverSendTimeMs, clientReceivedAtMs: this.#now() };
     this.#clock.add(sample);
     this.#transport.emit("client.event", { type: "clock.ack", pingId: event.pingId, protocolVersion: PROTOCOL_VERSION, eventId: crypto.randomUUID() } satisfies V1CommandEvent);
-    this.#set({ clockOffsetMs: this.#clock.offsetMs, clockRttMs: this.#clock.rttMs, clockReady: this.#clock.sampleCount >= 3, clockSamples: this.#clock.sampleCount });
-    if (this.#clock.sampleCount < 3) this.#sendClockPing();
+    const good = this.#clock.highQualitySampleCount >= 3;
+    const degraded = !good && (this.#clock.sampleCount >= 3 || this.#state.clockQuality === "degraded");
+    this.#set({ clockOffsetMs: this.#clock.offsetMs, clockRttMs: this.#clock.rttMs, clockReady: good || degraded, clockSamples: this.#clock.highQualitySampleCount, clockQuality: good ? "good" : degraded ? "degraded" : "syncing" });
+    if (good && this.#clockDegradeTimer) { clearTimeout(this.#clockDegradeTimer); this.#clockDegradeTimer = null; }
+    if (!good && !degraded) this.#sendClockPing();
   }
 
   #clearedBattleState(): Pick<RealtimeState, "battleStarted" | "schedule" | "privateGrade" | "spectatorGrades" | "frames" | "roundFinished" | "matchFinished" | "cancelledReason" | "attempt" | "currentRoundId"> {

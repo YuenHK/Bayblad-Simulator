@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CommandInput } from "../../realtime/socket-client";
 
 export type LaunchScheduleView = Readonly<{ roomId: string; matchId: string; roundId: string; nonce: string; serverTargetTimeMs: number }>;
-export function RhythmLaunch({ schedule, onCommand, reducedMotion = false, clockReady = true, clockSamples = 3 }: Readonly<{ schedule: LaunchScheduleView; onCommand: (command: CommandInput) => void; reducedMotion?: boolean; clockReady?: boolean; clockSamples?: number }>) {
+export function RhythmLaunch({ schedule, onCommand, reducedMotion = false, clockReady = true, clockSamples = 3, clockQuality = "good" }: Readonly<{ schedule: LaunchScheduleView; onCommand: (command: CommandInput) => void; reducedMotion?: boolean; clockReady?: boolean; clockSamples?: number; clockQuality?: "syncing" | "good" | "degraded" }>) {
   const sentNonce = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [, refresh] = useState(0);
@@ -35,6 +35,7 @@ export function RhythmLaunch({ schedule, onCommand, reducedMotion = false, clock
   return (
     <section className="rhythm-launch" aria-labelledby="launch-heading">
       <h3 id="launch-heading">發射判定</h3>
+      {clockQuality === "degraded" ? <p className="field-note warning" role="status">網絡延遲較高，判定以伺服器收件時間為準。</p> : null}
       <p className="launch-countdown" aria-hidden="true">{clockReady ? delta > 0 ? `${Math.max(0, delta / 1000).toFixed(1)} 秒` : "發射！" : `正在同步時間 ${Math.min(clockSamples, 3)}/3`}</p><p className="sr-only" aria-live="polite">{liveText}</p>
       <div data-testid="rhythm-track" className={`rhythm-track${reducedMotion ? " is-reduced-motion" : ""}`} aria-hidden="true">{clockReady && !reducedMotion ? <span data-testid="moving-marker" style={{ transform: `translateX(${Math.max(-48, Math.min(48, delta / 20))}px)` }} /> : null}<i /></div>
       <button type="button" className="launch-button" aria-label="在判定線發射" onPointerDown={(event) => { event.preventDefault(); launch(); }} onClick={launch} disabled={!clockReady || sentNonce.current === schedule.nonce}>點擊或按 Space 發射</button>

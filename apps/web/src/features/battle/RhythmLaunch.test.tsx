@@ -29,6 +29,12 @@ describe("RhythmLaunch", () => {
     expect(fireEvent.keyDown(input, { code: "Space" })).toBe(true);
     expect(onCommand).not.toHaveBeenCalled();
   });
+  it("高延遲降級時顯示公平性說明且仍可發射", () => {
+    const onCommand = vi.fn();
+    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "degraded", serverTargetTimeMs: Date.now() + 1_000 }} onCommand={onCommand} clockReady clockQuality="degraded" />);
+    expect(screen.getByRole("status")).toHaveTextContent("網絡延遲較高，判定以伺服器收件時間為準");
+    const button = screen.getByRole("button", { name: "在判定線發射" }); expect(button).toBeEnabled(); fireEvent.pointerDown(button); expect(onCommand).toHaveBeenCalledOnce();
+  });
   it("重連恢復同一 nonce 不重複發射，新一輪 nonce 可再發射", () => {
     const onCommand = vi.fn();
     const make = (nonce: string, roundId: string) => ({ roomId: "room", matchId: "match", roundId, nonce, serverTargetTimeMs: Date.now() });

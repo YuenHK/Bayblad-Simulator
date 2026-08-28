@@ -72,16 +72,22 @@ test("iPad student creates a legal three-layer design and loads the real 3D chun
 });
 
 test("production 首屏不預載3D heavy chunk，選擇3D後才載入", async ({ page, request }) => {
-  const manifest = JSON.parse(await readFile(resolve(process.cwd(), "apps/web/dist/.vite/manifest.json"), "utf8")) as Record<string, { file: string }>;
-  const heavyFile = manifest["src/features/designer/TopPreview3D.tsx"]?.file;
-  expect(heavyFile).toBeTruthy();
+  type Entry = { file: string; imports?: string[]; dynamicImports?: string[] };
+  const manifest = JSON.parse(await readFile(resolve(process.cwd(), "apps/web/dist/.vite/manifest.json"), "utf8")) as Record<string, Entry>;
+  const collect = (root: string, includeDynamic: boolean, excluded = new Set<string>()) => {
+    const found = new Set<string>(); const visit = (key: string) => { if (found.has(key) || excluded.has(key) || !manifest[key]) return; found.add(key); const entry = manifest[key]!; for (const dependency of [...(entry.imports ?? []), ...(includeDynamic ? entry.dynamicImports ?? [] : [])]) visit(dependency); }; visit(root); return found;
+  };
+  const sharedMain = collect("index.html", false);
+  const heavyKeys = collect("src/features/designer/TopPreview3D.tsx", true, sharedMain);
+  const heavyFiles = [...heavyKeys].map((key) => manifest[key]!.file);
+  expect(heavyFiles.length).toBeGreaterThan(0);
   const initialResources = await page.evaluate(() => performance.getEntriesByType("resource").map((entry) => new URL(entry.name).pathname));
-  expect(initialResources).not.toContain(`/${heavyFile}`);
+  for (const file of heavyFiles) expect(initialResources).not.toContain(`/${file}`);
   const html = await (await request.get("/")).text();
-  expect(html).not.toContain(heavyFile!);
+  for (const file of heavyFiles) expect(html).not.toContain(file);
   await page.getByRole("tab", { name: "3D 預覽" }).click();
   await expect(page.getByTestId("top-preview-3d")).toBeVisible({ timeout: 15_000 });
-  await expect.poll(() => page.evaluate((file) => performance.getEntriesByType("resource").some((entry) => new URL(entry.name).pathname === `/${file}`), heavyFile!)).toBe(true);
+  await expect.poll(() => page.evaluate((files) => { const loaded = new Set(performance.getEntriesByType("resource").map((entry) => new URL(entry.name).pathname)); return files.every((file) => loaded.has(`/${file}`)); }, heavyFiles)).toBe(true);
 });
 
 test("60.00 mm is valid while 60.01 mm reaches the course boundary rule", async ({ page }) => {
