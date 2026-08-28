@@ -11,6 +11,22 @@ import * as schema from "./schema";
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const rollbackSentinel = new Error("ROLLBACK_POSTGRES_SCHEMA_FIXTURE");
 
+function battleResult(
+  winner: "player1" | "player2" | "draw",
+  reason: "stopped" | "out-of-bounds" | "timeout" | "simultaneous",
+  seed: number,
+  ticks: number,
+) {
+  return {
+    modelVersion: "2.0.0",
+    seed,
+    ticks,
+    frames: [],
+    outcome: { winner, reason },
+    finalStats: {},
+  } as const;
+}
+
 const ids = {
   identity1: "00000000-0000-4000-8000-000000000001",
   identity2: "00000000-0000-4000-8000-000000000002",
@@ -69,10 +85,10 @@ async function insertDesign(
       center_of_mass_x_mm, center_of_mass_y_mm,
       performance_speed, performance_spin_duration, performance_stability,
       performance_impact_resistance, performance_model_version,
-      canonical_json, performance_json, battle_eligible, validation_issues
+      battle_eligible, validation_issues
     ) values (
       $1, $1, 1, '1', 'fixture', 4, 12, 0, 0, 40, 12000, 0, 0,
-      60, 65, 70, 55, '1.0.0', '{}', '{}', $2, '[]'
+      60, 65, 70, 55, '1.0.0', $2, '[]'
     )`,
     [id, battleEligible],
   );
@@ -125,20 +141,6 @@ it.skipIf(testDatabaseUrl === undefined)(
             },
           ]);
 
-          const canonical = (id: string, name: string) => ({
-            id,
-            name,
-            layers: [],
-            screwLayout: { count: 4, radiusMm: 12, rotationDeg: 0 },
-            metalDiscDiameterMm: 0,
-          });
-          const performance = {
-            speed: 60,
-            spinDuration: 65,
-            stability: 70,
-            impactResistance: 55,
-            modelVersion: "1.0.0",
-          };
           await db.insert(schema.designs).values([
             {
               id: ids.design1,
@@ -160,9 +162,7 @@ it.skipIf(testDatabaseUrl === undefined)(
               performanceStability: 70,
               performanceImpactResistance: 55,
               performanceModelVersion: "1.0.0",
-              canonicalJson: canonical(ids.logicalDesign1, "藍色陀螺"),
-              performanceJson: performance,
-              battleEligible: true,
+              battleEligible: false,
               validationIssues: [],
             },
             {
@@ -185,9 +185,7 @@ it.skipIf(testDatabaseUrl === undefined)(
               performanceStability: 72,
               performanceImpactResistance: 58,
               performanceModelVersion: "1.0.0",
-              canonicalJson: canonical(ids.logicalDesign2, "紅色陀螺"),
-              performanceJson: { ...performance, speed: 55 },
-              battleEligible: true,
+              battleEligible: false,
               validationIssues: [],
             },
           ]);
@@ -209,6 +207,7 @@ it.skipIf(testDatabaseUrl === undefined)(
               })),
             ),
           );
+          await db.update(schema.designs).set({ battleEligible: true });
 
           await db.insert(schema.matches).values({
             id: ids.match,
@@ -253,7 +252,7 @@ it.skipIf(testDatabaseUrl === undefined)(
               launchLinearMultiplierB: 1.1,
               physicsModelVersion: "2.0.0",
               inputFingerprint: "b".repeat(64),
-              battleResultJson: { outcome: { winner: "player1" } },
+              battleResultJson: battleResult("player1", "stopped", 101, 600),
               completedAt: now,
             },
             {
@@ -275,7 +274,7 @@ it.skipIf(testDatabaseUrl === undefined)(
               launchLinearMultiplierB: 1,
               physicsModelVersion: "2.0.0",
               inputFingerprint: "b".repeat(64),
-              battleResultJson: { outcome: { winner: "player1" } },
+              battleResultJson: battleResult("player1", "out-of-bounds", 102, 720),
               completedAt: now,
             },
           ]);
@@ -315,10 +314,14 @@ it.skipIf(testDatabaseUrl === undefined)(
       await expect(
         inEmptyMigratedDatabase(async (transaction) => {
           const designId = `50000000-0000-4000-8000-00000000000${layerCount}`;
-          await insertDesign(transaction, designId, true);
+          await insertDesign(transaction, designId, false);
           for (let index = 0; index < layerCount; index += 1) {
             await insertLayer(transaction, designId, index);
           }
+          await transaction.unsafe(
+            "update designs set battle_eligible = true where id = $1",
+            [designId],
+          );
           await transaction.unsafe("set constraints all immediate");
         }),
       ).rejects.toMatchObject({
@@ -331,7 +334,7 @@ it.skipIf(testDatabaseUrl === undefined)(
 );
 
 it.skipIf(testDatabaseUrl === undefined)(
-  "allows incomplete drafts but rejects deleting or moving a layer from an eligible design",
+  "allows incomplete drafts but makes eligible designs and their layers immutable",
   async () => {
     await expect(
       inEmptyMigratedDatabase(async (transaction) => {
@@ -350,11 +353,15 @@ it.skipIf(testDatabaseUrl === undefined)(
         inEmptyMigratedDatabase(async (transaction) => {
           const eligibleId = "52000000-0000-4000-8000-000000000000";
           const draftId = "52000000-0000-4000-8000-000000000001";
-          await insertDesign(transaction, eligibleId, true);
+          await insertDesign(transaction, eligibleId, false);
           await insertDesign(transaction, draftId, false);
           for (let index = 0; index < 3; index += 1) {
             await insertLayer(transaction, eligibleId, index);
           }
+          await transaction.unsafe(
+            "update designs set battle_eligible = true where id = $1",
+            [eligibleId],
+          );
           await transaction.unsafe("set constraints all immediate");
           await transaction.unsafe("set constraints all deferred");
           if (operation === "delete") {
@@ -370,10 +377,7 @@ it.skipIf(testDatabaseUrl === undefined)(
           }
           await transaction.unsafe("set constraints all immediate");
         }),
-      ).rejects.toMatchObject({
-        code: "23514",
-        constraint_name: "designs_battle_eligible_three_layers",
-      });
+      ).rejects.toMatchObject({ code: "55000" });
     }
   },
   30_000,
@@ -421,7 +425,7 @@ it.skipIf(testDatabaseUrl === undefined)(
 );
 
 it.skipIf(testDatabaseUrl === undefined)(
-  "allows repeated input fingerprints but rejects an authority key reused with different input",
+  "allows repeated input fingerprints and enforces canonical unique round authority",
   async () => {
     await expect(
       inEmptyMigratedDatabase(async (transaction) => {
@@ -451,7 +455,12 @@ it.skipIf(testDatabaseUrl === undefined)(
             input_fingerprint, battle_result_json, completed_at
           ) values (
             $1, $2, $3, $4, $5, 1, 1, 'player1', 'stopped', 60,
-            'Perfect', 'Great', 1.2, 1.1, 1.2, 1.1, '2.0.0', $6, '{}', now()
+            'Perfect', 'Great', 1.2, 1.1, 1.2, 1.1, '2.0.0', $6,
+            jsonb_build_object(
+              'modelVersion', '2.0.0', 'seed', 1, 'ticks', 60, 'frames', '[]'::jsonb,
+              'outcome', jsonb_build_object('winner', 'player1', 'reason', 'stopped'),
+              'finalStats', '{}'::jsonb
+            ), now()
           )`,
           [id, matchId, externalRoundId, authorityHash, roundNumber, inputHash],
         );
@@ -472,16 +481,170 @@ it.skipIf(testDatabaseUrl === undefined)(
         );
         await insertRound(
           "72000000-0000-4000-8000-000000000003",
-          "round-3",
+          "round-1",
           battleAuthorityKeyHash(matchId, "round-1"),
           "f".repeat(64),
           3,
         );
       }),
+    ).rejects.toMatchObject({ code: "23505" });
+  },
+  30_000,
+);
+
+it.skipIf(testDatabaseUrl === undefined)(
+  "rejects a noncanonical authority hash before accepting a canonical one",
+  async () => {
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        const designId = "73000000-0000-4000-8000-000000000000";
+        const matchId = "74000000-0000-4000-8000-000000000000";
+        await insertDesign(transaction, designId, false);
+        await transaction.unsafe(
+          `insert into matches (
+            id, idempotency_fingerprint, player1_design_id, player2_design_id,
+            performance_model_version, physics_model_version, protocol_version
+          ) values ($1, $2, $3, $3, '1.0.0', '2.0.0', 1)`,
+          [matchId, "1".repeat(64), designId],
+        );
+        await transaction.unsafe(
+          `insert into rounds (
+            id, match_id, external_round_id, authority_key_hash, round_number,
+            attempt, seed, outcome, outcome_reason, ticks, launch_grade_a,
+            launch_grade_b, launch_angular_multiplier_a, launch_angular_multiplier_b,
+            launch_linear_multiplier_a, launch_linear_multiplier_b,
+            physics_model_version, input_fingerprint, battle_result_json, completed_at
+          ) values (
+            '75000000-0000-4000-8000-000000000000', $1, 'round-1', $2, 1,
+            1, 1, 'player1', 'stopped', 60, 'Perfect', 'Great', 1.2, 1.1,
+            1.2, 1.1, '2.0.0', $3,
+            '{"modelVersion":"2.0.0","seed":1,"ticks":60,"frames":[],"outcome":{"winner":"player1","reason":"stopped"},"finalStats":{}}', now()
+          )`,
+          [matchId, "2".repeat(64), "3".repeat(64)],
+        );
+      }),
     ).rejects.toMatchObject({
-      code: "23505",
-      constraint_name: "rounds_authority_key_hash_uidx",
+      code: "23514",
+      constraint_name: "rounds_authority_key_matches_correlation",
     });
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        const designId = "76000000-0000-4000-8000-000000000000";
+        const matchId = "77000000-0000-4000-8000-000000000000";
+        await insertDesign(transaction, designId, false);
+        await transaction.unsafe(
+          `insert into matches (
+            id, idempotency_fingerprint, player1_design_id, player2_design_id,
+            performance_model_version, physics_model_version, protocol_version
+          ) values ($1, $2, $3, $3, '1.0.0', '2.0.0', 1)`,
+          [matchId, "4".repeat(64), designId],
+        );
+        await transaction.unsafe(
+          `insert into rounds (
+            id, match_id, external_round_id, authority_key_hash, round_number,
+            attempt, seed, outcome, outcome_reason, ticks, launch_grade_a,
+            launch_grade_b, launch_angular_multiplier_a, launch_angular_multiplier_b,
+            launch_linear_multiplier_a, launch_linear_multiplier_b,
+            physics_model_version, input_fingerprint, battle_result_json, completed_at
+          ) values (
+            '78000000-0000-4000-8000-000000000000', $1, 'round-1', $2, 1,
+            1, 1, 'player1', 'stopped', 60, 'Perfect', 'Great', 1.2, 1.1,
+            1.2, 1.1, '2.0.0', $3,
+            '{"modelVersion":"2.0.0","seed":1,"ticks":60,"frames":[],"outcome":{"winner":"player1","reason":"stopped"},"finalStats":{}}', now()
+          )`,
+          [matchId, battleAuthorityKeyHash(matchId, "round-1"), "5".repeat(64)],
+        );
+        throw rollbackSentinel;
+      }),
+    ).rejects.toBe(rollbackSentinel);
+  },
+  30_000,
+);
+
+it.skipIf(testDatabaseUrl === undefined)(
+  "protects completed records while allowing an explicitly audited deletion transaction",
+  async () => {
+    const designId = "79000000-0000-4000-8000-000000000000";
+    const matchId = "7a000000-0000-4000-8000-000000000000";
+    const insertCompletedFixture = async (transaction: TransactionSql) => {
+      await insertDesign(transaction, designId, false);
+      for (let index = 0; index < 3; index += 1) {
+        await insertLayer(transaction, designId, index);
+      }
+      await transaction.unsafe(
+        "update designs set battle_eligible = true where id = $1",
+        [designId],
+      );
+      await transaction.unsafe(
+        `insert into matches (
+          id, idempotency_fingerprint, status, player1_design_id, player2_design_id,
+          player1_battle_points, player2_battle_points,
+          player1_challenge_points, player2_challenge_points,
+          player1_total, player2_total, winner, round_winners,
+          performance_model_version, physics_model_version, protocol_version,
+          completed_at
+        ) values (
+          $1, $2, 'completed', $3, $3, 2, 0, 0, 0, 2, 0, 'player1',
+          '["player1","player1"]', '1.0.0', '2.0.0', 1, now()
+        )`,
+        [matchId, "6".repeat(64), designId],
+      );
+      await transaction.unsafe(
+        `insert into rounds (
+          id, match_id, external_round_id, authority_key_hash, round_number,
+          attempt, seed, outcome, outcome_reason, ticks, launch_grade_a,
+          launch_grade_b, launch_angular_multiplier_a, launch_angular_multiplier_b,
+          launch_linear_multiplier_a, launch_linear_multiplier_b,
+          physics_model_version, input_fingerprint, battle_result_json, completed_at
+        ) values (
+          '7b000000-0000-4000-8000-000000000000', $1, 'round-1', $2, 1,
+          1, 1, 'player1', 'stopped', 60, 'Perfect', 'Great', 1.2, 1.1,
+          1.2, 1.1, '2.0.0', $3,
+          '{"modelVersion":"2.0.0","seed":1,"ticks":60,"frames":[],"outcome":{"winner":"player1","reason":"stopped"},"finalStats":{}}', now()
+        )`,
+        [matchId, battleAuthorityKeyHash(matchId, "round-1"), "7".repeat(64)],
+      );
+      await transaction.unsafe("set constraints all immediate");
+    };
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        await insertCompletedFixture(transaction);
+        await transaction.unsafe(
+          "update matches set spectator_count = 1 where id = $1",
+          [matchId],
+        );
+      }),
+    ).rejects.toMatchObject({
+      code: "55000",
+      constraint_name: "completed_matches_are_immutable",
+    });
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        await insertCompletedFixture(transaction);
+        await transaction.unsafe(
+          "update rounds set ticks = 61 where match_id = $1",
+          [matchId],
+        );
+      }),
+    ).rejects.toMatchObject({
+      code: "55000",
+      constraint_name: "completed_rounds_are_immutable",
+    });
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        await insertCompletedFixture(transaction);
+        await transaction.unsafe(
+          "set local steam_top.allow_audited_delete = 'on'",
+        );
+        await transaction.unsafe("delete from matches where id = $1", [matchId]);
+        await transaction.unsafe("delete from designs where id = $1", [designId]);
+        throw rollbackSentinel;
+      }),
+    ).rejects.toBe(rollbackSentinel);
   },
   30_000,
 );

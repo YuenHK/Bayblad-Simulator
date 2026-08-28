@@ -17,6 +17,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  varchar,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
@@ -91,22 +92,6 @@ export const deletionScopeEnum = pgEnum("deletion_scope", [
   "all",
 ]);
 
-export type CanonicalDesignJson = Readonly<{
-  id: string;
-  name: string;
-  layers: readonly Readonly<Record<string, unknown>>[];
-  screwLayout: Readonly<Record<string, unknown>>;
-  metalDiscDiameterMm: number;
-}>;
-
-export type PerformanceSnapshot = Readonly<{
-  speed: number;
-  spinDuration: number;
-  stability: number;
-  impactResistance: number;
-  modelVersion: string;
-}>;
-
 export type BattleResultSnapshot = Readonly<Record<string, unknown>>;
 
 export const identities = pgTable(
@@ -114,14 +99,15 @@ export const identities = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     status: identityStatusEnum("status").notNull(),
-    displayName: text("display_name").notNull(),
-    studentName: text("student_name"),
-    className: text("class_name"),
-    studentNumber: text("student_number"),
-    deviceName: text("device_name"),
+    displayName: varchar("display_name", { length: 80 }).notNull(),
+    studentName: varchar("student_name", { length: 80 }),
+    className: varchar("class_name", { length: 30 }),
+    studentNumber: varchar("student_number", { length: 30 }),
+    // Durable by user request, but never usable as an identity key.
+    deviceName: varchar("device_name", { length: 128 }),
     anonymousDeviceId: uuid("anonymous_device_id").notNull().defaultRandom(),
-    iclassExternalId: text("iclass_external_id"),
-    externalDeviceId: text("external_device_id"),
+    iclassExternalId: varchar("iclass_external_id", { length: 128 }),
+    externalDeviceId: varchar("external_device_id", { length: 128 }),
     mergedIntoIdentityId: uuid("merged_into_identity_id").references(
       (): AnyPgColumn => identities.id,
       { onDelete: "set null" },
@@ -204,7 +190,11 @@ export const identitySessions = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     lastIp: inet("last_ip"),
-    userAgent: text("user_agent"),
+    userAgent: varchar("user_agent", { length: 512 }),
+    // IP/UA are diagnostics only and must be cleared by this retention boundary.
+    diagnosticsExpiresAt: timestamp("diagnostics_expires_at", {
+      withTimezone: true,
+    }).notNull().default(sql`now() + interval '90 days'`),
   },
   (table) => [
     uniqueIndex("identity_sessions_token_hash_uidx").on(table.tokenHash),
@@ -213,6 +203,9 @@ export const identitySessions = pgTable(
       table.lastSeenAt,
     ),
     index("identity_sessions_expires_at_idx").on(table.expiresAt),
+    index("identity_sessions_diagnostics_expires_at_idx").on(
+      table.diagnosticsExpiresAt,
+    ),
     check(
       "identity_sessions_token_hash_format",
       sql`${table.tokenHash} ~ '^[a-f0-9]{64}$'`,
@@ -233,8 +226,8 @@ export const designs = pgTable(
       onDelete: "set null",
     }),
     version: integer("version").notNull(),
-    schemaVersion: text("schema_version").notNull(),
-    name: text("name").notNull(),
+    schemaVersion: varchar("schema_version", { length: 64 }).notNull(),
+    name: varchar("name", { length: 40 }).notNull(),
     screwCount: smallint("screw_count").notNull(),
     screwRadiusMm: numeric("screw_radius_mm", {
       precision: 7,
@@ -294,11 +287,9 @@ export const designs = pgTable(
       scale: 3,
       mode: "number",
     }).notNull(),
-    performanceModelVersion: text("performance_model_version").notNull(),
-    canonicalJson: jsonb("canonical_json").$type<CanonicalDesignJson>().notNull(),
-    performanceJson: jsonb("performance_json")
-      .$type<PerformanceSnapshot>()
-      .notNull(),
+    performanceModelVersion: varchar("performance_model_version", {
+      length: 64,
+    }).notNull(),
     // Repositories must write a design and its layers in one transaction.
     // A deferred PostgreSQL constraint trigger validates exact layer topology
     // before any battle-eligible snapshot can commit.
@@ -371,7 +362,7 @@ export const designLayers = pgTable(
     designId: uuid("design_id")
       .notNull()
       .references(() => designs.id, { onDelete: "cascade" }),
-    sourceLayerId: text("source_layer_id").notNull(),
+    sourceLayerId: varchar("source_layer_id", { length: 128 }).notNull(),
     layerOrder: smallint("layer_order").notNull(),
     position: topLayerPositionEnum("position").notNull(),
     shape: topShapeEnum("shape").notNull(),
@@ -391,7 +382,7 @@ export const designLayers = pgTable(
       scale: 3,
       mode: "number",
     }).notNull(),
-    color: text("color").notNull(),
+    color: varchar("color", { length: 7 }).notNull(),
   },
   (table) => [
     uniqueIndex("design_layers_design_order_uidx").on(
@@ -447,8 +438,8 @@ export const rooms = pgTable(
   "rooms",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    code: text("code").notNull(),
-    name: text("name").notNull(),
+    code: varchar("code", { length: 32 }).notNull(),
+    name: varchar("name", { length: 30 }).notNull(),
     ownerIdentityId: uuid("owner_identity_id").references(() => identities.id, {
       onDelete: "set null",
     }),
@@ -486,8 +477,8 @@ export const roomParticipants = pgTable(
     identityId: uuid("identity_id").references(() => identities.id, {
       onDelete: "set null",
     }),
-    participantPublicId: text("participant_public_id").notNull(),
-    displayNameSnapshot: text("display_name_snapshot").notNull(),
+    participantPublicId: varchar("participant_public_id", { length: 32 }).notNull(),
+    displayNameSnapshot: varchar("display_name_snapshot", { length: 80 }).notNull(),
     role: participantRoleEnum("role").notNull(),
     isOwner: boolean("is_owner").notNull().default(false),
     joinedAt: timestamp("joined_at", { withTimezone: true })
@@ -495,8 +486,11 @@ export const roomParticipants = pgTable(
       .defaultNow(),
     leftAt: timestamp("left_at", { withTimezone: true }),
     lastIp: inet("last_ip"),
-    userAgent: text("user_agent"),
-    deviceNameSnapshot: text("device_name_snapshot"),
+    userAgent: varchar("user_agent", { length: 512 }),
+    deviceNameSnapshot: varchar("device_name_snapshot", { length: 128 }),
+    diagnosticsExpiresAt: timestamp("diagnostics_expires_at", {
+      withTimezone: true,
+    }).notNull().default(sql`now() + interval '90 days'`),
   },
   (table) => [
     uniqueIndex("room_participants_room_public_id_uidx").on(
@@ -513,6 +507,9 @@ export const roomParticipants = pgTable(
       table.joinedAt,
     ),
     index("room_participants_room_joined_idx").on(table.roomId, table.joinedAt),
+    index("room_participants_diagnostics_expires_at_idx").on(
+      table.diagnosticsExpiresAt,
+    ),
     check(
       "room_participants_time_order",
       sql`${table.leftAt} is null or ${table.leftAt} >= ${table.joinedAt}`,
@@ -565,17 +562,20 @@ export const matches = pgTable(
     }),
     winner: playerSlotEnum("winner"),
     roundWinners: jsonb("round_winners").$type<readonly ("player1" | "player2")[]>(),
-    performanceModelVersion: text("performance_model_version").notNull(),
-    physicsModelVersion: text("physics_model_version").notNull(),
+    performanceModelVersion: varchar("performance_model_version", { length: 64 }).notNull(),
+    physicsModelVersion: varchar("physics_model_version", { length: 64 }).notNull(),
     protocolVersion: smallint("protocol_version").notNull(),
     spectatorCount: integer("spectator_count").notNull().default(0),
     player1Ip: inet("player1_ip"),
     player2Ip: inet("player2_ip"),
-    player1UserAgent: text("player1_user_agent"),
-    player2UserAgent: text("player2_user_agent"),
-    player1DeviceName: text("player1_device_name"),
-    player2DeviceName: text("player2_device_name"),
-    persistFailureCode: text("persist_failure_code"),
+    player1UserAgent: varchar("player1_user_agent", { length: 512 }),
+    player2UserAgent: varchar("player2_user_agent", { length: 512 }),
+    player1DeviceName: varchar("player1_device_name", { length: 128 }),
+    player2DeviceName: varchar("player2_device_name", { length: 128 }),
+    persistFailureCode: varchar("persist_failure_code", { length: 128 }),
+    diagnosticsExpiresAt: timestamp("diagnostics_expires_at", {
+      withTimezone: true,
+    }).notNull().default(sql`now() + interval '90 days'`),
     startedAt: timestamp("started_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -604,6 +604,7 @@ export const matches = pgTable(
       table.completedAt,
     ),
     index("matches_room_started_at_idx").on(table.roomId, table.startedAt),
+    index("matches_diagnostics_expires_at_idx").on(table.diagnosticsExpiresAt),
     check(
       "matches_idempotency_fingerprint_format",
       sql`${table.idempotencyFingerprint} ~ '^[a-f0-9]{64}$'`,
@@ -621,8 +622,16 @@ export const matches = pgTable(
       sql`(${table.player1ChallengePoints} is null or ${table.player1ChallengePoints} between 0 and 0.5) and (${table.player2ChallengePoints} is null or ${table.player2ChallengePoints} between 0 and 0.5)`,
     ),
     check(
+      "matches_battle_points_range",
+      sql`(${table.player1BattlePoints} is null or ${table.player1BattlePoints} between 0 and 2) and (${table.player2BattlePoints} is null or ${table.player2BattlePoints} between 0 and 2)`,
+    ),
+    check(
+      "matches_round_winners_shape",
+      sql`${table.roundWinners} is null or (jsonb_typeof(${table.roundWinners}) = 'array' and jsonb_array_length(${table.roundWinners}) between 2 and 3 and ${table.roundWinners} <@ '["player1","player2"]'::jsonb)`,
+    ),
+    check(
       "matches_completed_score_shape",
-      sql`${table.status} <> 'completed' or (${table.completedAt} is not null and ${table.winner} is not null and ${table.player1BattlePoints} is not null and ${table.player2BattlePoints} is not null and ${table.player1ChallengePoints} is not null and ${table.player2ChallengePoints} is not null and ${table.player1Total} is not null and ${table.player2Total} is not null and ${table.roundWinners} is not null and jsonb_array_length(${table.roundWinners}) between 2 and 3 and ((${table.player1BattlePoints} = 2 and ${table.player2BattlePoints} in (0, 1) and ${table.winner} = 'player1') or (${table.player2BattlePoints} = 2 and ${table.player1BattlePoints} in (0, 1) and ${table.winner} = 'player2')))`,
+      sql`${table.status} <> 'completed' or (${table.completedAt} is not null and ${table.winner} is not null and ${table.player1ChallengePoints} is not null and ${table.player2ChallengePoints} is not null and ${table.player1Total} is not null and ${table.player2Total} is not null and jsonb_typeof(${table.roundWinners}) = 'array' and ((${table.winner} = 'player1' and ${table.player1BattlePoints} = 2 and ${table.player2BattlePoints} = 0 and ${table.roundWinners} = '["player1","player1"]'::jsonb) or (${table.winner} = 'player1' and ${table.player1BattlePoints} = 2 and ${table.player2BattlePoints} = 1 and ${table.roundWinners} in ('["player1","player2","player1"]'::jsonb, '["player2","player1","player1"]'::jsonb)) or (${table.winner} = 'player2' and ${table.player2BattlePoints} = 2 and ${table.player1BattlePoints} = 0 and ${table.roundWinners} = '["player2","player2"]'::jsonb) or (${table.winner} = 'player2' and ${table.player2BattlePoints} = 2 and ${table.player1BattlePoints} = 1 and ${table.roundWinners} in ('["player1","player2","player2"]'::jsonb, '["player2","player1","player2"]'::jsonb))))`,
     ),
     check(
       "matches_totals_consistent",
@@ -650,7 +659,7 @@ export const rounds = pgTable(
     matchId: uuid("match_id")
       .notNull()
       .references(() => matches.id, { onDelete: "cascade" }),
-    externalRoundId: text("external_round_id").notNull(),
+    externalRoundId: varchar("external_round_id", { length: 128 }).notNull(),
     authorityKeyHash: text("authority_key_hash").notNull(),
     roundNumber: smallint("round_number").notNull(),
     attempt: smallint("attempt").notNull(),
@@ -680,12 +689,12 @@ export const rounds = pgTable(
       scale: 4,
       mode: "number",
     }).notNull(),
-    physicsModelVersion: text("physics_model_version").notNull(),
+    physicsModelVersion: varchar("physics_model_version", { length: 64 }).notNull(),
     inputFingerprint: text("input_fingerprint").notNull(),
     battleResultJson: jsonb("battle_result_json")
       .$type<BattleResultSnapshot>()
       .notNull(),
-    framesStrategy: text("frames_strategy").notNull().default("full_json_v1"),
+    framesStrategy: varchar("frames_strategy", { length: 32 }).notNull().default("full_json_v1"),
     startedAt: timestamp("started_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -699,6 +708,10 @@ export const rounds = pgTable(
       table.matchId,
       table.roundNumber,
       table.attempt,
+    ),
+    uniqueIndex("rounds_match_external_round_id_uidx").on(
+      table.matchId,
+      table.externalRoundId,
     ),
     uniqueIndex("rounds_authority_key_hash_uidx").on(table.authorityKeyHash),
     index("rounds_input_fingerprint_idx").on(table.inputFingerprint),
@@ -743,6 +756,10 @@ export const rounds = pgTable(
       "rounds_physics_model_version_nonblank",
       sql`length(btrim(${table.physicsModelVersion})) > 0`,
     ),
+    check(
+      "rounds_battle_result_shape",
+      sql`jsonb_typeof(${table.battleResultJson}) = 'object' and jsonb_typeof(${table.battleResultJson}->'modelVersion') = 'string' and length(btrim(${table.battleResultJson}->>'modelVersion')) > 0 and ${table.battleResultJson}->>'modelVersion' = ${table.physicsModelVersion} and jsonb_typeof(${table.battleResultJson}->'seed') = 'number' and jsonb_typeof(${table.battleResultJson}->'ticks') = 'number' and jsonb_typeof(${table.battleResultJson}->'frames') = 'array' and jsonb_typeof(${table.battleResultJson}->'finalStats') = 'object' and jsonb_typeof(${table.battleResultJson}->'outcome') = 'object' and ${table.battleResultJson}->'outcome'->>'winner' = ${table.outcome}::text and ${table.battleResultJson}->'outcome'->>'reason' = ${table.outcomeReason}::text`,
+    ),
   ],
 );
 
@@ -750,7 +767,7 @@ export const adminUsers = pgTable(
   "admin_users",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    username: text("username").notNull(),
+    username: varchar("username", { length: 80 }).notNull(),
     passwordHash: text("password_hash").notNull(),
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -788,7 +805,10 @@ export const adminSessions = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     lastIp: inet("last_ip"),
-    userAgent: text("user_agent"),
+    userAgent: varchar("user_agent", { length: 512 }),
+    diagnosticsExpiresAt: timestamp("diagnostics_expires_at", {
+      withTimezone: true,
+    }).notNull().default(sql`now() + interval '90 days'`),
   },
   (table) => [
     uniqueIndex("admin_sessions_token_hash_uidx").on(table.tokenHash),
@@ -797,6 +817,9 @@ export const adminSessions = pgTable(
       table.lastSeenAt,
     ),
     index("admin_sessions_expires_at_idx").on(table.expiresAt),
+    index("admin_sessions_diagnostics_expires_at_idx").on(
+      table.diagnosticsExpiresAt,
+    ),
     check(
       "admin_sessions_token_hash_format",
       sql`${table.tokenHash} ~ '^[a-f0-9]{64}$' and ${table.csrfTokenHash} ~ '^[a-f0-9]{64}$'`,
@@ -818,13 +841,16 @@ export const adminAudit = pgTable(
     adminSessionId: uuid("admin_session_id").references(() => adminSessions.id, {
       onDelete: "set null",
     }),
-    action: text("action").notNull(),
-    targetType: text("target_type"),
-    targetId: text("target_id"),
+    action: varchar("action", { length: 128 }).notNull(),
+    targetType: varchar("target_type", { length: 64 }),
+    targetId: varchar("target_id", { length: 128 }),
     outcome: auditOutcomeEnum("outcome").notNull(),
     details: jsonb("details").$type<Readonly<Record<string, unknown>>>().notNull().default({}),
     requestIp: inet("request_ip"),
-    userAgent: text("user_agent"),
+    userAgent: varchar("user_agent", { length: 512 }),
+    diagnosticsExpiresAt: timestamp("diagnostics_expires_at", {
+      withTimezone: true,
+    }).notNull().default(sql`now() + interval '90 days'`),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -837,6 +863,9 @@ export const adminAudit = pgTable(
       table.createdAt,
     ),
     index("admin_audit_target_idx").on(table.targetType, table.targetId),
+    index("admin_audit_diagnostics_expires_at_idx").on(
+      table.diagnosticsExpiresAt,
+    ),
   ],
 );
 

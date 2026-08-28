@@ -1,3 +1,6 @@
+-- Pre-first-deploy baseline. This squashed migration is safe only before the
+-- first production deployment; future changes must use forward migrations.
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";--> statement-breakpoint
 CREATE TYPE "public"."audit_outcome" AS ENUM('success', 'failure', 'denied');--> statement-breakpoint
 CREATE TYPE "public"."battle_outcome" AS ENUM('player1', 'player2', 'draw');--> statement-breakpoint
 CREATE TYPE "public"."battle_reason" AS ENUM('stopped', 'out-of-bounds', 'timeout', 'simultaneous');--> statement-breakpoint
@@ -16,13 +19,14 @@ CREATE TABLE "admin_audit" (
 	"id" bigserial PRIMARY KEY NOT NULL,
 	"admin_user_id" uuid,
 	"admin_session_id" uuid,
-	"action" text NOT NULL,
-	"target_type" text,
-	"target_id" text,
+	"action" varchar(128) NOT NULL,
+	"target_type" varchar(64),
+	"target_id" varchar(128),
 	"outcome" "audit_outcome" NOT NULL,
 	"details" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"request_ip" "inet",
-	"user_agent" text,
+	"user_agent" varchar(512),
+	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -36,14 +40,15 @@ CREATE TABLE "admin_sessions" (
 	"expires_at" timestamp with time zone NOT NULL,
 	"revoked_at" timestamp with time zone,
 	"last_ip" "inet",
-	"user_agent" text,
+	"user_agent" varchar(512),
+	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	CONSTRAINT "admin_sessions_token_hash_format" CHECK ("admin_sessions"."token_hash" ~ '^[a-f0-9]{64}$' and "admin_sessions"."csrf_token_hash" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "admin_sessions_expiry_after_creation" CHECK ("admin_sessions"."expires_at" > "admin_sessions"."created_at")
 );
 --> statement-breakpoint
 CREATE TABLE "admin_users" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"username" text NOT NULL,
+	"username" varchar(80) NOT NULL,
 	"password_hash" text NOT NULL,
 	"active" boolean DEFAULT true NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -69,7 +74,7 @@ CREATE TABLE "deletion_audit" (
 CREATE TABLE "design_layers" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"design_id" uuid NOT NULL,
-	"source_layer_id" text NOT NULL,
+	"source_layer_id" varchar(128) NOT NULL,
 	"layer_order" smallint NOT NULL,
 	"position" "top_layer_position" NOT NULL,
 	"shape" "top_shape" NOT NULL,
@@ -77,7 +82,7 @@ CREATE TABLE "design_layers" (
 	"diameter_mm" numeric(7, 3) NOT NULL,
 	"corner_roundness" numeric(5, 4) NOT NULL,
 	"rotation_deg" numeric(7, 3) NOT NULL,
-	"color" text NOT NULL,
+	"color" varchar(7) NOT NULL,
 	CONSTRAINT "design_layers_order_range" CHECK ("design_layers"."layer_order" between 0 and 2),
 	CONSTRAINT "design_layers_position_matches_order" CHECK (("design_layers"."layer_order" = 0 and "design_layers"."position" = 'top') or ("design_layers"."layer_order" = 1 and "design_layers"."position" = 'middle') or ("design_layers"."layer_order" = 2 and "design_layers"."position" = 'bottom')),
 	CONSTRAINT "design_layers_points_range" CHECK ("design_layers"."points" between 3 and 16),
@@ -92,8 +97,8 @@ CREATE TABLE "designs" (
 	"logical_design_id" uuid NOT NULL,
 	"owner_identity_id" uuid,
 	"version" integer NOT NULL,
-	"schema_version" text NOT NULL,
-	"name" text NOT NULL,
+	"schema_version" varchar(64) NOT NULL,
+	"name" varchar(40) NOT NULL,
 	"screw_count" smallint NOT NULL,
 	"screw_radius_mm" numeric(7, 3) NOT NULL,
 	"screw_rotation_deg" numeric(7, 3) NOT NULL,
@@ -107,9 +112,9 @@ CREATE TABLE "designs" (
 	"performance_spin_duration" numeric(7, 3) NOT NULL,
 	"performance_stability" numeric(7, 3) NOT NULL,
 	"performance_impact_resistance" numeric(7, 3) NOT NULL,
-	"performance_model_version" text NOT NULL,
-	"canonical_json" jsonb NOT NULL,
-	"performance_json" jsonb NOT NULL,
+	"performance_model_version" varchar(64) NOT NULL,
+	"battle_eligible" boolean DEFAULT false NOT NULL,
+	"validation_issues" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "designs_version_positive" CHECK ("designs"."version" > 0),
 	CONSTRAINT "designs_screw_count_range" CHECK ("designs"."screw_count" between 3 and 8),
@@ -118,20 +123,22 @@ CREATE TABLE "designs" (
 	CONSTRAINT "designs_metal_disc_range" CHECK ("designs"."metal_disc_diameter_mm" = 0 or "designs"."metal_disc_diameter_mm" between 10 and 55),
 	CONSTRAINT "designs_metal_disc_placement" CHECK ("designs"."metal_disc_placement" = 'under_bottom'),
 	CONSTRAINT "designs_physics_values_positive" CHECK ("designs"."total_mass_g" > 0 and "designs"."total_mass_g" <= 60 and "designs"."polar_moment_gmm2" > 0),
-	CONSTRAINT "designs_performance_range" CHECK ("designs"."performance_speed" between 0 and 100 and "designs"."performance_spin_duration" between 0 and 100 and "designs"."performance_stability" between 0 and 100 and "designs"."performance_impact_resistance" between 0 and 100)
+	CONSTRAINT "designs_performance_range" CHECK ("designs"."performance_speed" between 0 and 100 and "designs"."performance_spin_duration" between 0 and 100 and "designs"."performance_stability" between 0 and 100 and "designs"."performance_impact_resistance" between 0 and 100),
+	CONSTRAINT "designs_battle_eligibility_consistent" CHECK (jsonb_typeof("designs"."validation_issues") = 'array' and (not "designs"."battle_eligible" or jsonb_array_length("designs"."validation_issues") = 0)),
+	CONSTRAINT "designs_model_versions_nonblank" CHECK (length(btrim("designs"."schema_version")) > 0 and length(btrim("designs"."performance_model_version")) > 0)
 );
 --> statement-breakpoint
 CREATE TABLE "identities" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"status" "identity_status" NOT NULL,
-	"display_name" text NOT NULL,
-	"student_name" text,
-	"class_name" text,
-	"student_number" text,
-	"device_name" text,
+	"display_name" varchar(80) NOT NULL,
+	"student_name" varchar(80),
+	"class_name" varchar(30),
+	"student_number" varchar(30),
+	"device_name" varchar(128),
 	"anonymous_device_id" uuid DEFAULT gen_random_uuid() NOT NULL,
-	"iclass_external_id" text,
-	"external_device_id" text,
+	"iclass_external_id" varchar(128),
+	"external_device_id" varchar(128),
 	"merged_into_identity_id" uuid,
 	"merged_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -160,7 +167,8 @@ CREATE TABLE "identity_sessions" (
 	"expires_at" timestamp with time zone NOT NULL,
 	"revoked_at" timestamp with time zone,
 	"last_ip" "inet",
-	"user_agent" text,
+	"user_agent" varchar(512),
+	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	CONSTRAINT "identity_sessions_token_hash_format" CHECK ("identity_sessions"."token_hash" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "identity_sessions_expiry_after_creation" CHECK ("identity_sessions"."expires_at" > "identity_sessions"."created_at")
 );
@@ -182,17 +190,18 @@ CREATE TABLE "matches" (
 	"player2_total" numeric(5, 3),
 	"winner" "player_slot",
 	"round_winners" jsonb,
-	"performance_model_version" text NOT NULL,
-	"physics_model_version" text NOT NULL,
+	"performance_model_version" varchar(64) NOT NULL,
+	"physics_model_version" varchar(64) NOT NULL,
 	"protocol_version" smallint NOT NULL,
 	"spectator_count" integer DEFAULT 0 NOT NULL,
 	"player1_ip" "inet",
 	"player2_ip" "inet",
-	"player1_user_agent" text,
-	"player2_user_agent" text,
-	"player1_device_name" text,
-	"player2_device_name" text,
-	"persist_failure_code" text,
+	"player1_user_agent" varchar(512),
+	"player2_user_agent" varchar(512),
+	"player1_device_name" varchar(128),
+	"player2_device_name" varchar(128),
+	"persist_failure_code" varchar(128),
+	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	"started_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"completed_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -200,31 +209,36 @@ CREATE TABLE "matches" (
 	CONSTRAINT "matches_spectator_count_nonnegative" CHECK ("matches"."spectator_count" >= 0),
 	CONSTRAINT "matches_distinct_player_identities" CHECK ("matches"."player1_identity_id" is null or "matches"."player2_identity_id" is null or "matches"."player1_identity_id" <> "matches"."player2_identity_id"),
 	CONSTRAINT "matches_challenge_points_range" CHECK (("matches"."player1_challenge_points" is null or "matches"."player1_challenge_points" between 0 and 0.5) and ("matches"."player2_challenge_points" is null or "matches"."player2_challenge_points" between 0 and 0.5)),
-	CONSTRAINT "matches_completed_score_shape" CHECK ("matches"."status" <> 'completed' or ("matches"."completed_at" is not null and "matches"."winner" is not null and "matches"."player1_battle_points" is not null and "matches"."player2_battle_points" is not null and "matches"."player1_challenge_points" is not null and "matches"."player2_challenge_points" is not null and "matches"."player1_total" is not null and "matches"."player2_total" is not null and jsonb_array_length("matches"."round_winners") between 2 and 3 and (("matches"."player1_battle_points" = 2 and "matches"."player2_battle_points" in (0, 1) and "matches"."winner" = 'player1') or ("matches"."player2_battle_points" = 2 and "matches"."player1_battle_points" in (0, 1) and "matches"."winner" = 'player2')))),
+	CONSTRAINT "matches_battle_points_range" CHECK (("matches"."player1_battle_points" is null or "matches"."player1_battle_points" between 0 and 2) and ("matches"."player2_battle_points" is null or "matches"."player2_battle_points" between 0 and 2)),
+	CONSTRAINT "matches_round_winners_shape" CHECK ("matches"."round_winners" is null or (jsonb_typeof("matches"."round_winners") = 'array' and jsonb_array_length("matches"."round_winners") between 2 and 3 and "matches"."round_winners" <@ '["player1","player2"]'::jsonb)),
+	CONSTRAINT "matches_completed_score_shape" CHECK ("matches"."status" <> 'completed' or ("matches"."completed_at" is not null and "matches"."winner" is not null and "matches"."player1_challenge_points" is not null and "matches"."player2_challenge_points" is not null and "matches"."player1_total" is not null and "matches"."player2_total" is not null and jsonb_typeof("matches"."round_winners") = 'array' and (("matches"."winner" = 'player1' and "matches"."player1_battle_points" = 2 and "matches"."player2_battle_points" = 0 and "matches"."round_winners" = '["player1","player1"]'::jsonb) or ("matches"."winner" = 'player1' and "matches"."player1_battle_points" = 2 and "matches"."player2_battle_points" = 1 and "matches"."round_winners" in ('["player1","player2","player1"]'::jsonb, '["player2","player1","player1"]'::jsonb)) or ("matches"."winner" = 'player2' and "matches"."player2_battle_points" = 2 and "matches"."player1_battle_points" = 0 and "matches"."round_winners" = '["player2","player2"]'::jsonb) or ("matches"."winner" = 'player2' and "matches"."player2_battle_points" = 2 and "matches"."player1_battle_points" = 1 and "matches"."round_winners" in ('["player1","player2","player2"]'::jsonb, '["player2","player1","player2"]'::jsonb))))),
 	CONSTRAINT "matches_totals_consistent" CHECK (("matches"."player1_total" is null and "matches"."player1_battle_points" is null and "matches"."player1_challenge_points" is null or "matches"."player1_total" = "matches"."player1_battle_points" + "matches"."player1_challenge_points") and ("matches"."player2_total" is null and "matches"."player2_battle_points" is null and "matches"."player2_challenge_points" is null or "matches"."player2_total" = "matches"."player2_battle_points" + "matches"."player2_challenge_points")),
-	CONSTRAINT "matches_completed_time_order" CHECK ("matches"."completed_at" is null or "matches"."completed_at" >= "matches"."started_at")
+	CONSTRAINT "matches_completed_time_order" CHECK ("matches"."completed_at" is null or "matches"."completed_at" >= "matches"."started_at"),
+	CONSTRAINT "matches_model_versions_nonblank" CHECK (length(btrim("matches"."performance_model_version")) > 0 and length(btrim("matches"."physics_model_version")) > 0),
+	CONSTRAINT "matches_protocol_version_positive" CHECK ("matches"."protocol_version" > 0)
 );
 --> statement-breakpoint
 CREATE TABLE "room_participants" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"room_id" uuid NOT NULL,
 	"identity_id" uuid,
-	"participant_public_id" text NOT NULL,
-	"display_name_snapshot" text NOT NULL,
+	"participant_public_id" varchar(32) NOT NULL,
+	"display_name_snapshot" varchar(80) NOT NULL,
 	"role" "participant_role" NOT NULL,
 	"is_owner" boolean DEFAULT false NOT NULL,
 	"joined_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"left_at" timestamp with time zone,
 	"last_ip" "inet",
-	"user_agent" text,
-	"device_name_snapshot" text,
+	"user_agent" varchar(512),
+	"device_name_snapshot" varchar(128),
+	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	CONSTRAINT "room_participants_time_order" CHECK ("room_participants"."left_at" is null or "room_participants"."left_at" >= "room_participants"."joined_at")
 );
 --> statement-breakpoint
 CREATE TABLE "rooms" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"code" text NOT NULL,
-	"name" text NOT NULL,
+	"code" varchar(32) NOT NULL,
+	"name" varchar(30) NOT NULL,
 	"owner_identity_id" uuid,
 	"status" "room_status" DEFAULT 'waiting' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -236,6 +250,8 @@ CREATE TABLE "rooms" (
 CREATE TABLE "rounds" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"match_id" uuid NOT NULL,
+	"external_round_id" varchar(128) NOT NULL,
+	"authority_key_hash" text NOT NULL,
 	"round_number" smallint NOT NULL,
 	"attempt" smallint NOT NULL,
 	"seed" bigint NOT NULL,
@@ -248,10 +264,10 @@ CREATE TABLE "rounds" (
 	"launch_angular_multiplier_b" numeric(6, 4) NOT NULL,
 	"launch_linear_multiplier_a" numeric(6, 4) NOT NULL,
 	"launch_linear_multiplier_b" numeric(6, 4) NOT NULL,
-	"physics_model_version" text NOT NULL,
-	"result_fingerprint" text NOT NULL,
+	"physics_model_version" varchar(64) NOT NULL,
+	"input_fingerprint" text NOT NULL,
 	"battle_result_json" jsonb NOT NULL,
-	"frames_strategy" text DEFAULT 'full_json_v1' NOT NULL,
+	"frames_strategy" varchar(32) DEFAULT 'full_json_v1' NOT NULL,
 	"started_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"completed_at" timestamp with time zone NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -260,9 +276,13 @@ CREATE TABLE "rounds" (
 	CONSTRAINT "rounds_ticks_nonnegative" CHECK ("rounds"."ticks" >= 0 and "rounds"."ticks" <= 5400),
 	CONSTRAINT "rounds_seed_safe_integer" CHECK ("rounds"."seed" between -9007199254740991 and 9007199254740991),
 	CONSTRAINT "rounds_launch_multiplier_range" CHECK ("rounds"."launch_angular_multiplier_a" between 0 and 2 and "rounds"."launch_angular_multiplier_b" between 0 and 2 and "rounds"."launch_linear_multiplier_a" between 0 and 2 and "rounds"."launch_linear_multiplier_b" between 0 and 2),
-	CONSTRAINT "rounds_result_fingerprint_format" CHECK ("rounds"."result_fingerprint" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "rounds_external_round_id_format" CHECK (length("rounds"."external_round_id") between 1 and 128 and "rounds"."external_round_id" ~ '^[A-Za-z0-9_-]+$'),
+	CONSTRAINT "rounds_authority_key_hash_format" CHECK ("rounds"."authority_key_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "rounds_input_fingerprint_format" CHECK ("rounds"."input_fingerprint" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "rounds_frames_strategy" CHECK ("rounds"."frames_strategy" in ('full_json_v1', 'summary_v1')),
-	CONSTRAINT "rounds_time_order" CHECK ("rounds"."completed_at" >= "rounds"."started_at")
+	CONSTRAINT "rounds_time_order" CHECK ("rounds"."completed_at" >= "rounds"."started_at"),
+	CONSTRAINT "rounds_physics_model_version_nonblank" CHECK (length(btrim("rounds"."physics_model_version")) > 0),
+	CONSTRAINT "rounds_battle_result_shape" CHECK (jsonb_typeof("rounds"."battle_result_json") = 'object' and jsonb_typeof("rounds"."battle_result_json"->'modelVersion') = 'string' and length(btrim("rounds"."battle_result_json"->>'modelVersion')) > 0 and "rounds"."battle_result_json"->>'modelVersion' = "rounds"."physics_model_version" and jsonb_typeof("rounds"."battle_result_json"->'seed') = 'number' and jsonb_typeof("rounds"."battle_result_json"->'ticks') = 'number' and jsonb_typeof("rounds"."battle_result_json"->'frames') = 'array' and jsonb_typeof("rounds"."battle_result_json"->'finalStats') = 'object' and jsonb_typeof("rounds"."battle_result_json"->'outcome') = 'object' and "rounds"."battle_result_json"->'outcome'->>'winner' = "rounds"."outcome"::text and "rounds"."battle_result_json"->'outcome'->>'reason' = "rounds"."outcome_reason"::text)
 );
 --> statement-breakpoint
 ALTER TABLE "admin_audit" ADD CONSTRAINT "admin_audit_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -287,9 +307,11 @@ ALTER TABLE "rounds" ADD CONSTRAINT "rounds_match_id_matches_id_fk" FOREIGN KEY 
 CREATE INDEX "admin_audit_created_at_idx" ON "admin_audit" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "admin_audit_admin_action_idx" ON "admin_audit" USING btree ("admin_user_id","action","created_at");--> statement-breakpoint
 CREATE INDEX "admin_audit_target_idx" ON "admin_audit" USING btree ("target_type","target_id");--> statement-breakpoint
+CREATE INDEX "admin_audit_diagnostics_expires_at_idx" ON "admin_audit" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "admin_sessions_token_hash_uidx" ON "admin_sessions" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "admin_sessions_admin_last_seen_idx" ON "admin_sessions" USING btree ("admin_user_id","last_seen_at");--> statement-breakpoint
 CREATE INDEX "admin_sessions_expires_at_idx" ON "admin_sessions" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "admin_sessions_diagnostics_expires_at_idx" ON "admin_sessions" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "admin_users_username_lower_uidx" ON "admin_users" USING btree (lower("username"));--> statement-breakpoint
 CREATE INDEX "deletion_audit_completed_at_idx" ON "deletion_audit" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "deletion_audit_admin_completed_idx" ON "deletion_audit" USING btree ("admin_user_id","completed_at");--> statement-breakpoint
@@ -310,6 +332,7 @@ CREATE INDEX "identity_links_target_idx" ON "identity_links" USING btree ("targe
 CREATE UNIQUE INDEX "identity_sessions_token_hash_uidx" ON "identity_sessions" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "identity_sessions_identity_last_seen_idx" ON "identity_sessions" USING btree ("identity_id","last_seen_at");--> statement-breakpoint
 CREATE INDEX "identity_sessions_expires_at_idx" ON "identity_sessions" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "identity_sessions_diagnostics_expires_at_idx" ON "identity_sessions" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "matches_idempotency_fingerprint_uidx" ON "matches" USING btree ("idempotency_fingerprint");--> statement-breakpoint
 CREATE INDEX "matches_completed_at_idx" ON "matches" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "matches_status_completed_at_idx" ON "matches" USING btree ("status","completed_at");--> statement-breakpoint
@@ -317,15 +340,226 @@ CREATE INDEX "matches_player1_identity_idx" ON "matches" USING btree ("player1_i
 CREATE INDEX "matches_player2_identity_idx" ON "matches" USING btree ("player2_identity_id","completed_at");--> statement-breakpoint
 CREATE INDEX "matches_model_versions_idx" ON "matches" USING btree ("performance_model_version","physics_model_version","completed_at");--> statement-breakpoint
 CREATE INDEX "matches_room_started_at_idx" ON "matches" USING btree ("room_id","started_at");--> statement-breakpoint
+CREATE INDEX "matches_diagnostics_expires_at_idx" ON "matches" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "room_participants_room_public_id_uidx" ON "room_participants" USING btree ("room_id","participant_public_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "room_participants_active_player_seat_uidx" ON "room_participants" USING btree ("room_id","role") WHERE "room_participants"."left_at" is null and "room_participants"."role" in ('player1', 'player2');--> statement-breakpoint
 CREATE INDEX "room_participants_identity_joined_idx" ON "room_participants" USING btree ("identity_id","joined_at");--> statement-breakpoint
 CREATE INDEX "room_participants_room_joined_idx" ON "room_participants" USING btree ("room_id","joined_at");--> statement-breakpoint
+CREATE INDEX "room_participants_diagnostics_expires_at_idx" ON "room_participants" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "rooms_code_active_uidx" ON "rooms" USING btree ("code") WHERE "rooms"."closed_at" is null;--> statement-breakpoint
 CREATE INDEX "rooms_created_at_idx" ON "rooms" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "rooms_status_created_at_idx" ON "rooms" USING btree ("status","created_at");--> statement-breakpoint
 CREATE INDEX "rooms_owner_created_at_idx" ON "rooms" USING btree ("owner_identity_id","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "rounds_match_round_attempt_uidx" ON "rounds" USING btree ("match_id","round_number","attempt");--> statement-breakpoint
-CREATE UNIQUE INDEX "rounds_result_fingerprint_uidx" ON "rounds" USING btree ("result_fingerprint");--> statement-breakpoint
-CREATE INDEX "rounds_match_number_idx" ON "rounds" USING btree ("match_id","round_number","attempt");--> statement-breakpoint
+CREATE UNIQUE INDEX "rounds_match_external_round_id_uidx" ON "rounds" USING btree ("match_id","external_round_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "rounds_authority_key_hash_uidx" ON "rounds" USING btree ("authority_key_hash");--> statement-breakpoint
+CREATE INDEX "rounds_input_fingerprint_idx" ON "rounds" USING btree ("input_fingerprint");--> statement-breakpoint
 CREATE INDEX "rounds_completed_at_idx" ON "rounds" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "rounds_launch_grades_idx" ON "rounds" USING btree ("launch_grade_a","launch_grade_b","completed_at");
+--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "set_row_updated_at"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "identities_set_updated_at"
+BEFORE UPDATE ON "identities"
+FOR EACH ROW EXECUTE FUNCTION "set_row_updated_at"();--> statement-breakpoint
+CREATE TRIGGER "admin_users_set_updated_at"
+BEFORE UPDATE ON "admin_users"
+FOR EACH ROW EXECUTE FUNCTION "set_row_updated_at"();--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION "steam_top_assert_battle_eligible_design_layers"(
+  checked_design_id uuid
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  eligible boolean;
+  layer_count integer;
+  position_count integer;
+BEGIN
+  SELECT battle_eligible INTO eligible
+  FROM designs
+  WHERE id = checked_design_id;
+
+  IF eligible IS DISTINCT FROM true THEN
+    RETURN;
+  END IF;
+
+  SELECT count(*), count(DISTINCT position)
+    INTO layer_count, position_count
+  FROM design_layers
+  WHERE design_id = checked_design_id;
+
+  IF layer_count <> 3 OR position_count <> 3 OR NOT EXISTS (
+    SELECT 1
+    FROM design_layers
+    WHERE design_id = checked_design_id
+    GROUP BY design_id
+    HAVING bool_and(position IN ('top', 'middle', 'bottom'))
+       AND count(*) FILTER (WHERE position = 'top') = 1
+       AND count(*) FILTER (WHERE position = 'middle') = 1
+       AND count(*) FILTER (WHERE position = 'bottom') = 1
+  ) THEN
+    RAISE EXCEPTION 'Battle-eligible design % must have exactly top, middle and bottom layers', checked_design_id
+      USING ERRCODE = '23514', CONSTRAINT = 'designs_battle_eligible_three_layers';
+  END IF;
+END;
+$$;--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "steam_top_check_design_layer_topology"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'designs' THEN
+    PERFORM steam_top_assert_battle_eligible_design_layers(COALESCE(NEW.id, OLD.id));
+  ELSE
+    IF TG_OP <> 'INSERT' THEN
+      PERFORM steam_top_assert_battle_eligible_design_layers(OLD.design_id);
+    END IF;
+    IF TG_OP <> 'DELETE' AND (TG_OP = 'INSERT' OR NEW.design_id IS DISTINCT FROM OLD.design_id) THEN
+      PERFORM steam_top_assert_battle_eligible_design_layers(NEW.design_id);
+    END IF;
+  END IF;
+  RETURN NULL;
+END;
+$$;--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER "designs_battle_eligible_three_layers"
+AFTER INSERT OR UPDATE OF battle_eligible ON "designs"
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION "steam_top_check_design_layer_topology"();--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER "design_layers_battle_eligible_three_layers"
+AFTER INSERT OR UPDATE OR DELETE ON "design_layers"
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION "steam_top_check_design_layer_topology"();--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION "steam_top_check_round_authority_key"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  expected_hash text;
+BEGIN
+  expected_hash := encode(
+    digest(
+      length(NEW.match_id::text)::text || ':' || NEW.match_id::text ||
+      length(NEW.external_round_id)::text || ':' || NEW.external_round_id,
+      'sha256'
+    ),
+    'hex'
+  );
+  IF NEW.authority_key_hash <> expected_hash THEN
+    RAISE EXCEPTION 'authority_key_hash does not match the canonical BattleEngine correlation key'
+      USING ERRCODE = '23514', CONSTRAINT = 'rounds_authority_key_matches_correlation';
+  END IF;
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "rounds_authority_key_matches_correlation"
+BEFORE INSERT OR UPDATE OF match_id, external_round_id, authority_key_hash ON "rounds"
+FOR EACH ROW EXECUTE FUNCTION "steam_top_check_round_authority_key"();--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION "steam_top_audited_delete_enabled"()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT COALESCE(current_setting('steam_top.allow_audited_delete', true), '') = 'on';
+$$;--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "steam_top_protect_eligible_design"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF steam_top_audited_delete_enabled() THEN
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+  IF OLD.battle_eligible THEN
+    RAISE EXCEPTION 'Battle-eligible design snapshots are immutable'
+      USING ERRCODE = '55000', CONSTRAINT = 'eligible_designs_are_immutable';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "eligible_designs_are_immutable"
+BEFORE UPDATE OR DELETE ON "designs"
+FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_eligible_design"();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "steam_top_protect_eligible_design_layer"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  old_eligible boolean := false;
+  new_eligible boolean := false;
+BEGIN
+  IF steam_top_audited_delete_enabled() THEN
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+  IF TG_OP <> 'INSERT' THEN
+    SELECT battle_eligible INTO old_eligible FROM designs WHERE id = OLD.design_id;
+  END IF;
+  IF TG_OP <> 'DELETE' THEN
+    SELECT battle_eligible INTO new_eligible FROM designs WHERE id = NEW.design_id;
+  END IF;
+  IF COALESCE(old_eligible, false) OR COALESCE(new_eligible, false) THEN
+    RAISE EXCEPTION 'Layers of a battle-eligible design are immutable'
+      USING ERRCODE = '55000', CONSTRAINT = 'eligible_design_layers_are_immutable';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "eligible_design_layers_are_immutable"
+BEFORE INSERT OR UPDATE OR DELETE ON "design_layers"
+FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_eligible_design_layer"();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "steam_top_protect_completed_match"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF steam_top_audited_delete_enabled() THEN
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+  IF OLD.status = 'completed' THEN
+    RAISE EXCEPTION 'Completed matches are immutable'
+      USING ERRCODE = '55000', CONSTRAINT = 'completed_matches_are_immutable';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "completed_matches_are_immutable"
+BEFORE UPDATE OR DELETE ON "matches"
+FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_completed_match"();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "steam_top_protect_authoritative_round"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF steam_top_audited_delete_enabled() THEN
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+  RAISE EXCEPTION 'Authoritative completed rounds are immutable'
+    USING ERRCODE = '55000', CONSTRAINT = 'completed_rounds_are_immutable';
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "completed_rounds_are_immutable"
+BEFORE UPDATE OR DELETE ON "rounds"
+FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_authoritative_round"();--> statement-breakpoint
+
+COMMENT ON COLUMN "identities"."device_name" IS
+  'Durable display/diagnostic context only; never an authentication or identity key.';--> statement-breakpoint
+COMMENT ON COLUMN "identity_sessions"."diagnostics_expires_at" IS
+  'Retention boundary for diagnostic IP and user-agent fields; these fields are never identity keys.';--> statement-breakpoint
+COMMENT ON COLUMN "room_participants"."diagnostics_expires_at" IS
+  'Retention boundary for diagnostic IP, user-agent and device fields; these fields are never identity keys.';--> statement-breakpoint
+COMMENT ON COLUMN "matches"."diagnostics_expires_at" IS
+  'Retention boundary for diagnostic IP, user-agent and device fields; these fields are never identity keys.';--> statement-breakpoint
+COMMENT ON COLUMN "admin_sessions"."diagnostics_expires_at" IS
+  'Retention boundary for diagnostic IP and user-agent fields.';--> statement-breakpoint
+COMMENT ON COLUMN "admin_audit"."diagnostics_expires_at" IS
+  'Retention boundary for diagnostic IP and user-agent fields.';

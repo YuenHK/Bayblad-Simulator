@@ -1,5 +1,5 @@
 {
-  "id": "da5c933e-3511-49c6-8d95-23c7d2bd41b3",
+  "id": "0243a4df-22a7-46bb-8380-a367f4757e9b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -28,19 +28,19 @@
         },
         "action": {
           "name": "action",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": true
         },
         "target_type": {
           "name": "target_type",
-          "type": "text",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": false
         },
         "target_id": {
           "name": "target_id",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
         },
@@ -66,9 +66,16 @@
         },
         "user_agent": {
           "name": "user_agent",
-          "type": "text",
+          "type": "varchar(512)",
           "primaryKey": false,
           "notNull": false
+        },
+        "diagnostics_expires_at": {
+          "name": "diagnostics_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now() + interval '90 days'"
         },
         "created_at": {
           "name": "created_at",
@@ -132,6 +139,21 @@
             },
             {
               "expression": "target_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "admin_audit_diagnostics_expires_at_idx": {
+          "name": "admin_audit_diagnostics_expires_at_idx",
+          "columns": [
+            {
+              "expression": "diagnostics_expires_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -240,9 +262,16 @@
         },
         "user_agent": {
           "name": "user_agent",
-          "type": "text",
+          "type": "varchar(512)",
           "primaryKey": false,
           "notNull": false
+        },
+        "diagnostics_expires_at": {
+          "name": "diagnostics_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now() + interval '90 days'"
         }
       },
       "indexes": {
@@ -287,6 +316,21 @@
           "columns": [
             {
               "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "admin_sessions_diagnostics_expires_at_idx": {
+          "name": "admin_sessions_diagnostics_expires_at_idx",
+          "columns": [
+            {
+              "expression": "diagnostics_expires_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -341,7 +385,7 @@
         },
         "username": {
           "name": "username",
-          "type": "text",
+          "type": "varchar(80)",
           "primaryKey": false,
           "notNull": true
         },
@@ -556,7 +600,7 @@
         },
         "source_layer_id": {
           "name": "source_layer_id",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": true
         },
@@ -606,7 +650,7 @@
         },
         "color": {
           "name": "color",
-          "type": "text",
+          "type": "varchar(7)",
           "primaryKey": false,
           "notNull": true
         }
@@ -790,13 +834,13 @@
         },
         "schema_version": {
           "name": "schema_version",
-          "type": "text",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true
         },
         "name": {
           "name": "name",
-          "type": "text",
+          "type": "varchar(40)",
           "primaryKey": false,
           "notNull": true
         },
@@ -882,21 +926,23 @@
         },
         "performance_model_version": {
           "name": "performance_model_version",
-          "type": "text",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true
         },
-        "canonical_json": {
-          "name": "canonical_json",
-          "type": "jsonb",
+        "battle_eligible": {
+          "name": "battle_eligible",
+          "type": "boolean",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": false
         },
-        "performance_json": {
-          "name": "performance_json",
+        "validation_issues": {
+          "name": "validation_issues",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "created_at": {
           "name": "created_at",
@@ -1021,6 +1067,14 @@
         "designs_performance_range": {
           "name": "designs_performance_range",
           "value": "\"designs\".\"performance_speed\" between 0 and 100 and \"designs\".\"performance_spin_duration\" between 0 and 100 and \"designs\".\"performance_stability\" between 0 and 100 and \"designs\".\"performance_impact_resistance\" between 0 and 100"
+        },
+        "designs_battle_eligibility_consistent": {
+          "name": "designs_battle_eligibility_consistent",
+          "value": "jsonb_typeof(\"designs\".\"validation_issues\") = 'array' and (not \"designs\".\"battle_eligible\" or jsonb_array_length(\"designs\".\"validation_issues\") = 0)"
+        },
+        "designs_model_versions_nonblank": {
+          "name": "designs_model_versions_nonblank",
+          "value": "length(btrim(\"designs\".\"schema_version\")) > 0 and length(btrim(\"designs\".\"performance_model_version\")) > 0"
         }
       },
       "isRLSEnabled": false
@@ -1045,31 +1099,31 @@
         },
         "display_name": {
           "name": "display_name",
-          "type": "text",
+          "type": "varchar(80)",
           "primaryKey": false,
           "notNull": true
         },
         "student_name": {
           "name": "student_name",
-          "type": "text",
+          "type": "varchar(80)",
           "primaryKey": false,
           "notNull": false
         },
         "class_name": {
           "name": "class_name",
-          "type": "text",
+          "type": "varchar(30)",
           "primaryKey": false,
           "notNull": false
         },
         "student_number": {
           "name": "student_number",
-          "type": "text",
+          "type": "varchar(30)",
           "primaryKey": false,
           "notNull": false
         },
         "device_name": {
           "name": "device_name",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
         },
@@ -1082,13 +1136,13 @@
         },
         "iclass_external_id": {
           "name": "iclass_external_id",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
         },
         "external_device_id": {
           "name": "external_device_id",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
         },
@@ -1419,9 +1473,16 @@
         },
         "user_agent": {
           "name": "user_agent",
-          "type": "text",
+          "type": "varchar(512)",
           "primaryKey": false,
           "notNull": false
+        },
+        "diagnostics_expires_at": {
+          "name": "diagnostics_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now() + interval '90 days'"
         }
       },
       "indexes": {
@@ -1466,6 +1527,21 @@
           "columns": [
             {
               "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "identity_sessions_diagnostics_expires_at_idx": {
+          "name": "identity_sessions_diagnostics_expires_at_idx",
+          "columns": [
+            {
+              "expression": "diagnostics_expires_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1612,13 +1688,13 @@
         },
         "performance_model_version": {
           "name": "performance_model_version",
-          "type": "text",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true
         },
         "physics_model_version": {
           "name": "physics_model_version",
-          "type": "text",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true
         },
@@ -1649,33 +1725,40 @@
         },
         "player1_user_agent": {
           "name": "player1_user_agent",
-          "type": "text",
+          "type": "varchar(512)",
           "primaryKey": false,
           "notNull": false
         },
         "player2_user_agent": {
           "name": "player2_user_agent",
-          "type": "text",
+          "type": "varchar(512)",
           "primaryKey": false,
           "notNull": false
         },
         "player1_device_name": {
           "name": "player1_device_name",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
         },
         "player2_device_name": {
           "name": "player2_device_name",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
         },
         "persist_failure_code": {
           "name": "persist_failure_code",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
+        },
+        "diagnostics_expires_at": {
+          "name": "diagnostics_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now() + interval '90 days'"
         },
         "started_at": {
           "name": "started_at",
@@ -1839,6 +1922,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "matches_diagnostics_expires_at_idx": {
+          "name": "matches_diagnostics_expires_at_idx",
+          "columns": [
+            {
+              "expression": "diagnostics_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1928,9 +2026,17 @@
           "name": "matches_challenge_points_range",
           "value": "(\"matches\".\"player1_challenge_points\" is null or \"matches\".\"player1_challenge_points\" between 0 and 0.5) and (\"matches\".\"player2_challenge_points\" is null or \"matches\".\"player2_challenge_points\" between 0 and 0.5)"
         },
+        "matches_battle_points_range": {
+          "name": "matches_battle_points_range",
+          "value": "(\"matches\".\"player1_battle_points\" is null or \"matches\".\"player1_battle_points\" between 0 and 2) and (\"matches\".\"player2_battle_points\" is null or \"matches\".\"player2_battle_points\" between 0 and 2)"
+        },
+        "matches_round_winners_shape": {
+          "name": "matches_round_winners_shape",
+          "value": "\"matches\".\"round_winners\" is null or (jsonb_typeof(\"matches\".\"round_winners\") = 'array' and jsonb_array_length(\"matches\".\"round_winners\") between 2 and 3 and \"matches\".\"round_winners\" <@ '[\"player1\",\"player2\"]'::jsonb)"
+        },
         "matches_completed_score_shape": {
           "name": "matches_completed_score_shape",
-          "value": "\"matches\".\"status\" <> 'completed' or (\"matches\".\"completed_at\" is not null and \"matches\".\"winner\" is not null and \"matches\".\"player1_battle_points\" is not null and \"matches\".\"player2_battle_points\" is not null and \"matches\".\"player1_challenge_points\" is not null and \"matches\".\"player2_challenge_points\" is not null and \"matches\".\"player1_total\" is not null and \"matches\".\"player2_total\" is not null and jsonb_array_length(\"matches\".\"round_winners\") between 2 and 3 and ((\"matches\".\"player1_battle_points\" = 2 and \"matches\".\"player2_battle_points\" in (0, 1) and \"matches\".\"winner\" = 'player1') or (\"matches\".\"player2_battle_points\" = 2 and \"matches\".\"player1_battle_points\" in (0, 1) and \"matches\".\"winner\" = 'player2')))"
+          "value": "\"matches\".\"status\" <> 'completed' or (\"matches\".\"completed_at\" is not null and \"matches\".\"winner\" is not null and \"matches\".\"player1_challenge_points\" is not null and \"matches\".\"player2_challenge_points\" is not null and \"matches\".\"player1_total\" is not null and \"matches\".\"player2_total\" is not null and jsonb_typeof(\"matches\".\"round_winners\") = 'array' and ((\"matches\".\"winner\" = 'player1' and \"matches\".\"player1_battle_points\" = 2 and \"matches\".\"player2_battle_points\" = 0 and \"matches\".\"round_winners\" = '[\"player1\",\"player1\"]'::jsonb) or (\"matches\".\"winner\" = 'player1' and \"matches\".\"player1_battle_points\" = 2 and \"matches\".\"player2_battle_points\" = 1 and \"matches\".\"round_winners\" in ('[\"player1\",\"player2\",\"player1\"]'::jsonb, '[\"player2\",\"player1\",\"player1\"]'::jsonb)) or (\"matches\".\"winner\" = 'player2' and \"matches\".\"player2_battle_points\" = 2 and \"matches\".\"player1_battle_points\" = 0 and \"matches\".\"round_winners\" = '[\"player2\",\"player2\"]'::jsonb) or (\"matches\".\"winner\" = 'player2' and \"matches\".\"player2_battle_points\" = 2 and \"matches\".\"player1_battle_points\" = 1 and \"matches\".\"round_winners\" in ('[\"player1\",\"player2\",\"player2\"]'::jsonb, '[\"player2\",\"player1\",\"player2\"]'::jsonb))))"
         },
         "matches_totals_consistent": {
           "name": "matches_totals_consistent",
@@ -1939,6 +2045,14 @@
         "matches_completed_time_order": {
           "name": "matches_completed_time_order",
           "value": "\"matches\".\"completed_at\" is null or \"matches\".\"completed_at\" >= \"matches\".\"started_at\""
+        },
+        "matches_model_versions_nonblank": {
+          "name": "matches_model_versions_nonblank",
+          "value": "length(btrim(\"matches\".\"performance_model_version\")) > 0 and length(btrim(\"matches\".\"physics_model_version\")) > 0"
+        },
+        "matches_protocol_version_positive": {
+          "name": "matches_protocol_version_positive",
+          "value": "\"matches\".\"protocol_version\" > 0"
         }
       },
       "isRLSEnabled": false
@@ -1968,13 +2082,13 @@
         },
         "participant_public_id": {
           "name": "participant_public_id",
-          "type": "text",
+          "type": "varchar(32)",
           "primaryKey": false,
           "notNull": true
         },
         "display_name_snapshot": {
           "name": "display_name_snapshot",
-          "type": "text",
+          "type": "varchar(80)",
           "primaryKey": false,
           "notNull": true
         },
@@ -2013,15 +2127,22 @@
         },
         "user_agent": {
           "name": "user_agent",
-          "type": "text",
+          "type": "varchar(512)",
           "primaryKey": false,
           "notNull": false
         },
         "device_name_snapshot": {
           "name": "device_name_snapshot",
-          "type": "text",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
+        },
+        "diagnostics_expires_at": {
+          "name": "diagnostics_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now() + interval '90 days'"
         }
       },
       "indexes": {
@@ -2042,6 +2163,28 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "room_participants_active_player_seat_uidx": {
+          "name": "room_participants_active_player_seat_uidx",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "role",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"room_participants\".\"left_at\" is null and \"room_participants\".\"role\" in ('player1', 'player2')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2078,6 +2221,21 @@
             },
             {
               "expression": "joined_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "room_participants_diagnostics_expires_at_idx": {
+          "name": "room_participants_diagnostics_expires_at_idx",
+          "columns": [
+            {
+              "expression": "diagnostics_expires_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2141,13 +2299,13 @@
         },
         "code": {
           "name": "code",
-          "type": "text",
+          "type": "varchar(32)",
           "primaryKey": false,
           "notNull": true
         },
         "name": {
           "name": "name",
-          "type": "text",
+          "type": "varchar(30)",
           "primaryKey": false,
           "notNull": true
         },
@@ -2302,6 +2460,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "external_round_id": {
+          "name": "external_round_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_key_hash": {
+          "name": "authority_key_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "round_number": {
           "name": "round_number",
           "type": "smallint",
@@ -2380,12 +2550,12 @@
         },
         "physics_model_version": {
           "name": "physics_model_version",
-          "type": "text",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true
         },
-        "result_fingerprint": {
-          "name": "result_fingerprint",
+        "input_fingerprint": {
+          "name": "input_fingerprint",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -2398,7 +2568,7 @@
         },
         "frames_strategy": {
           "name": "frames_strategy",
-          "type": "text",
+          "type": "varchar(32)",
           "primaryKey": false,
           "notNull": true,
           "default": "'full_json_v1'"
@@ -2452,11 +2622,17 @@
           "method": "btree",
           "with": {}
         },
-        "rounds_result_fingerprint_uidx": {
-          "name": "rounds_result_fingerprint_uidx",
+        "rounds_match_external_round_id_uidx": {
+          "name": "rounds_match_external_round_id_uidx",
           "columns": [
             {
-              "expression": "result_fingerprint",
+              "expression": "match_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "external_round_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2467,23 +2643,26 @@
           "method": "btree",
           "with": {}
         },
-        "rounds_match_number_idx": {
-          "name": "rounds_match_number_idx",
+        "rounds_authority_key_hash_uidx": {
+          "name": "rounds_authority_key_hash_uidx",
           "columns": [
             {
-              "expression": "match_id",
+              "expression": "authority_key_hash",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            },
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "rounds_input_fingerprint_idx": {
+          "name": "rounds_input_fingerprint_idx",
+          "columns": [
             {
-              "expression": "round_number",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "attempt",
+              "expression": "input_fingerprint",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2576,9 +2755,17 @@
           "name": "rounds_launch_multiplier_range",
           "value": "\"rounds\".\"launch_angular_multiplier_a\" between 0 and 2 and \"rounds\".\"launch_angular_multiplier_b\" between 0 and 2 and \"rounds\".\"launch_linear_multiplier_a\" between 0 and 2 and \"rounds\".\"launch_linear_multiplier_b\" between 0 and 2"
         },
-        "rounds_result_fingerprint_format": {
-          "name": "rounds_result_fingerprint_format",
-          "value": "\"rounds\".\"result_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        "rounds_external_round_id_format": {
+          "name": "rounds_external_round_id_format",
+          "value": "length(\"rounds\".\"external_round_id\") between 1 and 128 and \"rounds\".\"external_round_id\" ~ '^[A-Za-z0-9_-]+$'"
+        },
+        "rounds_authority_key_hash_format": {
+          "name": "rounds_authority_key_hash_format",
+          "value": "\"rounds\".\"authority_key_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "rounds_input_fingerprint_format": {
+          "name": "rounds_input_fingerprint_format",
+          "value": "\"rounds\".\"input_fingerprint\" ~ '^[a-f0-9]{64}$'"
         },
         "rounds_frames_strategy": {
           "name": "rounds_frames_strategy",
@@ -2587,6 +2774,14 @@
         "rounds_time_order": {
           "name": "rounds_time_order",
           "value": "\"rounds\".\"completed_at\" >= \"rounds\".\"started_at\""
+        },
+        "rounds_physics_model_version_nonblank": {
+          "name": "rounds_physics_model_version_nonblank",
+          "value": "length(btrim(\"rounds\".\"physics_model_version\")) > 0"
+        },
+        "rounds_battle_result_shape": {
+          "name": "rounds_battle_result_shape",
+          "value": "jsonb_typeof(\"rounds\".\"battle_result_json\") = 'object' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'modelVersion') = 'string' and length(btrim(\"rounds\".\"battle_result_json\"->>'modelVersion')) > 0 and \"rounds\".\"battle_result_json\"->>'modelVersion' = \"rounds\".\"physics_model_version\" and jsonb_typeof(\"rounds\".\"battle_result_json\"->'seed') = 'number' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'ticks') = 'number' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'frames') = 'array' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'finalStats') = 'object' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'outcome') = 'object' and \"rounds\".\"battle_result_json\"->'outcome'->>'winner' = \"rounds\".\"outcome\"::text and \"rounds\".\"battle_result_json\"->'outcome'->>'reason' = \"rounds\".\"outcome_reason\"::text"
         }
       },
       "isRLSEnabled": false
