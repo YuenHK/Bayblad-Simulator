@@ -17,8 +17,23 @@ const geometryInputSchema = layerSchema.pick({
 
 const FULL_TURN = Math.PI * 2;
 
-function finiteOrZero(value: number): number {
-  return Number.isFinite(value) ? value : 0;
+function assertNever(value: never): never {
+  throw new TypeError(`Unsupported layer shape: ${String(value)}`);
+}
+
+function assertFiniteVertices(vertices: readonly Point[]): void {
+  for (const vertex of vertices) {
+    if (!Number.isFinite(vertex.x) || !Number.isFinite(vertex.y)) {
+      throw new TypeError("Geometry vertices must contain finite coordinates");
+    }
+  }
+}
+
+function finiteResult(value: number): number {
+  if (!Number.isFinite(value)) {
+    throw new RangeError("Geometry calculation exceeded the finite number range");
+  }
+  return value;
 }
 
 export function radialFactor(
@@ -27,34 +42,48 @@ export function radialFactor(
   angle: number,
   cornerRoundness: number,
 ): number {
-  const safePoints = Math.max(3, Math.round(finiteOrZero(points)));
-  const safeAngle = finiteOrZero(angle);
-  const roundness = Math.min(1, Math.max(0, finiteOrZero(cornerRoundness)));
-
-  if (shape === "circle") {
-    return 1;
+  if (!Number.isInteger(points) || points < 3 || points > 16) {
+    throw new TypeError("points must be an integer from 3 to 16");
+  }
+  if (!Number.isFinite(angle)) {
+    throw new TypeError("angle must be finite");
+  }
+  if (
+    !Number.isFinite(cornerRoundness) ||
+    cornerRoundness < 0 ||
+    cornerRoundness > 1
+  ) {
+    throw new TypeError("cornerRoundness must be finite and between 0 and 1");
   }
 
-  if (shape === "polygon") {
-    const sector = FULL_TURN / safePoints;
-    const halfSector = sector / 2;
-    const localAngle =
-      ((safeAngle + halfSector) % sector + sector) % sector - halfSector;
-    const polygonFactor = Math.cos(halfSector) / Math.cos(localAngle);
-
-    return polygonFactor * (1 - roundness) + roundness;
+  switch (shape) {
+    case "circle":
+      return 1;
+    case "polygon": {
+      const regularPolygonDepth = 1 - Math.cos(Math.PI / points);
+      const roundedDepth = regularPolygonDepth * (1 - 0.85 * cornerRoundness);
+      return finiteResult(
+        1 - (roundedDepth * (1 - Math.cos(points * angle))) / 2,
+      );
+    }
+    case "star": {
+      const innerFactor = 0.58 + 0.22 * cornerRoundness;
+      const peak = (1 + Math.cos(points * angle)) / 2;
+      const smoothPeak = Math.pow(
+        peak,
+        1 + 2 * (1 - cornerRoundness),
+      );
+      return finiteResult(innerFactor + (1 - innerFactor) * smoothPeak);
+    }
+    case "wave": {
+      const amplitude = 0.1 * (1 - cornerRoundness / 2);
+      return finiteResult(
+        1 - amplitude / 2 + (amplitude / 2) * Math.cos(points * angle),
+      );
+    }
+    default:
+      return assertNever(shape);
   }
-
-  if (shape === "star") {
-    const innerFactor = 0.58 + 0.22 * roundness;
-    const peak = (1 + Math.cos(safePoints * safeAngle)) / 2;
-    const smoothPeak = Math.pow(peak, 1 + 2 * (1 - roundness));
-
-    return innerFactor + (1 - innerFactor) * smoothPeak;
-  }
-
-  const amplitude = 0.1 * (1 - roundness / 2);
-  return 1 - amplitude / 2 + (amplitude / 2) * Math.cos(safePoints * safeAngle);
 }
 
 export function makeLayerVertices(input: GeometryInput): Point[] {
@@ -84,6 +113,7 @@ export function makeLayerVertices(input: GeometryInput): Point[] {
 }
 
 export function polygonArea(vertices: readonly Point[]): number {
+  assertFiniteVertices(vertices);
   if (vertices.length < 3) {
     return 0;
   }
@@ -96,37 +126,93 @@ export function polygonArea(vertices: readonly Point[]): number {
       continue;
     }
     signedDoubleArea +=
-      finiteOrZero(current.x) * finiteOrZero(next.y) -
-      finiteOrZero(next.x) * finiteOrZero(current.y);
+      current.x * next.y - next.x * current.y;
   }
 
-  return finiteOrZero(Math.abs(signedDoubleArea) / 2);
+  return finiteResult(Math.abs(signedDoubleArea) / 2);
 }
 
 export function maxDiameter(vertices: readonly Point[]): number {
+  assertFiniteVertices(vertices);
   let maximumRadius = 0;
   for (const vertex of vertices) {
     maximumRadius = Math.max(
       maximumRadius,
-      Math.hypot(finiteOrZero(vertex.x), finiteOrZero(vertex.y)),
+      Math.hypot(vertex.x, vertex.y),
     );
   }
 
-  return finiteOrZero(maximumRadius * 2);
+  return finiteResult(maximumRadius * 2);
 }
 
+type PolarPoint = Readonly<{ angle: number; radius: number }>;
+
+function normaliseAngle(angle: number): number {
+  return ((angle % FULL_TURN) + FULL_TURN) % FULL_TURN;
+}
+
+function makePolarProfile(vertices: readonly Point[]): PolarPoint[] {
+  const byAngle = new Map<number, number>();
+  for (const vertex of vertices) {
+    const angle = normaliseAngle(Math.atan2(vertex.y, vertex.x));
+    const radius = Math.hypot(vertex.x, vertex.y);
+    byAngle.set(angle, Math.max(byAngle.get(angle) ?? 0, radius));
+  }
+
+  return [...byAngle]
+    .map(([angle, radius]) => ({ angle, radius }))
+    .sort((left, right) => left.angle - right.angle);
+}
+
+function radiusAtAngle(profile: readonly PolarPoint[], angle: number): number {
+  if (profile.length === 0) {
+    return 0;
+  }
+  if (profile.length === 1) {
+    return profile[0]?.radius ?? 0;
+  }
+
+  const target = normaliseAngle(angle);
+  for (let index = 0; index < profile.length; index += 1) {
+    const left = profile[index];
+    const right = profile[(index + 1) % profile.length];
+    if (left === undefined || right === undefined) {
+      continue;
+    }
+    const rightAngle = index === profile.length - 1 ? right.angle + FULL_TURN : right.angle;
+    const adjustedTarget = target < left.angle ? target + FULL_TURN : target;
+    if (adjustedTarget <= rightAngle) {
+      const span = rightAngle - left.angle;
+      const ratio = span === 0 ? 0 : (adjustedTarget - left.angle) / span;
+      return left.radius + (right.radius - left.radius) * ratio;
+    }
+  }
+
+  return profile[0]?.radius ?? 0;
+}
+
+/**
+ * Returns the minimum material span through the axle centre between opposite
+ * radial boundary intersections. It is not a local feature-distance measure.
+ */
 export function minRadialThickness(vertices: readonly Point[]): number {
+  assertFiniteVertices(vertices);
   if (vertices.length === 0) {
     return 0;
   }
 
-  let minimumRadius = Number.POSITIVE_INFINITY;
-  for (const vertex of vertices) {
-    minimumRadius = Math.min(
-      minimumRadius,
-      Math.hypot(finiteOrZero(vertex.x), finiteOrZero(vertex.y)),
+  const profile = makePolarProfile(vertices);
+  const candidateAngles = profile.flatMap(({ angle }) => [
+    angle,
+    normaliseAngle(angle - Math.PI),
+  ]);
+  let minimumSpan = Number.POSITIVE_INFINITY;
+  for (const angle of candidateAngles) {
+    minimumSpan = Math.min(
+      minimumSpan,
+      radiusAtAngle(profile, angle) + radiusAtAngle(profile, angle + Math.PI),
     );
   }
 
-  return finiteOrZero(minimumRadius * 2);
+  return finiteResult(minimumSpan);
 }
