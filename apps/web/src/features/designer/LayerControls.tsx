@@ -70,8 +70,8 @@ export function LayerControls({
             fieldName="diameterMm"
             minimum={20}
             maximum={80}
-            step={1}
-            errorMessage="請輸入 20 至 80 的有效數值"
+            step={0.01}
+            errorMessage="請輸入 20 至 80、每格 0.01 的有效數值"
             value={layer.diameterMm}
             onValidValue={updateNumber("diameterMm")}
             onValidityChange={onFieldValidityChange}

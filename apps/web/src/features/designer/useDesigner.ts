@@ -1,5 +1,4 @@
 import {
-  makeDefaultDesign,
   predictDesignPerformance,
   validateDesign,
   type DesignValidation,
@@ -7,7 +6,9 @@ import {
   type PerformancePrediction,
   type TopDesign,
 } from "@steam-top/domain";
-import { useMemo, useReducer } from "react";
+import { useEffect, useMemo, useReducer } from "react";
+
+import { loadDesignerDraft, saveDesignerDraft } from "./designerDraft";
 
 type LayerPosition = Layer["position"];
 type LayerField = Exclude<keyof Layer, "id" | "position">;
@@ -145,7 +146,8 @@ function designerReducer(design: TopDesign, action: DesignerAction): TopDesign {
 export function useDesigner(): DesignerState & {
   dispatch: React.Dispatch<DesignerAction>;
 } {
-  const [design, dispatch] = useReducer(designerReducer, undefined, makeDefaultDesign);
+  const [design, dispatch] = useReducer(designerReducer, undefined, loadDesignerDraft);
+  useEffect(() => saveDesignerDraft(design), [design]);
   const validation = useMemo(() => validateDesign(design), [design]);
   const prediction = useMemo(
     () => predictDesignPerformance(design),

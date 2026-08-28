@@ -342,7 +342,7 @@ describe("DesignerPage", () => {
     expect(screen.getByRole("heading", { name: "陀螺設計器" })).toBeVisible();
     expect(screen.getByLabelText("直徑（mm）")).toHaveValue(null);
     expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
-    expect(screen.getByText("請輸入 20 至 80 的有效數值")).toBeVisible();
+    expect(screen.getByText("請輸入 20 至 80、每格 0.01 的有效數值")).toBeVisible();
     expect(
       screen.getByRole("button", { name: "規格未通過，請先修正" }),
     ).toBeDisabled();
@@ -356,7 +356,7 @@ describe("DesignerPage", () => {
 
     expect(screen.getByLabelText("直徑（mm）")).toHaveValue(999);
     expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
-    expect(screen.getByText("請輸入 20 至 80 的有效數值")).toBeVisible();
+    expect(screen.getByText("請輸入 20 至 80、每格 0.01 的有效數值")).toBeVisible();
     expect(
       screen.getByRole("button", { name: "規格未通過，請先修正" }),
     ).toBeDisabled();
@@ -391,7 +391,7 @@ describe("DesignerPage", () => {
 
     expect(screen.getByLabelText("直徑（mm）")).toHaveValue(55);
     expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "false");
-    expect(screen.queryByText("請輸入 20 至 80 的有效數值")).not.toBeInTheDocument();
+    expect(screen.queryByText("請輸入 20 至 80、每格 0.01 的有效數值")).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "規格通過，可參戰" }),
     ).toBeEnabled();
