@@ -41,5 +41,10 @@ describe("DesignRegistry", () => {
     const stored = registry.register("session-a", makeDefaultDesign());
     stored.design.name = "tampered";
     expect(registry.requireOwned("session-a", stored.designId).design.name).toBe("我的陀螺");
+    const visual = registry.publicBattleDesign("session-a", stored.designId);
+    visual.layers[0].color = "#000000";
+    expect(registry.publicBattleDesign("session-a", stored.designId).layers[0].color).not.toBe("#000000");
+    expect(visual).not.toHaveProperty("ownerSessionId");
+    expect(visual).not.toHaveProperty("performance");
   });
 });

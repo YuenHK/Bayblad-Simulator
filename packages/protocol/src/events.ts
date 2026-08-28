@@ -167,6 +167,7 @@ export const protocolWelcomeEventSchema = z
     type: z.literal("protocol.welcome"),
     selectedVersion: protocolVersionSchema,
     sessionToken: z.string().min(32).max(256).optional(),
+    sessionStatus: z.enum(["new", "resumed", "replaced"]).optional(),
     ...serverEnvelopeShape,
   })
   .strict();
@@ -434,6 +435,48 @@ export const launchScheduleEventSchema = z
   })
   .strict();
 
+const publicBattleLayerSchema = z.object({
+  id: correlationIdSchema,
+  position: z.enum(["top", "middle", "bottom"]),
+  shape: z.enum(["circle", "polygon", "star", "wave"]),
+  points: z.number().int().min(3).max(16),
+  diameterMm: z.number().finite().min(20).max(80),
+  cornerRoundness: z.number().finite().min(0).max(1),
+  rotationDeg: z.number().finite().min(0).max(359),
+  color: z.string().regex(/^#[0-9a-f]{6}$/i),
+}).strict();
+
+export const publicBattleDesignSchema = z.object({
+  layers: z.tuple([
+    publicBattleLayerSchema.extend({ position: z.literal("top") }),
+    publicBattleLayerSchema.extend({ position: z.literal("middle") }),
+    publicBattleLayerSchema.extend({ position: z.literal("bottom") }),
+  ]),
+  screwLayout: z.object({
+    count: z.number().int().min(3).max(8),
+    radiusMm: z.number().finite().min(5).max(25),
+    rotationDeg: z.number().finite().min(0).max(359),
+  }).strict(),
+  metalDiscDiameterMm: z.union([z.literal(0), z.number().finite().min(10).max(55)]),
+}).strict();
+export type PublicBattleDesign = z.infer<typeof publicBattleDesignSchema>;
+
+const battleStartedPlayerSchema = z.object({
+  participantId: participantIdSchema,
+  designId: z.uuid(),
+  design: publicBattleDesignSchema,
+}).strict();
+
+export const battleStartedEventSchema = z.object({
+  type: z.literal("battle.started"),
+  roomId: correlationIdSchema,
+  matchId: correlationIdSchema,
+  player1: battleStartedPlayerSchema,
+  player2: battleStartedPlayerSchema,
+  ...serverEnvelopeShape,
+}).strict();
+export type BattleStartedEvent = z.infer<typeof battleStartedEventSchema>;
+
 export const LAUNCH_MULTIPLIER_MIN = 0;
 export const LAUNCH_MULTIPLIER_MAX = 2;
 const launchMultiplierSchema = z
@@ -511,6 +554,18 @@ export type RoundWinner = z.infer<typeof roundWinnerSchema>;
 
 export const matchRoundWinnerSchema = z.enum(["player1", "player2"]);
 export type MatchRoundWinner = z.infer<typeof matchRoundWinnerSchema>;
+
+export const battleCheckpointEventSchema = z.object({
+  type: z.literal("battle.checkpoint"),
+  roomId: correlationIdSchema,
+  matchId: correlationIdSchema,
+  roundId: correlationIdSchema,
+  attempt: z.number().int().min(1).max(1_000),
+  phase: z.enum(["launch", "battle", "result"]),
+  roundWinners: z.array(matchRoundWinnerSchema).max(3),
+  ...serverEnvelopeShape,
+}).strict();
+export type BattleCheckpointEvent = z.infer<typeof battleCheckpointEventSchema>;
 
 export const roundFinishedEventSchema = z
   .object({
@@ -612,6 +667,8 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   roomSnapshotEventSchema,
   roomDeltaEventSchema,
   launchScheduleEventSchema,
+  battleStartedEventSchema,
+  battleCheckpointEventSchema,
   launchResultPrivateEventSchema,
   launchResultSpectatorEventSchema,
   battleFrameEventSchema,
@@ -628,6 +685,8 @@ export const playerServerEventSchema = z.discriminatedUnion("type", [
   roomSnapshotEventSchema,
   roomDeltaEventSchema,
   launchScheduleEventSchema,
+  battleStartedEventSchema,
+  battleCheckpointEventSchema,
   launchResultPrivateEventSchema,
   battleFrameEventSchema,
   roundFinishedEventSchema,
@@ -643,6 +702,8 @@ export const spectatorServerEventSchema = z.discriminatedUnion("type", [
   roomSnapshotEventSchema,
   roomDeltaEventSchema,
   launchScheduleEventSchema,
+  battleStartedEventSchema,
+  battleCheckpointEventSchema,
   launchResultSpectatorEventSchema,
   battleFrameEventSchema,
   roundFinishedEventSchema,
