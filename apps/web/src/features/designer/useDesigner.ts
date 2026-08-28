@@ -26,6 +26,11 @@ export type DesignerAction =
       direction: "up" | "down";
     }>
   | Readonly<{
+      type: "reorder-layer";
+      sourceId: string;
+      targetId: string;
+    }>
+  | Readonly<{
       type: "update-screw-layout";
       field: ScrewField;
       value: number;
@@ -83,11 +88,28 @@ function moveLayer(
     return design;
   }
 
+  return reorderLayer(
+    design,
+    design.layers[currentIndex]!.id,
+    design.layers[targetIndex]!.id,
+  );
+}
+
+function reorderLayer(
+  design: TopDesign,
+  sourceId: string,
+  targetId: string,
+): TopDesign {
+  const sourceIndex = design.layers.findIndex((layer) => layer.id === sourceId);
+  const targetIndex = design.layers.findIndex((layer) => layer.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+    return design;
+  }
+
   const reordered = [...design.layers];
-  [reordered[currentIndex], reordered[targetIndex]] = [
-    reordered[targetIndex]!,
-    reordered[currentIndex]!,
-  ];
+  const [sourceLayer] = reordered.splice(sourceIndex, 1);
+  if (sourceLayer === undefined) return design;
+  reordered.splice(targetIndex, 0, sourceLayer);
   return {
     ...design,
     layers: positionLayers(reordered),
@@ -105,6 +127,8 @@ function designerReducer(design: TopDesign, action: DesignerAction): TopDesign {
       );
     case "move-layer":
       return moveLayer(design, action.position, action.direction);
+    case "reorder-layer":
+      return reorderLayer(design, action.sourceId, action.targetId);
     case "update-screw-layout":
       return {
         ...design,
