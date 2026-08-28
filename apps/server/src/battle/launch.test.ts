@@ -196,14 +196,18 @@ describe("LaunchCoordinator scheduling", () => {
     });
   });
 
-  it("rejects duplicate rounds and duplicate active nonces", () => {
+  it("rejects duplicate rounds and exhausts nonce generation without active state", () => {
     const { schedule } = makeHarness();
     schedule();
     expect(schedule).toThrow(new LaunchError("ROUND_ALREADY_SCHEDULED"));
     let eventSequence = 0;
+    let nonceCalls = 0;
     const coordinator = new LaunchCoordinator({
       now: () => 1_000,
-      createNonce: () => "same-nonce",
+      createNonce: () => {
+        nonceCalls += 1;
+        return "same-nonce";
+      },
       createServerEventId: () =>
         `00000000-0000-4000-8000-${String(++eventSequence).padStart(12, "0")}`,
     });
@@ -220,7 +224,25 @@ describe("LaunchCoordinator scheduling", () => {
         roundId: "round-2",
         players: [PLAYER_1, PLAYER_2],
       }),
-    ).toThrow(new LaunchError("NONCE_ALREADY_ACTIVE"));
+    ).toThrow(new LaunchError("NONCE_GENERATION_FAILED"));
+    expect(nonceCalls).toBe(1_001);
+    expect(coordinator.activeRoundCount).toBe(1);
+  });
+
+  it.each([
+    { players: [PLAYER_1] },
+    { players: [PLAYER_1, PLAYER_2, { participantId: "p3", displayName: "Player Three" }] },
+  ])("requires exactly two runtime players", ({ players }) => {
+    const { coordinator } = makeHarness();
+    expect(() =>
+      coordinator.schedule({
+        roomId: "room-1",
+        matchId: "match-1",
+        roundId: "round-1",
+        players,
+      } as never),
+    ).toThrow(new LaunchError("INVALID_SCHEDULE"));
+    expect(coordinator.activeRoundCount).toBe(0);
   });
 
   it.each([Number.NaN, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
@@ -252,11 +274,10 @@ describe("LaunchCoordinator scheduling", () => {
     ).toThrow(new LaunchError("TARGET_TOO_SOON"));
   });
 
-  it("fails atomically when an injected nonce or event id is invalid", () => {
-    for (const dependencies of [
-      { createNonce: () => "" },
-      { createServerEventId: () => "not-a-uuid" },
-    ]) {
+  it.each([
+    [{ createNonce: () => "" }, "NONCE_GENERATION_FAILED"],
+    [{ createServerEventId: () => "not-a-uuid" }, "SERVER_EVENT_ID_GENERATION_FAILED"],
+  ] as const)("fails atomically when an injected generator is exhausted", (dependencies, code) => {
       const coordinator = new LaunchCoordinator({
         now: () => 1_000,
         createNonce: () => "nonce-ok",
@@ -270,9 +291,28 @@ describe("LaunchCoordinator scheduling", () => {
           roundId: "round-1",
           players: [PLAYER_1, PLAYER_2],
         }),
-      ).toThrow(new LaunchError("INVALID_GENERATED_VALUE"));
+      ).toThrow(new LaunchError(code));
       expect(coordinator.activeRoundCount).toBe(0);
-    }
+  });
+
+  it("retries a colliding server event id and keeps all emitted ids unique", () => {
+    const firstId = "00000000-0000-4000-8000-000000000001";
+    const secondId = "00000000-0000-4000-8000-000000000002";
+    const generatedIds = [firstId, firstId, secondId];
+    const coordinator = new LaunchCoordinator({
+      now: () => 1_000,
+      createNonce: () => "nonce-1",
+      createServerEventId: () => generatedIds.shift() ?? secondId,
+    });
+    const scheduled = coordinator.schedule({
+      roomId: "room-1",
+      matchId: "match-1",
+      roundId: "round-1",
+      players: [PLAYER_1, PLAYER_2],
+    });
+    const result = coordinator.submit("p1", tap(), 4_000);
+    expect(scheduled.serverEventId).toBe(firstId);
+    expect(result.event.serverEventId).toBe(secondId);
   });
 });
 
@@ -394,6 +434,45 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     ).toThrow(new LaunchError("ROUND_CLOSED"));
   });
 
+  it("does not partially commit when result event-id generation is exhausted", () => {
+    const scheduleId = "00000000-0000-4000-8000-000000000001";
+    const player1Id = "00000000-0000-4000-8000-000000000002";
+    const player2Id = "00000000-0000-4000-8000-000000000003";
+    const spectatorId = "00000000-0000-4000-8000-000000000004";
+    let generatedIds = [scheduleId, player1Id];
+    let fallbackId = player1Id;
+    const coordinator = new LaunchCoordinator({
+      now: () => 1_000,
+      createNonce: () => "nonce-1",
+      createServerEventId: () => generatedIds.shift() ?? fallbackId,
+    });
+    coordinator.schedule({
+      roomId: "room-1",
+      matchId: "match-1",
+      roundId: "round-1",
+      players: [PLAYER_1, PLAYER_2],
+    });
+    coordinator.submit("p1", tap(), 4_000);
+
+    expect(() => coordinator.submit("p2", tap({ eventId: TAP_2 }), 4_000)).toThrow(
+      new LaunchError("SERVER_EVENT_ID_GENERATION_FAILED"),
+    );
+    expect(coordinator.peekResults("room-1", "round-1")).toMatchObject({
+      closed: false,
+      privateResults: [{ participantId: "p1" }],
+      spectatorResult: null,
+    });
+
+    generatedIds = [player2Id, spectatorId];
+    fallbackId = spectatorId;
+    expect(coordinator.submit("p2", tap({ eventId: TAP_2 }), 4_000).event.serverEventId).toBe(
+      player2Id,
+    );
+    expect(coordinator.peekResults("room-1", "round-1")?.spectatorResult?.serverEventId).toBe(
+      spectatorId,
+    );
+  });
+
   it("emits exact private and spectator protocol payloads without opponent leakage", () => {
     const { coordinator, schedule } = makeHarness();
     schedule();
@@ -446,12 +525,14 @@ describe("LaunchCoordinator submissions and result privacy", () => {
 });
 
 describe("LaunchCoordinator expiry and cleanup", () => {
-  it("does not finalize before the deadline and auto-Misses missing taps at the deadline", () => {
+  it("keeps the round open at the inclusive deadline and auto-Misses only after it", () => {
     const { coordinator, schedule, setNow } = makeHarness();
     schedule();
     setNow(5_499);
     expect(coordinator.finalizeExpired()).toEqual([]);
     setNow(5_500);
+    expect(coordinator.finalizeExpired()).toEqual([]);
+    setNow(5_501);
     const finalized = coordinator.finalizeExpired();
     expect(finalized).toHaveLength(1);
     expect(finalized[0]?.privateResults.map((event) => event.grade)).toEqual(["Miss", "Miss"]);
@@ -463,7 +544,7 @@ describe("LaunchCoordinator expiry and cleanup", () => {
     const { coordinator, schedule, setNow } = makeHarness();
     schedule();
     coordinator.submit("p1", tap(), 4_000);
-    setNow(5_500);
+    setNow(5_501);
     coordinator.finalizeExpired();
     const result = coordinator.peekResults("room-1", "round-1");
     expect(result?.privateResults.map((event) => [event.participantId, event.grade])).toEqual([
@@ -475,7 +556,7 @@ describe("LaunchCoordinator expiry and cleanup", () => {
   it("supports peek and draining take, then explicit closed-round cleanup", () => {
     const { coordinator, schedule, setNow } = makeHarness();
     schedule();
-    setNow(5_500);
+    setNow(5_501);
     coordinator.finalizeExpired();
     expect(coordinator.peekResults("room-1", "round-1")?.privateResults).toHaveLength(2);
     expect(coordinator.takeResults("room-1", "round-1")?.privateResults).toHaveLength(2);
@@ -496,5 +577,87 @@ describe("LaunchCoordinator expiry and cleanup", () => {
     expect(() => coordinator.cleanupRound("room-1", "round-1")).toThrow(
       new LaunchError("ROUND_NOT_CLOSED"),
     );
+  });
+
+  it("produces the same outcome whether finalize or tap is called first at the deadline", () => {
+    const first = makeHarness();
+    first.schedule();
+    first.setNow(5_500);
+    expect(first.coordinator.finalizeExpired()).toEqual([]);
+    first.coordinator.submit("p1", tap({ clientTimeMs: 5_500 }), 5_500);
+    first.setNow(5_501);
+    first.coordinator.finalizeExpired();
+
+    const second = makeHarness();
+    second.schedule();
+    second.setNow(5_500);
+    second.coordinator.submit("p1", tap({ clientTimeMs: 5_500 }), 5_500);
+    expect(second.coordinator.finalizeExpired()).toEqual([]);
+    second.setNow(5_501);
+    second.coordinator.finalizeExpired();
+
+    expect(first.coordinator.peekResults("room-1", "round-1")).toEqual(
+      second.coordinator.peekResults("room-1", "round-1"),
+    );
+  });
+
+  it("never reuses an issued nonce after cleanup and rejects the old tap", () => {
+    const serverIds = Array.from(
+      { length: 4 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    const coordinator = new LaunchCoordinator({
+      now: () => 1_000,
+      createNonce: () => "process-lifetime-nonce",
+      createServerEventId: () => serverIds.shift() ?? "00000000-0000-4000-8000-000000000004",
+    });
+    const input = {
+      roomId: "room-1",
+      matchId: "match-1",
+      roundId: "round-1",
+      players: [PLAYER_1, PLAYER_2],
+    } as const;
+    coordinator.schedule(input);
+    coordinator.finalizeExpired(5_501);
+    coordinator.cleanupRound("room-1", "round-1");
+
+    expect(() => coordinator.schedule(input)).toThrow(
+      new LaunchError("NONCE_GENERATION_FAILED"),
+    );
+    expect(coordinator.activeRoundCount).toBe(0);
+    expect(() =>
+      coordinator.submit(
+        "p1",
+        tap({ nonce: "process-lifetime-nonce" }),
+        4_000,
+      ),
+    ).toThrow(new LaunchError("SCHEDULE_MISMATCH"));
+  });
+
+  it("never reuses an issued server event id after cleanup", () => {
+    const firstId = "00000000-0000-4000-8000-000000000001";
+    const generatedIds = Array.from(
+      { length: 4 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    let nonceSequence = 0;
+    const coordinator = new LaunchCoordinator({
+      now: () => 1_000,
+      createNonce: () => `nonce-${++nonceSequence}`,
+      createServerEventId: () => generatedIds.shift() ?? firstId,
+    });
+    const input = {
+      roomId: "room-1",
+      matchId: "match-1",
+      roundId: "round-1",
+      players: [PLAYER_1, PLAYER_2],
+    } as const;
+    coordinator.schedule(input);
+    coordinator.finalizeExpired(5_501);
+    coordinator.cleanupRound("room-1", "round-1");
+    expect(() => coordinator.schedule(input)).toThrow(
+      new LaunchError("SERVER_EVENT_ID_GENERATION_FAILED"),
+    );
+    expect(coordinator.activeRoundCount).toBe(0);
   });
 });

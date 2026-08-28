@@ -1,5 +1,7 @@
 import {
   PROTOCOL_VERSION,
+  correlationIdSchema,
+  eventIdSchema,
   launchResultPrivateEventSchema,
   launchResultSpectatorEventSchema,
   launchScheduleEventSchema,
@@ -30,6 +32,7 @@ const ACCEPTANCE_AFTER_TARGET_MS = 1_500;
 const MAX_CLOCK_RTT_MS = 2_000;
 const MAX_CLOCK_OFFSET_MS = 5 * 60_000;
 const MAX_CLOCK_SAMPLES = 9;
+const MAX_GENERATION_ATTEMPTS = 1_000;
 const GRADES = ["Perfect", "Great", "Good", "Miss"] as const;
 
 export type LaunchErrorCode =
@@ -38,9 +41,10 @@ export type LaunchErrorCode =
   | "INVALID_COORDINATOR_CONFIG"
   | "INVALID_SCHEDULE"
   | "INVALID_GENERATED_VALUE"
+  | "NONCE_GENERATION_FAILED"
+  | "SERVER_EVENT_ID_GENERATION_FAILED"
   | "TARGET_TOO_SOON"
   | "ROUND_ALREADY_SCHEDULED"
-  | "NONCE_ALREADY_ACTIVE"
   | "INVALID_TAP"
   | "SCHEDULE_MISMATCH"
   | "UNKNOWN_PARTICIPANT"
@@ -283,7 +287,9 @@ const cloneSpectator = (
 export class LaunchCoordinator {
   readonly #dependencies: LaunchCoordinatorDependencies;
   readonly #rounds = new Map<string, RoundState>();
-  readonly #activeNonces = new Set<string>();
+  // Process-lifetime replay protection. Persistence/rotation belongs to server deployment.
+  readonly #issuedNonces = new Set<string>();
+  readonly #issuedServerEventIds = new Set<string>();
   readonly #events = new Map<string, EventRecord>();
 
   constructor(dependencies: Partial<LaunchCoordinatorDependencies> = {}) {
@@ -315,6 +321,12 @@ export class LaunchCoordinator {
 
     let players: [LaunchParticipant, LaunchParticipant];
     try {
+      if (!Array.isArray(input.players) || input.players.length !== 2) {
+        throw new LaunchError("INVALID_SCHEDULE");
+      }
+      correlationIdSchema.parse(input.roomId);
+      correlationIdSchema.parse(input.matchId);
+      correlationIdSchema.parse(input.roundId);
       players = [
         participantSummarySchema.parse(input.players[0]),
         participantSummarySchema.parse(input.players[1]),
@@ -326,24 +338,27 @@ export class LaunchCoordinator {
       throw new LaunchError("INVALID_SCHEDULE");
     }
 
-    const nonce = this.#dependencies.createNonce();
-    if (this.#activeNonces.has(nonce)) throw new LaunchError("NONCE_ALREADY_ACTIVE");
+    const nonce = this.#generateNonce();
+    const stagedServerEventIds = new Set<string>();
     let event: LaunchScheduleEvent;
     try {
       event = launchScheduleEventSchema.parse({
         type: "launch.schedule",
         protocolVersion: PROTOCOL_VERSION,
-        serverEventId: this.#dependencies.createServerEventId(),
+        serverEventId: this.#stageServerEventId(stagedServerEventIds),
         roomId: input.roomId,
         matchId: input.matchId,
         roundId: input.roundId,
         serverTargetTimeMs: target,
         nonce,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof LaunchError) throw error;
       throw new LaunchError("INVALID_GENERATED_VALUE");
     }
 
+    this.#issuedNonces.add(nonce);
+    this.#commitServerEventIds(stagedServerEventIds);
     this.#rounds.set(key, {
       schedule: event,
       players,
@@ -354,7 +369,6 @@ export class LaunchCoordinator {
       spectatorResult: null,
       closed: false,
     });
-    this.#activeNonces.add(nonce);
     return { ...event };
   }
 
@@ -403,13 +417,20 @@ export class LaunchCoordinator {
     }
 
     const judgement = judgeLaunch(correctedServerTapMs - state.schedule.serverTargetTimeMs);
-    const privateEvent = this.#createPrivateEvent(state, participantId, judgement);
+    const stagedServerEventIds = new Set<string>();
+    const privateEvent = this.#createPrivateEvent(
+      state,
+      participantId,
+      judgement,
+      stagedServerEventIds,
+    );
     const proposedResults = new Map(state.results).set(participantId, privateEvent);
     const spectatorEvent =
       proposedResults.size === state.players.length
-        ? this.#createSpectatorEvent(state, proposedResults)
+        ? this.#createSpectatorEvent(state, proposedResults, stagedServerEventIds)
         : null;
 
+    this.#commitServerEventIds(stagedServerEventIds);
     state.results.set(participantId, privateEvent);
     state.pendingPrivateResults.push(privateEvent);
     state.clientEventIds.add(tapEvent.eventId);
@@ -425,26 +446,45 @@ export class LaunchCoordinator {
 
   finalizeExpired(nowMs = this.#dependencies.now()): RoundLaunchResults[] {
     const now = this.#safeServerTime(nowMs);
-    const finalized: RoundLaunchResults[] = [];
+    const stagedServerEventIds = new Set<string>();
+    const plans: Array<{
+      state: RoundState;
+      generated: LaunchResultPrivateEvent[];
+      spectatorEvent: LaunchResultSpectatorEvent;
+    }> = [];
     for (const state of this.#rounds.values()) {
       if (state.closed) continue;
       const deadline =
         state.schedule.serverTargetTimeMs + this.#dependencies.acceptanceAfterTargetMs;
-      if (now < deadline) continue;
+      if (now <= deadline) continue;
 
       const generated = state.players
         .filter((player) => !state.results.has(player.participantId))
         .map((player) =>
-          this.#createPrivateEvent(state, player.participantId, {
-            grade: "Miss",
-            angularMultiplier: LAUNCH_MULTIPLIER.Miss.angular,
-            impulseMultiplier: LAUNCH_MULTIPLIER.Miss.impulse,
-          }),
+          this.#createPrivateEvent(
+            state,
+            player.participantId,
+            {
+              grade: "Miss",
+              angularMultiplier: LAUNCH_MULTIPLIER.Miss.angular,
+              impulseMultiplier: LAUNCH_MULTIPLIER.Miss.impulse,
+            },
+            stagedServerEventIds,
+          ),
         );
       const proposedResults = new Map(state.results);
       for (const event of generated) proposedResults.set(event.participantId, event);
-      const spectatorEvent = this.#createSpectatorEvent(state, proposedResults);
+      const spectatorEvent = this.#createSpectatorEvent(
+        state,
+        proposedResults,
+        stagedServerEventIds,
+      );
+      plans.push({ state, generated, spectatorEvent });
+    }
 
+    this.#commitServerEventIds(stagedServerEventIds);
+    const finalized: RoundLaunchResults[] = [];
+    for (const { state, generated, spectatorEvent } of plans) {
       for (const event of generated) {
         state.results.set(event.participantId, event);
         state.pendingPrivateResults.push(event);
@@ -479,7 +519,6 @@ export class LaunchCoordinator {
     if (!state) return false;
     if (!state.closed) throw new LaunchError("ROUND_NOT_CLOSED");
     for (const eventId of state.clientEventIds) this.#events.delete(eventId);
-    this.#activeNonces.delete(state.schedule.nonce);
     this.#rounds.delete(key);
     return true;
   }
@@ -493,19 +532,21 @@ export class LaunchCoordinator {
     state: RoundState,
     participantId: string,
     judgement: LaunchJudgement,
+    stagedServerEventIds: Set<string>,
   ): LaunchResultPrivateEvent {
     try {
       return launchResultPrivateEventSchema.parse({
         type: "launch.result.private",
         protocolVersion: PROTOCOL_VERSION,
-        serverEventId: this.#dependencies.createServerEventId(),
+        serverEventId: this.#stageServerEventId(stagedServerEventIds),
         roomId: state.schedule.roomId,
         matchId: state.schedule.matchId,
         roundId: state.schedule.roundId,
         participantId,
         ...judgement,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof LaunchError) throw error;
       throw new LaunchError("INVALID_GENERATED_VALUE");
     }
   }
@@ -513,6 +554,7 @@ export class LaunchCoordinator {
   #createSpectatorEvent(
     state: RoundState,
     results: ReadonlyMap<string, LaunchResultPrivateEvent>,
+    stagedServerEventIds: Set<string>,
   ): LaunchResultSpectatorEvent {
     const [player1, player2] = state.players;
     const result1 = results.get(player1.participantId);
@@ -522,7 +564,7 @@ export class LaunchCoordinator {
       return launchResultSpectatorEventSchema.parse({
         type: "launch.result.spectator",
         protocolVersion: PROTOCOL_VERSION,
-        serverEventId: this.#dependencies.createServerEventId(),
+        serverEventId: this.#stageServerEventId(stagedServerEventIds),
         roomId: state.schedule.roomId,
         matchId: state.schedule.matchId,
         roundId: state.schedule.roundId,
@@ -558,5 +600,37 @@ export class LaunchCoordinator {
       spectatorResult: cloneSpectator(state.spectatorResult),
       closed: state.closed,
     };
+  }
+
+  #generateNonce(): string {
+    for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS; attempt += 1) {
+      const candidate = this.#dependencies.createNonce();
+      if (
+        correlationIdSchema.safeParse(candidate).success &&
+        !this.#issuedNonces.has(candidate)
+      ) {
+        return candidate;
+      }
+    }
+    throw new LaunchError("NONCE_GENERATION_FAILED");
+  }
+
+  #stageServerEventId(stagedServerEventIds: Set<string>): string {
+    for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS; attempt += 1) {
+      const candidate = this.#dependencies.createServerEventId();
+      if (
+        eventIdSchema.safeParse(candidate).success &&
+        !this.#issuedServerEventIds.has(candidate) &&
+        !stagedServerEventIds.has(candidate)
+      ) {
+        stagedServerEventIds.add(candidate);
+        return candidate;
+      }
+    }
+    throw new LaunchError("SERVER_EVENT_ID_GENERATION_FAILED");
+  }
+
+  #commitServerEventIds(stagedServerEventIds: ReadonlySet<string>): void {
+    for (const eventId of stagedServerEventIds) this.#issuedServerEventIds.add(eventId);
   }
 }
