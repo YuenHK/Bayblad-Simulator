@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { MAX_MASS_G } from "@steam-top/domain";
 
 import {
+  MASS_DIFFERENCE_FLOAT_TOLERANCE_G,
   MASS_MEASUREMENT_PRECISION_G,
   challengePoints,
   scoreMatch,
@@ -9,6 +11,15 @@ import {
 describe("challengePoints", () => {
   it("uses an explicit one-milligram measurement precision", () => {
     expect(MASS_MEASUREMENT_PRECISION_G).toBe(0.001);
+    expect(MASS_DIFFERENCE_FLOAT_TOLERANCE_G).toBe(
+      Number.EPSILON * MAX_MASS_G * 2,
+    );
+    expect(MASS_DIFFERENCE_FLOAT_TOLERANCE_G).toBeGreaterThan(
+      Number.EPSILON * MAX_MASS_G,
+    );
+    expect(MASS_DIFFERENCE_FLOAT_TOLERANCE_G).toBeLessThan(
+      MASS_MEASUREMENT_PRECISION_G / 1_000_000,
+    );
   });
 
   it.each([
@@ -23,6 +34,36 @@ describe("challengePoints", () => {
     "rejects a non-finite difference: %s",
     (differenceG) => expect(() => challengePoints(differenceG)).toThrow(),
   );
+
+  it.each([
+    [0.0005, 0.00005],
+    [9.9985, 0.49995],
+    [9.9995, 0.5],
+  ])("keeps the nominal %sg half-milligram boundary stable", (
+    nominalDifferenceG,
+    expected,
+  ) => {
+    for (const lighterMassG of [1, 20, 40, 50]) {
+      if (lighterMassG + nominalDifferenceG <= MAX_MASS_G) {
+        const rawDifferenceG = (lighterMassG + nominalDifferenceG) - lighterMassG;
+        expect(challengePoints(rawDifferenceG)).toBe(expected);
+      }
+    }
+  });
+
+  it.each([
+    [0.0005, 0, 0.00005],
+    [9.9985, 0.4999, 0.49995],
+    [9.9995, 0.49995, 0.5],
+  ])("separates values genuinely below and above %sg", (
+    thresholdG,
+    expectedBelow,
+    expectedAbove,
+  ) => {
+    const outsideToleranceG = MASS_DIFFERENCE_FLOAT_TOLERANCE_G * 4;
+    expect(challengePoints(thresholdG - outsideToleranceG)).toBe(expectedBelow);
+    expect(challengePoints(thresholdG + outsideToleranceG)).toBe(expectedAbove);
+  });
 });
 
 describe("scoreMatch", () => {

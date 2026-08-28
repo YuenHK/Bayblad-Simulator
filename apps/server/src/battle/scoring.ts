@@ -1,4 +1,4 @@
-import { validateMassLimit } from "@steam-top/domain";
+import { MAX_MASS_G, validateMassLimit } from "@steam-top/domain";
 import {
   matchRoundWinnerSchema,
   type MatchRoundWinner,
@@ -12,6 +12,12 @@ import { z } from "zod";
  * milligrams so floating-point multiplication cannot alter boundaries.
  */
 export const MASS_MEASUREMENT_PRECISION_G = 0.001;
+// At the 60 g domain maximum, Number.EPSILON * mass exceeds one binary64 ULP.
+// Two such bounds cover both represented operands and their subtraction. The
+// result is still over ten million times smaller than the 1 mg scoring unit.
+const MASS_DIFFERENCE_TOLERANCE_SAFETY_FACTOR = 2;
+export const MASS_DIFFERENCE_FLOAT_TOLERANCE_G =
+  Number.EPSILON * MAX_MASS_G * MASS_DIFFERENCE_TOLERANCE_SAFETY_FACTOR;
 const MASS_UNITS_PER_GRAM = 1 / MASS_MEASUREMENT_PRECISION_G;
 const CHALLENGE_CAP_DIFFERENCE_UNITS = 10 * MASS_UNITS_PER_GRAM;
 const CHALLENGE_DIVISOR = 20 * MASS_UNITS_PER_GRAM;
@@ -77,8 +83,10 @@ export type MatchScoreResult = Readonly<{
   player2: PlayerMatchScore;
 }>;
 
-function toMeasurementUnits(massG: number): number {
-  return Math.round((massG + Number.EPSILON) * MASS_UNITS_PER_GRAM);
+function toDifferenceUnits(differenceG: number): number {
+  return Math.round(
+    (differenceG + MASS_DIFFERENCE_FLOAT_TOLERANCE_G) * MASS_UNITS_PER_GRAM,
+  );
 }
 
 function pointsFromDifferenceUnits(differenceUnits: number): number {
@@ -89,7 +97,7 @@ function pointsFromDifferenceUnits(differenceUnits: number): number {
 export function challengePoints(differenceG: number): number {
   const parsedDifferenceG = z.number().finite().parse(differenceG);
   const boundedDifferenceG = Math.min(Math.max(parsedDifferenceG, 0), 10);
-  return pointsFromDifferenceUnits(toMeasurementUnits(boundedDifferenceG));
+  return pointsFromDifferenceUnits(toDifferenceUnits(boundedDifferenceG));
 }
 
 function frozenScore(
