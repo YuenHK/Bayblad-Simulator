@@ -1,5 +1,7 @@
 packages:
   - apps/*
   - packages/*
+minimumReleaseAge: 1440
+# @testing-library/react@16.3.3 於 2026-08-27 發布；超過 24 小時後移除此例外。
 minimumReleaseAgeExclude:
   - '@testing-library/react@16.3.3'

@@ -1,5 +1,5 @@
 import type { RuleIssueCode } from "@steam-top/domain";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AssemblyControls } from "./AssemblyControls";
 import { LayerControls } from "./LayerControls";
@@ -41,6 +41,10 @@ export function DesignerPage() {
   );
   const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null);
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
+  const [reorderAnnouncement, setReorderAnnouncement] = useState("");
+  const [invalidFieldKeys, setInvalidFieldKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const dragCapture = useRef<{
     element: HTMLButtonElement;
     pointerId: number;
@@ -51,11 +55,36 @@ export function DesignerPage() {
   const selectedIndex = design.layers.findIndex(
     (layer) => layer.id === selectedLayer.id,
   );
+  const updateFieldValidity = useCallback(
+    (fieldKey: string, isValid: boolean) => {
+      setInvalidFieldKeys((current) => {
+        const currentlyInvalid = current.has(fieldKey);
+        if (currentlyInvalid === !isValid) return current;
+        const next = new Set(current);
+        if (isValid) next.delete(fieldKey);
+        else next.add(fieldKey);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const reorderLayers = (sourceId: string, targetId: string) => {
+    const source = design.layers.find((layer) => layer.id === sourceId);
+    const target = design.layers.find((layer) => layer.id === targetId);
+    if (source === undefined || target === undefined || source.id === target.id) {
+      return;
+    }
+    dispatch({ type: "reorder-layer", sourceId, targetId });
+    setReorderAnnouncement(
+      `${POSITION_LABELS[source.position]}層板已移至${POSITION_LABELS[target.position]}`,
+    );
+  };
 
   const moveSelected = (direction: "up" | "down") => {
     const targetIndex = direction === "up" ? selectedIndex - 1 : selectedIndex + 1;
     if (targetIndex < 0 || targetIndex >= design.layers.length) return;
-    dispatch({ type: "move-layer", position: selectedLayer.position, direction });
+    reorderLayers(selectedLayer.id, design.layers[targetIndex]!.id);
   };
 
   const beginDrag = (
@@ -64,6 +93,7 @@ export function DesignerPage() {
   ) => {
     event.preventDefault();
     event.stopPropagation();
+    if (dragCapture.current !== null) return;
     dragCapture.current = {
       element: event.currentTarget,
       pointerId: event.pointerId,
@@ -87,18 +117,17 @@ export function DesignerPage() {
     ) {
       return;
     }
-    dispatch({
-      type: "reorder-layer",
-      sourceId: draggingLayerId,
-      targetId,
-    });
+    reorderLayers(draggingLayerId, targetId);
     setDragOverLayerId(targetId);
   };
 
   const moveCapturedPointer = (
     event: React.PointerEvent<HTMLButtonElement>,
   ) => {
+    const capture = dragCapture.current;
     if (
+      capture === null ||
+      capture.pointerId !== event.pointerId ||
       draggingLayerId === null ||
       typeof document.elementFromPoint !== "function"
     ) {
@@ -110,10 +139,10 @@ export function DesignerPage() {
     if (targetId !== undefined) moveDraggedLayer(targetId);
   };
 
-  const finishDrag = () => {
+  const finishDrag = (pointerId: number) => {
     const capture = dragCapture.current;
+    if (capture === null || capture.pointerId !== pointerId) return;
     if (
-      capture !== null &&
       typeof capture.element.releasePointerCapture === "function"
     ) {
       try {
@@ -129,12 +158,12 @@ export function DesignerPage() {
 
   const endDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
-    finishDrag();
+    finishDrag(event.pointerId);
   };
 
   useEffect(() => {
     if (draggingLayerId === null) return;
-    const finishFromWindow = () => finishDrag();
+    const finishFromWindow = (event: PointerEvent) => finishDrag(event.pointerId);
     window.addEventListener("pointerup", finishFromWindow);
     window.addEventListener("pointercancel", finishFromWindow);
     return () => {
@@ -142,6 +171,8 @@ export function DesignerPage() {
       window.removeEventListener("pointercancel", finishFromWindow);
     };
   }, [draggingLayerId]);
+
+  const readinessValid = validation.valid && invalidFieldKeys.size === 0;
 
   return (
     <main className="designer-shell">
@@ -228,8 +259,20 @@ export function DesignerPage() {
             </button>
           </div>
 
-          <LayerControls layer={selectedLayer} dispatch={dispatch} />
-          <AssemblyControls design={design} dispatch={dispatch} />
+          <p className="sr-only" aria-live="polite">
+            {reorderAnnouncement}
+          </p>
+
+          <LayerControls
+            layer={selectedLayer}
+            dispatch={dispatch}
+            onFieldValidityChange={updateFieldValidity}
+          />
+          <AssemblyControls
+            design={design}
+            dispatch={dispatch}
+            onFieldValidityChange={updateFieldValidity}
+          />
         </section>
 
         <aside className="panel results-panel" aria-labelledby="results-heading">
@@ -247,10 +290,13 @@ export function DesignerPage() {
             <div><dt>抗撞能力</dt><dd>{format(prediction.impactResistance, 0)} / 100</dd></div>
           </dl>
 
-          <div className="validation" aria-live="polite">
-            {validation.valid ? (
+          <div id="validation-status" className="validation" aria-live="polite">
+            {invalidFieldKeys.size > 0 ? (
+              <p className="issue-message">請先修正標示的數值欄位。</p>
+            ) : null}
+            {validation.valid && invalidFieldKeys.size === 0 ? (
               <p className="valid-message">設計符合課堂規格</p>
-            ) : (
+            ) : validation.issues.length > 0 ? (
               <ul className="issue-list">
                 {validation.issues.map((issue, index) => (
                   <li key={`${issue.code}-${issue.layerId ?? "design"}-${index}`}>
@@ -258,15 +304,20 @@ export function DesignerPage() {
                   </li>
                 ))}
               </ul>
-            )}
+            ) : null}
           </div>
           <button
             className="readiness-button"
             type="button"
-            disabled={!validation.valid}
-            aria-label="規格通過，可參戰"
+            disabled={!readinessValid}
+            aria-label={
+              readinessValid
+                ? "規格通過，可參戰"
+                : "規格未通過，請先修正"
+            }
+            aria-describedby={readinessValid ? undefined : "validation-status"}
           >
-            規格通過，可參戰
+            {readinessValid ? "規格通過，可參戰" : "規格未通過，請先修正"}
           </button>
         </aside>
       </div>

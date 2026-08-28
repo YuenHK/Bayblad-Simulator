@@ -1,68 +1,14 @@
 import type { Layer } from "@steam-top/domain";
 import { useEffect, useState } from "react";
 
+import { NumericField, type FieldValidityChange } from "./NumericField";
 import type { DesignerAction } from "./useDesigner";
 
 type LayerControlsProps = Readonly<{
   layer: Layer;
   dispatch: React.Dispatch<DesignerAction>;
+  onFieldValidityChange: FieldValidityChange;
 }>;
-
-function parseBoundedNumber(
-  rawValue: string,
-  minimum: number,
-  maximum: number,
-): number | null {
-  if (rawValue.trim() === "") {
-    return null;
-  }
-  const value = Number(rawValue);
-  return Number.isFinite(value) && value >= minimum && value <= maximum
-    ? value
-    : null;
-}
-
-type DraftNumberInputProps = Readonly<{
-  value: number;
-  minimum: number;
-  maximum: number;
-  step: number;
-  disabled?: boolean;
-  integer?: boolean;
-  onValidValue: (value: number) => void;
-}>;
-
-function DraftNumberInput({
-  value,
-  minimum,
-  maximum,
-  step,
-  disabled = false,
-  integer = false,
-  onValidValue,
-}: DraftNumberInputProps) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
-
-  return (
-    <input
-      type="number"
-      min={minimum}
-      max={maximum}
-      step={step}
-      value={draft}
-      disabled={disabled}
-      onChange={(event) => {
-        const rawValue = event.currentTarget.value;
-        setDraft(rawValue);
-        const parsed = parseBoundedNumber(rawValue, minimum, maximum);
-        if (parsed !== null && (!integer || Number.isInteger(parsed))) {
-          onValidValue(parsed);
-        }
-      }}
-    />
-  );
-}
 
 function DraftColorInput({
   value,
@@ -88,7 +34,11 @@ function DraftColorInput({
   );
 }
 
-export function LayerControls({ layer, dispatch }: LayerControlsProps) {
+export function LayerControls({
+  layer,
+  dispatch,
+  onFieldValidityChange,
+}: LayerControlsProps) {
   const updateNumber = (
     field: "points" | "diameterMm" | "cornerRoundness" | "rotationDeg",
   ) => (value: number) =>
@@ -121,45 +71,66 @@ export function LayerControls({ layer, dispatch }: LayerControlsProps) {
       <div className="control-grid">
         <label>
           角數
-          <DraftNumberInput
+          <NumericField
+            accessibleLabel="角數"
+            scopeKey={layer.id}
+            fieldName="points"
             minimum={3}
             maximum={16}
             step={1}
             integer
+            errorMessage="請輸入 3 至 16 的有效整數"
             value={layer.points}
             disabled={circle}
             onValidValue={updateNumber("points")}
+            onValidityChange={onFieldValidityChange}
           />
         </label>
         <label>
           直徑（mm）
-          <DraftNumberInput
+          <NumericField
+            accessibleLabel="直徑（mm）"
+            scopeKey={layer.id}
+            fieldName="diameterMm"
             minimum={20}
             maximum={80}
             step={1}
+            errorMessage="請輸入 20 至 80 的有效數值"
             value={layer.diameterMm}
             onValidValue={updateNumber("diameterMm")}
+            onValidityChange={onFieldValidityChange}
           />
         </label>
         <label>
           圓角程度
-          <DraftNumberInput
+          <NumericField
+            accessibleLabel="圓角程度"
+            scopeKey={layer.id}
+            fieldName="cornerRoundness"
             minimum={0}
             maximum={1}
             step={0.05}
+            errorMessage="請輸入 0 至 1、每格 0.05 的有效數值"
             value={layer.cornerRoundness}
             disabled={circle}
             onValidValue={updateNumber("cornerRoundness")}
+            onValidityChange={onFieldValidityChange}
           />
         </label>
         <label>
           旋轉角度（度）
-          <DraftNumberInput
+          <NumericField
+            accessibleLabel="旋轉角度（度）"
+            scopeKey={layer.id}
+            fieldName="rotationDeg"
             minimum={0}
             maximum={359}
             step={1}
+            integer
+            errorMessage="請輸入 0 至 359 的有效整數"
             value={layer.rotationDeg}
             onValidValue={updateNumber("rotationDeg")}
+            onValidityChange={onFieldValidityChange}
           />
         </label>
         <label>

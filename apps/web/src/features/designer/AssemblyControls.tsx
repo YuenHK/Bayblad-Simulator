@@ -1,63 +1,19 @@
 import type { TopDesign } from "@steam-top/domain";
-import { useEffect, useState } from "react";
 
+import { NumericField, type FieldValidityChange } from "./NumericField";
 import type { DesignerAction } from "./useDesigner";
 
 type AssemblyControlsProps = Readonly<{
   design: TopDesign;
   dispatch: React.Dispatch<DesignerAction>;
+  onFieldValidityChange: FieldValidityChange;
 }>;
 
-function boundedValue(
-  rawValue: string,
-  minimum: number,
-  maximum: number,
-): number | null {
-  if (rawValue.trim() === "") return null;
-  const value = Number(rawValue);
-  return Number.isFinite(value) && value >= minimum && value <= maximum
-    ? value
-    : null;
-}
-
-function AssemblyNumberInput({
-  value,
-  minimum,
-  maximum,
-  step,
-  integer = false,
-  onValidValue,
-}: Readonly<{
-  value: number;
-  minimum: number;
-  maximum: number;
-  step: number;
-  integer?: boolean;
-  onValidValue: (value: number) => void;
-}>) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
-
-  return (
-    <input
-      type="number"
-      min={minimum}
-      max={maximum}
-      step={step}
-      value={draft}
-      onChange={(event) => {
-        const rawValue = event.currentTarget.value;
-        setDraft(rawValue);
-        const parsed = boundedValue(rawValue, minimum, maximum);
-        if (parsed !== null && (!integer || Number.isInteger(parsed))) {
-          onValidValue(parsed);
-        }
-      }}
-    />
-  );
-}
-
-export function AssemblyControls({ design, dispatch }: AssemblyControlsProps) {
+export function AssemblyControls({
+  design,
+  dispatch,
+  onFieldValidityChange,
+}: AssemblyControlsProps) {
   const updateScrew = (field: keyof TopDesign["screwLayout"]) =>
     (value: number) => dispatch({ type: "update-screw-layout", field, value });
 
@@ -68,33 +24,49 @@ export function AssemblyControls({ design, dispatch }: AssemblyControlsProps) {
       <div className="control-grid">
         <label>
           螺絲數量
-          <AssemblyNumberInput
+          <NumericField
+            accessibleLabel="螺絲數量"
+            scopeKey="assembly"
+            fieldName="count"
             minimum={3}
             maximum={8}
             step={1}
             integer
+            errorMessage="請輸入 3 至 8 的有效整數"
             value={design.screwLayout.count}
             onValidValue={updateScrew("count")}
+            onValidityChange={onFieldValidityChange}
           />
         </label>
         <label>
           螺絲半徑（mm）
-          <AssemblyNumberInput
+          <NumericField
+            accessibleLabel="螺絲半徑（mm）"
+            scopeKey="assembly"
+            fieldName="radiusMm"
             minimum={5}
             maximum={25}
             step={0.5}
+            errorMessage="請輸入 5 至 25、每格 0.5 的有效數值"
             value={design.screwLayout.radiusMm}
             onValidValue={updateScrew("radiusMm")}
+            onValidityChange={onFieldValidityChange}
           />
         </label>
         <label>
           螺絲旋轉角度（度）
-          <AssemblyNumberInput
+          <NumericField
+            accessibleLabel="螺絲旋轉角度（度）"
+            scopeKey="assembly"
+            fieldName="rotationDeg"
             minimum={0}
             maximum={359}
             step={1}
+            integer
+            errorMessage="請輸入 0 至 359 的有效整數"
             value={design.screwLayout.rotationDeg}
             onValidValue={updateScrew("rotationDeg")}
+            onValidityChange={onFieldValidityChange}
           />
         </label>
         <label>
