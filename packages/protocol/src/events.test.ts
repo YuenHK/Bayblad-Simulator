@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  BATTLE_ANGLE_MAX_RAD,
+  BATTLE_ANGLE_MIN_RAD,
+  BATTLE_ANGULAR_SPEED_MAX,
+  BATTLE_ANGULAR_SPEED_MIN,
+  BATTLE_POSITION_MAX_MM,
+  BATTLE_POSITION_MIN_MM,
+  LAUNCH_MULTIPLIER_MAX,
+  LAUNCH_MULTIPLIER_MIN,
   clientEventSchema,
+  handshakeServerEventSchema,
   playerServerEventSchema,
   protocolHelloEventSchema,
+  protocolUnsupportedEventSchema,
   serverEventSchema,
   spectatorServerEventSchema,
   v1CommandEventSchema,
@@ -170,7 +180,7 @@ describe("clientEventSchema", () => {
       clientEventSchema.safeParse({
         type: "protocol.hello",
         eventId,
-        supportedVersions: [1, 2],
+        supportedVersions: [2],
       }).success,
     ).toBe(true);
   });
@@ -294,6 +304,7 @@ const roomSnapshot = {
   ownerParticipantId: "p1",
   phase: "launch",
   revision: 8,
+  viewerRevision: 3,
   player1: occupiedSeat,
   player2: null,
   spectators: [{ participantId: "s1", displayName: "Spectator" }],
@@ -353,14 +364,26 @@ const serverCases = [
   { type: "lobby.snapshot", value: lobbySnapshot },
   { type: "room.snapshot", value: roomSnapshot },
   {
-    type: "room.presence.delta",
+    type: "room.delta",
     value: {
-      type: "room.presence.delta",
+      type: "room.delta",
       roomId: "room-1",
+      baseRevision: 8,
       revision: 9,
-      joined: [{ participantId: "s2", displayName: "New Spectator" }],
+      patch: {
+        ownerParticipantId: "p1",
+        phase: "waiting",
+        player2: {
+          participantId: "s1",
+          displayName: "Spectator",
+          ready: false,
+          designId: null,
+        },
+        spectatorCount: 0,
+        name: "更新房間",
+      },
+      joined: [],
       leftParticipantIds: ["s1"],
-      spectatorCount: 1,
       ...serverEnvelope,
     },
   },
@@ -417,28 +440,12 @@ const serverCases = [
     },
   },
   {
-    type: "room.state.delta",
-    value: {
-      type: "room.state.delta",
-      roomId: "room-1",
-      revision: 10,
-      patch: {
-        ownerParticipantId: "p2",
-        phase: "waiting",
-        player1: { ...occupiedSeat, ready: false },
-        player2: null,
-        spectatorCount: 2,
-        name: "更新房間",
-      },
-      ...serverEnvelope,
-    },
-  },
-  {
     type: "room.viewer.delta",
     value: {
       type: "room.viewer.delta",
       roomId: "room-1",
-      revision: 10,
+      baseViewerRevision: 3,
+      viewerRevision: 4,
       viewer: { participantId: "p2", isOwner: true, role: "spectator" },
       ...serverEnvelope,
     },
@@ -466,6 +473,65 @@ const maximumRoomSnapshot = {
     participantId: maximumParticipantId,
   },
 };
+
+const unsupportedEvent = {
+  type: "protocol.unsupported",
+  serverEventId,
+  supportedVersions: [1],
+  causedByEventId: eventId,
+  reason: "No mutually supported protocol version",
+} as const;
+
+describe("handshake server events", () => {
+  it("responds to a valid v2-only hello without using the v1 envelope", () => {
+    expect(
+      protocolHelloEventSchema.safeParse({
+        type: "protocol.hello",
+        eventId,
+        supportedVersions: [2],
+      }).success,
+    ).toBe(true);
+    expect(protocolUnsupportedEventSchema.safeParse(unsupportedEvent).success).toBe(true);
+    expect(handshakeServerEventSchema.safeParse(unsupportedEvent).success).toBe(true);
+    expect(handshakeServerEventSchema.safeParse(serverCases[0].value).success).toBe(true);
+    expect(serverEventSchema.safeParse(unsupportedEvent).success).toBe(false);
+    expect(playerServerEventSchema.safeParse(unsupportedEvent).success).toBe(false);
+    expect(spectatorServerEventSchema.safeParse(unsupportedEvent).success).toBe(false);
+  });
+
+  it("keeps unsupported responses strict, bounded, and version neutral", () => {
+    expect(
+      protocolUnsupportedEventSchema.safeParse({
+        ...unsupportedEvent,
+        protocolVersion: 1,
+      }).success,
+    ).toBe(false);
+    for (const supportedVersions of [[], [1, 1], Array(9).fill(1), [2]]) {
+      expect(
+        protocolUnsupportedEventSchema.safeParse({
+          ...unsupportedEvent,
+          supportedVersions,
+        }).success,
+      ).toBe(false);
+    }
+    for (const reason of [
+      "bad\nreason",
+      "bad\u0085reason",
+      "bad\u202ereason",
+      "x".repeat(161),
+    ]) {
+      expect(
+        protocolUnsupportedEventSchema.safeParse({ ...unsupportedEvent, reason }).success,
+      ).toBe(false);
+    }
+    expect(
+      protocolUnsupportedEventSchema.safeParse({
+        ...unsupportedEvent,
+        reason: "  版本不支援 🚫  ",
+      }).success,
+    ).toBe(true);
+  });
+});
 
 describe("serverEventSchema", () => {
   it.each(serverCases)("accepts a valid $type event", ({ value }) => {
@@ -641,10 +707,11 @@ describe("serverEventSchema", () => {
 
   it("requires internally consistent presence deltas", () => {
     const delta = serverCases[3].value;
+    const joined = { participantId: "s2", displayName: "New Spectator" };
     expect(
       serverEventSchema.safeParse({
         ...delta,
-        joined: [delta.joined[0], delta.joined[0]],
+        joined: [joined, joined],
       }).success,
     ).toBe(false);
     expect(
@@ -654,30 +721,88 @@ describe("serverEventSchema", () => {
       }).success,
     ).toBe(false);
     expect(
-      serverEventSchema.safeParse({ ...delta, leftParticipantIds: ["s2"] }).success,
+      serverEventSchema.safeParse({
+        ...delta,
+        joined: [joined],
+        leftParticipantIds: ["s2"],
+      }).success,
     ).toBe(false);
   });
 
-  it("expresses room state and viewer changes without broadcasting the roster", () => {
-    const stateDelta = serverCases[12].value;
-    const viewerDelta = serverCases[13].value;
-    expect(serverEventSchema.safeParse(stateDelta).success).toBe(true);
+  it("expresses an atomic room move and independent viewer change", () => {
+    const sharedDelta = serverCases[3].value;
+    const viewerDelta = serverCases[12].value;
+    expect(serverEventSchema.safeParse(sharedDelta).success).toBe(true);
     expect(serverEventSchema.safeParse(viewerDelta).success).toBe(true);
-    expect(new TextEncoder().encode(JSON.stringify(stateDelta)).byteLength).toBeLessThan(2_048);
+    expect(sharedDelta.patch.player2?.participantId).toBe("s1");
+    expect(sharedDelta.leftParticipantIds).toEqual(["s1"]);
+    expect(new TextEncoder().encode(JSON.stringify(sharedDelta)).byteLength).toBeLessThan(2_048);
     expect(new TextEncoder().encode(JSON.stringify(viewerDelta)).byteLength).toBeLessThan(2_048);
-    expect(serverEventSchema.safeParse({ ...stateDelta, patch: {} }).success).toBe(false);
     expect(
-      serverEventSchema.safeParse({ ...stateDelta, patch: { phase: undefined } }).success,
+      serverEventSchema.safeParse({
+        ...sharedDelta,
+        patch: {},
+        joined: [],
+        leftParticipantIds: [],
+      }).success,
     ).toBe(false);
     expect(
       serverEventSchema.safeParse({
-        ...stateDelta,
-        patch: { ...stateDelta.patch, spectators: roomSnapshot.spectators },
+        ...sharedDelta,
+        patch: { phase: undefined },
+        joined: [],
+        leftParticipantIds: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({
+        ...sharedDelta,
+        patch: { ...sharedDelta.patch, spectators: roomSnapshot.spectators },
       }).success,
     ).toBe(false);
     expect(
       serverEventSchema.safeParse({ ...viewerDelta, spectators: roomSnapshot.spectators }).success,
     ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({ ...sharedDelta, viewer: roomSnapshot.viewer }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({ ...sharedDelta, type: "room.presence.delta" }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({ ...sharedDelta, type: "room.state.delta" }).success,
+    ).toBe(false);
+  });
+
+  it("requires sequential shared and viewer revisions without conflating them", () => {
+    const sharedDelta = serverCases[3].value;
+    expect(serverEventSchema.safeParse(sharedDelta).success).toBe(true);
+    expect(
+      serverEventSchema.safeParse({
+        ...sharedDelta,
+        baseRevision: 9,
+        revision: 10,
+      }).success,
+    ).toBe(true);
+    for (const revision of [8, 10]) {
+      expect(serverEventSchema.safeParse({ ...sharedDelta, revision }).success).toBe(false);
+    }
+
+    const viewerDelta = serverCases[12].value;
+    expect(serverEventSchema.safeParse(viewerDelta).success).toBe(true);
+    expect(
+      serverEventSchema.safeParse({
+        ...viewerDelta,
+        baseViewerRevision: 4,
+        viewerRevision: 5,
+      }).success,
+    ).toBe(true);
+    for (const viewerRevision of [3, 5]) {
+      expect(serverEventSchema.safeParse({ ...viewerDelta, viewerRevision }).success).toBe(
+        false,
+      );
+    }
+    expect(sharedDelta.revision).not.toBe(viewerDelta.viewerRevision);
   });
 
   it("carries full room, match, and round correlation ids", () => {
@@ -699,6 +824,11 @@ describe("serverEventSchema", () => {
     for (const sequence of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(serverEventSchema.safeParse({ ...battleFrame, sequence }).success).toBe(false);
     }
+    for (const viewerRevision of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        serverEventSchema.safeParse({ ...roomSnapshot, viewerRevision }).success,
+      ).toBe(false);
+    }
   });
 
   it("accepts 500 spectators without a product array maximum", () => {
@@ -715,7 +845,6 @@ describe("serverEventSchema", () => {
     for (const deltaValue of [
       serverCases[3].value,
       serverCases[12].value,
-      serverCases[13].value,
     ]) {
       const delta = serverEventSchema.parse(deltaValue);
       const deltaBytes = new TextEncoder().encode(JSON.stringify(delta)).byteLength;
@@ -749,6 +878,70 @@ describe("serverEventSchema", () => {
           player1: { ...battleFrame.player1, angularSpeed },
         }).success,
       ).toBe(false);
+    }
+  });
+
+  it("enforces canonical launch multiplier bounds", () => {
+    expect([LAUNCH_MULTIPLIER_MIN, LAUNCH_MULTIPLIER_MAX]).toEqual([0, 2]);
+    for (const value of [LAUNCH_MULTIPLIER_MIN, LAUNCH_MULTIPLIER_MAX]) {
+      expect(
+        serverEventSchema.safeParse({
+          ...launchPrivate,
+          angularMultiplier: value,
+          impulseMultiplier: value,
+        }).success,
+      ).toBe(true);
+    }
+    for (const value of [-0.001, 2.001, 1e308, Number.POSITIVE_INFINITY]) {
+      expect(
+        serverEventSchema.safeParse({ ...launchPrivate, angularMultiplier: value }).success,
+      ).toBe(false);
+      expect(
+        serverEventSchema.safeParse({
+          ...serverCases[6].value,
+          player2: { ...serverCases[6].value.player2, impulseMultiplier: value },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("enforces canonical battle-state bounds", () => {
+    expect([
+      BATTLE_POSITION_MIN_MM,
+      BATTLE_POSITION_MAX_MM,
+      BATTLE_ANGLE_MIN_RAD,
+      BATTLE_ANGLE_MAX_RAD,
+      BATTLE_ANGULAR_SPEED_MIN,
+      BATTLE_ANGULAR_SPEED_MAX,
+    ]).toEqual([-100, 100, -Math.PI, Math.PI, -1000, 1000]);
+    expect(
+      serverEventSchema.safeParse({
+        ...battleFrame,
+        player1: {
+          x: BATTLE_POSITION_MIN_MM,
+          y: BATTLE_POSITION_MAX_MM,
+          angle: BATTLE_ANGLE_MIN_RAD,
+          angularSpeed: BATTLE_ANGULAR_SPEED_MAX,
+        },
+        player2: {
+          x: BATTLE_POSITION_MAX_MM,
+          y: BATTLE_POSITION_MIN_MM,
+          angle: BATTLE_ANGLE_MAX_RAD,
+          angularSpeed: BATTLE_ANGULAR_SPEED_MIN,
+        },
+      }).success,
+    ).toBe(true);
+
+    const invalidBodies = [
+      { ...battleFrame.player1, x: -100.001 },
+      { ...battleFrame.player1, y: 100.001 },
+      { ...battleFrame.player1, angle: Math.PI + 0.001 },
+      { ...battleFrame.player1, angularSpeed: -1000.001 },
+      { ...battleFrame.player1, x: 1e308 },
+      { ...battleFrame.player1, y: Number.POSITIVE_INFINITY },
+    ];
+    for (const player1 of invalidBodies) {
+      expect(serverEventSchema.safeParse({ ...battleFrame, player1 }).success).toBe(false);
     }
   });
 
