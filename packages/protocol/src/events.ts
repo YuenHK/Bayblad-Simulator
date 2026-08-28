@@ -166,6 +166,7 @@ export const protocolWelcomeEventSchema = z
   .object({
     type: z.literal("protocol.welcome"),
     selectedVersion: protocolVersionSchema,
+    sessionToken: z.string().min(32).max(256).optional(),
     ...serverEnvelopeShape,
   })
   .strict();
