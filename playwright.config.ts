@@ -9,7 +9,6 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:4173",
     browserName: "chromium",
-    channel: "chrome",
     viewport: { width: 1024, height: 768 },
     hasTouch: true,
     trace: "retain-on-failure",
