@@ -12,6 +12,7 @@ import {
   LaunchError,
   estimateClockOffset,
   judgeLaunch,
+  type ClockEstimate,
   type ClockOffsetSample,
 } from "./launch";
 
@@ -33,7 +34,18 @@ const ping = (
   return { clientSentAtMs, serverReceivedAtMs, serverSentAtMs, clientReceivedAtMs };
 };
 
-const makeHarness = (offsets: Readonly<Record<string, number>> = {}) => {
+const clockEstimate = (
+  offsetMs: number,
+  overrides: Partial<ClockEstimate> = {},
+): ClockEstimate => ({
+  offsetMs,
+  medianRttMs: 40,
+  sampleCount: 3,
+  measuredAtServerMs: 3_900,
+  ...overrides,
+});
+
+const makeHarness = (estimates: Readonly<Record<string, ClockEstimate | null>> = {}) => {
   let now = 1_000;
   let nonceSequence = 0;
   let eventSequence = 0;
@@ -42,7 +54,7 @@ const makeHarness = (offsets: Readonly<Record<string, number>> = {}) => {
     createNonce: () => `nonce-${++nonceSequence}`,
     createServerEventId: () =>
       `00000000-0000-4000-8000-${String(++eventSequence).padStart(12, "0")}`,
-    getEstimatedOffsetMs: (participantId) => offsets[participantId] ?? 0,
+    getClockEstimate: (participantId) => estimates[participantId] ?? null,
   });
   return {
     coordinator,
@@ -169,13 +181,21 @@ describe("clock offset estimation", () => {
 
   it("retains only the latest nine valid samples", () => {
     const estimator = new ClockOffsetEstimator();
+    expect(estimator.estimate()).toBeNull();
     estimator.addSample(ping(-100));
     for (let offset = 1; offset <= 9; offset += 1) estimator.addSample(ping(offset));
     expect(estimator.sampleCount).toBe(9);
     expect(estimator.estimatedOffsetMs).toBe(5);
+    expect(estimator.estimate()).toEqual({
+      offsetMs: 5,
+      medianRttMs: 40,
+      sampleCount: 9,
+      measuredAtServerMs: 10_029,
+    });
     estimator.clear();
     expect(estimator.sampleCount).toBe(0);
     expect(estimator.estimatedOffsetMs).toBe(0);
+    expect(estimator.estimate()).toBeNull();
   });
 });
 
@@ -317,12 +337,70 @@ describe("LaunchCoordinator scheduling", () => {
 });
 
 describe("LaunchCoordinator submissions and result privacy", () => {
-  it("corrects client time with the server-owned offset estimator", () => {
-    const { coordinator, schedule } = makeHarness({ p1: 100 });
+  it("uses corrected client time only with a fresh multi-sample plausible estimate", () => {
+    const { coordinator, schedule } = makeHarness({
+      p1: clockEstimate(100, { measuredAtServerMs: 3_990 }),
+    });
     schedule();
-    const submitted = coordinator.submit("p1", tap({ clientTimeMs: 3_900 }), 4_000);
+    const submitted = coordinator.submit("p1", tap({ clientTimeMs: 3_900 }), 4_020);
     expect(submitted.replayed).toBe(false);
     expect(submitted.event.grade).toBe("Perfect");
+  });
+
+  it("does not award Perfect from an untrusted client timestamp", () => {
+    const { coordinator, schedule } = makeHarness();
+    schedule();
+    expect(coordinator.submit("p1", tap({ clientTimeMs: 4_000 }), 3_000).event.grade).toBe(
+      "Miss",
+    );
+  });
+
+  it.each([
+    [clockEstimate(0, { sampleCount: 1 }), 4_000, 4_101, "Good"],
+    [clockEstimate(0, { medianRttMs: 100 }), 4_000, 3_900, "Great"],
+    [clockEstimate(1_000), 3_000, 4_181, "Miss"],
+    [clockEstimate(1), Number.MAX_SAFE_INTEGER, 4_181, "Miss"],
+  ] as const)(
+    "falls back to receivedAt for low-quality or implausible clock evidence %#",
+    (estimate, clientTimeMs, receivedAtMs, grade) => {
+      const { coordinator, schedule } = makeHarness({ p1: estimate });
+      schedule();
+      expect(
+        coordinator.submit("p1", tap({ clientTimeMs }), receivedAtMs).event.grade,
+      ).toBe(grade);
+    },
+  );
+
+  it("falls back when the clock estimate is older than thirty seconds", () => {
+    const coordinator = new LaunchCoordinator({
+      now: () => 1_000,
+      createNonce: () => "nonce-1",
+      createServerEventId: (() => {
+        let sequence = 0;
+        return () =>
+          `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`;
+      })(),
+      getClockEstimate: () =>
+        clockEstimate(0, { measuredAtServerMs: 0, medianRttMs: 100 }),
+    });
+    coordinator.schedule({
+      roomId: "room-1",
+      matchId: "match-1",
+      roundId: "round-1",
+      players: [PLAYER_1, PLAYER_2],
+      serverTargetTimeMs: 40_000,
+    });
+    expect(
+      coordinator.submit("p1", tap({ clientTimeMs: 40_000 }), 40_101).event.grade,
+    ).toBe("Good");
+  });
+
+  it("trusts an exact zero offset backed by three plausible samples", () => {
+    const { coordinator, schedule } = makeHarness({
+      p1: clockEstimate(0, { medianRttMs: 100 }),
+    });
+    schedule();
+    expect(coordinator.submit("p1", tap(), 4_101).event.grade).toBe("Perfect");
   });
 
   it.each([
@@ -348,15 +426,10 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     );
   });
 
-  it.each([
-    [2_999, 4_000],
-    [5_501, 4_000],
-    [4_000, 2_999],
-    [4_000, 5_501],
-  ])("rejects received/corrected time outside the anti-cheat window", (receivedAtMs, clientTimeMs) => {
+  it.each([2_999, 5_501])("rejects authoritative received time outside the anti-cheat window", (receivedAtMs) => {
     const { coordinator, schedule } = makeHarness();
     schedule();
-    expect(() => coordinator.submit("p1", tap({ clientTimeMs }), receivedAtMs)).toThrow(
+    expect(() => coordinator.submit("p1", tap(), receivedAtMs)).toThrow(
       new LaunchError("OUTSIDE_ACCEPTANCE_WINDOW"),
     );
   });
@@ -402,7 +475,10 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     const replay = coordinator.submit("p1", tap(), 4_000);
     expect(first.replayed).toBe(false);
     expect(replay).toEqual({ ...first, replayed: true });
-    expect(coordinator.peekResults("room-1", "round-1")?.privateResults).toHaveLength(1);
+    expect(coordinator.peekRoundStatus("room-1", "round-1")).toEqual({
+      closed: false,
+      submittedParticipantIds: ["p1"],
+    });
   });
 
   it("rejects one event id reused across payloads or participants", () => {
@@ -457,10 +533,9 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     expect(() => coordinator.submit("p2", tap({ eventId: TAP_2 }), 4_000)).toThrow(
       new LaunchError("SERVER_EVENT_ID_GENERATION_FAILED"),
     );
-    expect(coordinator.peekResults("room-1", "round-1")).toMatchObject({
+    expect(coordinator.peekRoundStatus("room-1", "round-1")).toEqual({
       closed: false,
-      privateResults: [{ participantId: "p1" }],
-      spectatorResult: null,
+      submittedParticipantIds: ["p1"],
     });
 
     generatedIds = [player2Id, spectatorId];
@@ -468,7 +543,7 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     expect(coordinator.submit("p2", tap({ eventId: TAP_2 }), 4_000).event.serverEventId).toBe(
       player2Id,
     );
-    expect(coordinator.peekResults("room-1", "round-1")?.spectatorResult?.serverEventId).toBe(
+    expect(coordinator.takeSpectatorResult("room-1", "round-1")?.serverEventId).toBe(
       spectatorId,
     );
   });
@@ -477,7 +552,7 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     const { coordinator, schedule } = makeHarness();
     schedule();
     const private1 = coordinator.submit("p1", tap(), 4_000).event;
-    expect(coordinator.peekResults("room-1", "round-1")?.spectatorResult).toBeNull();
+    expect(coordinator.takeSpectatorResult("room-1", "round-1")).toBeUndefined();
     const private2 = coordinator.submit("p2", tap({ eventId: TAP_2, clientTimeMs: 4_101 }), 4_101).event;
     expect(playerServerEventSchema.parse(private1)).toEqual(private1);
     expect(playerServerEventSchema.parse(private2)).toEqual(private2);
@@ -496,7 +571,7 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     expect(JSON.stringify(private1)).not.toContain("Player");
     expect(JSON.stringify(private1)).not.toContain("p2");
 
-    const spectator = coordinator.peekResults("room-1", "round-1")?.spectatorResult;
+    const spectator = coordinator.takeSpectatorResult("room-1", "round-1");
     expect(spectatorServerEventSchema.parse(spectator)).toEqual(spectator);
     expect(playerServerEventSchema.safeParse(spectator).success).toBe(false);
     expect(spectator).toEqual({
@@ -529,15 +604,17 @@ describe("LaunchCoordinator expiry and cleanup", () => {
     const { coordinator, schedule, setNow } = makeHarness();
     schedule();
     setNow(5_499);
-    expect(coordinator.finalizeExpired()).toEqual([]);
+    expect(coordinator.finalizeExpired()).toBe(0);
     setNow(5_500);
-    expect(coordinator.finalizeExpired()).toEqual([]);
+    expect(coordinator.finalizeExpired()).toBe(0);
     setNow(5_501);
     const finalized = coordinator.finalizeExpired();
-    expect(finalized).toHaveLength(1);
-    expect(finalized[0]?.privateResults.map((event) => event.grade)).toEqual(["Miss", "Miss"]);
-    expect(finalized[0]?.spectatorResult?.player1.grade).toBe("Miss");
-    expect(finalized[0]?.spectatorResult?.player2.grade).toBe("Miss");
+    expect(finalized).toBe(1);
+    expect(coordinator.takePrivateResult("room-1", "round-1", "p1")?.grade).toBe("Miss");
+    expect(coordinator.takePrivateResult("room-1", "round-1", "p2")?.grade).toBe("Miss");
+    const spectator = coordinator.takeSpectatorResult("room-1", "round-1");
+    expect(spectator?.player1.grade).toBe("Miss");
+    expect(spectator?.player2.grade).toBe("Miss");
   });
 
   it("auto-Misses only the missing participant", () => {
@@ -546,28 +623,33 @@ describe("LaunchCoordinator expiry and cleanup", () => {
     coordinator.submit("p1", tap(), 4_000);
     setNow(5_501);
     coordinator.finalizeExpired();
-    const result = coordinator.peekResults("room-1", "round-1");
-    expect(result?.privateResults.map((event) => [event.participantId, event.grade])).toEqual([
-      ["p1", "Perfect"],
-      ["p2", "Miss"],
-    ]);
+    expect(coordinator.takePrivateResult("room-1", "round-1", "p1")?.grade).toBe("Perfect");
+    expect(coordinator.takePrivateResult("room-1", "round-1", "p2")?.grade).toBe("Miss");
   });
 
-  it("supports peek and draining take, then explicit closed-round cleanup", () => {
+  it("drains private results per participant and spectator results separately", () => {
     const { coordinator, schedule, setNow } = makeHarness();
     schedule();
     setNow(5_501);
     coordinator.finalizeExpired();
-    expect(coordinator.peekResults("room-1", "round-1")?.privateResults).toHaveLength(2);
-    expect(coordinator.takeResults("room-1", "round-1")?.privateResults).toHaveLength(2);
-    expect(coordinator.takeResults("room-1", "round-1")).toEqual({
-      privateResults: [],
-      spectatorResult: null,
+    expect(coordinator.peekRoundStatus("room-1", "round-1")).toEqual({
       closed: true,
+      submittedParticipantIds: ["p1", "p2"],
     });
+    const player1 = coordinator.takePrivateResult("room-1", "round-1", "p1");
+    expect(player1).toMatchObject({ participantId: "p1", grade: "Miss" });
+    expect(JSON.stringify(player1)).not.toContain("p2");
+    expect(JSON.stringify(player1)).not.toContain("Player Two");
+    expect(coordinator.takePrivateResult("room-1", "round-1", "p1")).toBeUndefined();
+    expect(coordinator.takePrivateResult("room-1", "round-1", "unknown")).toBeUndefined();
+    expect(coordinator.takePrivateResult("room-1", "round-1", "p2")).toMatchObject({
+      participantId: "p2",
+    });
+    expect(coordinator.takeSpectatorResult("room-1", "round-1")).toBeDefined();
+    expect(coordinator.takeSpectatorResult("room-1", "round-1")).toBeUndefined();
     expect(coordinator.cleanupRound("room-1", "round-1")).toBe(true);
     expect(coordinator.activeRoundCount).toBe(0);
-    expect(coordinator.peekResults("room-1", "round-1")).toBeUndefined();
+    expect(coordinator.peekRoundStatus("room-1", "round-1")).toBeUndefined();
     expect(coordinator.cleanupRound("room-1", "round-1")).toBe(false);
   });
 
@@ -583,7 +665,7 @@ describe("LaunchCoordinator expiry and cleanup", () => {
     const first = makeHarness();
     first.schedule();
     first.setNow(5_500);
-    expect(first.coordinator.finalizeExpired()).toEqual([]);
+    expect(first.coordinator.finalizeExpired()).toBe(0);
     first.coordinator.submit("p1", tap({ clientTimeMs: 5_500 }), 5_500);
     first.setNow(5_501);
     first.coordinator.finalizeExpired();
@@ -592,23 +674,30 @@ describe("LaunchCoordinator expiry and cleanup", () => {
     second.schedule();
     second.setNow(5_500);
     second.coordinator.submit("p1", tap({ clientTimeMs: 5_500 }), 5_500);
-    expect(second.coordinator.finalizeExpired()).toEqual([]);
+    expect(second.coordinator.finalizeExpired()).toBe(0);
     second.setNow(5_501);
     second.coordinator.finalizeExpired();
 
-    expect(first.coordinator.peekResults("room-1", "round-1")).toEqual(
-      second.coordinator.peekResults("room-1", "round-1"),
+    expect(first.coordinator.peekRoundStatus("room-1", "round-1")).toEqual(
+      second.coordinator.peekRoundStatus("room-1", "round-1"),
+    );
+    expect(first.coordinator.takePrivateResult("room-1", "round-1", "p1")).toEqual(
+      second.coordinator.takePrivateResult("room-1", "round-1", "p1"),
+    );
+    expect(first.coordinator.takePrivateResult("room-1", "round-1", "p2")).toEqual(
+      second.coordinator.takePrivateResult("room-1", "round-1", "p2"),
     );
   });
 
-  it("never reuses an issued nonce after cleanup and rejects the old tap", () => {
+  it("rejects nonce reuse during TTL, then permits reuse after expiry", () => {
     const serverIds = Array.from(
       { length: 4 },
       (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
     );
+    let now = 1_000;
     const coordinator = new LaunchCoordinator({
-      now: () => 1_000,
-      createNonce: () => "process-lifetime-nonce",
+      now: () => now,
+      createNonce: () => "ttl-nonce",
       createServerEventId: () => serverIds.shift() ?? "00000000-0000-4000-8000-000000000004",
     });
     const input = {
@@ -628,21 +717,24 @@ describe("LaunchCoordinator expiry and cleanup", () => {
     expect(() =>
       coordinator.submit(
         "p1",
-        tap({ nonce: "process-lifetime-nonce" }),
+        tap({ nonce: "ttl-nonce" }),
         4_000,
       ),
     ).toThrow(new LaunchError("SCHEDULE_MISMATCH"));
+    now = 605_502;
+    expect(coordinator.schedule(input).nonce).toBe("ttl-nonce");
   });
 
-  it("never reuses an issued server event id after cleanup", () => {
+  it("rejects server event id reuse during TTL, then permits reuse after expiry", () => {
     const firstId = "00000000-0000-4000-8000-000000000001";
     const generatedIds = Array.from(
       { length: 4 },
       (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
     );
     let nonceSequence = 0;
+    let now = 1_000;
     const coordinator = new LaunchCoordinator({
-      now: () => 1_000,
+      now: () => now,
       createNonce: () => `nonce-${++nonceSequence}`,
       createServerEventId: () => generatedIds.shift() ?? firstId,
     });
@@ -659,5 +751,178 @@ describe("LaunchCoordinator expiry and cleanup", () => {
       new LaunchError("SERVER_EVENT_ID_GENERATION_FAILED"),
     );
     expect(coordinator.activeRoundCount).toBe(0);
+    now = 605_502;
+    expect(coordinator.schedule(input).serverEventId).toBe(firstId);
+  });
+});
+
+describe("LaunchCoordinator bounded replay protection and safe arithmetic", () => {
+  it("requires at least two minutes of replay protection", () => {
+    expect(() => new LaunchCoordinator({ replayProtectionMs: 119_999 })).toThrow(
+      new LaunchError("INVALID_COORDINATOR_CONFIG"),
+    );
+  });
+
+  it.each([
+    {
+      now: Number.MAX_SAFE_INTEGER - 1_000,
+      input: {},
+    },
+    {
+      now: 0,
+      input: { serverTargetTimeMs: Number.MAX_SAFE_INTEGER - 1_000 },
+    },
+    {
+      now: 0,
+      dependencies: { leadTimeMs: 0 },
+      input: { serverTargetTimeMs: 500 },
+    },
+  ])("rejects unsafe derived schedule times %#", ({ now, dependencies = {}, input }) => {
+    const coordinator = new LaunchCoordinator({
+      now: () => now,
+      createNonce: () => "nonce-1",
+      createServerEventId: () => "00000000-0000-4000-8000-000000000001",
+      ...dependencies,
+    });
+    expect(() =>
+      coordinator.schedule({
+        roomId: "room-1",
+        matchId: "match-1",
+        roundId: "round-1",
+        players: [PLAYER_1, PLAYER_2],
+        ...input,
+      }),
+    ).toThrow(new LaunchError("INVALID_SCHEDULE"));
+    expect(coordinator.activeRoundCount).toBe(0);
+  });
+
+  it("keeps replay records through cleanup, then expires all tombstones", () => {
+    let now = 1_000;
+    let nonceSequence = 0;
+    let eventSequence = 0;
+    const coordinator = new LaunchCoordinator({
+      now: () => now,
+      createNonce: () => `nonce-${++nonceSequence}`,
+      createServerEventId: () =>
+        `00000000-0000-4000-8000-${String(++eventSequence).padStart(12, "0")}`,
+      replayProtectionMs: 120_000,
+    });
+    const input = {
+      roomId: "room-1",
+      matchId: "match-1",
+      roundId: "round-1",
+      players: [PLAYER_1, PLAYER_2],
+    } as const;
+    coordinator.schedule(input);
+    const first = coordinator.submit("p1", tap(), 4_000);
+    now = 5_501;
+    coordinator.finalizeExpired();
+    coordinator.cleanupRound("room-1", "round-1");
+    expect(coordinator.replayProtectionCounts).toEqual({
+      issuedNonces: 1,
+      issuedServerEventIds: 4,
+      replayEvents: 1,
+      activeRounds: 0,
+    });
+    expect(coordinator.submit("p1", tap(), 4_000)).toEqual({ ...first, replayed: true });
+
+    now = 125_502;
+    expect(() => coordinator.submit("p1", tap(), now)).toThrow(
+      new LaunchError("SCHEDULE_MISMATCH"),
+    );
+    expect(coordinator.replayProtectionCounts).toEqual({
+      issuedNonces: 0,
+      issuedServerEventIds: 0,
+      replayEvents: 0,
+      activeRounds: 0,
+    });
+  });
+
+  it("bounds replay tombstones across ten thousand cleaned rounds", () => {
+    let now = 1_000;
+    let nonceSequence = 0;
+    let eventSequence = 0;
+    const coordinator = new LaunchCoordinator({
+      now: () => now,
+      createNonce: () => `nonce-${++nonceSequence}`,
+      createServerEventId: () => {
+        eventSequence += 1;
+        const tail = String(eventSequence % 1_000_000_000_000).padStart(12, "0");
+        return `00000000-0000-4000-8000-${tail}`;
+      },
+      replayProtectionMs: 120_000,
+    });
+    for (let index = 0; index < 10_000; index += 1) {
+      const roomId = `room-${index}`;
+      const roundId = `round-${index}`;
+      coordinator.schedule({
+        roomId,
+        matchId: `match-${index}`,
+        roundId,
+        players: [PLAYER_1, PLAYER_2],
+      });
+      now += 4_501;
+      coordinator.finalizeExpired();
+      coordinator.cleanupRound(roomId, roundId);
+      now += 1;
+    }
+    expect(coordinator.replayProtectionCounts.activeRounds).toBe(0);
+    expect(coordinator.replayProtectionCounts.issuedNonces).toBeLessThan(30);
+    expect(coordinator.replayProtectionCounts.issuedServerEventIds).toBeLessThan(120);
+
+    now += 120_001;
+    coordinator.pruneExpiredReplayProtection(now);
+    expect(coordinator.replayProtectionCounts).toEqual({
+      issuedNonces: 0,
+      issuedServerEventIds: 0,
+      replayEvents: 0,
+      activeRounds: 0,
+    });
+  });
+
+  it("does not expire tombstones when the server clock moves backwards", () => {
+    let now = 500_000;
+    const coordinator = new LaunchCoordinator({
+      now: () => now,
+      createNonce: () => "nonce-1",
+      createServerEventId: () => "00000000-0000-4000-8000-000000000001",
+    });
+    coordinator.schedule({
+      roomId: "room-1",
+      matchId: "match-1",
+      roundId: "round-1",
+      players: [PLAYER_1, PLAYER_2],
+    });
+    now = 400_000;
+    coordinator.pruneExpiredReplayProtection(now);
+    expect(coordinator.replayProtectionCounts.issuedNonces).toBe(1);
+    expect(coordinator.replayProtectionCounts.issuedServerEventIds).toBe(1);
+  });
+
+  it("does not reuse an id still referenced by an active round after TTL", () => {
+    const fixedId = "00000000-0000-4000-8000-000000000001";
+    let now = 1_000;
+    let nonceSequence = 0;
+    const coordinator = new LaunchCoordinator({
+      now: () => now,
+      createNonce: () => `nonce-${++nonceSequence}`,
+      createServerEventId: () => fixedId,
+      replayProtectionMs: 120_000,
+    });
+    coordinator.schedule({
+      roomId: "room-1",
+      matchId: "match-1",
+      roundId: "round-1",
+      players: [PLAYER_1, PLAYER_2],
+    });
+    now = 121_001;
+    expect(() =>
+      coordinator.schedule({
+        roomId: "room-2",
+        matchId: "match-2",
+        roundId: "round-2",
+        players: [PLAYER_1, PLAYER_2],
+      }),
+    ).toThrow(new LaunchError("SERVER_EVENT_ID_GENERATION_FAILED"));
   });
 });
