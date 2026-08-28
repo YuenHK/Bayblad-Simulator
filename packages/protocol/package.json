@@ -1,0 +1,21 @@
+{
+  "name": "@steam-top/protocol",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/events.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}
