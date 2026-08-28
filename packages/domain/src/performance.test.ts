@@ -5,11 +5,13 @@ import {
   calculateMassProperties,
   calculateMinimumMaterialNeckMm,
   derivePerformanceInput,
+  effectiveLayerRoundness,
   makeDefaultDesign,
   predictDesignPerformance,
   predictPerformance,
   scoreStability,
   validateDesign,
+  type Layer,
   type PerformanceInput,
   type PerformancePrediction,
   type TopDesign,
@@ -17,159 +19,229 @@ import {
 
 type DesignFixture = Readonly<{
   name: string;
+  shape: Layer["shape"] | "mixed";
+  points: number;
   diameterMm: number;
   screwCount: number;
   screwRadiusMm: number;
   roundness: number;
   metalDiscDiameterMm: number;
+  expectedEffectiveRoundness: number;
   expectedMassRange: readonly [number, number];
   expectedSpeedRange: readonly [number, number];
   expectedSpinDurationRange: readonly [number, number];
+  expectedStabilityRange: readonly [number, number];
+  expectedImpactRange: readonly [number, number];
 }>;
 
 const calibrationFixtures: readonly DesignFixture[] = [
   {
-    name: "compact sharp three-screw",
+    name: "compact circle",
+    shape: "circle",
+    points: 6,
     diameterMm: 30,
     screwCount: 3,
     screwRadiusMm: 10,
     roundness: 0,
     metalDiscDiameterMm: 0,
-    expectedMassRange: [13, 14],
-    expectedSpeedRange: [85, 87],
-    expectedSpinDurationRange: [17, 18],
-  },
-  {
-    name: "compact rounded three-screw",
-    diameterMm: 30,
-    screwCount: 3,
-    screwRadiusMm: 10,
-    roundness: 1,
-    metalDiscDiameterMm: 0,
+    expectedEffectiveRoundness: 1,
     expectedMassRange: [13, 14],
     expectedSpeedRange: [95, 97],
     expectedSpinDurationRange: [27, 28],
+    expectedStabilityRange: [74, 75],
+    expectedImpactRange: [63, 65],
   },
   {
-    name: "small four-screw",
-    diameterMm: 36,
-    screwCount: 4,
-    screwRadiusMm: 13,
-    roundness: 0.25,
-    metalDiscDiameterMm: 0,
-    expectedMassRange: [19, 21],
-    expectedSpeedRange: [81, 83],
-    expectedSpinDurationRange: [22, 23],
-  },
-  {
-    name: "balanced four-screw",
+    name: "circle with thin neck",
+    shape: "circle",
+    points: 6,
     diameterMm: 40,
     screwCount: 4,
-    screwRadiusMm: 15,
+    screwRadiusMm: 16,
     roundness: 0.5,
     metalDiscDiameterMm: 0,
+    expectedEffectiveRoundness: 1,
     expectedMassRange: [24, 26],
-    expectedSpeedRange: [78, 80],
-    expectedSpinDurationRange: [27, 28],
+    expectedSpeedRange: [83, 85],
+    expectedSpinDurationRange: [32, 33],
+    expectedStabilityRange: [77, 78],
+    expectedImpactRange: [50, 52],
   },
   {
-    name: "balanced top with metal disc",
+    name: "circle with thick neck",
+    shape: "circle",
+    points: 6,
     diameterMm: 40,
     screwCount: 4,
-    screwRadiusMm: 15,
-    roundness: 0.5,
-    metalDiscDiameterMm: 30,
-    expectedMassRange: [30, 31],
-    expectedSpeedRange: [72, 74],
-    expectedSpinDurationRange: [28, 29],
-  },
-  {
-    name: "medium five-screw",
-    diameterMm: 44,
-    screwCount: 5,
-    screwRadiusMm: 17,
-    roundness: 0.4,
-    metalDiscDiameterMm: 0,
-    expectedMassRange: [30, 31],
-    expectedSpeedRange: [71, 73],
-    expectedSpinDurationRange: [29, 31],
-  },
-  {
-    name: "wide six-screw",
-    diameterMm: 50,
-    screwCount: 6,
-    screwRadiusMm: 20,
-    roundness: 0.6,
-    metalDiscDiameterMm: 0,
-    expectedMassRange: [39, 40],
-    expectedSpeedRange: [64, 66],
-    expectedSpinDurationRange: [38, 40],
-  },
-  {
-    name: "wide top with metal disc",
-    diameterMm: 50,
-    screwCount: 6,
-    screwRadiusMm: 20,
-    roundness: 0.6,
-    metalDiscDiameterMm: 40,
-    expectedMassRange: [49, 50],
-    expectedSpeedRange: [53, 55],
-    expectedSpinDurationRange: [41, 42],
-  },
-  {
-    name: "broad three-screw",
-    diameterMm: 54,
-    screwCount: 3,
-    screwRadiusMm: 22,
-    roundness: 0.3,
-    metalDiscDiameterMm: 0,
-    expectedMassRange: [47, 48],
-    expectedSpeedRange: [53, 54],
-    expectedSpinDurationRange: [42, 44],
-  },
-  {
-    name: "large seven-screw",
-    diameterMm: 56,
-    screwCount: 7,
-    screwRadiusMm: 23,
-    roundness: 0.7,
-    metalDiscDiameterMm: 0,
-    expectedMassRange: [49, 50],
-    expectedSpeedRange: [54, 56],
-    expectedSpinDurationRange: [49, 51],
-  },
-  {
-    name: "large eight-screw",
-    diameterMm: 58,
-    screwCount: 8,
-    screwRadiusMm: 24,
-    roundness: 0.8,
-    metalDiscDiameterMm: 0,
-    expectedMassRange: [53, 54],
-    expectedSpeedRange: [51, 53],
-    expectedSpinDurationRange: [54, 56],
-  },
-  {
-    name: "maximum course circle",
-    diameterMm: 60,
-    screwCount: 8,
-    screwRadiusMm: 25,
+    screwRadiusMm: 14,
     roundness: 1,
     metalDiscDiameterMm: 0,
-    expectedMassRange: [57, 58],
-    expectedSpeedRange: [49, 51],
-    expectedSpinDurationRange: [61, 63],
+    expectedEffectiveRoundness: 1,
+    expectedMassRange: [24, 26],
+    expectedSpeedRange: [83, 85],
+    expectedSpinDurationRange: [32, 33],
+    expectedStabilityRange: [77, 78],
+    expectedImpactRange: [76, 78],
+  },
+  {
+    name: "circle with central disc",
+    shape: "circle",
+    points: 6,
+    diameterMm: 40,
+    screwCount: 4,
+    screwRadiusMm: 15,
+    roundness: 0.2,
+    metalDiscDiameterMm: 30,
+    expectedEffectiveRoundness: 1,
+    expectedMassRange: [30, 31],
+    expectedSpeedRange: [77, 79],
+    expectedSpinDurationRange: [33, 34],
+    expectedStabilityRange: [76, 78],
+    expectedImpactRange: [63, 65],
+  },
+  {
+    name: "angular hexagon",
+    shape: "polygon",
+    points: 6,
+    diameterMm: 45,
+    screwCount: 4,
+    screwRadiusMm: 15.8,
+    roundness: 0.2,
+    metalDiscDiameterMm: 0,
+    expectedEffectiveRoundness: 0.2,
+    expectedMassRange: [28, 29],
+    expectedSpeedRange: [71, 73],
+    expectedSpinDurationRange: [26, 27],
+    expectedStabilityRange: [78, 79],
+    expectedImpactRange: [41, 42],
+  },
+  {
+    name: "rounded hexagon",
+    shape: "polygon",
+    points: 6,
+    diameterMm: 45,
+    screwCount: 4,
+    screwRadiusMm: 16,
+    roundness: 0.8,
+    metalDiscDiameterMm: 0,
+    expectedEffectiveRoundness: 0.8,
+    expectedMassRange: [30, 31],
+    expectedSpeedRange: [75, 77],
+    expectedSpinDurationRange: [33, 34],
+    expectedStabilityRange: [78, 79],
+    expectedImpactRange: [67, 69],
+  },
+  {
+    name: "rounded square",
+    shape: "polygon",
+    points: 4,
+    diameterMm: 44,
+    screwCount: 4,
+    screwRadiusMm: 11,
+    roundness: 0.6,
+    metalDiscDiameterMm: 0,
+    expectedEffectiveRoundness: 0.6,
+    expectedMassRange: [25, 27],
+    expectedSpeedRange: [78, 80],
+    expectedSpinDurationRange: [29, 30],
+    expectedStabilityRange: [77, 79],
+    expectedImpactRange: [93, 95],
+  },
+  {
+    name: "rounded six-point star",
+    shape: "star",
+    points: 6,
+    diameterMm: 50,
+    screwCount: 4,
+    screwRadiusMm: 10,
+    roundness: 0.6,
+    metalDiscDiameterMm: 0,
+    expectedEffectiveRoundness: 0.6,
+    expectedMassRange: [26, 28],
+    expectedSpeedRange: [77, 79],
+    expectedSpinDurationRange: [30, 31],
+    expectedStabilityRange: [78, 79],
+    expectedImpactRange: [80, 82],
+  },
+  {
+    name: "rounded eight-point star",
+    shape: "star",
+    points: 8,
+    diameterMm: 55,
+    screwCount: 4,
+    screwRadiusMm: 15,
+    roundness: 0.8,
+    metalDiscDiameterMm: 0,
+    expectedEffectiveRoundness: 0.8,
+    expectedMassRange: [35, 37],
+    expectedSpeedRange: [69, 71],
+    expectedSpinDurationRange: [38, 39],
+    expectedStabilityRange: [80, 81],
+    expectedImpactRange: [99, 100],
+  },
+  {
+    name: "angular six-lobe wave",
+    shape: "wave",
+    points: 6,
+    diameterMm: 44,
+    screwCount: 4,
+    screwRadiusMm: 16,
+    roundness: 0.2,
+    metalDiscDiameterMm: 0,
+    expectedEffectiveRoundness: 0.2,
+    expectedMassRange: [27, 28],
+    expectedSpeedRange: [72, 74],
+    expectedSpinDurationRange: [25, 27],
+    expectedStabilityRange: [78, 79],
+    expectedImpactRange: [39, 40],
+  },
+  {
+    name: "rounded eight-lobe wave",
+    shape: "wave",
+    points: 8,
+    diameterMm: 52,
+    screwCount: 4,
+    screwRadiusMm: 20,
+    roundness: 0.8,
+    metalDiscDiameterMm: 0,
+    expectedEffectiveRoundness: 0.8,
+    expectedMassRange: [40, 41],
+    expectedSpeedRange: [65, 66],
+    expectedSpinDurationRange: [41, 42],
+    expectedStabilityRange: [80, 81],
+    expectedImpactRange: [73, 74],
+  },
+  {
+    name: "mixed top with central disc",
+    shape: "mixed",
+    points: 6,
+    diameterMm: 52,
+    screwCount: 4,
+    screwRadiusMm: 15,
+    roundness: 0.7,
+    metalDiscDiameterMm: 30,
+    expectedEffectiveRoundness: 0.8,
+    expectedMassRange: [47, 48],
+    expectedSpeedRange: [58, 59],
+    expectedSpinDurationRange: [43, 44],
+    expectedStabilityRange: [80, 81],
+    expectedImpactRange: [99, 100],
   },
 ];
 
 function makeCalibrationDesign(fixture: DesignFixture): TopDesign {
   const design = makeDefaultDesign();
+  const shapes: readonly Layer["shape"][] =
+    fixture.shape === "mixed"
+      ? ["circle", "polygon", "wave"]
+      : [fixture.shape, fixture.shape, fixture.shape];
   return {
     ...design,
     name: fixture.name,
-    layers: design.layers.map((layer) => ({
+    layers: design.layers.map((layer, index) => ({
       ...layer,
-      shape: "circle" as const,
+      shape: shapes[index]!,
+      points: fixture.points,
       diameterMm: fixture.diameterMm,
       cornerRoundness: fixture.roundness,
     })) as TopDesign["layers"],
@@ -218,6 +290,27 @@ describe("performance model contract", () => {
     >();
   });
 
+  it("canonicalises the ineffective circle roundness without changing predictions", () => {
+    const rawSquareCorner = makeCalibrationDesign(calibrationFixtures[3]!);
+    const rawRoundCorner = structuredClone(rawSquareCorner);
+    rawSquareCorner.layers = rawSquareCorner.layers.map((layer) => ({
+      ...layer,
+      cornerRoundness: 0,
+    })) as TopDesign["layers"];
+    rawRoundCorner.layers = rawRoundCorner.layers.map((layer) => ({
+      ...layer,
+      cornerRoundness: 1,
+    })) as TopDesign["layers"];
+
+    expect(effectiveLayerRoundness(rawSquareCorner.layers[0])).toBe(1);
+    expect(derivePerformanceInput(rawSquareCorner)).toEqual(
+      derivePerformanceInput(rawRoundCorner),
+    );
+    expect(predictDesignPerformance(rawSquareCorner)).toEqual(
+      predictDesignPerformance(rawRoundCorner),
+    );
+  });
+
   it.each(calibrationFixtures)(
     "calibrates a real valid design: $name",
     (fixture) => {
@@ -236,7 +329,7 @@ describe("performance model contract", () => {
       expect(input.polarMomentGmm2).toBeGreaterThan(0);
       expect(input.minNeckThicknessMm).toBeGreaterThanOrEqual(2);
       expect(input.averageCornerRoundness).toBeCloseTo(
-        fixture.roundness,
+        fixture.expectedEffectiveRoundness,
         12,
       );
       expect(prediction.modelVersion).toBe("1.0.0");
@@ -252,6 +345,18 @@ describe("performance model contract", () => {
       expect(prediction.spinDuration).toBeLessThanOrEqual(
         fixture.expectedSpinDurationRange[1],
       );
+      expect(prediction.stability).toBeGreaterThanOrEqual(
+        fixture.expectedStabilityRange[0],
+      );
+      expect(prediction.stability).toBeLessThanOrEqual(
+        fixture.expectedStabilityRange[1],
+      );
+      expect(prediction.impactResistance).toBeGreaterThanOrEqual(
+        fixture.expectedImpactRange[0],
+      );
+      expect(prediction.impactResistance).toBeLessThanOrEqual(
+        fixture.expectedImpactRange[1],
+      );
       expectScoresInRange(prediction);
     },
   );
@@ -260,27 +365,29 @@ describe("performance model contract", () => {
     const predictions = calibrationFixtures.map((fixture) =>
       predictDesignPerformance(makeCalibrationDesign(fixture)),
     );
-    const compactSharp = predictions[0]!;
-    const compactRounded = predictions[1]!;
-    const balanced = predictions[3]!;
-    const balancedDisc = predictions[4]!;
-    const maximum = predictions[11]!;
+    const compactCircle = predictions[0]!;
+    const thinNeckCircle = predictions[1]!;
+    const thickNeckCircle = predictions[2]!;
+    const centralDiscCircle = predictions[3]!;
+    const angularHexagon = predictions[4]!;
+    const roundedHexagon = predictions[5]!;
+    const roundedStar = predictions[8]!;
 
-    expect(compactRounded.speed).toBeGreaterThan(compactSharp.speed);
-    expect(compactRounded.spinDuration).toBeGreaterThan(
-      compactSharp.spinDuration,
+    expect(roundedHexagon.speed).toBeGreaterThan(angularHexagon.speed);
+    expect(roundedHexagon.spinDuration).toBeGreaterThan(
+      angularHexagon.spinDuration,
     );
-    expect(compactRounded.impactResistance).toBeGreaterThan(
-      compactSharp.impactResistance,
+    expect(roundedHexagon.impactResistance).toBeGreaterThan(
+      angularHexagon.impactResistance,
     );
-    expect(balancedDisc.speed).toBeLessThan(balanced.speed);
-    expect(balancedDisc.spinDuration).toBeGreaterThan(
-      balanced.spinDuration,
+    expect(thickNeckCircle.impactResistance).toBeGreaterThan(
+      thinNeckCircle.impactResistance,
     );
-    expect(maximum.speed).toBeLessThan(compactRounded.speed);
-    expect(maximum.spinDuration).toBeGreaterThan(
-      compactRounded.spinDuration,
+    expect(centralDiscCircle.speed).toBeLessThan(thinNeckCircle.speed);
+    expect(centralDiscCircle.spinDuration).toBeGreaterThan(
+      thinNeckCircle.spinDuration,
     );
+    expect(roundedStar.stability).toBeGreaterThan(compactCircle.stability);
   });
 
   it("derives every calculated value from authoritative domain helpers", () => {
@@ -361,6 +468,21 @@ describe("raw calculated performance input", () => {
     ).toBeGreaterThan(
       predictPerformance({ ...baseline, centerOfMassOffsetMm: 2 }).stability,
     );
+  });
+
+  it("raises stability when the same mass has a larger radius of gyration", () => {
+    const compact = predictPerformance({
+      ...baseline,
+      centerOfMassOffsetMm: 0,
+      polarMomentGmm2: 15_000,
+    });
+    const rimWeighted = predictPerformance({
+      ...baseline,
+      centerOfMassOffsetMm: 0,
+      polarMomentGmm2: 45_000,
+    });
+
+    expect(rimWeighted.stability).toBeGreaterThan(compact.stability);
   });
 
   it("never lowers impact resistance when the minimum neck thickens", () => {
