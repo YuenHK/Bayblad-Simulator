@@ -16,7 +16,7 @@ import {
   type BattleBody as ProtocolBattleBody,
   type LaunchGrade,
 } from "@steam-top/protocol";
-import { Edge, Polygon, Settings, Vec2, World, type Body } from "planck";
+import { Edge, Polygon, Settings, Vec2, World, type Body, type Contact } from "planck";
 
 import type { LaunchJudgement } from "./launch";
 import { DeterministicPrng } from "./prng";
@@ -70,8 +70,9 @@ export type PreparedBattleTop = Readonly<{
 }>;
 
 export type BattleFinalStats = Readonly<{
-  player1: Readonly<{ angularSpeed: number; speedMps: number; energyJ: number; stoppedTicks: number }>;
-  player2: Readonly<{ angularSpeed: number; speedMps: number; energyJ: number; stoppedTicks: number }>;
+  player1: Readonly<{ angularSpeed: number; speedMps: number; energyJ: number; stoppedTicks: number; impactRetentionProduct: number }>;
+  player2: Readonly<{ angularSpeed: number; speedMps: number; energyJ: number; stoppedTicks: number; impactRetentionProduct: number }>;
+  topTopContactCount: number;
 }>;
 
 export type BattleResult = Readonly<{
@@ -103,6 +104,31 @@ export type EliminationResult = Readonly<{
   player2: boolean;
   reason: "stopped" | "out-of-bounds" | "simultaneous" | null;
 }>;
+
+export type ImpactPhysics = Readonly<{
+  friction: number;
+  restitution: number;
+  angularRetention: number;
+}>;
+
+/** Maps the canonical 0..100 score to bounded, monotonic Planck/contact values. */
+export function impactPhysicsFromScore(score: number): ImpactPhysics {
+  if (!Number.isFinite(score) || score < 0 || score > 100) {
+    throw new RangeError("impactResistance must be finite and between 0 and 100");
+  }
+  return Object.freeze({
+    friction: 0.3 - score * 0.0012,
+    restitution: 0.35 + score * 0.0035,
+    angularRetention: 0.82 + score * 0.0016,
+  });
+}
+
+export function retainAngularSpeedAfterImpact(angularSpeed: number, impactResistance: number): number {
+  if (!Number.isFinite(angularSpeed)) {
+    throw new RangeError("angularSpeed must be finite");
+  }
+  return angularSpeed * impactPhysicsFromScore(impactResistance).angularRetention;
+}
 
 function deepFreeze<T extends object>(value: T): Readonly<T> {
   Object.freeze(value);
@@ -171,8 +197,8 @@ export function prepareBattleTop(input: TopDesign): PreparedBattleTop {
 function validateLaunch(value: LaunchJudgement): void {
   if (
     !LAUNCH_GRADES.has(value.grade) ||
-    !Number.isFinite(value.angularMultiplier) || value.angularMultiplier <= 0 || value.angularMultiplier > 2 ||
-    !Number.isFinite(value.impulseMultiplier) || value.impulseMultiplier <= 0 || value.impulseMultiplier > 2
+    !Number.isFinite(value.angularMultiplier) || value.angularMultiplier < 0 || value.angularMultiplier > 2 ||
+    !Number.isFinite(value.impulseMultiplier) || value.impulseMultiplier < 0 || value.impulseMultiplier > 2
   ) {
     throw new RangeError("Invalid launch judgement or multiplier");
   }
@@ -211,6 +237,7 @@ function createTopBody(
     // Canonical spinDuration maps to a bounded SI angular drag coefficient.
     angularDamping: 0.015 + (100 - top.performance.spinDuration) * 0.0001,
   });
+  const impactPhysics = impactPhysicsFromScore(top.performance.impactResistance);
   for (let index = 0; index < ENVELOPE_SEGMENTS; index += 1) {
     const next = (index + 1) % ENVELOPE_SEGMENTS;
     const angleA = (index / ENVELOPE_SEGMENTS) * Math.PI * 2;
@@ -221,7 +248,7 @@ function createTopBody(
         Vec2(Math.cos(angleA) * (top.envelopeRadiiM[index] ?? 0), Math.sin(angleA) * (top.envelopeRadiiM[index] ?? 0)),
         Vec2(Math.cos(angleB) * (top.envelopeRadiiM[next] ?? 0), Math.sin(angleB) * (top.envelopeRadiiM[next] ?? 0)),
       ]),
-      { density: 1, friction: 0.22, restitution: 0.5 },
+      { density: 1, friction: impactPhysics.friction, restitution: impactPhysics.restitution },
     );
   }
   body.setMassData({
@@ -237,6 +264,13 @@ function createTopBody(
     true,
   );
   return body;
+}
+
+function contactIsBetween(contact: Contact, body1: Body, body2: Body): boolean {
+  const fixtureBodyA = contact.getFixtureA().getBody();
+  const fixtureBodyB = contact.getFixtureB().getBody();
+  return (fixtureBodyA === body1 && fixtureBodyB === body2) ||
+    (fixtureBodyA === body2 && fixtureBodyB === body1);
 }
 
 function normaliseAngle(angle: number): number {
@@ -350,15 +384,41 @@ export function simulateMatchRound(
   const retainedSpin2 = Math.abs(body2.getAngularVelocity()) * (top2.performance.spinDuration / 100) ** 2 * 0.15;
   let ticks = 0;
   let outcome: BattleOutcome | null = null;
+  let activeTopContactFixtures = 0;
+  let topTopContactCount = 0;
+  let impactRetentionProduct1 = 1;
+  let impactRetentionProduct2 = 1;
+  let steppingTick = 0;
+  let lastImpactTick = -1;
+  const impact1 = impactPhysicsFromScore(top1.performance.impactResistance);
+  const impact2 = impactPhysicsFromScore(top2.performance.impactResistance);
+
+  world.on("begin-contact", (contact) => {
+    if (!contactIsBetween(contact, body1, body2)) return;
+    if (activeTopContactFixtures === 0 && lastImpactTick !== steppingTick) {
+      body1.setAngularVelocity(retainAngularSpeedAfterImpact(body1.getAngularVelocity(), top1.performance.impactResistance));
+      body2.setAngularVelocity(retainAngularSpeedAfterImpact(body2.getAngularVelocity(), top2.performance.impactResistance));
+      impactRetentionProduct1 *= impact1.angularRetention;
+      impactRetentionProduct2 *= impact2.angularRetention;
+      topTopContactCount += 1;
+      lastImpactTick = steppingTick;
+    }
+    activeTopContactFixtures += 1;
+  });
+  world.on("end-contact", (contact) => {
+    if (!contactIsBetween(contact, body1, body2)) return;
+    activeTopContactFixtures = Math.max(0, activeTopContactFixtures - 1);
+  });
 
   for (let tick = 1; tick <= MAX_TICKS; tick += 1) {
+    steppingTick = tick;
     world.step(STEP_SECONDS, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
     // A flat 2D silhouette has no gyroscopic precession, so raw contact torque can
     // erase all spin in one solver step. A short, domain-derived endurance floor
     // models that omitted effect while Planck remains authoritative for collisions.
     const enduranceDecay = Math.exp(-2 * tick * STEP_SECONDS);
-    body1.setAngularVelocity(Math.max(Math.abs(body1.getAngularVelocity()), retainedSpin1 * enduranceDecay));
-    body2.setAngularVelocity(-Math.max(Math.abs(body2.getAngularVelocity()), retainedSpin2 * enduranceDecay));
+    body1.setAngularVelocity(Math.max(Math.abs(body1.getAngularVelocity()), retainedSpin1 * impactRetentionProduct1 * enduranceDecay));
+    body2.setAngularVelocity(-Math.max(Math.abs(body2.getAngularVelocity()), retainedSpin2 * impactRetentionProduct2 * enduranceDecay));
     ticks = tick;
     stoppedTicks1 = Math.abs(body1.getAngularVelocity()) < STOP_ANGULAR_SPEED_RAD_PER_SECOND ? stoppedTicks1 + 1 : 0;
     stoppedTicks2 = Math.abs(body2.getAngularVelocity()) < STOP_ANGULAR_SPEED_RAD_PER_SECOND ? stoppedTicks2 + 1 : 0;
@@ -397,8 +457,9 @@ export function simulateMatchRound(
     frames,
     outcome,
     finalStats: {
-      player1: { angularSpeed: body1.getAngularVelocity(), speedMps: body1.getLinearVelocity().length(), energyJ: energy1, stoppedTicks: stoppedTicks1 },
-      player2: { angularSpeed: body2.getAngularVelocity(), speedMps: body2.getLinearVelocity().length(), energyJ: energy2, stoppedTicks: stoppedTicks2 },
+      player1: { angularSpeed: body1.getAngularVelocity(), speedMps: body1.getLinearVelocity().length(), energyJ: energy1, stoppedTicks: stoppedTicks1, impactRetentionProduct: impactRetentionProduct1 },
+      player2: { angularSpeed: body2.getAngularVelocity(), speedMps: body2.getLinearVelocity().length(), energyJ: energy2, stoppedTicks: stoppedTicks2, impactRetentionProduct: impactRetentionProduct2 },
+      topTopContactCount,
     },
   };
 }

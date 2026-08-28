@@ -18,6 +18,8 @@ import {
   STEP_SECONDS,
   STOPPED_TICKS,
   classifyEliminations,
+  impactPhysicsFromScore,
+  retainAngularSpeedAfterImpact,
   prepareBattleTop,
   resolveTimeoutOutcome,
   simulateMatchRound,
@@ -66,6 +68,18 @@ const lightTop = design({
   layers: design().layers.map((layer) => ({ ...layer, id: `${layer.id}-light`, diameterMm: 40 })) as TopDesign["layers"],
   screwLayout: { count: 4, radiusMm: 12, rotationDeg: 0 },
 });
+const lowImpactTop = design({
+  id: "low-impact",
+  name: "低抗撞型",
+  layers: design().layers.map((layer) => ({
+    ...layer,
+    id: `${layer.id}-low-impact`,
+    shape: "star",
+    diameterMm: 60,
+    cornerRoundness: 0,
+  })) as TopDesign["layers"],
+  screwLayout: { count: 4, radiusMm: 12, rotationDeg: 0 },
+});
 
 const inputs = (seed = 12345): BattleInputs => ({
   player1,
@@ -107,6 +121,29 @@ describe("DeterministicPrng", () => {
 });
 
 describe("authoritative Planck battle simulation", () => {
+  it("maps canonical impact resistance monotonically to bounded fixture/contact physics", () => {
+    const low = impactPhysicsFromScore(0);
+    const middle = impactPhysicsFromScore(50);
+    const high = impactPhysicsFromScore(100);
+    expect(low.angularRetention).toBeCloseTo(0.82, 12);
+    expect(high.angularRetention).toBeCloseTo(0.98, 12);
+    expect(low.angularRetention).toBeLessThan(middle.angularRetention);
+    expect(middle.angularRetention).toBeLessThan(high.angularRetention);
+    expect(low.restitution).toBeLessThan(high.restitution);
+    for (const value of [low, middle, high].flatMap(Object.values)) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("retains more angular speed after a controlled impact at a higher score", () => {
+    const low = retainAngularSpeedAfterImpact(120, 0);
+    const high = retainAngularSpeedAfterImpact(120, 100);
+    expect(Math.abs(high)).toBeGreaterThan(Math.abs(low));
+    expect(retainAngularSpeedAfterImpact(-120, 100)).toBeCloseTo(-high, 12);
+  });
+
   it("exports the canonical physics constants", () => {
     expect(PHYSICS_MODEL_VERSION).toBe("1.0.0");
     expect(STEP_SECONDS).toBe(1 / 60);
@@ -174,9 +211,36 @@ describe("authoritative Planck battle simulation", () => {
     launch("Great", -0.01, 1),
     launch("Great", 2.01, 1),
     launch("Great", 1, Number.NaN),
-    launch("Great", 1, 0),
-  ])("rejects invalid or zero launch multipliers", (invalidLaunch) => {
+  ])("rejects launch multipliers outside the protocol range", (invalidLaunch) => {
     expect(() => simulateMatchRound(player1, player2, { seed: 1, launchA: invalidLaunch, launchB: launch() })).toThrow(/launch/i);
+  });
+
+  it("accepts protocol-minimum zero multipliers and stops finitely after 500 ms", () => {
+    const result = simulateMatchRound(player1, player2, {
+      seed: 99,
+      launchA: launch("Miss", 0, 0),
+      launchB: launch("Miss", 0, 0),
+    });
+    expect(result.ticks).toBe(STOPPED_TICKS);
+    expect(result.outcome).toEqual({ winner: "draw", reason: "simultaneous" });
+    expect(result.frames.flatMap((frame) => [
+      ...Object.values(frame.player1),
+      ...Object.values(frame.player2),
+    ]).every(Number.isFinite)).toBe(true);
+  });
+
+  it("records one deduplicated top contact and applies stronger retention to the high-impact top", () => {
+    const highImpactTop = enduranceTop;
+    const result = simulateMatchRound(highImpactTop, lowImpactTop, {
+      seed: 31337,
+      launchA: launch(),
+      launchB: launch(),
+    });
+    expect(prepareBattleTop(highImpactTop).performance.impactResistance)
+      .toBeGreaterThan(prepareBattleTop(lowImpactTop).performance.impactResistance);
+    expect(result.finalStats.topTopContactCount).toBeGreaterThan(0);
+    expect(result.finalStats.player1.impactRetentionProduct)
+      .toBeGreaterThan(result.finalStats.player2.impactRetentionProduct);
   });
 
   it("does not mutate caller inputs", () => {
