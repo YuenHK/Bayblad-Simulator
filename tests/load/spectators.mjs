@@ -1,11 +1,9 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { io } from "socket.io-client";
-import { stopChildCleanly } from "./child-process.mjs";
+import { startJsonReadyChild, stopChildCleanly } from "./child-process.mjs";
+import { readLoadConfig } from "./load-config.mjs";
 
-const SECRET = "steam-top-load-only", CYCLES = Number(process.env.LOAD_CYCLES ?? 3);
-const MAX_MS = Number(process.env.LOAD_MAX_SCENARIO_MS ?? 60_000);
-const HEAP_SPAN = Number(process.env.LOAD_MAX_STEADY_HEAP_SPAN_MIB ?? 24) * 1024 * 1024;
+const SECRET = "steam-top-load-only", CONFIG = readLoadConfig();
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const cmd = (type, fields = {}) => ({ type, protocolVersion: 1, eventId: randomUUID(), ...fields });
 
@@ -20,19 +18,13 @@ function collector(socket, label) {
   return { events, next(test, timeout = 60_000) { const old = events.find(test); if (old) return Promise.resolve(old); return new Promise((resolve, reject) => { const waiter = { test, resolve, timer: setTimeout(() => { waiters.splice(waiters.indexOf(waiter), 1); reject(new Error(`${label} timeout; recent=${events.slice(-10).map((e) => e.type)}`)); }, timeout) }; waiters.push(waiter); }); } };
 }
 async function startServer() {
-  const child = spawn("pnpm", ["--filter", "@steam-top/server", "exec", "node", "--expose-gc", "--import", "tsx", "../../tests/support/realtime-server.ts"], { cwd: process.cwd(), env: { ...process.env, NODE_ENV: "test", BATTLE_ENGINE: "real", TEST_REALTIME_PORT: "0", TEST_CONTROL_SECRET: SECRET }, stdio: ["ignore", "pipe", "pipe"] });
-  let output = "", buffer = "", resolveReady, rejectReady;
-  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
-  const timer = setTimeout(() => rejectReady(new Error(`ready timeout\n${output}`)), 15_000);
-  child.stdout.on("data", (chunk) => { const text = String(chunk); output += text; buffer += text; for (;;) { const at = buffer.indexOf("\n"); if (at < 0) break; const line = buffer.slice(0, at).trim(); buffer = buffer.slice(at + 1); try { const parsed = JSON.parse(line); if (parsed.type === "ready") { clearTimeout(timer); resolveReady(parsed); } } catch {} } });
-  child.stderr.on("data", (chunk) => { output += String(chunk); });
-  child.once("exit", (code, signal) => { if (code !== 0) rejectReady(new Error(`early exit ${code}/${signal}\n${output}`)); });
-  const info = await ready; return { child, url: info.url, output: () => output };
+  const started = await startJsonReadyChild({ command: "pnpm", args: ["--filter", "@steam-top/server", "exec", "node", "--expose-gc", "--import", "tsx", "../../tests/support/realtime-server.ts"], options: { cwd: process.cwd(), env: { ...process.env, NODE_ENV: "test", BATTLE_ENGINE: "real", TEST_REALTIME_PORT: "0", TEST_CONTROL_SECRET: SECRET }, stdio: ["ignore", "pipe", "pipe"] }, timeoutMs: CONFIG.readyTimeoutMs });
+  return { child: started.child, url: started.info.url, output: started.output };
 }
 async function stopServer(server) {
   await stopChildCleanly(server.child, {
     requestGraceful: async () => (await fetch(`${server.url}/__test/shutdown`, { method: "POST", headers: { "x-test-secret": SECRET } })).ok,
-    timeoutMs: 5_000,
+    timeoutMs: CONFIG.shutdownTimeoutMs,
     diagnostics: server.output,
   });
 }
@@ -83,13 +75,13 @@ let server, failure; const clients = [];
 try {
   server = await startServer(); const cold = await stats(server.url, true), started = Date.now();
   const players = await Promise.all([connect(server.url, "Load-player-1"), connect(server.url, "Load-player-2")]), spectators = await Promise.all(Array.from({ length: 20 }, (_, i) => connect(server.url, `Load-spectator-${i + 1}`))); clients.push(...players, ...spectators);
-  const connected = await stats(server.url, true), results = []; for (let i = 1; i <= CYCLES; i += 1) results.push(await cycle(server.url, clients, players, i));
+  const connected = await stats(server.url, true), results = []; for (let i = 1; i <= CONFIG.cycles; i += 1) results.push(await cycle(server.url, clients, players, i));
   const elapsedMs = Date.now() - started, heaps = results.map((r) => r.heap), deltas = heaps.slice(1).map((h, i) => h - heaps[i]);
-  if (elapsedMs > MAX_MS) throw new Error(`scenario ${elapsedMs}ms > ${MAX_MS}ms`);
-  if (Math.max(...heaps) - Math.min(...heaps) > HEAP_SPAN || (deltas.length > 1 && deltas.every((d) => d > 4 * 1024 * 1024))) throw new Error(`linear/unbounded heap: ${heaps}`);
+  if (elapsedMs > CONFIG.maxScenarioMs) throw new Error(`scenario ${elapsedMs}ms > ${CONFIG.maxScenarioMs}ms`);
+  if (Math.max(...heaps) - Math.min(...heaps) > CONFIG.heapSpanBytes || (deltas.length > 1 && deltas.every((d) => d > CONFIG.linearStepBytes))) throw new Error(`linear/unbounded heap: ${heaps}`);
   clients.forEach((c) => c.socket.disconnect()); await control(server.url, "/__test/advance", { ms: 120_001 });
   const final = await poll("disconnect cleanup", async () => { const s = await stats(server.url, true); return s.connections === 0 && s.sessions === 0 && s.rooms === 0 && s.matches === 0 && s.bindings === 0 && s.timers === 0 && s.engine.cache === 0 && s.designs.total === 0 ? s : false; });
-  if (final.heapUsed > connected.heapUsed + HEAP_SPAN) throw new Error("post-disconnect heap remained high");
+  if (final.heapUsed > connected.heapUsed + CONFIG.heapSpanBytes) throw new Error("post-disconnect heap remained high");
   console.info(JSON.stringify({ engineKind: final.engineKind, physicsModelVersion: final.physicsModelVersion, cycles: results.map(({ heap, ...r }) => r), elapsedMs, heapMiB: { cold: +(cold.heapUsed / 1048576).toFixed(2), connected: +(connected.heapUsed / 1048576).toFixed(2), steady: heaps.map((h) => +(h / 1048576).toFixed(2)), final: +(final.heapUsed / 1048576).toFixed(2) }, finalCounts: { connections: final.connections, sessions: final.sessions, rooms: final.rooms, matches: final.matches, bindings: final.bindings, timers: final.timers, designs: final.designs.total, cache: final.engine.cache } }));
 } catch (error) { failure = error; }
 finally { clients.forEach((c) => c.socket.disconnect()); if (server) try { await stopServer(server); } catch (error) { failure = failure ? new AggregateError([failure, error]) : error; } }

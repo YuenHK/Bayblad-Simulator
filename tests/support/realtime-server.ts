@@ -70,11 +70,18 @@ const app = buildApp({
   frameScheduler: async (_delayMs, signal) => {
     if (signal.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, 200);
-      signal.addEventListener("abort", () => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
-        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-      }, { once: true });
+        signal.removeEventListener("abort", abort);
+        error ? reject(error) : resolve();
+      };
+      const abort = () => finish(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      const timer = setTimeout(() => finish(), 200);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
     });
   },
   allowedOrigins: ["http://127.0.0.1:4173"],
