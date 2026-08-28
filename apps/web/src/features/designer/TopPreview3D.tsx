@@ -1,4 +1,4 @@
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import {
   ASSEMBLY,
   MATERIALS,
@@ -10,15 +10,27 @@ import {
   Component,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ErrorInfo,
   type ReactNode,
 } from "react";
-import { CylinderGeometry, ExtrudeGeometry, Path, Shape } from "three";
+import {
+  CylinderGeometry,
+  ExtrudeGeometry,
+  OrthographicCamera,
+  Path,
+  Shape,
+} from "three";
 
 import { ExplodedView } from "./ExplodedView";
+import {
+  calculateOrthographicFit,
+  calculatePreviewBounds,
+  type PreviewBounds,
+} from "./previewBounds";
 import {
   clampPreviewZoom,
   pointerDistance,
@@ -175,26 +187,85 @@ function PreviewScene({
   design,
   rotation,
   zoom,
+  bounds,
 }: Readonly<{
   design: TopDesign;
   rotation: PreviewRotation;
   zoom: number;
+  bounds: PreviewBounds;
 }>) {
   return (
     <>
+      <FitOrthographicCamera
+        boundingSphereRadiusMm={bounds.boundingSphereRadiusMm}
+        userZoom={zoom}
+      />
       <ambientLight intensity={1.2} />
       <directionalLight position={[45, -30, 70]} intensity={2.3} />
       <directionalLight position={[-35, 25, 25]} intensity={0.8} />
-      <group rotation={[rotation.x, 0, rotation.y]} scale={zoom} position={[0, 0, -8]}>
+      <CenteredModel centerZMm={bounds.centerZMm} rotation={rotation}>
         {design.layers.map((layer) => (
           <AcrylicLayer key={layer.id} layer={layer} design={design} />
         ))}
         {design.metalDiscDiameterMm > 0 ? (
           <MetalDisc diameterMm={design.metalDiscDiameterMm} />
         ) : null}
-      </group>
+      </CenteredModel>
     </>
   );
+}
+
+export function CenteredModel({
+  centerZMm,
+  rotation,
+  children,
+}: Readonly<{
+  centerZMm: number;
+  rotation: PreviewRotation;
+  children: ReactNode;
+}>) {
+  return (
+    <group
+      name="preview-rotation-pivot"
+      rotation={[rotation.x, 0, rotation.y]}
+    >
+      <group
+        name="preview-centered-model"
+        position={[0, 0, -centerZMm]}
+      >
+        {children}
+      </group>
+    </group>
+  );
+}
+
+export function FitOrthographicCamera({
+  boundingSphereRadiusMm,
+  userZoom,
+}: Readonly<{
+  boundingSphereRadiusMm: number;
+  userZoom: number;
+}>) {
+  const { camera, size } = useThree();
+
+  useLayoutEffect(() => {
+    if (
+      !(camera instanceof OrthographicCamera) ||
+      size.width <= 0 ||
+      size.height <= 0
+    ) {
+      return;
+    }
+    const fit = calculateOrthographicFit(
+      size.width,
+      size.height,
+      boundingSphereRadiusMm,
+    );
+    camera.zoom = fit.baseZoom * userZoom;
+    camera.updateProjectionMatrix();
+  }, [boundingSphereRadiusMm, camera, size.height, size.width, userZoom]);
+
+  return null;
 }
 
 type PointerPosition = Readonly<{ x: number; y: number }>;
@@ -209,6 +280,7 @@ export function TopPreview3D({
   const [gestureStatus, setGestureStatus] = useState("可拖動旋轉或雙指縮放");
   const pointers = useRef(new Map<number, PointerPosition>());
   const pinchDistance = useRef<number | null>(null);
+  const bounds = useMemo(() => calculatePreviewBounds(design), [design]);
   const fallback = <Fallback design={design} />;
   const webGLAvailable = useMemo(
     () => !forceFallback && detectWebGL(),
@@ -338,10 +410,15 @@ export function TopPreview3D({
       >
         <Canvas
           orthographic
-          camera={{ position: [58, -72, 72], zoom: 5.8, near: 0.1, far: 400 }}
+          camera={{ position: [0, 0, 150], zoom: 1, near: 0.1, far: 400 }}
           gl={{ antialias: true, alpha: true }}
         >
-          <PreviewScene design={design} rotation={rotation} zoom={zoom} />
+          <PreviewScene
+            design={design}
+            rotation={rotation}
+            zoom={zoom}
+            bounds={bounds}
+          />
         </Canvas>
       </div>
       <p className="gesture-hint">單指拖動旋轉，雙指或滾輪縮放</p>
