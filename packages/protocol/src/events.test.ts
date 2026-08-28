@@ -547,6 +547,17 @@ describe("serverEventSchema", () => {
     ).toBe(false);
   });
 
+  it("allows welcome to return an opaque resumable session token without exposing identity ids", () => {
+    const welcome = serverEventSchema.parse({
+      type: "protocol.welcome",
+      selectedVersion: 1,
+      sessionToken: "opaque-resume-token-with-sufficient-entropy",
+      ...serverEnvelope,
+    });
+    expect(welcome).toMatchObject({ sessionToken: "opaque-resume-token-with-sufficient-entropy" });
+    expect(serverEventSchema.safeParse({ ...welcome, sessionToken: "short" }).success).toBe(false);
+  });
+
   it("defines acknowledgement correlation without implementing idempotency", () => {
     const ack = serverCases[10].value;
     expect(serverEventSchema.safeParse(ack).success).toBe(true);
