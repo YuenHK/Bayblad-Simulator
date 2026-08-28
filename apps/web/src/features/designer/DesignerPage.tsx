@@ -1,8 +1,10 @@
 import type { RuleIssueCode } from "@steam-top/domain";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { AssemblyControls } from "./AssemblyControls";
+import { ExplodedView } from "./ExplodedView";
 import { LayerControls } from "./LayerControls";
+import { TopViewSvg } from "./TopViewSvg";
 import { useDesigner } from "./useDesigner";
 
 const POSITION_LABELS = {
@@ -29,6 +31,18 @@ const ISSUE_LABELS: Record<RuleIssueCode, string> = {
 };
 
 type Position = keyof typeof POSITION_LABELS;
+type PreviewMode = "top" | "exploded" | "3d";
+
+const PREVIEW_TABS: ReadonlyArray<Readonly<{ mode: PreviewMode; label: string }>> = [
+  { mode: "top", label: "俯視圖" },
+  { mode: "exploded", label: "分解圖" },
+  { mode: "3d", label: "3D 預覽" },
+];
+
+const LazyTopPreview3D = lazy(async () => {
+  const module = await import("./TopPreview3D");
+  return { default: module.TopPreview3D };
+});
 
 function format(value: number, digits = 1): string {
   return value.toFixed(digits);
@@ -42,6 +56,7 @@ export function DesignerPage() {
   const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null);
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("top");
   const [invalidFieldKeys, setInvalidFieldKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -183,6 +198,54 @@ export function DesignerPage() {
       </header>
 
       <div className="designer-layout">
+        <section className="panel preview-panel" aria-labelledby="preview-heading">
+          <div className="preview-heading-row">
+            <h2 id="preview-heading">即時預覽</h2>
+            <div className="preview-tabs" role="tablist" aria-label="預覽模式">
+              {PREVIEW_TABS.map(({ mode, label }, index) => (
+                <button
+                  key={mode}
+                  id={`preview-tab-${mode}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={previewMode === mode}
+                  aria-controls="preview-tabpanel"
+                  tabIndex={previewMode === mode ? 0 : -1}
+                  onClick={() => setPreviewMode(mode)}
+                  onKeyDown={(event) => {
+                    let nextIndex = index;
+                    if (event.key === "ArrowRight") nextIndex = (index + 1) % PREVIEW_TABS.length;
+                    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + PREVIEW_TABS.length) % PREVIEW_TABS.length;
+                    else if (event.key === "Home") nextIndex = 0;
+                    else if (event.key === "End") nextIndex = PREVIEW_TABS.length - 1;
+                    else return;
+                    event.preventDefault();
+                    const nextMode = PREVIEW_TABS[nextIndex]!.mode;
+                    setPreviewMode(nextMode);
+                    requestAnimationFrame(() => document.getElementById(`preview-tab-${nextMode}`)?.focus());
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div
+            id="preview-tabpanel"
+            className="preview-stage"
+            role="tabpanel"
+            aria-labelledby={`preview-tab-${previewMode}`}
+          >
+            {previewMode === "top" ? <TopViewSvg design={design} /> : null}
+            {previewMode === "exploded" ? <ExplodedView design={design} /> : null}
+            {previewMode === "3d" ? (
+              <Suspense fallback={<p role="status">正在載入 3D 預覽……</p>}>
+                <LazyTopPreview3D design={design} />
+              </Suspense>
+            ) : null}
+          </div>
+        </section>
+
         <section className="panel controls-panel" aria-labelledby="layer-heading">
           <h2 id="layer-heading">層板設計</h2>
           <ol className="layer-list" aria-label="三層排列">

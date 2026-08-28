@@ -28,6 +28,36 @@ async function replaceNumber(
 }
 
 describe("DesignerPage", () => {
+  it("初始顯示俯視圖，可用鍵盤切換分解圖和 3D 預覽", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+
+    expect(screen.getByRole("img", { name: "陀螺俯視圖" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "俯視圖" })).toHaveAttribute("aria-selected", "true");
+
+    screen.getByRole("tab", { name: "俯視圖" }).focus();
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("img", { name: "陀螺分解圖" })).toBeVisible();
+
+    await user.keyboard("{End}");
+    expect(await screen.findByText("裝置未能啟用 3D，已顯示分解圖")).toBeVisible();
+  });
+
+  it("設計輸入會即時更新俯視圖", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+    const topPath = screen.getAllByTestId("layer-path").find(
+      (path) => path.getAttribute("data-position") === "top",
+    )!;
+    const before = topPath.getAttribute("d");
+
+    await replaceNumber(user, "直徑（mm）", "58");
+
+    expect(screen.getAllByTestId("layer-path").find(
+      (path) => path.getAttribute("data-position") === "top",
+    )).not.toHaveAttribute("d", before);
+  });
+
   it("初始設計符合規格並可參戰", () => {
     render(<DesignerPage />);
 
@@ -87,7 +117,7 @@ describe("DesignerPage", () => {
     const user = userEvent.setup();
     const { container } = render(<DesignerPage />);
 
-    const idsBefore = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+    const idsBefore = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
     );
     await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
@@ -103,7 +133,7 @@ describe("DesignerPage", () => {
       "polite",
     );
 
-    const idsAfter = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+    const idsAfter = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
     );
     expect(idsAfter).toHaveLength(3);
@@ -114,7 +144,7 @@ describe("DesignerPage", () => {
   it("可用 Pointer Events 拖動手柄重排而不遺失層資料或選中層", async () => {
     const user = userEvent.setup();
     const { container } = render(<DesignerPage />);
-    const idsBefore = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+    const idsBefore = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
     );
 
@@ -140,7 +170,7 @@ describe("DesignerPage", () => {
     expect(within(summaries[0]!).getByText("42 mm")).toBeVisible();
     expect(screen.getByLabelText("目前編輯層")).toHaveValue("top");
     expect(screen.getByLabelText("直徑（mm）")).toHaveValue(42);
-    const idsAfter = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+    const idsAfter = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
     );
     expect(idsAfter).toHaveLength(3);
@@ -150,7 +180,7 @@ describe("DesignerPage", () => {
 
   it("取消 Pointer 拖動會安全清除狀態且不再重排", () => {
     const { container } = render(<DesignerPage />);
-    const idsBefore = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+    const idsBefore = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
     );
     const topHandle = screen.getByRole("button", {
@@ -172,7 +202,7 @@ describe("DesignerPage", () => {
       clientY: 90,
     });
 
-    const idsAfter = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+    const idsAfter = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
     );
     expect(idsAfter).toEqual(idsBefore);
@@ -186,7 +216,7 @@ describe("DesignerPage", () => {
     const { container } = render(<DesignerPage />);
     await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
 
-    const idsBefore = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+    const idsBefore = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
     );
     const firstHandle = screen.getByRole("button", {
@@ -215,7 +245,7 @@ describe("DesignerPage", () => {
 
     expect(firstHandle).toHaveAttribute("aria-pressed", "true");
     expect(
-      container.querySelectorAll("[data-layer-id]")[0]?.getAttribute("data-layer-id"),
+      container.querySelectorAll(".layer-list [data-layer-id]")[0]?.getAttribute("data-layer-id"),
     ).toBe(idsBefore[0]);
 
     fireEvent.pointerMove(firstHandle, {
@@ -226,7 +256,7 @@ describe("DesignerPage", () => {
     fireEvent.pointerUp(firstHandle, { pointerId: 11 });
 
     expect(
-      container.querySelectorAll("[data-layer-id]")[0]?.getAttribute("data-layer-id"),
+      container.querySelectorAll(".layer-list [data-layer-id]")[0]?.getAttribute("data-layer-id"),
     ).toBe(idsBefore[1]);
     expect(setPointerCapture).toHaveBeenCalledTimes(1);
     expect(setPointerCapture).toHaveBeenCalledWith(11);
