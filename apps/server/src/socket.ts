@@ -58,6 +58,10 @@ export type RealtimeDependencies = Readonly<{
   handshakeTimeoutMs: number;
   rateLimitBurst: number;
   rateLimitRefillPerSecond: number;
+  pendingRateLimitBurst: number;
+  pendingRateLimitRefillPerSecond: number;
+  rateLimitMaxBuckets: number;
+  rateLimitBucketTtlMs: number;
   maxConnections: number;
   maxConnectionsPerIp: number;
   maxRetainedSessions: number;
@@ -70,6 +74,7 @@ export type RealtimeDependencies = Readonly<{
   maxOwnedRoomsPerSession: number;
   maxMatchAttempts: number;
   lobbyDebounceMs: number;
+  maintenance?: () => void;
   logError?: (error: unknown) => void;
 }>; 
 
@@ -136,8 +141,8 @@ export class RealtimeGateway {
   readonly #frameScheduler: FrameScheduler;
   readonly #scoreMatch: MatchScorer;
   readonly #handshakeTimeoutMs: number;
-  readonly #rateLimitBurst: number;
-  readonly #rateLimitRefillPerMs: number;
+  readonly #pendingLimiter: TokenBucketLimiter;
+  readonly #sessionCommandLimiter: TokenBucketLimiter;
   readonly #maxConnections: number;
   readonly #maxConnectionsPerIp: number;
   readonly #maxRetainedSessions: number;
@@ -149,6 +154,7 @@ export class RealtimeGateway {
   readonly #maxMatchAttempts: number;
   readonly #lobbyDebounceMs: number;
   readonly #logError: (error: unknown) => void;
+  readonly #maintenance: () => void;
   readonly #sessionsByToken = new Map<string, Session>();
   readonly #sessionsById = new Map<string, Session>();
   readonly #sessionIdsByParticipant = new Map<string, Map<string, string>>();
@@ -171,8 +177,21 @@ export class RealtimeGateway {
     this.#frameScheduler = dependencies.frameScheduler ?? defaultFrameScheduler;
     this.#scoreMatch = dependencies.scoreMatch ?? defaultScoreMatch;
     this.#handshakeTimeoutMs = dependencies.handshakeTimeoutMs;
-    this.#rateLimitBurst = dependencies.rateLimitBurst;
-    this.#rateLimitRefillPerMs = dependencies.rateLimitRefillPerSecond / 1_000;
+    const limiterOptions = {
+      maxBuckets: dependencies.rateLimitMaxBuckets,
+      ttlMs: dependencies.rateLimitBucketTtlMs,
+      ...(dependencies.now ? { now: dependencies.now } : {}),
+    };
+    this.#pendingLimiter = new TokenBucketLimiter({
+      burst: dependencies.pendingRateLimitBurst,
+      refillPerSecond: dependencies.pendingRateLimitRefillPerSecond,
+      ...limiterOptions,
+    });
+    this.#sessionCommandLimiter = new TokenBucketLimiter({
+      burst: dependencies.rateLimitBurst,
+      refillPerSecond: dependencies.rateLimitRefillPerSecond,
+      ...limiterOptions,
+    });
     this.#maxConnections = dependencies.maxConnections;
     this.#maxConnectionsPerIp = dependencies.maxConnectionsPerIp;
     this.#maxRetainedSessions = dependencies.maxRetainedSessions;
@@ -180,18 +199,19 @@ export class RealtimeGateway {
     this.#newSessionByClientLimiter = new TokenBucketLimiter({
       burst: dependencies.newSessionBurstPerClient,
       refillPerSecond: dependencies.newSessionRefillPerSecond,
-      ...(dependencies.now ? { now: dependencies.now } : {}),
+      ...limiterOptions,
     });
     this.#newSessionGlobalLimiter = new TokenBucketLimiter({
       burst: dependencies.newSessionGlobalBurst,
       refillPerSecond: dependencies.newSessionGlobalRefillPerSecond,
-      ...(dependencies.now ? { now: dependencies.now } : {}),
+      ...limiterOptions,
     });
     this.#maxRooms = dependencies.maxRooms;
     this.#maxOwnedRoomsPerSession = dependencies.maxOwnedRoomsPerSession;
     this.#maxMatchAttempts = dependencies.maxMatchAttempts;
     this.#lobbyDebounceMs = dependencies.lobbyDebounceMs;
     this.#logError = dependencies.logError ?? (() => undefined);
+    this.#maintenance = dependencies.maintenance ?? (() => undefined);
     const origins = new Set(dependencies.allowedOrigins);
     const originAllowed = (origin: string | undefined) =>
       origin === undefined ? dependencies.allowMissingOrigin : origins.has(origin);
@@ -217,6 +237,8 @@ export class RealtimeGateway {
     frameBroadcastOperations: number;
     connections: number;
     newSessionClientBuckets: number;
+    pendingBuckets: number;
+    sessionCommandBuckets: number;
   }> {
     return {
       sessions: this.#sessionsById.size,
@@ -225,6 +247,8 @@ export class RealtimeGateway {
       frameBroadcastOperations: this.#frameBroadcastOperations,
       connections: [...this.#connectionsByIp.values()].reduce((sum, count) => sum + count, 0),
       newSessionClientBuckets: this.#newSessionByClientLimiter.size,
+      pendingBuckets: this.#pendingLimiter.size,
+      sessionCommandBuckets: this.#sessionCommandLimiter.size,
     };
   }
 
@@ -247,11 +271,19 @@ export class RealtimeGateway {
     this.#lobbyTimer = null;
     for (const [roomId, match] of this.#matches) this.#cancelMatch(roomId, match);
     await new Promise<void>((resolve) => this.io.close(() => resolve()));
+    this.#pendingLimiter.clear();
+    this.#sessionCommandLimiter.clear();
+    this.#newSessionByClientLimiter.clear();
+    this.#newSessionGlobalLimiter.clear();
   }
 
   pump(nowMs = this.#now()): void {
     this.#launch.finalizeExpired(nowMs);
-    this.#newSessionByClientLimiter.pruneOlderThan(120_000);
+    this.#pendingLimiter.pruneExpired();
+    this.#sessionCommandLimiter.pruneExpired();
+    this.#newSessionByClientLimiter.pruneExpired();
+    this.#newSessionGlobalLimiter.pruneExpired();
+    this.#maintenance();
     for (const [roomId, match] of [...this.#matches]) {
       if (!this.#rooms.hasRoom(roomId)) {
         this.#cancelMatch(roomId, match);
@@ -315,21 +347,30 @@ export class RealtimeGateway {
       return;
     }
     const requestedToken = typeof auth.sessionToken === "string" ? auth.sessionToken : undefined;
+    const pendingKey = `${clientKey}:${socket.id}`;
     let session: Session | null = null;
     let welcomed = false;
-    let closingPreHello = false;
-    let tokens = this.#rateLimitBurst;
-    let lastRefillAt = this.#now();
+    let closingProtocol = false;
     const handshakeTimer = setTimeout(() => socket.disconnect(true), this.#handshakeTimeoutMs);
     handshakeTimer.unref();
     socket.on("client.event", (raw: unknown) => {
+      if (closingProtocol) return;
+      if (!this.#pendingLimiter.consume(pendingKey)) {
+        closingProtocol = true;
+        this.#error(socket, "RATE_LIMITED", "Too many socket events");
+        setTimeout(() => socket.disconnect(true), 0);
+        return;
+      }
       const hello = protocolHelloEventSchema.safeParse(raw);
       if (hello.success) {
         if (welcomed) {
+          closingProtocol = true;
           this.#error(socket, "INVALID_EVENT", "Protocol hello has already completed");
+          setTimeout(() => socket.disconnect(true), 0);
           return;
         }
         if (!hello.data.supportedVersions.includes(PROTOCOL_VERSION)) {
+          closingProtocol = true;
           this.#emit(socket, {
             type: "protocol.unsupported",
             serverEventId: this.#createServerEventId(),
@@ -337,6 +378,7 @@ export class RealtimeGateway {
             causedByEventId: hello.data.eventId,
             reason: "No mutually supported protocol version",
           });
+          setTimeout(() => socket.disconnect(true), 0);
           return;
         }
         clearTimeout(handshakeTimer);
@@ -381,20 +423,16 @@ export class RealtimeGateway {
         return;
       }
       if (!welcomed) {
-        if (closingPreHello) return;
-        closingPreHello = true;
+        closingProtocol = true;
         this.#error(socket, "INVALID_EVENT", "Protocol hello is required");
         setTimeout(() => socket.disconnect(true), 0);
         return;
       }
       const now = this.#now();
-      tokens = Math.min(this.#rateLimitBurst, tokens + Math.max(0, now - lastRefillAt) * this.#rateLimitRefillPerMs);
-      lastRefillAt = now;
-      if (tokens < 1) {
+      if (!this.#sessionCommandLimiter.consume(session!.id)) {
         this.#error(socket, "RATE_LIMITED", "Too many commands");
         return;
       }
-      tokens -= 1;
       session!.lastActiveAt = now;
       const parsed = clientEventSchema.safeParse(raw);
       if (!parsed.success || parsed.data.type === "protocol.hello") {
@@ -409,6 +447,7 @@ export class RealtimeGateway {
     });
     socket.on("disconnect", () => {
       clearTimeout(handshakeTimer);
+      this.#pendingLimiter.delete(pendingKey);
       const remaining = Math.max(0, (this.#connectionsByIp.get(clientKey) ?? 1) - 1);
       if (remaining === 0) this.#connectionsByIp.delete(clientKey);
       else this.#connectionsByIp.set(clientKey, remaining);
@@ -472,6 +511,7 @@ export class RealtimeGateway {
   #expireSession(session: Session): void {
     this.#sessionsByToken.delete(session.token);
     this.#sessionsById.delete(session.id);
+    this.#sessionCommandLimiter.delete(session.id);
     this.#designs.cleanupOwner(session.id);
     for (const [roomId, bindings] of this.#sessionIdsByParticipant) {
       for (const [participantId, sessionId] of bindings) {

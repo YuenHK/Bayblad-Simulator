@@ -36,6 +36,10 @@ export type BuildAppOptions = Readonly<{
   handshakeTimeoutMs?: number;
   rateLimitBurst?: number;
   rateLimitRefillPerSecond?: number;
+  pendingRateLimitBurst?: number;
+  pendingRateLimitRefillPerSecond?: number;
+  rateLimitMaxBuckets?: number;
+  rateLimitBucketTtlMs?: number;
   maxConnections?: number;
   maxConnectionsPerIp?: number;
   maxRetainedSessions?: number;
@@ -84,12 +88,19 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (process.env.NODE_ENV === "production" && options.behindProxy && !options.clientKeyResolver) {
     throw new TypeError("Production behindProxy composition requires clientKeyResolver");
   }
+  if (options.clientKeyResolver && !options.behindProxy) {
+    throw new TypeError("clientKeyResolver requires behindProxy trusted boundary");
+  }
   const config = {
     bodyLimit: requirePositive("bodyLimit", options.bodyLimit ?? 64 * 1_024),
     maxHttpBufferSize: requirePositive("maxHttpBufferSize", options.maxHttpBufferSize ?? 64 * 1_024),
     handshakeTimeoutMs: requirePositive("handshakeTimeoutMs", options.handshakeTimeoutMs ?? 10_000),
     rateLimitBurst: requirePositive("rateLimitBurst", options.rateLimitBurst ?? 30),
     rateLimitRefillPerSecond: requirePositive("rateLimitRefillPerSecond", options.rateLimitRefillPerSecond ?? 10, false),
+    pendingRateLimitBurst: requirePositive("pendingRateLimitBurst", options.pendingRateLimitBurst ?? 64),
+    pendingRateLimitRefillPerSecond: requirePositive("pendingRateLimitRefillPerSecond", options.pendingRateLimitRefillPerSecond ?? 20, false),
+    rateLimitMaxBuckets: requirePositive("rateLimitMaxBuckets", options.rateLimitMaxBuckets ?? 10_000),
+    rateLimitBucketTtlMs: requirePositive("rateLimitBucketTtlMs", options.rateLimitBucketTtlMs ?? 120_000),
     maxConnections: requirePositive("maxConnections", options.maxConnections ?? 5_000),
     maxConnectionsPerIp: requirePositive("maxConnectionsPerIp", options.maxConnectionsPerIp ?? 500),
     maxRetainedSessions: requirePositive("maxRetainedSessions", options.maxRetainedSessions ?? 10_000),
@@ -136,6 +147,16 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     ? new BattleEngine({ resultRepository: options.resultRepository })
     : undefined);
   if (!battleEngine) throw new TypeError("Production composition requires a durable resultRepository");
+  const limiterOptions = {
+    maxBuckets: config.rateLimitMaxBuckets, ttlMs: config.rateLimitBucketTtlMs,
+    ...(options.now ? { now: options.now } : {}),
+  };
+  const designLimiter = new TokenBucketLimiter({
+    burst: config.designRateBurst, refillPerSecond: config.designRateRefillPerSecond, ...limiterOptions,
+  });
+  const designClientLimiter = new TokenBucketLimiter({
+    burst: config.designClientRateBurst, refillPerSecond: config.designClientRateRefillPerSecond, ...limiterOptions,
+  });
   const gateway = new RealtimeGateway(app.server, {
     rooms,
     designs,
@@ -154,6 +175,10 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     handshakeTimeoutMs: config.handshakeTimeoutMs,
     rateLimitBurst: config.rateLimitBurst,
     rateLimitRefillPerSecond: config.rateLimitRefillPerSecond,
+    pendingRateLimitBurst: config.pendingRateLimitBurst,
+    pendingRateLimitRefillPerSecond: config.pendingRateLimitRefillPerSecond,
+    rateLimitMaxBuckets: config.rateLimitMaxBuckets,
+    rateLimitBucketTtlMs: config.rateLimitBucketTtlMs,
     maxConnections: config.maxConnections,
     maxConnectionsPerIp: config.maxConnectionsPerIp,
     maxRetainedSessions: config.maxRetainedSessions,
@@ -166,20 +191,13 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     maxOwnedRoomsPerSession: config.maxOwnedRoomsPerSession,
     maxMatchAttempts: config.maxMatchAttempts,
     lobbyDebounceMs: config.lobbyDebounceMs,
+    maintenance: () => { designLimiter.pruneExpired(); designClientLimiter.pruneExpired(); },
     ...(options.logError ? { logError: options.logError } : {}),
   });
   app.decorate("realtimeGateway", gateway);
   app.decorate("battleEngine", battleEngine);
 
   app.get("/health", async () => ({ status: "ok" }));
-  const designLimiter = new TokenBucketLimiter({
-    burst: config.designRateBurst, refillPerSecond: config.designRateRefillPerSecond,
-    ...(options.now ? { now: options.now } : {}),
-  });
-  const designClientLimiter = new TokenBucketLimiter({
-    burst: config.designClientRateBurst, refillPerSecond: config.designClientRateRefillPerSecond,
-    ...(options.now ? { now: options.now } : {}),
-  });
   app.post("/api/designs", { onRequest: async (request, reply) => {
     const authorization = request.headers.authorization;
     const session = gateway.sessionForBearer(authorization);
