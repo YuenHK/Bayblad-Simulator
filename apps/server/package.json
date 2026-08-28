@@ -1,0 +1,25 @@
+{
+  "name": "@steam-top/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@steam-top/domain": "workspace:*",
+    "@steam-top/protocol": "workspace:*",
+    "fastify": "5.12.1",
+    "planck": "1.5.0",
+    "socket.io": "4.8.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "4.23.12",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}
