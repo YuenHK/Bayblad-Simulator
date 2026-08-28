@@ -421,25 +421,25 @@ git commit -m "feat: add lobby rooms spectators and battle ui"
 - 建立：`tests/e2e/battle.spec.ts`
 - 建立：`tests/load/spectators.mjs`
 
-- [ ] **步驟 1：建立三瀏覽器 E2E**
+- [x] **步驟 1：建立三瀏覽器 E2E**
 
 Playwright 使用兩個 player context 及一個 spectator context，完成建房、入席、準備、每輪節拍、三輪內完場及賽後計分。
 
-- [ ] **步驟 2：加入房主移動及兩分鐘 fake-clock 測試**
+- [x] **步驟 2：加入房主移動及兩分鐘 fake-clock 測試**
 
 覆蓋房主轉觀賽、斷線重連、逾時轉移和空房刪除；以伺服器注入時鐘避免真等兩分鐘。
 
-- [ ] **步驟 3：建立 20 名觀賽者負載測試**
+- [x] **步驟 3：建立 20 名觀賽者負載測試**
 
-連接同一房間，斷言所有 client 最終 frame tick 和 match id 一致，伺服器物理模擬計數為 1。
+連接同一房間，斷言所有 client 最終 frame tick 和 match id 一致，伺服器物理模擬計數等於已完成回合數。
 
-- [ ] **步驟 4：執行階段品質閘門**
+- [x] **步驟 4：執行階段品質閘門**
 
 執行：`pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e && node tests/load/spectators.mjs`
 
 預期：全部 PASS。
 
-- [ ] **步驟 5：Commit**
+- [x] **步驟 5：Commit**
 
 ```bash
 git add tests apps

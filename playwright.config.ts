@@ -22,12 +22,22 @@ export default defineConfig({
       ],
     },
   },
-  webServer: {
-    command: "pnpm --filter @steam-top/web build && pnpm --filter @steam-top/web exec vite preview --host 127.0.0.1 --port 4173",
-    url: "http://127.0.0.1:4173",
-    reuseExistingServer: false,
-    timeout: 120_000,
-    stdout: "pipe",
-    stderr: "pipe",
-  },
+  webServer: [
+    {
+      command: "NODE_ENV=test TEST_REALTIME_PORT=4174 TEST_CONTROL_SECRET=steam-top-e2e-only pnpm --filter @steam-top/server exec tsx ../../tests/support/realtime-server.ts",
+      url: "http://127.0.0.1:4174/health",
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+    {
+      command: "TEST_REALTIME_PROXY=http://127.0.0.1:4174 pnpm --filter @steam-top/web build && TEST_REALTIME_PROXY=http://127.0.0.1:4174 pnpm --filter @steam-top/web exec vite preview --host 127.0.0.1 --port 4173",
+      url: "http://127.0.0.1:4173",
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  ],
 });
