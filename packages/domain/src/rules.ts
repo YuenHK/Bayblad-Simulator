@@ -216,10 +216,7 @@ export function validateDesign(input: TopDesign): DesignValidation {
       );
       if (clearance < -EPSILON) {
         hasOutsideScrew = true;
-      } else if (
-        clearance > EPSILON &&
-        clearance + EPSILON < ASSEMBLY.minimumMaterialNeckMm
-      ) {
+      } else if (clearance + EPSILON < ASSEMBLY.minimumMaterialNeckMm) {
         hasThinNeck = true;
       }
     }

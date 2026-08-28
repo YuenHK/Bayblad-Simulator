@@ -5,7 +5,7 @@ import {
   type Polygon,
 } from "polygon-clipping";
 
-import { designSchema, type TopDesign } from "./design";
+import { designSchema, type Layer, type TopDesign } from "./design";
 import { makeLayerVertices, type Point } from "./geometry";
 
 export const MATERIALS = {
@@ -52,14 +52,44 @@ const FULL_TURN = Math.PI * 2;
  * continue to use exact circle formulae.
  */
 export const CUTOUT_CIRCLE_SEGMENTS = 192;
+export const CIRCLE_LAYER_SEGMENTS = 512;
 
-const UNIT_CIRCLE_SAMPLES = Array.from(
-  { length: CUTOUT_CIRCLE_SEGMENTS },
-  (_, index): readonly [number, number] => {
-    const angle = (index / CUTOUT_CIRCLE_SEGMENTS) * FULL_TURN;
-    return [Math.cos(angle), Math.sin(angle)];
-  },
+function makeUnitCircleSamples(
+  segments: number,
+  angularOffset = 0,
+): ReadonlyArray<readonly [number, number]> {
+  return Array.from(
+    { length: segments },
+    (_, index): readonly [number, number] => {
+      const angle = (index / segments) * FULL_TURN + angularOffset;
+      return [Math.cos(angle), Math.sin(angle)];
+    },
+  );
+}
+
+const UNIT_CIRCLE_SAMPLES = makeUnitCircleSamples(CUTOUT_CIRCLE_SEGMENTS);
+const CIRCLE_LAYER_CUTOUT_SAMPLES = makeUnitCircleSamples(
+  CIRCLE_LAYER_SEGMENTS,
 );
+const CIRCLE_LAYER_BOUNDARY_SAMPLES = makeUnitCircleSamples(
+  CIRCLE_LAYER_SEGMENTS,
+  Math.PI / CIRCLE_LAYER_SEGMENTS,
+);
+
+function makeCircleLayerVertices(radiusMm: number): Point[] {
+  const circumscribedRadiusMm =
+    radiusMm / Math.cos(Math.PI / CIRCLE_LAYER_SEGMENTS);
+  return CIRCLE_LAYER_BOUNDARY_SAMPLES.map(([unitX, unitY]) => ({
+    x: unitX * circumscribedRadiusMm,
+    y: unitY * circumscribedRadiusMm,
+  }));
+}
+
+export function makeMassLayerVertices(layer: Layer): Point[] {
+  return layer.shape === "circle"
+    ? makeCircleLayerVertices(layer.diameterMm / 2)
+    : makeLayerVertices(layer);
+}
 
 function assertFinitePositive(value: number, name: string): void {
   if (!Number.isFinite(value) || value <= 0) {
@@ -313,9 +343,12 @@ function uniqueCutouts(
   );
 }
 
-function circlePolygon(cutout: CircularCutout): Polygon {
+function circlePolygon(
+  cutout: CircularCutout,
+  samples: ReadonlyArray<readonly [number, number]> = UNIT_CIRCLE_SAMPLES,
+): Polygon {
   return [
-    UNIT_CIRCLE_SAMPLES.map(([unitX, unitY]) => [
+    samples.map(([unitX, unitY]) => [
       cutout.center.x + unitX * cutout.radiusMm,
       cutout.center.y + unitY * cutout.radiusMm,
     ]),
@@ -388,19 +421,51 @@ function addRemovedSections(
   };
 }
 
+function regularPolygonCircularSection(
+  cutouts: readonly CircularCutout[],
+  segments: number,
+): RemovedSection {
+  const step = FULL_TURN / segments;
+  const areaFactor = (segments * Math.sin(step)) / 2;
+  const polarFactor =
+    (segments * Math.sin(step) * (2 + Math.cos(step))) / 12;
+  return cutouts.reduce<RemovedSection>(
+    (section, cutout) => {
+      const areaMm2 = areaFactor * cutout.radiusMm ** 2;
+      return {
+        areaMm2: section.areaMm2 + areaMm2,
+        firstMomentXmm3:
+          section.firstMomentXmm3 + areaMm2 * cutout.center.x,
+        firstMomentYmm3:
+          section.firstMomentYmm3 + areaMm2 * cutout.center.y,
+        polarSecondMomentAtOriginMm4:
+          section.polarSecondMomentAtOriginMm4 +
+          polarFactor * cutout.radiusMm ** 4 +
+          areaMm2 * (cutout.center.x ** 2 + cutout.center.y ** 2),
+      };
+    },
+    exactCircularSection([]),
+  );
+}
+
+type CircleLayerModel = Readonly<{
+  boundaryRadiusMm: number;
+  cutoutSamples: ReadonlyArray<readonly [number, number]>;
+}>;
+
 function clippedCutoutSection(
   vertices: readonly Point[],
   cutouts: readonly CircularCutout[],
-  analyticCircleRadiusMm?: number,
+  circleLayerModel?: CircleLayerModel,
 ): RemovedSection {
   if (cutouts.length === 0) {
     return exactCircularSection([]);
   }
   const layerPolygon = polygonFromVertices(vertices);
   const fitsInside = (cutout: CircularCutout) =>
-    analyticCircleRadiusMm === undefined
+    circleLayerModel === undefined
       ? circleFitsInsidePolygon(cutout, vertices)
-      : circleFitsInsideCircle(cutout, analyticCircleRadiusMm);
+      : circleFitsInsideCircle(cutout, circleLayerModel.boundaryRadiusMm);
 
   return overlappingComponents(uniqueCutouts(cutouts)).reduce<RemovedSection>(
     (removed, component) => {
@@ -411,11 +476,18 @@ function clippedCutoutSection(
       if (component.length === 1 && fitsInside(firstCutout)) {
         return addRemovedSections(
           removed,
-          exactCircularSection([firstCutout]),
+          circleLayerModel === undefined
+            ? exactCircularSection([firstCutout])
+            : regularPolygonCircularSection(
+                [firstCutout],
+                circleLayerModel.cutoutSamples.length,
+              ),
         );
       }
 
-      const polygons = component.map(circlePolygon);
+      const polygons = component.map((cutout) =>
+        circlePolygon(cutout, circleLayerModel?.cutoutSamples),
+      );
       const firstPolygon = polygons[0];
       if (firstPolygon === undefined) {
         return removed;
@@ -438,7 +510,7 @@ export function calculatePerforatedLayerMassProperties(
   cutouts: readonly CircularCutout[],
   thicknessMm: number,
   densityGPerMm3: number,
-  analyticCircleRadiusMm?: number,
+  circleLayerModel?: CircleLayerModel,
 ): MassProperties {
   assertFinitePositive(thicknessMm, "thicknessMm");
   assertFinitePositive(densityGPerMm3, "densityGPerMm3");
@@ -450,7 +522,7 @@ export function calculatePerforatedLayerMassProperties(
   const removed = clippedCutoutSection(
     vertices,
     cutouts,
-    analyticCircleRadiusMm,
+    circleLayerModel,
   );
   const netArea = section.areaMm2 - removed.areaMm2;
   const firstMomentX =
@@ -521,7 +593,7 @@ export function calculateMassProperties(input: TopDesign): MassProperties {
   const design = designSchema.parse(input);
   const screws = screwCutouts(design);
   const components: MassProperties[] = design.layers.map((layer) => {
-    const vertices = makeLayerVertices(layer);
+    const vertices = makeMassLayerVertices(layer);
     const cutouts: CircularCutout[] = [
       { center: { x: 0, y: 0 }, radiusMm: ASSEMBLY.axleHoleRadiusMm },
       ...screws,
@@ -531,7 +603,12 @@ export function calculateMassProperties(input: TopDesign): MassProperties {
       cutouts,
       MATERIALS.layerThicknessMm,
       MATERIALS.acrylicDensityGPerMm3,
-      layer.shape === "circle" ? layer.diameterMm / 2 : undefined,
+      layer.shape === "circle"
+        ? {
+            boundaryRadiusMm: layer.diameterMm / 2,
+            cutoutSamples: CIRCLE_LAYER_CUTOUT_SAMPLES,
+          }
+        : undefined,
     );
   });
 

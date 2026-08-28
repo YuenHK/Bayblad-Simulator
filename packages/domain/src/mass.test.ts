@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { makeDefaultDesign } from "./design";
-import { makeLayerVertices, polygonArea } from "./geometry";
 import {
   ASSEMBLY,
+  CIRCLE_LAYER_SEGMENTS,
   CUTOUT_CIRCLE_SEGMENTS,
   MATERIALS,
   calculateMassProperties,
   calculatePerforatedLayerMassProperties,
+  makeMassLayerVertices,
 } from "./mass";
 
 describe("mass constants", () => {
@@ -32,6 +33,24 @@ describe("mass constants", () => {
 });
 
 describe("calculatePerforatedLayerMassProperties", () => {
+  it("keeps an unperforated canonical circle within 0.002% analytic area", () => {
+    const layer = {
+      ...makeDefaultDesign().layers[0],
+      shape: "circle" as const,
+      diameterMm: 40,
+    };
+    const result = calculatePerforatedLayerMassProperties(
+      makeMassLayerVertices(layer),
+      [],
+      1,
+      1,
+    );
+
+    expect(Math.abs(result.totalMassG - Math.PI * 20 ** 2) / (Math.PI * 20 ** 2)).toBeLessThan(
+      0.00002,
+    );
+  });
+
   it("uses the centroid and parallel-axis theorem for an asymmetric plate", () => {
     const result = calculatePerforatedLayerMassProperties(
       [
@@ -157,7 +176,7 @@ describe("calculatePerforatedLayerMassProperties", () => {
 });
 
 describe("calculateMassProperties", () => {
-  it("uses exact hole mass when screws are tangent to analytic circle layers", () => {
+  it("keeps canonical circle-layer mass within 0.01% of the analytic circle", () => {
     const design = makeDefaultDesign();
     design.layers = design.layers.map((layer) => ({
       ...layer,
@@ -165,19 +184,21 @@ describe("calculateMassProperties", () => {
       diameterMm: 40,
     })) as typeof design.layers;
     design.screwLayout = { count: 4, radiusMm: 18, rotationDeg: 0 };
-    const layerAreaMm2 = polygonArea(makeLayerVertices(design.layers[0]));
     const expectedLayerAreaMm2 =
-      layerAreaMm2 -
+      Math.PI * 20 ** 2 -
       Math.PI * ASSEMBLY.axleHoleRadiusMm ** 2 -
       4 * Math.PI * ASSEMBLY.screwHoleRadiusMm ** 2;
     const result = calculateMassProperties(design);
-
-    expect(result.totalMassG).toBeCloseTo(
+    const expectedMassG =
       expectedLayerAreaMm2 *
-        MATERIALS.layerThicknessMm *
-        MATERIALS.acrylicDensityGPerMm3 *
-        3,
-      10,
+      MATERIALS.layerThicknessMm *
+      MATERIALS.acrylicDensityGPerMm3 *
+      3;
+
+    expect(
+      Math.abs(result.totalMassG - expectedMassG) / expectedMassG,
+    ).toBeLessThan(
+      0.0001,
     );
   });
 
@@ -212,11 +233,16 @@ describe("calculateMassProperties", () => {
     };
     const three = calculateMassProperties(threeScrews);
     const four = calculateMassProperties(fourScrews);
+    const circleLayerHoleAreaMm2 =
+      (CIRCLE_LAYER_SEGMENTS *
+        Math.sin((Math.PI * 2) / CIRCLE_LAYER_SEGMENTS) *
+        ASSEMBLY.screwHoleRadiusMm ** 2) /
+      2;
     const oneHoleAcrossThreeLayers =
-      Math.PI * ASSEMBLY.screwHoleRadiusMm ** 2 *
+      (Math.PI * ASSEMBLY.screwHoleRadiusMm ** 2 +
+        2 * circleLayerHoleAreaMm2) *
       MATERIALS.layerThicknessMm *
-      MATERIALS.acrylicDensityGPerMm3 *
-      3;
+      MATERIALS.acrylicDensityGPerMm3;
 
     expect(three.totalMassG - four.totalMassG).toBeCloseTo(
       oneHoleAcrossThreeLayers,
@@ -263,8 +289,7 @@ describe("calculateMassProperties", () => {
         metalDiscDiameterMm: 0,
       };
     };
-    const fullFitBoundaryMm =
-      20 - ASSEMBLY.screwHoleRadiusMm / Math.cos(Math.PI / 64);
+    const fullFitBoundaryMm = 20 - ASSEMBLY.screwHoleRadiusMm;
     const justInside = calculateMassProperties(
       makeBoundaryDesign(fullFitBoundaryMm - 0.0005),
     );
@@ -280,5 +305,27 @@ describe("calculateMassProperties", () => {
         justOutside.polarMomentGmm2 - justInside.polarMomentGmm2,
       ),
     ).toBeLessThan(1);
+  });
+
+  it("has no mass jump across the analytic 18 mm circle boundary", () => {
+    const makeBoundaryDesign = (radiusMm: number) => {
+      const design = makeDefaultDesign();
+      design.layers = design.layers.map((layer) => ({
+        ...layer,
+        shape: "circle",
+        diameterMm: 40,
+      })) as typeof design.layers;
+      design.screwLayout = { count: 4, radiusMm, rotationDeg: 0 };
+      return design;
+    };
+    const inside = calculateMassProperties(makeBoundaryDesign(17.999999));
+    const outside = calculateMassProperties(makeBoundaryDesign(18.000001));
+
+    expect(Math.abs(outside.totalMassG - inside.totalMassG)).toBeLessThan(
+      0.00002,
+    );
+    expect(
+      Math.abs(outside.polarMomentGmm2 - inside.polarMomentGmm2),
+    ).toBeLessThan(0.01);
   });
 });
