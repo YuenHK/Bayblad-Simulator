@@ -91,7 +91,10 @@ describe("RealtimeClient", () => {
       expect(count).toBeLessThanOrEqual(5);
       vi.advanceTimersByTime(10_000);
       expect(transport.emitted.filter(([, event]) => (event as any).type === "clock.ping")).toHaveLength(count);
+      vi.advanceTimersByTime(3 * 60_000);
+      expect(client.debugPendingPingCount()).toBeLessThanOrEqual(8);
       client.stop();
+      expect(client.debugPendingPingCount()).toBe(0);
     } finally { vi.useRealTimers(); }
   });
 
@@ -156,10 +159,12 @@ describe("RealtimeClient", () => {
       expect(client.getState()).toMatchObject({ departurePending: false, pendingActions: 0, room: { roomId: "room-1" }, lastError: "操作逾時，請重試。" });
       const retry = client.command({ type, roomId: "room-1" });
       expect(retry).not.toBe(first); expect(client.getState()).toMatchObject({ departurePending: true, pendingActions: 1, lastError: null });
+      transport.fire("server.event", { type: "error", code: "LATE", message: "late old error", causedByEventId: first, protocolVersion: 1, serverEventId: uuid(4) });
+      expect(client.getState()).toMatchObject({ departurePending: true, pendingActions: 1, lastError: null });
       transport.fire("server.event", { type: "command.ack", causedByEventId: first, commandType: type, status: "applied", protocolVersion: 1, serverEventId: uuid(5) });
       expect(client.getState()).toMatchObject({ departurePending: true, pendingActions: 1, room: { roomId: "room-1" } });
       transport.fire("server.event", { type: "room.departed", departureId: uuid(8), roomId: "room-1", reason: type === "room.leave" ? "left" : "closed", protocolVersion: 1, serverEventId: uuid(6) });
-      expect(client.getState()).toMatchObject({ departurePending: false, pendingActions: 0, room: null });
+      expect(client.getState()).toMatchObject({ departurePending: false, pendingActions: 0, room: null, lastError: null });
       client.stop();
     } finally { vi.useRealTimers(); }
   });
@@ -172,6 +177,16 @@ describe("RealtimeClient", () => {
     transport.fire("server.event", { type: "error", code: "NEW", message: "new error", protocolVersion: 1, serverEventId: uuid(6) });
     transport.fire("server.event", { type: "command.ack", causedByEventId: eventId, commandType: "room.move", status: "applied", protocolVersion: 1, serverEventId: uuid(7) });
     expect(client.getState().lastError).toBe("new error");
+    client.stop();
+  });
+
+  it("authoritative departed會清除該次離房命令的correlated error", () => {
+    const transport = new FakeTransport(); const client = onlineClient(transport);
+    const eventId = client.command({ type: "room.leave", roomId: "room-1" });
+    transport.fire("server.event", { type: "error", code: "TEMP", message: "temporary", causedByEventId: eventId, protocolVersion: 1, serverEventId: uuid(4) });
+    expect(client.getState().lastError).toBe("temporary");
+    transport.fire("server.event", { type: "room.departed", departureId: uuid(8), roomId: "room-1", reason: "left", protocolVersion: 1, serverEventId: uuid(5) });
+    expect(client.getState()).toMatchObject({ room: null, departurePending: false, lastError: null });
     client.stop();
   });
 

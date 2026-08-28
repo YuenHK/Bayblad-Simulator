@@ -1,5 +1,5 @@
 import { expect, test, type CDPSession, type Locator, type Page } from "@playwright/test";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const DRAFT_KEY = "steam-top:designer-draft:v1";
@@ -78,6 +78,10 @@ test("production 首屏不預載3D heavy chunk，選擇3D後才載入", async ({
     const found = new Set<string>(); const visit = (key: string) => { if (found.has(key) || excluded.has(key) || !manifest[key]) return; found.add(key); const entry = manifest[key]!; for (const dependency of [...(entry.imports ?? []), ...(includeDynamic ? entry.dynamicImports ?? [] : [])]) visit(dependency); }; visit(root); return found;
   };
   const sharedMain = collect("index.html", false);
+  const staticMainFiles = [...sharedMain].map((key) => manifest[key]!.file).filter((file) => file.endsWith(".js"));
+  const staticMainSizes = await Promise.all(staticMainFiles.map(async (file) => (await stat(resolve(process.cwd(), "apps/web/dist", file))).size));
+  for (const size of staticMainSizes) expect(size).toBeLessThan(500 * 1_024);
+  expect(staticMainSizes.reduce((total, size) => total + size, 0)).toBeLessThan(650 * 1_024);
   const heavyKeys = collect("src/features/designer/TopPreview3D.tsx", true, sharedMain);
   const heavyFiles = [...heavyKeys].map((key) => manifest[key]!.file);
   expect(heavyFiles.length).toBeGreaterThan(0);

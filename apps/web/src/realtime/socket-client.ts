@@ -86,6 +86,8 @@ export type RealtimeState = Readonly<{
 
 const SESSION_KEY = "steam-top.session-token";
 const DESIGN_CACHE_KEY = "steam-top.design-cache";
+const CLOCK_PING_TTL_MS = 30_000;
+const MAX_PENDING_PINGS = 8;
 const designCacheSchema = z.object({
   sessionToken: z.string().min(32).max(256), fingerprint: z.string(), designId: z.uuid(),
 }).strict();
@@ -149,7 +151,7 @@ export class RealtimeClient {
   readonly #clock = new ClientClockEstimator();
   readonly #listeners = new Set<() => void>();
   readonly #bound = new Map<string, (...args: unknown[]) => void>();
-  readonly #pendingPings = new Map<string, number>();
+  readonly #pendingPings = new Map<string, Readonly<{ clientSentAtMs: number; deadlineMs: number }>>();
   readonly #seenServerEvents = new Set<string>();
   readonly #seenRoundIds = new Set<string>();
   readonly #pendingActions = new Map<string, Readonly<{ timer: ReturnType<typeof setTimeout>; commandType: CommandInput["type"] }>>();
@@ -162,6 +164,7 @@ export class RealtimeClient {
   #clockDegradeTimer: ReturnType<typeof setTimeout> | null = null;
   #clockPingAttempts = 0;
   #pendingDepartureEventId: string | null = null;
+  #lastDepartureEventId: string | null = null;
   #lastErrorEventId: string | null = null;
 
   constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number }>) {
@@ -175,6 +178,7 @@ export class RealtimeClient {
   }
 
   getState = (): RealtimeState => this.#state;
+  debugPendingPingCount = (): number => this.#pendingPings.size;
   subscribe = (listener: () => void): (() => void) => { this.#listeners.add(listener); return () => this.#listeners.delete(listener); };
 
   start(): void {
@@ -201,7 +205,7 @@ export class RealtimeClient {
     if (this.#clockRetryTimer) clearTimeout(this.#clockRetryTimer);
     if (this.#clockDegradeTimer) clearTimeout(this.#clockDegradeTimer);
     this.#clearPendingActions(true);
-    this.#pendingDepartureEventId = null;
+    this.#pendingPings.clear(); this.#pendingDepartureEventId = null; this.#lastDepartureEventId = null;
     this.#clockTimer = null;
     this.#clockRetryTimer = null; this.#clockDegradeTimer = null;
     this.#started = false;
@@ -215,7 +219,7 @@ export class RealtimeClient {
     const eventId = crypto.randomUUID();
     this.#transport.emit("client.event", { ...input, protocolVersion: PROTOCOL_VERSION, eventId } satisfies V1CommandEvent);
     if (input.type === "room.leave" || input.type === "room.close") {
-      this.#pendingDepartureEventId = eventId;
+      this.#pendingDepartureEventId = eventId; this.#lastDepartureEventId = eventId;
       this.#set({ departurePending: true, lastError: null });
     }
     const timer = setTimeout(() => {
@@ -332,7 +336,8 @@ export class RealtimeClient {
       case "round.finished": if (this.#sameRound(event)) this.#set({ roundFinished: { winner: event.winner } }); break;
       case "match.finished": if (this.#sameMatch(event)) this.#set({ matchFinished: event, schedule: null }); break;
       case "match.cancelled": if (this.#sameMatch(event)) this.#set({ cancelledReason: event.reason, schedule: null }); break;
-      case "room.departed":
+      case "room.departed": {
+        const departureEventId = this.#pendingDepartureEventId;
         if (this.#pendingDepartureEventId) {
           this.#actionWaiters.get(this.#pendingDepartureEventId)?.resolve();
           this.#actionWaiters.delete(this.#pendingDepartureEventId);
@@ -340,12 +345,17 @@ export class RealtimeClient {
         }
         if (event.roomId === this.#state.room?.roomId) {
           this.#pendingDepartureEventId = null;
-          this.#set({ room: null, departurePending: false, ...this.#clearedBattleState() });
+          const clearsDepartureError = this.#lastErrorEventId !== null && (this.#lastErrorEventId === departureEventId || this.#lastErrorEventId === this.#lastDepartureEventId);
+          if (clearsDepartureError) this.#lastErrorEventId = null;
+          this.#lastDepartureEventId = null;
+          this.#set({ room: null, departurePending: false, ...(clearsDepartureError ? { lastError: null } : {}), ...this.#clearedBattleState() });
         }
         this.#ackDeparture(event.departureId);
         break;
+      }
       case "clock.pong": this.#acceptClockPong(event); break;
       case "error":
+        if (event.causedByEventId && !this.#pendingActions.has(event.causedByEventId) && !this.#actionWaiters.has(event.causedByEventId) && event.causedByEventId !== this.#pendingDepartureEventId) break;
         if (event.causedByEventId) { const waiter = this.#actionWaiters.get(event.causedByEventId); const error = Object.assign(new Error(event.message), { code: event.code }); waiter?.reject(error); this.#actionWaiters.delete(event.causedByEventId); this.#clearPendingAction(event.causedByEventId); this.#lastErrorEventId = event.causedByEventId; }
         if (event.causedByEventId && event.causedByEventId === this.#pendingDepartureEventId) {
           this.#pendingDepartureEventId = null;
@@ -393,7 +403,9 @@ export class RealtimeClient {
     this.#clockPingAttempts += 1;
     const pingId = crypto.randomUUID();
     const clientSentAtMs = this.#now();
-    this.#pendingPings.set(pingId, clientSentAtMs);
+    this.#prunePendingPings(clientSentAtMs);
+    while (this.#pendingPings.size >= MAX_PENDING_PINGS) this.#pendingPings.delete(this.#pendingPings.keys().next().value!);
+    this.#pendingPings.set(pingId, { clientSentAtMs, deadlineMs: clientSentAtMs + CLOCK_PING_TTL_MS });
     this.#transport.emit("client.event", {
       type: "clock.ping", pingId, clientSentAtMs,
       protocolVersion: PROTOCOL_VERSION, eventId: crypto.randomUUID(),
@@ -404,12 +416,13 @@ export class RealtimeClient {
     }
   }
   #acceptClockPong(event: Extract<ServerEvent, { type: "clock.pong" }>): void {
-    const sent = this.#pendingPings.get(event.pingId);
-    if (sent === undefined || sent !== event.clientSentAtMs) return;
+    this.#prunePendingPings(this.#now());
+    const pending = this.#pendingPings.get(event.pingId);
+    if (pending === undefined || pending.clientSentAtMs !== event.clientSentAtMs) return;
     this.#pendingPings.delete(event.pingId);
     if (this.#clockRetryTimer) clearTimeout(this.#clockRetryTimer);
     this.#clockRetryTimer = null;
-    const sample = { clientSentAtMs: sent, serverReceivedAtMs: event.serverReceiveTimeMs, serverSentAtMs: event.serverSendTimeMs, clientReceivedAtMs: this.#now() };
+    const sample = { clientSentAtMs: pending.clientSentAtMs, serverReceivedAtMs: event.serverReceiveTimeMs, serverSentAtMs: event.serverSendTimeMs, clientReceivedAtMs: this.#now() };
     this.#clock.add(sample);
     this.#transport.emit("client.event", { type: "clock.ack", pingId: event.pingId, protocolVersion: PROTOCOL_VERSION, eventId: crypto.randomUUID() } satisfies V1CommandEvent);
     const good = this.#clock.highQualitySampleCount >= 3;
@@ -417,6 +430,9 @@ export class RealtimeClient {
     this.#set({ clockOffsetMs: this.#clock.offsetMs, clockRttMs: this.#clock.rttMs, clockReady: good || degraded, clockSamples: this.#clock.highQualitySampleCount, clockQuality: good ? "good" : degraded ? "degraded" : "syncing" });
     if (good && this.#clockDegradeTimer) { clearTimeout(this.#clockDegradeTimer); this.#clockDegradeTimer = null; }
     if (!good && !degraded) this.#sendClockPing();
+  }
+  #prunePendingPings(nowMs: number): void {
+    for (const [pingId, pending] of this.#pendingPings) if (pending.deadlineMs <= nowMs) this.#pendingPings.delete(pingId);
   }
 
   #clearedBattleState(): Pick<RealtimeState, "battleStarted" | "schedule" | "privateGrade" | "spectatorGrades" | "frames" | "roundFinished" | "matchFinished" | "cancelledReason" | "attempt" | "currentRoundId"> {
@@ -429,7 +445,7 @@ export class RealtimeClient {
   #clearPendingAction(eventId: string): void { const pending = this.#pendingActions.get(eventId); if (pending) clearTimeout(pending.timer); this.#pendingActions.delete(eventId); this.#set({ pendingActions: this.#pendingActions.size }); }
   #clearPendingActions(reject = false): void { for (const pending of this.#pendingActions.values()) clearTimeout(pending.timer); for (const waiter of this.#actionWaiters.values()) reject ? waiter.reject(new Error("操作已由最新伺服器狀態取代。")) : waiter.resolve(); this.#actionWaiters.clear(); this.#pendingActions.clear(); this.#set({ pendingActions: 0 }); }
   #clearAllServerState(): void {
-    this.#seenServerEvents.clear(); this.#seenRoundIds.clear(); this.#pendingDepartureEventId = null; this.#lastErrorEventId = null; this.#clearPendingActions(true);
+    this.#seenServerEvents.clear(); this.#seenRoundIds.clear(); this.#pendingDepartureEventId = null; this.#lastDepartureEventId = null; this.#lastErrorEventId = null; this.#clearPendingActions(true);
     this.#set({ room: null, lobbyRooms: [], departurePending: false, ...this.#clearedBattleState() });
   }
 
