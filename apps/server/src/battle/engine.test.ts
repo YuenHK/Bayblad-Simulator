@@ -31,7 +31,10 @@ import {
   resolveTimeoutOutcome,
   simulateMatchRound,
   simulateMatchRoundAsync,
+  sha256Hex,
   type BattleInputs,
+  type ResultRepository,
+  type StoredBattleResult,
 } from "./engine";
 import { DeterministicPrng } from "./prng";
 
@@ -111,7 +114,12 @@ const inputs = (seed = 12345): BattleInputs => ({
   seed,
 });
 
+const localResultRepository = () => new InMemoryCompletedRoundStore();
+
 describe("DeterministicPrng", () => {
+  it("uses the standard SHA-256 digest for bounded authority fingerprints", () => {
+    expect(sha256Hex("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  });
   it("replays the same bounded sequence from the same uint32 seed", () => {
     const first = new DeterministicPrng(0);
     const second = new DeterministicPrng(0);
@@ -573,6 +581,14 @@ describe("elimination and outcome rules", () => {
 });
 
 describe("BattleEngine simulate-once cache", () => {
+  const waitForScheduler = async (predicate: () => boolean) => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    throw new Error("Scheduler did not reach the expected state");
+  };
+
   const timeoutInputs = (seed: number): BattleInputs => ({
     player1: lightTop,
     player2: {
@@ -643,7 +659,7 @@ describe("BattleEngine simulate-once cache", () => {
   }, 30_000);
 
   it("deduplicates concurrent async spectators and rejects an active fingerprint conflict", async () => {
-    const engine = new BattleEngine({ chunkTicks: 1 });
+    const engine = new BattleEngine({ resultRepository: localResultRepository(), chunkTicks: 1 });
     const first = engine.simulateOnceAsync("match-async", "round-1", inputs());
     const second = engine.simulateOnceAsync("match-async", "round-1", inputs());
     await expect(engine.simulateOnceAsync("match-async", "round-1", inputs(99))).rejects.toThrow(/conflict/i);
@@ -654,7 +670,7 @@ describe("BattleEngine simulate-once cache", () => {
   });
 
   it("simulates once for twenty spectators and returns defensive deep clones", () => {
-    const engine = new BattleEngine();
+    const engine = new BattleEngine({ resultRepository: localResultRepository() });
     const results = Array.from({ length: 20 }, () => engine.simulateOnce("match-1", "round-1", inputs()));
     expect(engine.simulationCount).toBe(1);
     expect(results.every((result) => JSON.stringify(result) === JSON.stringify(results[0]))).toBe(true);
@@ -663,7 +679,7 @@ describe("BattleEngine simulate-once cache", () => {
   });
 
   it("fingerprints parsed canonical inputs so trim-equivalent retries share cache", () => {
-    const engine = new BattleEngine();
+    const engine = new BattleEngine({ resultRepository: localResultRepository() });
     const canonical = inputs();
     const spaced = {
       ...canonical,
@@ -677,7 +693,7 @@ describe("BattleEngine simulate-once cache", () => {
 
   it("expires closed results after TTL but keeps them for a short reconnect", () => {
     let now = 1_000;
-    const engine = new BattleEngine({ ttlMs: 100, now: () => now });
+    const engine = new BattleEngine({ resultRepository: localResultRepository(), ttlMs: 100, now: () => now });
     const first = engine.simulateOnce("match-ttl", "round-1", inputs());
     engine.close("match-ttl", "round-1");
     now += 99;
@@ -689,7 +705,7 @@ describe("BattleEngine simulate-once cache", () => {
   });
 
   it("bounds large timeout results and evicts the least recently used entry", () => {
-    const engine = new BattleEngine({ maxEntries: 2 });
+    const engine = new BattleEngine({ resultRepository: localResultRepository(), maxEntries: 2 });
     engine.simulateOnce("match-a", "round", inputs(1));
     const expectedB = engine.simulateOnce("match-b", "round", inputs(2));
     engine.simulateOnce("match-a", "round", inputs(1));
@@ -699,14 +715,14 @@ describe("BattleEngine simulate-once cache", () => {
     expect(engine.simulationCount).toBe(3);
     expect(engine.cacheSize).toBe(2);
 
-    const timeoutEngine = new BattleEngine({ maxEntries: 1 });
+    const timeoutEngine = new BattleEngine({ resultRepository: localResultRepository(), maxEntries: 1 });
     expect(timeoutEngine.simulateOnce("timeout-a", "round", timeoutInputs(10)).ticks).toBe(5_400);
     expect(timeoutEngine.simulateOnce("timeout-b", "round", timeoutInputs(11)).ticks).toBe(5_400);
     expect(timeoutEngine.cacheSize).toBe(1);
   });
 
   it("rejects correlation conflicts while explicit cleanup deletes immediately", () => {
-    const engine = new BattleEngine();
+    const engine = new BattleEngine({ resultRepository: localResultRepository() });
     const expected = engine.simulateOnce("match-1", "round-1", inputs());
     expect(() => engine.simulateOnce("match-1", "round-1", inputs(9))).toThrow(/conflict/i);
     expect(engine.cleanup("match-1", "round-1")).toBe(true);
@@ -733,8 +749,88 @@ describe("BattleEngine simulate-once cache", () => {
     expect(engine.simulationCount).toBe(2);
   });
 
+  it("bounds all local records while retaining LRU results and tombstones", async () => {
+    expect(() => new InMemoryCompletedRoundStore({ maxResults: 2, maxRecords: 1 }))
+      .toThrow(/maxRecords/i);
+    const repository = new InMemoryCompletedRoundStore({ maxResults: 1, maxRecords: 3 });
+    const result = simulateMatchRound(player1, player2, {
+      seed: 91,
+      launchA: launch(),
+      launchB: launch(),
+    });
+    for (let index = 0; index < 10; index += 1) {
+      await repository.saveIfAbsent(`record-${index}`, {
+        fingerprint: index.toString(16).padStart(64, "0"),
+        result,
+      });
+    }
+    expect(repository.recordCount).toBe(3);
+    expect(repository.fullResultCount).toBe(1);
+    expect(await repository.get("record-0")).toBeUndefined();
+    expect((await repository.get("record-7"))?.result).toBeUndefined();
+    expect((await repository.get("record-9"))?.result).toEqual(result);
+  });
+
+  it("requires an explicitly injected result repository", () => {
+    expect(() => new BattleEngine({} as ConstructorParameters<typeof BattleEngine>[0]))
+      .toThrow(/repository/i);
+  });
+
+  it("awaits an async atomic repository and adopts one winner across engines", async () => {
+    const records = new Map<string, StoredBattleResult>();
+    const repository = {
+      async get(key: string) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return records.get(key);
+      },
+      async saveIfAbsent(key: string, value: StoredBattleResult) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const winner = records.get(key) ?? structuredClone(value);
+        records.set(key, winner);
+        return structuredClone(winner);
+      },
+    } as unknown as ResultRepository;
+    const firstEngine = new BattleEngine({ resultRepository: repository, chunkTicks: 60 });
+    const secondEngine = new BattleEngine({ resultRepository: repository, chunkTicks: 60 });
+    const [first, second] = await Promise.all([
+      firstEngine.simulateOnceAsync("shared-async", "round", inputs(92)),
+      secondEngine.simulateOnceAsync("shared-async", "round", inputs(92)),
+    ]);
+    expect(second).toEqual(first);
+    expect(records).toHaveLength(1);
+    expect(records.values().next().value?.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("rejects the test-only sync cache API for an async repository", () => {
+    const repository = {
+      async get() { return undefined; },
+      async saveIfAbsent(_key: string, value: StoredBattleResult) { return value; },
+    } as unknown as ResultRepository;
+    const engine = new BattleEngine({ resultRepository: repository });
+    expect(() => engine.simulateOnce("async-repository", "round", inputs(93)))
+      .toThrow(/test-only|in-memory/i);
+  });
+
+  it("does not repopulate cache when cleanup cancels a pending repository lookup", async () => {
+    const local = localResultRepository();
+    new BattleEngine({ resultRepository: local }).simulateOnce("delayed-authority", "round", inputs(94));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const delayed = {
+      async get(key: string) { await gate; return local.get(key); },
+      async saveIfAbsent(key: string, value: StoredBattleResult) { return local.saveIfAbsent(key, value); },
+    } satisfies ResultRepository;
+    const engine = new BattleEngine({ resultRepository: delayed });
+    const pending = engine.simulateOnceAsync("delayed-authority", "round", inputs(94));
+    expect(engine.cleanup("delayed-authority", "round")).toBe(true);
+    release();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(engine.cacheSize).toBe(0);
+    expect(engine.simulationCount).toBe(0);
+  });
+
   it("bounds concurrent and queued jobs, rejects overflow, and drains FIFO", async () => {
-    const engine = new BattleEngine({ chunkTicks: 60, maxConcurrent: 1, maxQueued: 2 });
+    const engine = new BattleEngine({ resultRepository: localResultRepository(), chunkTicks: 60, maxConcurrent: 1, maxQueued: 2 });
     const completionOrder: string[] = [];
     const first = engine.simulateOnceAsync("schedule-a", "round", timeoutInputs(21))
       .then((result) => { completionOrder.push("a"); return result; });
@@ -742,6 +838,7 @@ describe("BattleEngine simulate-once cache", () => {
       .then((result) => { completionOrder.push("b"); return result; });
     const third = engine.simulateOnceAsync("schedule-c", "round", timeoutInputs(23))
       .then((result) => { completionOrder.push("c"); return result; });
+    await waitForScheduler(() => engine.runningCount === 1 && engine.queuedCount === 2);
     expect(engine.runningCount).toBe(1);
     expect(engine.queuedCount).toBe(2);
     await expect(engine.simulateOnceAsync("schedule-overflow", "round", timeoutInputs(24)))
@@ -754,12 +851,13 @@ describe("BattleEngine simulate-once cache", () => {
   });
 
   it("rejects only an aborted queued caller while the authoritative job continues", async () => {
-    const engine = new BattleEngine({ chunkTicks: 60, maxConcurrent: 1, maxQueued: 2 });
+    const engine = new BattleEngine({ resultRepository: localResultRepository(), chunkTicks: 60, maxConcurrent: 1, maxQueued: 2 });
     const active = engine.simulateOnceAsync("abort-active", "round", timeoutInputs(31));
     const controller = new AbortController();
     const queued = engine.simulateOnceAsync("abort-queued", "round", timeoutInputs(32), {
       signal: controller.signal,
     });
+    await waitForScheduler(() => engine.queuedCount === 1);
     expect(engine.queuedCount).toBe(1);
     controller.abort();
     await expect(queued).rejects.toMatchObject({ name: "AbortError" });
@@ -772,7 +870,7 @@ describe("BattleEngine simulate-once cache", () => {
   });
 
   it("aborting one deduplicated caller does not cancel the shared simulation", async () => {
-    const engine = new BattleEngine({ chunkTicks: 60, maxConcurrent: 1 });
+    const engine = new BattleEngine({ resultRepository: localResultRepository(), chunkTicks: 60, maxConcurrent: 1 });
     const controller = new AbortController();
     const first = engine.simulateOnceAsync("spectator-abort", "round", timeoutInputs(41), {
       signal: controller.signal,
@@ -786,9 +884,11 @@ describe("BattleEngine simulate-once cache", () => {
   });
 
   it("authoritative cleanup cancels a running job and starts the next queued job", async () => {
-    const engine = new BattleEngine({ chunkTicks: 1, maxConcurrent: 1, maxQueued: 1 });
+    const engine = new BattleEngine({ resultRepository: localResultRepository(), chunkTicks: 1, maxConcurrent: 1, maxQueued: 1 });
     const active = engine.simulateOnceAsync("running-cancel", "round", timeoutInputs(41));
+    await waitForScheduler(() => engine.runningCount === 1);
     const queued = engine.simulateOnceAsync("running-recovery", "round", inputs(42));
+    await waitForScheduler(() => engine.queuedCount === 1);
     expect(engine.cleanup("running-cancel", "round")).toBe(true);
     await expect(active).rejects.toMatchObject({ name: "AbortError" });
     await expect(queued).resolves.toMatchObject({ seed: 42 });
@@ -798,7 +898,7 @@ describe("BattleEngine simulate-once cache", () => {
   });
 
   it("cleanup cancels an in-flight result and does not retain it", async () => {
-    const engine = new BattleEngine({ chunkTicks: 1 });
+    const engine = new BattleEngine({ resultRepository: localResultRepository(), chunkTicks: 1 });
     const active = engine.simulateOnceAsync("match-cleanup", "round-1", inputs());
     const spectator = engine.simulateOnceAsync("match-cleanup", "round-1", inputs());
     expect(engine.cleanup("match-cleanup", "round-1")).toBe(true);
@@ -809,10 +909,12 @@ describe("BattleEngine simulate-once cache", () => {
   });
 
   it("cleanup cancels a queued job for every waiter and releases queue capacity", async () => {
-    const engine = new BattleEngine({ chunkTicks: 60, maxConcurrent: 1, maxQueued: 1 });
+    const engine = new BattleEngine({ resultRepository: localResultRepository(), chunkTicks: 60, maxConcurrent: 1, maxQueued: 1 });
     const running = engine.simulateOnceAsync("queued-cleanup-running", "round", timeoutInputs(61));
+    await waitForScheduler(() => engine.runningCount === 1);
     const queued = engine.simulateOnceAsync("queued-cleanup", "round", inputs(62));
     const spectator = engine.simulateOnceAsync("queued-cleanup", "round", inputs(62));
+    await waitForScheduler(() => engine.queuedCount === 1);
     expect(engine.queuedCount).toBe(1);
     expect(engine.cleanup("queued-cleanup", "round")).toBe(true);
     await expect(queued).rejects.toMatchObject({ name: "AbortError" });
@@ -823,7 +925,7 @@ describe("BattleEngine simulate-once cache", () => {
   });
 
   it("rejects unbounded correlation keys", () => {
-    const engine = new BattleEngine();
+    const engine = new BattleEngine({ resultRepository: localResultRepository() });
     expect(() => engine.simulateOnce("x".repeat(129), "round", inputs())).toThrow(/correlation/i);
   });
 });

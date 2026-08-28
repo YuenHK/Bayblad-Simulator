@@ -254,7 +254,9 @@ Planck 建立 server-authoritative SI 世界、dynamic bodies、arena wall 及 t
 
 **實作決策記錄（2026-08-28）：** 不再使用 compound solid fixtures 處理 top-to-top 碰撞，因內部三角接縫會令 Planck 在一次碰撞產生多重 solver impulses，造成座位不公平及回合過早終止。實體 convex proxy 只與 arena wall 碰撞；concave silhouette 的 sensor/narrow-phase 不產生 Planck solver impulse。arena wall 位於安全中心界線加最大合法半徑及 margin 之外，確保中心越過 70 mm 的權威出界判定先發生。
 
-seed PRNG 只產生有界起始方向及擾動。物理固定 60 Hz，15 Hz 收集 frames；同步入口只供純函式測試／benchmark，production handler 使用 cooperative async 入口。`BattleEngine` 以 `maxConcurrent`、`maxQueued`、FIFO queue 及每 chunk 運算時間預算限制 event-loop 阻塞；TTL/LRU result cache 只作加速。完成結果先寫入具 atomic `saveIfAbsent` 契約的 authoritative `ResultRepository`，同一 match/round 即使 cache 到期或淘汰也不得重新模擬；本機 bounded store 只供測試／單程序開發，production 必須由 Phase 3 持久 repository 取代。
+seed PRNG 只產生有界起始方向及擾動。物理固定 60 Hz，15 Hz 收集 frames；`simulateOnce` 是只接受本機 test store 的 deprecated 同步測試入口，production handler 只使用 cooperative `simulateOnceAsync`，不得同步阻塞資料庫。`BattleEngine` constructor 必須顯式注入 repository，並以 `maxConcurrent`、`maxQueued`、FIFO queue 及每 chunk 運算時間預算限制 event-loop 阻塞；TTL/LRU result cache 只作加速。完成結果以固定長度 SHA-256 canonical fingerprint 寫入具 async atomic `saveIfAbsent` 契約的 authoritative `ResultRepository`；跨 engine race 必須採用 repository 回傳的 winner record。Phase 3 的 PostgreSQL implementation 可再以 advisory lock／claim lease 避免跨 process 重複運算。
+
+`InMemoryCompletedRoundStore` 只供測試／單程序開發，full results 與 total records 均有獨立上限；result 淘汰先降為 tombstone，record LRU 淘汰後則不再具權威性，因此絕不能作 production fallback。production composition 必須顯式注入 Phase 3 持久 repository，確保同一 match/round 即使 cache 到期或淘汰仍不會重新模擬。
 
 - [ ] **步驟 4：實作勝負條件**
 
