@@ -1,6 +1,6 @@
 import type { Layer } from "@steam-top/domain";
-import { useEffect, useState } from "react";
 
+import { ColorField } from "./ColorField";
 import { NumericField, type FieldValidityChange } from "./NumericField";
 import type { DesignerAction } from "./useDesigner";
 
@@ -9,30 +9,6 @@ type LayerControlsProps = Readonly<{
   dispatch: React.Dispatch<DesignerAction>;
   onFieldValidityChange: FieldValidityChange;
 }>;
-
-function DraftColorInput({
-  value,
-  onValidValue,
-}: Readonly<{ value: string; onValidValue: (value: string) => void }>) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
-
-  return (
-    <input
-      type="text"
-      inputMode="text"
-      pattern="#[0-9a-fA-F]{6}"
-      value={draft}
-      onChange={(event) => {
-        const nextValue = event.currentTarget.value;
-        setDraft(nextValue);
-        if (/^#[0-9a-f]{6}$/i.test(nextValue)) {
-          onValidValue(nextValue);
-        }
-      }}
-    />
-  );
-}
 
 export function LayerControls({
   layer,
@@ -135,7 +111,8 @@ export function LayerControls({
         </label>
         <label>
           顏色
-          <DraftColorInput
+          <ColorField
+            scopeKey={layer.id}
             value={layer.color}
             onValidValue={(value) =>
               dispatch({
@@ -145,6 +122,7 @@ export function LayerControls({
                 value,
               })
             }
+            onValidityChange={onFieldValidityChange}
           />
         </label>
       </div>
