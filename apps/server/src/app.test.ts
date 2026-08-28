@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { BattleInputs, BattleResult } from "./battle/engine";
 import { buildApp, type BattleEnginePort } from "./app";
 import { LaunchCoordinator } from "./battle/launch";
+import { scoreMatch } from "./battle/scoring";
 
 const uuid = () => crypto.randomUUID();
 const command = (type: string, fields: Record<string, unknown> = {}) => ({
@@ -16,19 +17,21 @@ const command = (type: string, fields: Record<string, unknown> = {}) => ({
 
 class FakeBattleEngine implements BattleEnginePort {
   simulationCount = 0;
-  outcomes: Array<"player1" | "player2" | "draw"> = ["player1", "player1"];
+  outcomes: Array<"player1" | "player2" | "draw" | "throw"> = ["player1", "player1"];
+  frames: BattleResult["frames"] = [{
+    tick: 1,
+    player1: { x: -10, y: 0, angle: 0, angularSpeed: 10 },
+    player2: { x: 10, y: 0, angle: 0, angularSpeed: 10 },
+  }];
   async simulateOnceAsync(_matchId: string, _roundId: string, inputs: BattleInputs): Promise<BattleResult> {
     this.simulationCount += 1;
     const winner = this.outcomes.shift() ?? "player1";
+    if (winner === "throw") throw new Error("injected physics failure");
     return {
       modelVersion: "2.0.0",
       seed: inputs.seed,
       ticks: 1,
-      frames: [{
-        tick: 1,
-        player1: { x: -10, y: 0, angle: 0, angularSpeed: 10 },
-        player2: { x: 10, y: 0, angle: 0, angularSpeed: 10 },
-      }],
+      frames: structuredClone(this.frames),
       outcome: { winner, reason: winner === "draw" ? "simultaneous" : "stopped" },
       finalStats: {
         player1: { angularSpeed: 10, speedMps: 0, energyJ: 1, stoppedTicks: 0, impactRetentionProduct: 1 },
@@ -155,11 +158,12 @@ describe("realtime app", () => {
     const url = `http://127.0.0.1:${address.port}`;
     const p1 = await connect(url, "P1");
     const p2 = await connect(url, "P2");
+    let p2Socket = p2.socket;
     const spectators = await Promise.all(Array.from({ length: 20 }, (_, index) => connect(url, `Watcher ${index + 1}`)));
     const spectator = spectators[0]!;
     closers.push(
       () => { p1.socket.close(); },
-      () => { p2.socket.close(); },
+      () => { p2Socket.close(); },
       ...spectators.map(({ socket }) => () => { socket.close(); }),
     );
     const p1Events: any[] = [];
@@ -183,17 +187,22 @@ describe("realtime app", () => {
     const d1 = await register(p1.token);
     const d2 = await register(p2.token);
     p1.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
+    const startedPromise = nextEvent(p1.socket, "battle.started");
     const schedule1Promise = nextEvent(p1.socket, "launch.schedule");
     p2.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
+    const started = await startedPromise;
+    expect(started.player1.designId).toBe(d1);
+    expect(started.player2.design.layers).toHaveLength(3);
+    expect(started.player2).not.toHaveProperty("ownerSessionId");
     const schedule1 = await schedule1Promise;
 
     const playAttempt = async (schedule: any) => {
       now = schedule.serverTargetTimeMs;
       const private1 = nextEvent(p1.socket, "launch.result.private");
-      const private2 = nextEvent(p2.socket, "launch.result.private");
+      const private2 = nextEvent(p2Socket, "launch.result.private");
       const publicResult = nextEvent(spectator.socket, "launch.result.spectator");
       p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
-      p2.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
+      p2Socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
       const [own1, own2, both] = await Promise.all([private1, private2, publicResult]);
       expect(own1.participantId).not.toBe(own2.participantId);
       expect(own1).not.toHaveProperty("player2");
@@ -203,11 +212,44 @@ describe("realtime app", () => {
     const schedule2Promise = nextEvent(p1.socket, "launch.schedule", 5_000);
     await playAttempt(schedule1);
     const schedule2 = await schedule2Promise;
+    now = schedule2.serverTargetTimeMs;
+    const p2OwnBeforeDisconnect = nextEvent(p2Socket, "launch.result.private");
+    p2Socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule2.roundId, nonce: schedule2.nonce, clientTimeMs: now }));
+    expect((await p2OwnBeforeDisconnect).participantId).toBe(started.player2.participantId);
+    p2Socket.close();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    const resumedSocket = io(url, { transports: ["websocket"], auth: { displayName: "P2 renamed", sessionToken: p2.token } });
+    await new Promise<void>((resolve) => resumedSocket.once("connect", resolve));
+    const resumeWelcome = nextEvent(resumedSocket, "protocol.welcome");
+    const resumeSnapshot = nextEvent(resumedSocket, "room.snapshot");
+    const resumeStarted = nextEvent(resumedSocket, "battle.started");
+    const resumeCheckpoint = nextEvent(resumedSocket, "battle.checkpoint");
+    const resumeSchedule = nextEvent(resumedSocket, "launch.schedule");
+    const resumePrivate = nextEvent(resumedSocket, "launch.result.private");
+    const leaked: any[] = [];
+    resumedSocket.on("server.event", (event) => {
+      if (event.type === "launch.result.private") leaked.push(event);
+    });
+    resumedSocket.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+    expect((await resumeWelcome).sessionStatus).toBe("resumed");
+    expect((await resumeSnapshot).player2).toMatchObject({
+      displayName: "P2", ready: true, designId: d2,
+    });
+    expect((await resumeStarted).matchId).toBe(started.matchId);
+    expect((await resumeCheckpoint).roundWinners).toEqual(["player1"]);
+    expect((await resumeSchedule).roundId).toBe(schedule2.roundId);
+    expect((await resumePrivate).participantId).toBe(started.player2.participantId);
+    expect(leaked.every((event) => event.participantId === started.player2.participantId)).toBe(true);
+    p2Socket = resumedSocket;
     const matchFinished = nextEvent(p1.socket, "match.finished", 5_000);
-    await playAttempt(schedule2);
+    const finalPrivate = nextEvent(p1.socket, "launch.result.private");
+    const finalSpectator = nextEvent(spectator.socket, "launch.result.spectator");
+    p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule2.roundId, nonce: schedule2.nonce, clientTimeMs: now }));
+    await Promise.all([finalPrivate, finalSpectator]);
     const match = await matchFinished;
     expect(match.roundWinners).toEqual(["player1", "player1"]);
     expect(engine.simulationCount).toBe(2);
+    expect(app.realtimeGateway.activeMatchCount).toBe(0);
     expect(p1Events.some((event) => event.type === "launch.result.spectator")).toBe(false);
     expect(p1Events.filter((event) => event.type === "match.finished")).toHaveLength(1);
   });
@@ -215,10 +257,16 @@ describe("realtime app", () => {
   it("retries a draw without counting it as a scored round", async () => {
     let now = 10_000;
     const engine = new FakeBattleEngine();
-    engine.outcomes = ["draw", "player1", "player1"];
+    engine.outcomes = ["throw", "draw", "player1", "player1", "player1"];
+    let scoreAttempts = 0;
     const app = buildApp({
       battleEngine: engine, now: () => now,
       launch: new LaunchCoordinator({ now: () => now, leadTimeMs: 100 }), sweepIntervalMs: 0,
+      scoreMatch: (input) => {
+        scoreAttempts += 1;
+        if (scoreAttempts === 1) throw new Error("injected scoring failure");
+        return scoreMatch(input);
+      },
     });
     closers.push(() => app.close());
     await app.listen({ host: "127.0.0.1", port: 0 });
@@ -242,22 +290,36 @@ describe("realtime app", () => {
     const firstSchedule = nextEvent(p1.socket, "launch.schedule");
     p2.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
     let schedule = await firstSchedule;
+    now = schedule.serverTargetTimeMs;
+    const retryError = nextEvent(p1.socket, "error", 5_000);
+    const retrySchedule = nextEvent(p1.socket, "launch.schedule", 5_000);
+    p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
+    p2.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
+    expect((await retryError).code).toBe("BATTLE_FAILED");
+    const failedRoundId = schedule.roundId;
+    schedule = await retrySchedule;
+    expect(schedule.roundId).not.toBe(failedRoundId);
     let firstWinner: string | undefined;
     let matchPromise: Promise<any> | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
       now = schedule.serverTargetTimeMs;
-      const roundFinished = nextEvent(p1.socket, "round.finished", 5_000);
-      const nextSchedule = attempt < 2 ? nextEvent(p1.socket, "launch.schedule", 5_000) : undefined;
-      if (attempt === 2) matchPromise = nextEvent(p1.socket, "match.finished", 5_000);
+      const scoreWillFail = attempt === 2;
+      const completion = scoreWillFail
+        ? nextEvent(p1.socket, "error", 5_000)
+        : nextEvent(p1.socket, "round.finished", 5_000);
+      const nextSchedule = attempt < 3 ? nextEvent(p1.socket, "launch.schedule", 5_000) : undefined;
+      if (attempt === 3) matchPromise = nextEvent(p1.socket, "match.finished", 5_000);
       p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
       p2.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
-      const round = await roundFinished;
-      firstWinner ??= round.winner;
+      const completedEvent = await completion;
+      if (scoreWillFail) expect(completedEvent.code).toBe("BATTLE_FAILED");
+      else firstWinner ??= completedEvent.winner;
       if (nextSchedule) schedule = await nextSchedule;
     }
     const finished = await matchPromise!;
     expect(firstWinner).toBe("draw");
-    expect(engine.simulationCount).toBe(3);
+    expect(engine.simulationCount).toBe(5);
+    expect(scoreAttempts).toBe(2);
     expect(finished.roundWinners).toEqual(["player1", "player1"]);
   });
 
@@ -297,7 +359,136 @@ describe("realtime app", () => {
 
     now += 120_001;
     const removed = nextEvent(peer.socket, "room.delta");
+    const sweptLobby = nextEvent(peer.socket, "lobby.snapshot");
     app.realtimeGateway.pump(now);
-    expect((await removed).patch.player1).toBeNull();
+    const removalDelta = await removed;
+    expect(removalDelta.patch.player1).toBeNull();
+    expect(removalDelta.patch.ownerParticipantId).toBeDefined();
+    expect((await sweptLobby).rooms[0].player1.displayName).toBeNull();
+
+    const replacementSocket = io(url, { transports: ["websocket"], auth: { displayName: "Replacement", sessionToken: owner.token } });
+    await new Promise<void>((resolve) => replacementSocket.once("connect", resolve));
+    closers.push(() => { replacementSocket.close(); });
+    const replacementWelcome = nextEvent(replacementSocket, "protocol.welcome");
+    replacementSocket.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+    const replacementWelcomeEvent = await replacementWelcome;
+    const replacementToken = replacementWelcomeEvent.sessionToken as string;
+    expect(replacementWelcomeEvent.sessionStatus).toBe("replaced");
+    expect(replacementToken).not.toBe(owner.token);
+    const replacementJoined = nextEvent(replacementSocket, "room.snapshot");
+    replacementSocket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
+    const replacementRoom = await replacementJoined;
+    expect(replacementRoom.viewer.participantId).not.toBe(originalParticipantId);
+    const register = async (token: string) => (await app.inject({
+      method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${token}` }, payload: makeDefaultDesign(),
+    })).json().designId as string;
+    const [replacementDesign, peerDesign] = await Promise.all([register(replacementToken), register(peer.token)]);
+    replacementSocket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: replacementDesign }));
+    const replacementSchedule = nextEvent(replacementSocket, "launch.schedule");
+    peer.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: peerDesign }));
+    const activeSchedule = await replacementSchedule;
+    now = activeSchedule.serverTargetTimeMs;
+    const replacementPrivate = nextEvent(replacementSocket, "launch.result.private");
+    replacementSocket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: activeSchedule.roundId, nonce: activeSchedule.nonce, clientTimeMs: now }));
+    peer.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: activeSchedule.roundId, nonce: activeSchedule.nonce, clientTimeMs: now }));
+    expect((await replacementPrivate).participantId).toBe(replacementRoom.viewer.participantId);
+  });
+
+  it("paces frames at their 60 Hz ticks and gives a late spectator only the latest checkpoint", async () => {
+    let now = 20_000;
+    const engine = new FakeBattleEngine();
+    engine.frames = [0, 4, 8].map((tick) => ({
+      tick,
+      player1: { x: -10 + tick, y: 0, angle: 0, angularSpeed: 10 },
+      player2: { x: 10 - tick, y: 0, angle: 0, angularSpeed: 10 },
+    }));
+    const waits: Array<{ delayMs: number; resolve: () => void }> = [];
+    const app = buildApp({
+      battleEngine: engine,
+      now: () => now,
+      launch: new LaunchCoordinator({ now: () => now, leadTimeMs: 100 }),
+      frameScheduler: (delayMs, signal) => new Promise<void>((resolve, reject) => {
+        const abort = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        signal.addEventListener("abort", abort, { once: true });
+        waits.push({ delayMs, resolve: () => { signal.removeEventListener("abort", abort); resolve(); } });
+      }),
+      sweepIntervalMs: 0,
+    });
+    let pacedAppClosed = false;
+    closers.push(async () => { if (!pacedAppClosed) await app.close(); });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const p1 = await connect(url, "Frame P1");
+    const p2 = await connect(url, "Frame P2");
+    const watcher = await connect(url, "Late watcher");
+    closers.push(() => { p1.socket.close(); }, () => { p2.socket.close(); }, () => { watcher.socket.close(); });
+    const created = nextEvent(p1.socket, "room.snapshot");
+    p1.socket.emit("client.event", command("room.create", { name: "Paced" }));
+    const room = await created;
+    const joined = nextEvent(p2.socket, "room.snapshot");
+    p2.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
+    await joined;
+    const register = async (token: string) => (await app.inject({
+      method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${token}` }, payload: makeDefaultDesign(),
+    })).json().designId as string;
+    const [d1, d2] = await Promise.all([register(p1.token), register(p2.token)]);
+    p1.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
+    const scheduled = nextEvent(p1.socket, "launch.schedule");
+    p2.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
+    const schedule = await scheduled;
+    now = schedule.serverTargetTimeMs;
+    const firstFrame = nextEvent(p1.socket, "battle.frame");
+    p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
+    p2.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
+    expect((await firstFrame).sequence).toBe(0);
+    while (waits.length < 1) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(waits[0]!.delayMs).toBeCloseTo(1_000 / 15, 5);
+
+    const watcherFrames: number[] = [];
+    watcher.socket.on("server.event", (event) => {
+      if (event.type === "battle.frame") watcherFrames.push(event.sequence);
+    });
+    const watcherSnapshot = nextEvent(watcher.socket, "room.snapshot");
+    const watcherStarted = nextEvent(watcher.socket, "battle.started");
+    const watcherLaunch = nextEvent(watcher.socket, "launch.result.spectator");
+    const watcherLatest = nextEvent(watcher.socket, "battle.frame");
+    watcher.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "spectator" }));
+    await watcherSnapshot;
+    expect((await watcherStarted).player1.design.layers).toHaveLength(3);
+    expect((await watcherLaunch).player2.grade).toBe("Perfect");
+    expect((await watcherLatest).sequence).toBe(0);
+    expect(watcherFrames).toEqual([0]);
+
+    const secondFrame = nextEvent(p1.socket, "battle.frame");
+    waits.shift()!.resolve();
+    expect((await secondFrame).sequence).toBe(1);
+    while (waits.length < 1) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(waits[0]!.delayMs).toBeCloseTo(1_000 / 15, 5);
+    const thirdFrame = nextEvent(p1.socket, "battle.frame");
+    const roundFinished = nextEvent(p1.socket, "round.finished");
+    const nextRoundSchedule = nextEvent(p1.socket, "launch.schedule");
+    waits.shift()!.resolve();
+    expect((await thirdFrame).sequence).toBe(2);
+    await roundFinished;
+    expect(watcherFrames).toEqual([0, 1, 2]);
+
+    const secondSchedule = await nextRoundSchedule;
+    now = secondSchedule.serverTargetTimeMs;
+    const secondRoundFirstFrame = nextEvent(p1.socket, "battle.frame");
+    const watcherSecondRoundFirstFrame = nextEvent(watcher.socket, "battle.frame");
+    p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: secondSchedule.roundId, nonce: secondSchedule.nonce, clientTimeMs: now }));
+    p2.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: secondSchedule.roundId, nonce: secondSchedule.nonce, clientTimeMs: now }));
+    expect((await secondRoundFirstFrame).sequence).toBe(0);
+    expect((await watcherSecondRoundFirstFrame).sequence).toBe(0);
+    while (waits.length < 1) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const framesBeforeClose = watcherFrames.length;
+    await app.close();
+    pacedAppClosed = true;
+    waits.shift()?.resolve();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(app.realtimeGateway.activeMatchCount).toBe(0);
+    expect(watcherFrames).toHaveLength(framesBeforeClose);
   });
 });

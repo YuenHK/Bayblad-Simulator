@@ -343,8 +343,15 @@ describe("RoomService moves, readiness, and phases", () => {
     );
     service.setPhase(room.roomId, "battle");
     service.setPhase(room.roomId, "result");
-    service.move(room.roomId, "player2", "spectator");
-    service.setPhase(room.roomId, "waiting");
+    expect(() => service.move(room.roomId, "player2", "spectator")).toThrow(
+      new RoomServiceError("SEATS_LOCKED"),
+    );
+    service.nextRound(room.roomId);
+    expect(service.get(room.roomId)?.phase).toBe("launch");
+    expect(service.get(room.roomId)?.player1).toMatchObject({ ready: true, designId: DESIGN_A });
+    service.setPhase(room.roomId, "battle");
+    service.setPhase(room.roomId, "result");
+    service.finishMatch(room.roomId);
     expect(service.snapshot(room.roomId, "owner").player1).toMatchObject({ ready: false, designId: null });
   });
 });
@@ -374,6 +381,7 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
       spectator.participantId,
     );
     service.setPhase(room.roomId, "result");
+    service.finishMatch(room.roomId);
     service.sweep();
     expect(service.get(room.roomId)?.player2).toBeNull();
     const replacement = service.join(room.roomId, user("replacement"), "player");
@@ -600,7 +608,7 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     });
   });
 
-  it("allows only the owner to close waiting/result rooms", () => {
+  it("allows only the owner to close waiting or finished rooms", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
     service.join(room.roomId, user("player2"), "player");
@@ -612,6 +620,8 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     expect(() => service.close(room.roomId, "owner")).toThrow(new RoomServiceError("ROOM_ACTIVE"));
     service.setPhase(room.roomId, "battle");
     service.setPhase(room.roomId, "result");
+    expect(() => service.close(room.roomId, "owner")).toThrow(new RoomServiceError("ROOM_ACTIVE"));
+    service.finishMatch(room.roomId);
     service.close(room.roomId, "owner");
     expect(service.hasRoom(room.roomId)).toBe(false);
   });

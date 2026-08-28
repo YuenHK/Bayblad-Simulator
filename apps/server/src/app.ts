@@ -4,7 +4,7 @@ import { BattleEngine } from "./battle/engine";
 import { LaunchCoordinator } from "./battle/launch";
 import { DesignRegistry, DesignRegistryError } from "./design-registry";
 import { RoomService } from "./rooms/room-service";
-import { RealtimeGateway } from "./socket";
+import { RealtimeGateway, type FrameScheduler, type MatchScorer } from "./socket";
 
 export interface BattleEnginePort {
   readonly simulationCount: number;
@@ -20,6 +20,8 @@ export type BuildAppOptions = Readonly<{
   launch?: LaunchCoordinator;
   now?: () => number;
   seedFactory?: () => number;
+  frameScheduler?: FrameScheduler;
+  scoreMatch?: MatchScorer;
   sweepIntervalMs?: number;
 }>;
 
@@ -29,7 +31,7 @@ export type BuiltApp = FastifyInstance & Readonly<{
 }>;
 
 export function buildApp(options: BuildAppOptions): BuiltApp {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, forceCloseConnections: true });
   const rooms = options.rooms ?? new RoomService(options.now ? { now: options.now } : {});
   const designs = options.designs ?? new DesignRegistry();
   const battleEngine = options.battleEngine ?? (options.resultRepository
@@ -43,6 +45,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     launch: options.launch ?? new LaunchCoordinator(options.now ? { now: options.now } : {}),
     ...(options.now ? { now: options.now } : {}),
     ...(options.seedFactory ? { seedFactory: options.seedFactory } : {}),
+    ...(options.frameScheduler ? { frameScheduler: options.frameScheduler } : {}),
+    ...(options.scoreMatch ? { scoreMatch: options.scoreMatch } : {}),
   });
   app.decorate("realtimeGateway", gateway);
   app.decorate("battleEngine", battleEngine);
@@ -70,7 +74,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   const intervalMs = options.sweepIntervalMs ?? 1_000;
   const timer = intervalMs > 0 ? setInterval(() => gateway.pump(), intervalMs) : undefined;
   timer?.unref();
-  app.addHook("onClose", async () => {
+  app.addHook("preClose", async () => {
     if (timer) clearInterval(timer);
     await gateway.close();
   });

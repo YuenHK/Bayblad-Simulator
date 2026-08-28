@@ -552,10 +552,36 @@ describe("serverEventSchema", () => {
       type: "protocol.welcome",
       selectedVersion: 1,
       sessionToken: "opaque-resume-token-with-sufficient-entropy",
+      sessionStatus: "resumed",
       ...serverEnvelope,
     });
     expect(welcome).toMatchObject({ sessionToken: "opaque-resume-token-with-sufficient-entropy" });
     expect(serverEventSchema.safeParse({ ...welcome, sessionToken: "short" }).success).toBe(false);
+  });
+
+  it("strictly exposes battle visual designs without internal ownership or performance", () => {
+    const layer = (position: "top" | "middle" | "bottom", id: string) => ({
+      id, position, shape: "circle", points: 6, diameterMm: 40,
+      cornerRoundness: 0.5, rotationDeg: 0, color: "#2563eb",
+    });
+    const design = {
+      layers: [layer("top", "top"), layer("middle", "middle"), layer("bottom", "bottom")],
+      screwLayout: { count: 4, radiusMm: 15, rotationDeg: 0 },
+      metalDiscDiameterMm: 0,
+    };
+    const started = {
+      type: "battle.started",
+      roomId: "room-1",
+      matchId: "match-1",
+      player1: { participantId: "p1", designId, design },
+      player2: { participantId: "p2", designId, design },
+      ...serverEnvelope,
+    };
+    expect(serverEventSchema.safeParse(started).success).toBe(true);
+    expect(serverEventSchema.safeParse({
+      ...started,
+      player1: { ...started.player1, ownerSessionId: "secret" },
+    }).success).toBe(false);
   });
 
   it("defines acknowledgement correlation without implementing idempotency", () => {

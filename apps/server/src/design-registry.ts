@@ -7,6 +7,7 @@ import {
   type TopDesign,
 } from "@steam-top/domain";
 import { z } from "zod";
+import type { PublicBattleDesign } from "@steam-top/protocol";
 
 const strictLayerSchema = layerSchema.strict();
 const strictDesignSchema = designSchema.extend({
@@ -85,5 +86,14 @@ export class DesignRegistry {
       throw new DesignRegistryError("DESIGN_NOT_OWNED");
     }
     return clone(stored);
+  }
+
+  publicBattleDesign(ownerSessionId: string, designId: string): PublicBattleDesign {
+    const { design } = this.requireOwned(ownerSessionId, designId);
+    return structuredClone({
+      layers: design.layers,
+      screwLayout: design.screwLayout,
+      metalDiscDiameterMm: design.metalDiscDiameterMm,
+    });
   }
 }

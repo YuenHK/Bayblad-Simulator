@@ -181,6 +181,18 @@ export class RoomService {
     this.#transaction(roomId, () => this.#setPhase(roomId, phase));
   }
 
+  nextRound(roomId: string): void {
+    this.#transaction(roomId, () => this.#transitionResult(roomId, "launch"));
+  }
+
+  retryRound(roomId: string): void {
+    this.#transaction(roomId, () => this.#retryRound(roomId));
+  }
+
+  finishMatch(roomId: string): void {
+    this.#transaction(roomId, () => this.#transitionResult(roomId, "waiting"));
+  }
+
   disconnect(roomId: string, internalUserId: string): void {
     this.#transaction(roomId, () => this.#disconnect(roomId, internalUserId));
   }
@@ -250,7 +262,7 @@ export class RoomService {
       existing.disconnectedAt !== null &&
       now - existing.disconnectedAt >= DISCONNECT_RETENTION_MS &&
       !(
-        (room.phase === "launch" || room.phase === "battle") &&
+        room.phase !== "waiting" &&
         existing.role !== "spectator"
       )
     ) {
@@ -278,7 +290,7 @@ export class RoomService {
       return Object.freeze({ roomId, code: room.code, participantId: existing.participantId });
     }
 
-    if (role === "player" && (room.phase === "launch" || room.phase === "battle")) {
+    if (role === "player" && room.phase !== "waiting") {
       throw new RoomServiceError("SEATS_LOCKED");
     }
 
@@ -318,7 +330,7 @@ export class RoomService {
   ): void {
     const room = this.#room(roomId);
     const actor = this.#connectedParticipant(room, actorInternalUserId);
-    if (room.phase === "launch" || room.phase === "battle") {
+    if (room.phase !== "waiting") {
       throw new RoomServiceError("SEATS_LOCKED");
     }
     const subject = subjectParticipantId
@@ -394,11 +406,10 @@ export class RoomService {
   #setPhase(roomId: string, phase: Phase): void {
     const room = this.#room(roomId);
     const nextPhase = phaseSchema.parse(phase);
-    const allowed: Readonly<Record<Phase, Phase>> = {
+    const allowed: Readonly<Partial<Record<Phase, Phase>>> = {
       waiting: "launch",
       launch: "battle",
       battle: "result",
-      result: "waiting",
     };
     if (allowed[room.phase] !== nextPhase) {
       throw new RoomServiceError("INVALID_PHASE_TRANSITION");
@@ -421,17 +432,36 @@ export class RoomService {
     }
     room.phase = nextPhase;
     const patch: RoomStatePatch = { phase: nextPhase };
-    if (nextPhase === "waiting") {
-      for (const role of ["player1", "player2"] as const) {
-        const internalUserId = room[role];
-        if (internalUserId === null) continue;
-        const participant = room.participants.get(internalUserId)!;
-        participant.ready = false;
-        participant.designId = null;
-        patch[role] = this.#seat(participant);
-      }
-    }
     this.#emitDelta(room, patch, [], []);
+  }
+
+  #transitionResult(roomId: string, nextPhase: "launch" | "waiting"): void {
+    const room = this.#room(roomId);
+    if (room.phase !== "result") throw new RoomServiceError("INVALID_PHASE_TRANSITION");
+    room.phase = nextPhase;
+    const patch: RoomStatePatch = { phase: nextPhase };
+    if (nextPhase === "waiting") this.#clearReady(room, patch);
+    this.#emitDelta(room, patch, [], []);
+  }
+
+  #retryRound(roomId: string): void {
+    const room = this.#room(roomId);
+    if (room.phase !== "battle" && room.phase !== "result") {
+      throw new RoomServiceError("INVALID_PHASE_TRANSITION");
+    }
+    room.phase = "launch";
+    this.#emitDelta(room, { phase: "launch" }, [], []);
+  }
+
+  #clearReady(room: Room, patch: RoomStatePatch): void {
+    for (const role of ["player1", "player2"] as const) {
+      const internalUserId = room[role];
+      if (internalUserId === null) continue;
+      const participant = room.participants.get(internalUserId)!;
+      participant.ready = false;
+      participant.designId = null;
+      patch[role] = this.#seat(participant);
+    }
   }
 
   #disconnect(roomId: string, internalUserId: string): void {
@@ -446,7 +476,7 @@ export class RoomService {
     const room = this.#room(roomId);
     const participant = this.#participant(room, internalUserId);
     if (
-      (room.phase === "launch" || room.phase === "battle") &&
+      room.phase !== "waiting" &&
       participant.role !== "spectator"
     ) {
       if (!participant.connected) return;
@@ -465,7 +495,7 @@ export class RoomService {
     if (room.ownerInternalUserId !== actorInternalUserId) {
       throw new RoomServiceError("OWNER_REQUIRED");
     }
-    if (room.phase === "launch" || room.phase === "battle") {
+    if (room.phase !== "waiting") {
       throw new RoomServiceError("ROOM_ACTIVE");
     }
     this.#deleteRoom(room);
@@ -486,7 +516,7 @@ export class RoomService {
       return;
     }
 
-    const seatsAreRetained = room.phase === "launch" || room.phase === "battle";
+    const seatsAreRetained = room.phase !== "waiting";
     for (const participant of [...room.participants.values()]) {
       const expired =
         !participant.connected &&
