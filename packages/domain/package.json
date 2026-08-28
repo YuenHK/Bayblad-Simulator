@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "polygon-clipping": "0.15.7",
     "zod": "4.4.3"
   },
   "devDependencies": {
