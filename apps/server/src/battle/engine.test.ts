@@ -87,6 +87,20 @@ const lowImpactTop = design({
   })) as TopDesign["layers"],
   screwLayout: { count: 4, radiusMm: 12, rotationDeg: 0 },
 });
+const maximalStarTop = design({
+  id: "maximal-star",
+  name: "最大十六角星",
+  layers: design().layers.map((layer) => ({
+    ...layer,
+    id: `${layer.id}-maximal-star`,
+    shape: "star",
+    points: 16,
+    diameterMm: 60,
+    cornerRoundness: 0,
+    rotationDeg: 5.625,
+  })) as TopDesign["layers"],
+  screwLayout: { count: 4, radiusMm: 12, rotationDeg: 0 },
+});
 
 const inputs = (seed = 12345): BattleInputs => ({
   player1,
@@ -172,6 +186,10 @@ describe("authoritative Planck battle simulation", () => {
         expect(maximumError).toBeLessThanOrEqual(COLLISION_OUTLINE_MAX_ERROR_MM);
       }
     }
+  });
+
+  it("simplifies the worst canonical 16-point star outline to a bounded vertex count", () => {
+    expect(buildCollisionOutlineVertices(maximalStarTop).length).toBeLessThanOrEqual(192);
   });
 
   it("keeps the valleys of a 9-point star in the top-to-top contact outline", () => {
@@ -572,6 +590,42 @@ describe("BattleEngine simulate-once cache", () => {
     expect(heartbeats).toBeGreaterThan(1);
   });
 
+  it("keeps two concurrent maximal-star rounds responsive", async () => {
+    const opponent = {
+      ...maximalStarTop,
+      id: "maximal-star-opponent",
+      layers: maximalStarTop.layers.map((layer) => ({
+        ...layer,
+        id: `${layer.id}-opponent`,
+      })) as TopDesign["layers"],
+    };
+    const gaps: number[] = [];
+    let previous = performance.now();
+    const heartbeat = setInterval(() => {
+      const current = performance.now();
+      gaps.push(current - previous);
+      previous = current;
+    }, 5);
+    const started = performance.now();
+    const results = await Promise.all([
+      simulateMatchRoundAsync(maximalStarTop, opponent, {
+        seed: 501,
+        launchA: launch(),
+        launchB: launch(),
+      }),
+      simulateMatchRoundAsync(maximalStarTop, opponent, {
+        seed: 502,
+        launchA: launch(),
+        launchB: launch(),
+      }),
+    ]);
+    clearInterval(heartbeat);
+    expect(results.every(({ ticks }) => ticks > 60)).toBe(true);
+    expect(gaps.length).toBeGreaterThan(1);
+    expect(Math.max(...gaps)).toBeLessThan(100);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  }, 30_000);
+
   it("deduplicates concurrent async spectators and rejects an active fingerprint conflict", async () => {
     const engine = new BattleEngine({ chunkTicks: 1 });
     const first = engine.simulateOnceAsync("match-async", "round-1", inputs());
@@ -664,7 +718,7 @@ describe("BattleEngine simulate-once cache", () => {
     expect(engine.queuedCount).toBe(0);
   });
 
-  it("cancels a queued job through AbortSignal without consuming a slot", async () => {
+  it("rejects only an aborted queued caller while the authoritative job continues", async () => {
     const engine = new BattleEngine({ chunkTicks: 60, maxConcurrent: 1, maxQueued: 2 });
     const active = engine.simulateOnceAsync("abort-active", "round", timeoutInputs(31));
     const controller = new AbortController();
@@ -674,19 +728,33 @@ describe("BattleEngine simulate-once cache", () => {
     expect(engine.queuedCount).toBe(1);
     controller.abort();
     await expect(queued).rejects.toMatchObject({ name: "AbortError" });
-    expect(engine.queuedCount).toBe(0);
     await active;
-    expect(engine.simulationCount).toBe(1);
+    while (engine.runningCount + engine.queuedCount > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(engine.simulationCount).toBe(2);
+    expect(engine.cacheSize).toBe(2);
   });
 
-  it("cancels a running job and starts the next queued job", async () => {
-    const engine = new BattleEngine({ chunkTicks: 1, maxConcurrent: 1, maxQueued: 1 });
+  it("aborting one deduplicated caller does not cancel the shared simulation", async () => {
+    const engine = new BattleEngine({ chunkTicks: 60, maxConcurrent: 1 });
     const controller = new AbortController();
-    const active = engine.simulateOnceAsync("running-cancel", "round", timeoutInputs(41), {
+    const first = engine.simulateOnceAsync("spectator-abort", "round", timeoutInputs(41), {
       signal: controller.signal,
     });
-    const queued = engine.simulateOnceAsync("running-recovery", "round", inputs(42));
+    const second = engine.simulateOnceAsync("spectator-abort", "round", timeoutInputs(41));
     controller.abort();
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    await expect(second).resolves.toMatchObject({ seed: 41, ticks: 5_400 });
+    expect(engine.simulationCount).toBe(1);
+    expect(engine.cacheSize).toBe(1);
+  });
+
+  it("authoritative cleanup cancels a running job and starts the next queued job", async () => {
+    const engine = new BattleEngine({ chunkTicks: 1, maxConcurrent: 1, maxQueued: 1 });
+    const active = engine.simulateOnceAsync("running-cancel", "round", timeoutInputs(41));
+    const queued = engine.simulateOnceAsync("running-recovery", "round", inputs(42));
+    expect(engine.cleanup("running-cancel", "round")).toBe(true);
     await expect(active).rejects.toMatchObject({ name: "AbortError" });
     await expect(queued).resolves.toMatchObject({ seed: 42 });
     expect(engine.simulationCount).toBe(2);
@@ -697,10 +765,26 @@ describe("BattleEngine simulate-once cache", () => {
   it("cleanup cancels an in-flight result and does not retain it", async () => {
     const engine = new BattleEngine({ chunkTicks: 1 });
     const active = engine.simulateOnceAsync("match-cleanup", "round-1", inputs());
+    const spectator = engine.simulateOnceAsync("match-cleanup", "round-1", inputs());
     expect(engine.cleanup("match-cleanup", "round-1")).toBe(true);
     await expect(active).rejects.toMatchObject({ name: "AbortError" });
+    await expect(spectator).rejects.toMatchObject({ name: "AbortError" });
     expect(engine.cacheSize).toBe(0);
     expect(engine.runningCount).toBe(0);
+  });
+
+  it("cleanup cancels a queued job for every waiter and releases queue capacity", async () => {
+    const engine = new BattleEngine({ chunkTicks: 60, maxConcurrent: 1, maxQueued: 1 });
+    const running = engine.simulateOnceAsync("queued-cleanup-running", "round", timeoutInputs(61));
+    const queued = engine.simulateOnceAsync("queued-cleanup", "round", inputs(62));
+    const spectator = engine.simulateOnceAsync("queued-cleanup", "round", inputs(62));
+    expect(engine.queuedCount).toBe(1);
+    expect(engine.cleanup("queued-cleanup", "round")).toBe(true);
+    await expect(queued).rejects.toMatchObject({ name: "AbortError" });
+    await expect(spectator).rejects.toMatchObject({ name: "AbortError" });
+    expect(engine.queuedCount).toBe(0);
+    await running;
+    expect(engine.simulationCount).toBe(1);
   });
 
   it("rejects unbounded correlation keys", () => {
