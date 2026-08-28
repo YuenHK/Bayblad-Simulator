@@ -15,16 +15,24 @@ import {
   type BattleBody as ProtocolBattleBody,
   type LaunchGrade,
 } from "@steam-top/protocol";
-import { Edge, Polygon, Vec2, World, type Body, type Contact } from "planck";
+import { Circle, Edge, Polygon, Vec2, World, type Body, type Contact } from "planck";
 
-import { buildCollisionProxyVertices } from "./collision-proxy";
+import {
+  buildCollisionOutlineVertices,
+  buildCollisionProxyVertices,
+  COLLISION_OUTLINE_MAX_ERROR_MM,
+} from "./collision-proxy";
 import type { LaunchJudgement } from "./launch";
 import { ensurePlanckSiTuning } from "./planck-config";
 import { DeterministicPrng } from "./prng";
 
-export { buildCollisionProxyVertices } from "./collision-proxy";
+export {
+  buildCollisionOutlineVertices,
+  buildCollisionProxyVertices,
+  COLLISION_OUTLINE_MAX_ERROR_MM,
+} from "./collision-proxy";
 
-export const PHYSICS_MODEL_VERSION = "1.0.0" as const;
+export const PHYSICS_MODEL_VERSION = "2.0.0" as const;
 export const STEP_SECONDS = 1 / 60;
 export const MAX_ROUND_SECONDS = 90;
 export const BROADCAST_EVERY_TICKS = 4;
@@ -46,8 +54,13 @@ const POSITION_ITERATIONS = 3;
 const MAX_CORRELATION_LENGTH = 128;
 const TIMEOUT_TIE_TOLERANCE = 0.03;
 const LAUNCH_GRADES = new Set<LaunchGrade>(launchGradeSchema.options);
+const WALL_CATEGORY = 0x0002;
+const TOP_SENSOR_CATEGORY = 0x0004;
+const TOP_WALL_PROXY_CATEGORY = 0x0008;
 export const DEFAULT_BATTLE_CACHE_TTL_MS = 5 * 60_000;
 export const DEFAULT_BATTLE_CACHE_MAX_ENTRIES = 128;
+export const DEFAULT_BATTLE_MAX_CONCURRENT = 2;
+export const DEFAULT_BATTLE_MAX_QUEUED = 64;
 
 export type BattleBodyFrame = Readonly<ProtocolBattleBody>;
 
@@ -69,6 +82,7 @@ export type PreparedBattleTop = Readonly<{
   performance: Readonly<PerformancePrediction>;
   envelopeRadiiM: readonly number[];
   collisionVerticesM: readonly Readonly<Point>[];
+  collisionOutlineVerticesM: readonly Readonly<Point>[];
 }>;
 
 export type BattleFinalStats = Readonly<{
@@ -160,7 +174,12 @@ export function prepareBattleTop(input: TopDesign): PreparedBattleTop {
   const mass = validation.massProperties;
   const performance = predictDesignPerformance(design);
   const collisionProxyMm = buildCollisionProxyVertices(design);
+  const collisionOutlineMm = buildCollisionOutlineVertices(design);
   const collisionVerticesM = collisionProxyMm.map(({ x, y }) => ({
+    x: x * METRES_PER_MM,
+    y: y * METRES_PER_MM,
+  }));
+  const collisionOutlineVerticesM = collisionOutlineMm.map(({ x, y }) => ({
     x: x * METRES_PER_MM,
     y: y * METRES_PER_MM,
   }));
@@ -178,12 +197,14 @@ export function prepareBattleTop(input: TopDesign): PreparedBattleTop {
     performance: { ...performance },
     envelopeRadiiM,
     collisionVerticesM,
+    collisionOutlineVerticesM,
   };
   if (
     !Number.isFinite(prepared.massKg) || prepared.massKg <= 0 ||
     !Number.isFinite(prepared.polarInertiaKgM2) || prepared.polarInertiaKgM2 <= 0 ||
     !prepared.envelopeRadiiM.every((radius) => Number.isFinite(radius) && radius > 0) ||
-    !prepared.collisionVerticesM.flatMap(({ x, y }) => [x, y]).every(Number.isFinite)
+    !prepared.collisionVerticesM.flatMap(({ x, y }) => [x, y]).every(Number.isFinite) ||
+    !prepared.collisionOutlineVerticesM.flatMap(({ x, y }) => [x, y]).every(Number.isFinite)
   ) {
     throw new RangeError("Authoritative physical properties must be finite and positive");
   }
@@ -211,7 +232,12 @@ function createArena(world: World): void {
         Vec2(Math.cos(angleB) * ARENA_WALL_RADIUS_M, Math.sin(angleB) * ARENA_WALL_RADIUS_M),
         Vec2(Math.cos(angleA) * ARENA_WALL_RADIUS_M, Math.sin(angleA) * ARENA_WALL_RADIUS_M),
       ),
-      { friction: 0.15, restitution: 0.55 },
+      {
+        friction: 0.15,
+        restitution: 0.55,
+        filterCategoryBits: WALL_CATEGORY,
+        filterMaskBits: TOP_WALL_PROXY_CATEGORY,
+      },
     );
   }
 }
@@ -236,7 +262,22 @@ function createTopBody(
   const impactPhysics = impactPhysicsFromScore(top.performance.impactResistance);
   body.createFixture(
     new Polygon(top.collisionVerticesM.map(({ x, y }) => Vec2(x, y))),
-    { density: 1, friction: impactPhysics.friction, restitution: impactPhysics.restitution },
+    {
+      density: 0,
+      friction: 0.12,
+      restitution: 0.4,
+      filterCategoryBits: TOP_WALL_PROXY_CATEGORY,
+      filterMaskBits: WALL_CATEGORY,
+    },
+  );
+  body.createFixture(
+    new Circle(Math.max(...top.collisionOutlineVerticesM.map(({ x, y }) => Math.hypot(x, y)))),
+    {
+      density: 0,
+      isSensor: true,
+      filterCategoryBits: TOP_SENSOR_CATEGORY,
+      filterMaskBits: TOP_SENSOR_CATEGORY,
+    },
   );
   body.setMassData({
     mass: top.massKg,
@@ -258,6 +299,113 @@ function contactIsBetween(contact: Contact, body1: Body, body2: Body): boolean {
   const fixtureBodyB = contact.getFixtureB().getBody();
   return (fixtureBodyA === body1 && fixtureBodyB === body2) ||
     (fixtureBodyA === body2 && fixtureBodyB === body1);
+}
+
+function applyCustomTopImpulse(
+  body1: Body,
+  body2: Body,
+  impact1: ImpactPhysics,
+  impact2: ImpactPhysics,
+): void {
+  const position1 = body1.getPosition();
+  const position2 = body2.getPosition();
+  const dx = position2.x - position1.x;
+  const dy = position2.y - position1.y;
+  const distance = Math.hypot(dx, dy);
+  if (!Number.isFinite(distance) || distance <= Number.EPSILON) return;
+  const nx = dx / distance;
+  const ny = dy / distance;
+  const velocity1 = body1.getLinearVelocity();
+  const velocity2 = body2.getLinearVelocity();
+  const relativeX = velocity2.x - velocity1.x;
+  const relativeY = velocity2.y - velocity1.y;
+  const closingSpeed = relativeX * nx + relativeY * ny;
+  if (closingSpeed >= 0) return;
+  const inverseMass1 = 1 / body1.getMass();
+  const inverseMass2 = 1 / body2.getMass();
+  const restitution = (impact1.restitution + impact2.restitution) / 2;
+  const normalImpulse = -(1 + restitution) * closingSpeed / (inverseMass1 + inverseMass2);
+  const tx = -ny;
+  const ty = nx;
+  const tangentSpeed = relativeX * tx + relativeY * ty;
+  const unconstrainedTangent = -tangentSpeed / (inverseMass1 + inverseMass2);
+  const frictionLimit = (impact1.friction + impact2.friction) / 2 * normalImpulse;
+  const tangentImpulse = Math.max(-frictionLimit, Math.min(frictionLimit, unconstrainedTangent));
+  const impulseX = normalImpulse * nx + tangentImpulse * tx;
+  const impulseY = normalImpulse * ny + tangentImpulse * ty;
+  body1.setLinearVelocity(Vec2(
+    velocity1.x - impulseX * inverseMass1,
+    velocity1.y - impulseY * inverseMass1,
+  ));
+  body2.setLinearVelocity(Vec2(
+    velocity2.x + impulseX * inverseMass2,
+    velocity2.y + impulseY * inverseMass2,
+  ));
+}
+
+function transformedOutline(
+  vertices: readonly Readonly<Point>[],
+  position: Readonly<Point>,
+  angle: number,
+): Point[] {
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  return vertices.map(({ x, y }) => ({
+    x: position.x + x * cosine - y * sine,
+    y: position.y + x * sine + y * cosine,
+  }));
+}
+
+function segmentsIntersect(a: Point, b: Point, c: Point, d: Point): boolean {
+  const orient = (p: Point, q: Point, r: Point) =>
+    (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  const abC = orient(a, b, c);
+  const abD = orient(a, b, d);
+  const cdA = orient(c, d, a);
+  const cdB = orient(c, d, b);
+  return ((abC >= 0 && abD <= 0) || (abC <= 0 && abD >= 0)) &&
+    ((cdA >= 0 && cdB <= 0) || (cdA <= 0 && cdB >= 0));
+}
+
+function pointInPolygon(point: Point, polygon: readonly Point[]): boolean {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const a = polygon[index]!;
+    const b = polygon[previous]!;
+    if ((a.y > point.y) !== (b.y > point.y) &&
+      point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/** Exact concave-polygon overlap used after Planck's sensor broad phase. */
+export function collisionOutlinesOverlap(
+  vertices1: readonly Readonly<Point>[],
+  pose1: Readonly<{ position: Readonly<Point>; angle: number }>,
+  vertices2: readonly Readonly<Point>[],
+  pose2: Readonly<{ position: Readonly<Point>; angle: number }>,
+): boolean {
+  const outline1 = transformedOutline(vertices1, pose1.position, pose1.angle);
+  const outline2 = transformedOutline(vertices2, pose2.position, pose2.angle);
+  for (let index1 = 0; index1 < outline1.length; index1 += 1) {
+    const a = outline1[index1]!;
+    const b = outline1[(index1 + 1) % outline1.length]!;
+    for (let index2 = 0; index2 < outline2.length; index2 += 1) {
+      const c = outline2[index2]!;
+      const d = outline2[(index2 + 1) % outline2.length]!;
+      if (segmentsIntersect(a, b, c, d)) return true;
+    }
+  }
+  return pointInPolygon(outline1[0]!, outline2) || pointInPolygon(outline2[0]!, outline1);
+}
+
+function exactOutlinesOverlap(body1: Body, top1: PreparedBattleTop, body2: Body, top2: PreparedBattleTop): boolean {
+  return collisionOutlinesOverlap(
+    top1.collisionOutlineVerticesM,
+    { position: body1.getPosition(), angle: body1.getAngle() },
+    top2.collisionOutlineVerticesM,
+    { position: body2.getPosition(), angle: body2.getAngle() },
+  );
 }
 
 function normaliseAngle(angle: number): number {
@@ -323,17 +471,82 @@ export function resolveTimeoutOutcome(input: Readonly<{
   return { winner, reason: "timeout" };
 }
 
+function physicalPlayerKey(designInput: TopDesign, launch: LaunchJudgement): string {
+  let design: TopDesign;
+  try {
+    design = designSchema.parse(designInput);
+  } catch (error) {
+    throw new TypeError(`Invalid design schema: ${error instanceof Error ? error.message : "unknown"}`);
+  }
+  return stableStringify({
+    layers: design.layers.map((layer) => ({
+      position: layer.position,
+      shape: layer.shape,
+      points: layer.points,
+      diameterMm: layer.diameterMm,
+      cornerRoundness: layer.cornerRoundness,
+      rotationDeg: layer.rotationDeg,
+    })),
+    screwLayout: design.screwLayout,
+    metalDiscDiameterMm: design.metalDiscDiameterMm,
+    launch: {
+      grade: launch.grade,
+      angularMultiplier: launch.angularMultiplier,
+      impulseMultiplier: launch.impulseMultiplier,
+    },
+  });
+}
+
+function seedHashBit(seed: number): number {
+  let value = seed >>> 0;
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x7feb352d);
+  value ^= value >>> 15;
+  value = Math.imul(value, 0x846ca68b);
+  value ^= value >>> 16;
+  return value & 1;
+}
+
+function swapWinner(winner: BattleOutcome["winner"]): BattleOutcome["winner"] {
+  return winner === "player1" ? "player2" : winner === "player2" ? "player1" : "draw";
+}
+
+function mapInternalResult(result: BattleResult, swapped: boolean): BattleResult {
+  if (!swapped) return result;
+  return {
+    ...result,
+    frames: result.frames.map((frame) => ({
+      tick: frame.tick,
+      player1: frame.player2,
+      player2: frame.player1,
+    })),
+    outcome: { ...result.outcome, winner: swapWinner(result.outcome.winner) },
+    finalStats: {
+      ...result.finalStats,
+      player1: result.finalStats.player2,
+      player2: result.finalStats.player1,
+    },
+  };
+}
+
 function* simulateMatchRoundSteps(
   player1Design: TopDesign,
   player2Design: TopDesign,
   options: Readonly<{ seed: number; launchA: LaunchJudgement; launchB: LaunchJudgement }>,
 ): Generator<void, BattleResult, void> {
   ensurePlanckSiTuning();
+  const key1 = physicalPlayerKey(player1Design, options.launchA);
+  const key2 = physicalPlayerKey(player2Design, options.launchB);
+  const swapped = key1 > key2 || (key1 === key2 && seedHashBit(options.seed) === 1);
+  const internalPlayer1 = swapped ? player2Design : player1Design;
+  const internalPlayer2 = swapped ? player1Design : player2Design;
+  const internalLaunch1 = swapped ? options.launchB : options.launchA;
+  const internalLaunch2 = swapped ? options.launchA : options.launchB;
   const prng = new DeterministicPrng(options.seed);
-  validateLaunch(options.launchA);
-  validateLaunch(options.launchB);
-  const top1 = prepareBattleTop(player1Design);
-  const top2 = prepareBattleTop(player2Design);
+  validateLaunch(internalLaunch1);
+  validateLaunch(internalLaunch2);
+  const top1 = prepareBattleTop(internalPlayer1);
+  const top2 = prepareBattleTop(internalPlayer2);
   const world = new World(Vec2(0, 0));
   createArena(world);
 
@@ -350,16 +563,16 @@ function* simulateMatchRoundSteps(
     top1,
     { x: -0.04, y: positionJitter },
     headingJitter,
-    baseAngular1 * options.launchA.angularMultiplier,
-    { x: Math.cos(headingJitter) * baseSpeed1 * options.launchA.impulseMultiplier * impulseJitter, y: Math.sin(headingJitter) * baseSpeed1 * options.launchA.impulseMultiplier * impulseJitter },
+    baseAngular1 * internalLaunch1.angularMultiplier,
+    { x: Math.cos(headingJitter) * baseSpeed1 * internalLaunch1.impulseMultiplier * impulseJitter, y: Math.sin(headingJitter) * baseSpeed1 * internalLaunch1.impulseMultiplier * impulseJitter },
   );
   const body2 = createTopBody(
     world,
     top2,
     { x: 0.04, y: -positionJitter },
     Math.PI + headingJitter,
-    -baseAngular2 * options.launchB.angularMultiplier,
-    { x: -Math.cos(headingJitter) * baseSpeed2 * options.launchB.impulseMultiplier * impulseJitter, y: -Math.sin(headingJitter) * baseSpeed2 * options.launchB.impulseMultiplier * impulseJitter },
+    -baseAngular2 * internalLaunch2.angularMultiplier,
+    { x: -Math.cos(headingJitter) * baseSpeed2 * internalLaunch2.impulseMultiplier * impulseJitter, y: -Math.sin(headingJitter) * baseSpeed2 * internalLaunch2.impulseMultiplier * impulseJitter },
   );
 
   const frames: BattleFrame[] = [makeFrame(0, body1, body2)];
@@ -370,28 +583,17 @@ function* simulateMatchRoundSteps(
   let ticks = 0;
   let outcome: BattleOutcome | null = null;
   let activeTopContactFixtures = 0;
+  let exactTopContactActive = false;
   let topTopContactCount = 0;
   let topTopBeginContactEpisodes = 0;
   let topTopImpactApplications = 0;
   let impactRetentionProduct1 = 1;
   let impactRetentionProduct2 = 1;
-  let steppingTick = 0;
-  let lastImpactTick = -1;
   const impact1 = impactPhysicsFromScore(top1.performance.impactResistance);
   const impact2 = impactPhysicsFromScore(top2.performance.impactResistance);
 
   world.on("begin-contact", (contact) => {
     if (!contactIsBetween(contact, body1, body2)) return;
-    if (activeTopContactFixtures === 0) topTopBeginContactEpisodes += 1;
-    if (activeTopContactFixtures === 0 && lastImpactTick !== steppingTick) {
-      body1.setAngularVelocity(retainAngularSpeedAfterImpact(body1.getAngularVelocity(), top1.performance.impactResistance));
-      body2.setAngularVelocity(retainAngularSpeedAfterImpact(body2.getAngularVelocity(), top2.performance.impactResistance));
-      impactRetentionProduct1 *= impact1.angularRetention;
-      impactRetentionProduct2 *= impact2.angularRetention;
-      topTopContactCount += 1;
-      topTopImpactApplications += 1;
-      lastImpactTick = steppingTick;
-    }
     activeTopContactFixtures += 1;
   });
   world.on("end-contact", (contact) => {
@@ -400,8 +602,19 @@ function* simulateMatchRoundSteps(
   });
 
   for (let tick = 1; tick <= MAX_TICKS; tick += 1) {
-    steppingTick = tick;
     world.step(STEP_SECONDS, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
+    const exactContact = activeTopContactFixtures > 0 && exactOutlinesOverlap(body1, top1, body2, top2);
+    if (exactContact && !exactTopContactActive) {
+      topTopBeginContactEpisodes += 1;
+      applyCustomTopImpulse(body1, body2, impact1, impact2);
+      body1.setAngularVelocity(retainAngularSpeedAfterImpact(body1.getAngularVelocity(), top1.performance.impactResistance));
+      body2.setAngularVelocity(retainAngularSpeedAfterImpact(body2.getAngularVelocity(), top2.performance.impactResistance));
+      impactRetentionProduct1 *= impact1.angularRetention;
+      impactRetentionProduct2 *= impact2.angularRetention;
+      topTopContactCount += 1;
+      topTopImpactApplications += 1;
+    }
+    exactTopContactActive = exactContact;
     // A flat 2D silhouette has no gyroscopic precession, so raw contact torque can
     // erase all spin in one solver step. A short, domain-derived endurance floor
     // models that omitted effect while Planck remains authoritative for collisions.
@@ -440,7 +653,7 @@ function* simulateMatchRoundSteps(
     });
   }
   if (frames.at(-1)?.tick !== ticks) frames.push(makeFrame(ticks, body1, body2));
-  return {
+  return mapInternalResult({
     modelVersion: PHYSICS_MODEL_VERSION,
     seed: options.seed,
     ticks,
@@ -453,7 +666,7 @@ function* simulateMatchRoundSteps(
       topTopBeginContactEpisodes,
       topTopImpactApplications,
     },
-  };
+  }, swapped);
 }
 
 export function simulateMatchRound(
@@ -472,20 +685,33 @@ export async function simulateMatchRoundAsync(
   player1Design: TopDesign,
   player2Design: TopDesign,
   options: Readonly<{ seed: number; launchA: LaunchJudgement; launchB: LaunchJudgement }>,
-  asyncOptions: Readonly<{ chunkTicks?: number }> = {},
+  asyncOptions: Readonly<{ chunkTicks?: number; signal?: AbortSignal }> = {},
 ): Promise<BattleResult> {
   const chunkTicks = asyncOptions.chunkTicks ?? 120;
   if (!Number.isSafeInteger(chunkTicks) || chunkTicks < 1 || chunkTicks > MAX_TICKS) {
     throw new RangeError("chunkTicks must be a safe integer within one round");
   }
+  throwIfAborted(asyncOptions.signal);
   const simulation = simulateMatchRoundSteps(player1Design, player2Design, options);
   while (true) {
     for (let index = 0; index < chunkTicks; index += 1) {
+      throwIfAborted(asyncOptions.signal);
       const step = simulation.next();
       if (step.done) return step.value;
     }
     await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+    throwIfAborted(asyncOptions.signal);
   }
+}
+
+function abortError(): Error {
+  const error = new Error("Battle simulation aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError();
 }
 
 function stableStringify(value: unknown): string {
@@ -532,27 +758,44 @@ type CacheEntry = {
   closed: boolean;
   expiresAtMs: number;
 };
-type InFlightEntry = { fingerprint: string; promise: Promise<BattleResult> };
+type ScheduledBattleJob = {
+  key: string;
+  fingerprint: string;
+  canonical: BattleInputs;
+  controller: AbortController;
+  promise: Promise<BattleResult>;
+  resolve: (result: BattleResult) => void;
+  reject: (reason: unknown) => void;
+  state: "queued" | "running" | "settled";
+  detachAbortListeners: Set<() => void>;
+};
 
 export class BattleEngine {
   readonly #cache = new Map<string, CacheEntry>();
-  readonly #inFlight = new Map<string, InFlightEntry>();
-  readonly #discardOnCompletion = new Set<string>();
+  readonly #inFlight = new Map<string, ScheduledBattleJob>();
+  readonly #queue: ScheduledBattleJob[] = [];
   readonly #chunkTicks: number;
   readonly #ttlMs: number;
   readonly #maxEntries: number;
+  readonly #maxConcurrent: number;
+  readonly #maxQueued: number;
   readonly #now: () => number;
   #simulationCount = 0;
+  #runningCount = 0;
 
   constructor(options: Readonly<{
     chunkTicks?: number;
     ttlMs?: number;
     maxEntries?: number;
+    maxConcurrent?: number;
+    maxQueued?: number;
     now?: () => number;
   }> = {}) {
     this.#chunkTicks = options.chunkTicks ?? 120;
     this.#ttlMs = options.ttlMs ?? DEFAULT_BATTLE_CACHE_TTL_MS;
     this.#maxEntries = options.maxEntries ?? DEFAULT_BATTLE_CACHE_MAX_ENTRIES;
+    this.#maxConcurrent = options.maxConcurrent ?? DEFAULT_BATTLE_MAX_CONCURRENT;
+    this.#maxQueued = options.maxQueued ?? DEFAULT_BATTLE_MAX_QUEUED;
     this.#now = options.now ?? Date.now;
     if (!Number.isSafeInteger(this.#chunkTicks) || this.#chunkTicks < 1 || this.#chunkTicks > MAX_TICKS) {
       throw new RangeError("chunkTicks must be a safe integer within one round");
@@ -562,6 +805,12 @@ export class BattleEngine {
     }
     if (!Number.isSafeInteger(this.#maxEntries) || this.#maxEntries < 1) {
       throw new RangeError("maxEntries must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(this.#maxConcurrent) || this.#maxConcurrent < 1) {
+      throw new RangeError("maxConcurrent must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(this.#maxQueued) || this.#maxQueued < 0) {
+      throw new RangeError("maxQueued must be a non-negative safe integer");
     }
     this.#readNow();
   }
@@ -573,6 +822,14 @@ export class BattleEngine {
   get cacheSize(): number {
     this.#pruneExpired();
     return this.#cache.size;
+  }
+
+  get runningCount(): number {
+    return this.#runningCount;
+  }
+
+  get queuedCount(): number {
+    return this.#queue.length;
   }
 
   #readNow(): number {
@@ -631,7 +888,13 @@ export class BattleEngine {
     return structuredClone(result);
   }
 
-  async simulateOnceAsync(matchId: string, roundId: string, inputs: BattleInputs): Promise<BattleResult> {
+  /** Production handlers should use this cooperative, bounded async path. */
+  async simulateOnceAsync(
+    matchId: string,
+    roundId: string,
+    inputs: BattleInputs,
+    options: Readonly<{ signal?: AbortSignal }> = {},
+  ): Promise<BattleResult> {
     const key = correlationKey(matchId, roundId);
     const canonical = canonicalizeBattleInputs(inputs);
     const fingerprint = stableStringify(canonical);
@@ -642,22 +905,96 @@ export class BattleEngine {
     const active = this.#inFlight.get(key);
     if (active !== undefined) {
       if (active.fingerprint !== fingerprint) throw new Error("Active battle correlation conflict");
+      this.#attachAbort(active, options.signal);
       return structuredClone(await active.promise);
     }
-    this.#simulationCount += 1;
-    const promise = simulateMatchRoundAsync(canonical.player1, canonical.player2, canonical, {
-      chunkTicks: this.#chunkTicks,
-    }).then((result) => {
-      if (!this.#discardOnCompletion.delete(key)) {
-        this.#storeCached(key, fingerprint, result);
-      }
-      return result;
-    }).finally(() => {
-      this.#inFlight.delete(key);
-      this.#discardOnCompletion.delete(key);
+    throwIfAborted(options.signal);
+    if (this.#runningCount >= this.#maxConcurrent && this.#queue.length >= this.#maxQueued) {
+      throw new Error("Battle scheduler capacity exceeded");
+    }
+    let resolve!: (result: BattleResult) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<BattleResult>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
     });
-    this.#inFlight.set(key, { fingerprint, promise });
+    const job: ScheduledBattleJob = {
+      key,
+      fingerprint,
+      canonical,
+      controller: new AbortController(),
+      promise,
+      resolve,
+      reject,
+      state: "queued",
+      detachAbortListeners: new Set(),
+    };
+    this.#inFlight.set(key, job);
+    this.#attachAbort(job, options.signal);
+    if (job.state === "settled") return structuredClone(await promise);
+    if (this.#runningCount < this.#maxConcurrent) this.#startJob(job);
+    else this.#queue.push(job);
     return structuredClone(await promise);
+  }
+
+  #attachAbort(job: ScheduledBattleJob, signal: AbortSignal | undefined): void {
+    if (signal === undefined) return;
+    const cancel = () => this.#cancelJob(job);
+    if (signal.aborted) {
+      cancel();
+      return;
+    }
+    signal.addEventListener("abort", cancel, { once: true });
+    job.detachAbortListeners.add(() => signal.removeEventListener("abort", cancel));
+  }
+
+  #cancelJob(job: ScheduledBattleJob): void {
+    if (job.state === "settled") return;
+    if (job.state === "queued") {
+      const queuedIndex = this.#queue.indexOf(job);
+      if (queuedIndex >= 0) this.#queue.splice(queuedIndex, 1);
+      job.state = "settled";
+      this.#inFlight.delete(job.key);
+      this.#detachAbort(job);
+      job.reject(abortError());
+      return;
+    }
+    job.controller.abort();
+  }
+
+  #detachAbort(job: ScheduledBattleJob): void {
+    for (const detach of job.detachAbortListeners) detach();
+    job.detachAbortListeners.clear();
+  }
+
+  #startJob(job: ScheduledBattleJob): void {
+    if (job.state !== "queued") return;
+    job.state = "running";
+    this.#runningCount += 1;
+    this.#simulationCount += 1;
+    void simulateMatchRoundAsync(job.canonical.player1, job.canonical.player2, job.canonical, {
+      chunkTicks: this.#chunkTicks,
+      signal: job.controller.signal,
+    }).then((result) => {
+      if (!job.controller.signal.aborted) this.#storeCached(job.key, job.fingerprint, result);
+      job.resolve(result);
+    }, (error: unknown) => {
+      job.reject(error);
+    }).finally(() => {
+      job.state = "settled";
+      this.#runningCount -= 1;
+      this.#inFlight.delete(job.key);
+      this.#detachAbort(job);
+      this.#startNextJob();
+    });
+  }
+
+  #startNextJob(): void {
+    while (this.#runningCount < this.#maxConcurrent) {
+      const next = this.#queue.shift();
+      if (next === undefined) return;
+      if (next.state === "queued") this.#startJob(next);
+    }
   }
 
   close(matchId: string, roundId: string): void {
@@ -671,8 +1008,8 @@ export class BattleEngine {
     this.#pruneExpired();
     const key = correlationKey(matchId, roundId);
     const removed = this.#cache.delete(key);
-    const active = this.#inFlight.has(key);
-    if (active) this.#discardOnCompletion.add(key);
-    return removed || active;
+    const active = this.#inFlight.get(key);
+    if (active !== undefined) this.#cancelJob(active);
+    return removed || active !== undefined;
   }
 }
