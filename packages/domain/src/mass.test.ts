@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { makeDefaultDesign } from "./design";
+import { makeLayerVertices, polygonArea } from "./geometry";
 import {
   ASSEMBLY,
   CUTOUT_CIRCLE_SEGMENTS,
@@ -19,14 +20,14 @@ describe("mass constants", () => {
     });
   });
 
-  it("bounds the inscribed circle approximation area error below 0.003%", () => {
+  it("bounds the partial-circle approximation area error below 0.02%", () => {
     const relativeArea =
       (CUTOUT_CIRCLE_SEGMENTS *
         Math.sin((Math.PI * 2) / CUTOUT_CIRCLE_SEGMENTS)) /
       (Math.PI * 2);
 
-    expect(CUTOUT_CIRCLE_SEGMENTS).toBeGreaterThanOrEqual(512);
-    expect(1 - relativeArea).toBeLessThan(0.00003);
+    expect(CUTOUT_CIRCLE_SEGMENTS).toBeGreaterThanOrEqual(192);
+    expect(1 - relativeArea).toBeLessThan(0.0002);
   });
 });
 
@@ -112,7 +113,7 @@ describe("calculatePerforatedLayerMassProperties", () => {
 
     expect(removedArea).toBeGreaterThan(0);
     expect(removedArea).toBeLessThan(Math.PI * 2 ** 2);
-    expect(removedArea).toBeCloseTo(Math.PI * 2 ** 2 / 2, 3);
+    expect(removedArea).toBeCloseTo(Math.PI * 2 ** 2 / 2, 2);
     expect(removedPolarAtOrigin).toBeGreaterThan(0);
     expect(removedPolarAtOrigin).toBeLessThan(fullCirclePolarAtOrigin);
   });
@@ -156,6 +157,30 @@ describe("calculatePerforatedLayerMassProperties", () => {
 });
 
 describe("calculateMassProperties", () => {
+  it("uses exact hole mass when screws are tangent to analytic circle layers", () => {
+    const design = makeDefaultDesign();
+    design.layers = design.layers.map((layer) => ({
+      ...layer,
+      shape: "circle",
+      diameterMm: 40,
+    })) as typeof design.layers;
+    design.screwLayout = { count: 4, radiusMm: 18, rotationDeg: 0 };
+    const layerAreaMm2 = polygonArea(makeLayerVertices(design.layers[0]));
+    const expectedLayerAreaMm2 =
+      layerAreaMm2 -
+      Math.PI * ASSEMBLY.axleHoleRadiusMm ** 2 -
+      4 * Math.PI * ASSEMBLY.screwHoleRadiusMm ** 2;
+    const result = calculateMassProperties(design);
+
+    expect(result.totalMassG).toBeCloseTo(
+      expectedLayerAreaMm2 *
+        MATERIALS.layerThicknessMm *
+        MATERIALS.acrylicDensityGPerMm3 *
+        3,
+      10,
+    );
+  });
+
   it("adds an unperforated solid metal disc", () => {
     const withoutDisc = makeDefaultDesign();
     const withDisc = { ...withoutDisc, metalDiscDiameterMm: 30 };

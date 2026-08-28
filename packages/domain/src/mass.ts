@@ -47,11 +47,19 @@ const EPSILON = 1e-9;
 const FULL_TURN = Math.PI * 2;
 
 /**
- * Partial circular holes are clipped as inscribed regular polygons. At 512
- * sides their area error is below 0.003%, while fully contained, disjoint holes
+ * Partial circular holes are clipped as inscribed regular polygons. At 192
+ * sides their area error is below 0.02%, while fully contained, disjoint holes
  * continue to use exact circle formulae.
  */
-export const CUTOUT_CIRCLE_SEGMENTS = 512;
+export const CUTOUT_CIRCLE_SEGMENTS = 192;
+
+const UNIT_CIRCLE_SAMPLES = Array.from(
+  { length: CUTOUT_CIRCLE_SEGMENTS },
+  (_, index): readonly [number, number] => {
+    const angle = (index / CUTOUT_CIRCLE_SEGMENTS) * FULL_TURN;
+    return [Math.cos(angle), Math.sin(angle)];
+  },
+);
 
 function assertFinitePositive(value: number, name: string): void {
   if (!Number.isFinite(value) || value <= 0) {
@@ -198,6 +206,16 @@ function circleFitsInsidePolygon(
   return minimumDistance + EPSILON >= cutout.radiusMm;
 }
 
+function circleFitsInsideCircle(
+  cutout: CircularCutout,
+  boundaryRadiusMm: number,
+): boolean {
+  return (
+    Math.hypot(cutout.center.x, cutout.center.y) + cutout.radiusMm <=
+    boundaryRadiusMm + EPSILON
+  );
+}
+
 type RemovedSection = Readonly<{
   areaMm2: number;
   firstMomentXmm3: number;
@@ -230,38 +248,77 @@ function exactCircularSection(cutouts: readonly CircularCutout[]): RemovedSectio
   );
 }
 
-function cutoutsAreDisjoint(cutouts: readonly CircularCutout[]): boolean {
-  for (let leftIndex = 0; leftIndex < cutouts.length; leftIndex += 1) {
-    for (
-      let rightIndex = leftIndex + 1;
-      rightIndex < cutouts.length;
-      rightIndex += 1
-    ) {
-      const left = cutouts[leftIndex];
-      const right = cutouts[rightIndex];
-      if (left === undefined || right === undefined) {
+function cutoutsOverlap(
+  left: CircularCutout,
+  right: CircularCutout,
+): boolean {
+  return (
+    Math.sqrt(squaredDistance(left.center, right.center)) + EPSILON <
+    left.radiusMm + right.radiusMm
+  );
+}
+
+function overlappingComponents(
+  cutouts: readonly CircularCutout[],
+): CircularCutout[][] {
+  const visited = new Set<number>();
+  const components: CircularCutout[][] = [];
+
+  for (let start = 0; start < cutouts.length; start += 1) {
+    if (visited.has(start)) {
+      continue;
+    }
+    const component: CircularCutout[] = [];
+    const pending = [start];
+    visited.add(start);
+    while (pending.length > 0) {
+      const index = pending.pop();
+      if (index === undefined) {
         continue;
       }
-      if (
-        Math.sqrt(squaredDistance(left.center, right.center)) + EPSILON <
-        left.radiusMm + right.radiusMm
-      ) {
-        return false;
+      const cutout = cutouts[index];
+      if (cutout === undefined) {
+        continue;
+      }
+      component.push(cutout);
+      for (let candidate = 0; candidate < cutouts.length; candidate += 1) {
+        const other = cutouts[candidate];
+        if (
+          !visited.has(candidate) &&
+          other !== undefined &&
+          cutoutsOverlap(cutout, other)
+        ) {
+          visited.add(candidate);
+          pending.push(candidate);
+        }
       }
     }
+    components.push(component);
   }
-  return true;
+
+  return components;
+}
+
+function uniqueCutouts(
+  cutouts: readonly CircularCutout[],
+): CircularCutout[] {
+  return cutouts.filter(
+    (cutout, index) =>
+      cutouts.findIndex(
+        (candidate) =>
+          candidate.radiusMm === cutout.radiusMm &&
+          candidate.center.x === cutout.center.x &&
+          candidate.center.y === cutout.center.y,
+      ) === index,
+  );
 }
 
 function circlePolygon(cutout: CircularCutout): Polygon {
   return [
-    Array.from({ length: CUTOUT_CIRCLE_SEGMENTS }, (_, index) => {
-      const angle = (index / CUTOUT_CIRCLE_SEGMENTS) * FULL_TURN;
-      return [
-        cutout.center.x + Math.cos(angle) * cutout.radiusMm,
-        cutout.center.y + Math.sin(angle) * cutout.radiusMm,
-      ];
-    }),
+    UNIT_CIRCLE_SAMPLES.map(([unitX, unitY]) => [
+      cutout.center.x + unitX * cutout.radiusMm,
+      cutout.center.y + unitY * cutout.radiusMm,
+    ]),
   ];
 }
 
@@ -317,28 +374,63 @@ function multiPolygonSection(multiPolygon: MultiPolygon): RemovedSection {
   };
 }
 
+function addRemovedSections(
+  left: RemovedSection,
+  right: RemovedSection,
+): RemovedSection {
+  return {
+    areaMm2: left.areaMm2 + right.areaMm2,
+    firstMomentXmm3: left.firstMomentXmm3 + right.firstMomentXmm3,
+    firstMomentYmm3: left.firstMomentYmm3 + right.firstMomentYmm3,
+    polarSecondMomentAtOriginMm4:
+      left.polarSecondMomentAtOriginMm4 +
+      right.polarSecondMomentAtOriginMm4,
+  };
+}
+
 function clippedCutoutSection(
   vertices: readonly Point[],
   cutouts: readonly CircularCutout[],
+  analyticCircleRadiusMm?: number,
 ): RemovedSection {
   if (cutouts.length === 0) {
     return exactCircularSection([]);
   }
-  if (
-    cutoutsAreDisjoint(cutouts) &&
-    cutouts.every((cutout) => circleFitsInsidePolygon(cutout, vertices))
-  ) {
-    return exactCircularSection(cutouts);
-  }
+  const layerPolygon = polygonFromVertices(vertices);
+  const fitsInside = (cutout: CircularCutout) =>
+    analyticCircleRadiusMm === undefined
+      ? circleFitsInsidePolygon(cutout, vertices)
+      : circleFitsInsideCircle(cutout, analyticCircleRadiusMm);
 
-  const circlePolygons = cutouts.map(circlePolygon);
-  const firstCircle = circlePolygons[0];
-  if (firstCircle === undefined) {
-    return exactCircularSection([]);
-  }
-  const combinedCutouts = union(firstCircle, ...circlePolygons.slice(1));
-  const clipped = intersection(polygonFromVertices(vertices), combinedCutouts);
-  return multiPolygonSection(clipped);
+  return overlappingComponents(uniqueCutouts(cutouts)).reduce<RemovedSection>(
+    (removed, component) => {
+      const firstCutout = component[0];
+      if (firstCutout === undefined) {
+        return removed;
+      }
+      if (component.length === 1 && fitsInside(firstCutout)) {
+        return addRemovedSections(
+          removed,
+          exactCircularSection([firstCutout]),
+        );
+      }
+
+      const polygons = component.map(circlePolygon);
+      const firstPolygon = polygons[0];
+      if (firstPolygon === undefined) {
+        return removed;
+      }
+      const cutoutGeometry =
+        polygons.length === 1
+          ? firstPolygon
+          : union(firstPolygon, ...polygons.slice(1));
+      return addRemovedSections(
+        removed,
+        multiPolygonSection(intersection(layerPolygon, cutoutGeometry)),
+      );
+    },
+    exactCircularSection([]),
+  );
 }
 
 export function calculatePerforatedLayerMassProperties(
@@ -346,6 +438,7 @@ export function calculatePerforatedLayerMassProperties(
   cutouts: readonly CircularCutout[],
   thicknessMm: number,
   densityGPerMm3: number,
+  analyticCircleRadiusMm?: number,
 ): MassProperties {
   assertFinitePositive(thicknessMm, "thicknessMm");
   assertFinitePositive(densityGPerMm3, "densityGPerMm3");
@@ -354,7 +447,11 @@ export function calculatePerforatedLayerMassProperties(
     assertFinitePoint(cutout.center);
     assertFinitePositive(cutout.radiusMm, "cutout radiusMm");
   }
-  const removed = clippedCutoutSection(vertices, cutouts);
+  const removed = clippedCutoutSection(
+    vertices,
+    cutouts,
+    analyticCircleRadiusMm,
+  );
   const netArea = section.areaMm2 - removed.areaMm2;
   const firstMomentX =
     section.areaMm2 * section.centroidMm.x - removed.firstMomentXmm3;
@@ -434,6 +531,7 @@ export function calculateMassProperties(input: TopDesign): MassProperties {
       cutouts,
       MATERIALS.layerThicknessMm,
       MATERIALS.acrylicDensityGPerMm3,
+      layer.shape === "circle" ? layer.diameterMm / 2 : undefined,
     );
   });
 
