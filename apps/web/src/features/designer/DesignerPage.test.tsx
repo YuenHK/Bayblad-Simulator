@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DesignerPage } from "./DesignerPage";
 
@@ -47,8 +47,11 @@ describe("DesignerPage", () => {
 
     expect(screen.getByText("最大直徑為 60 mm")).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "規格通過，可參戰" }),
+      screen.getByRole("button", { name: "規格未通過，請先修正" }),
     ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "規格未通過，請先修正" }),
+    ).toHaveAttribute("aria-describedby", "validation-status");
   });
 
   it("可更新形狀、角數、直徑、圓角、旋轉及顏色", async () => {
@@ -95,6 +98,10 @@ describe("DesignerPage", () => {
     expect(within(summaries[0]!).getByText("頂層")).toBeVisible();
     expect(within(summaries[0]!).getByText("42 mm")).toBeVisible();
     expect(screen.getByLabelText("目前編輯層")).toHaveValue("top");
+    expect(screen.getByText("中層層板已移至頂層")).toHaveAttribute(
+      "aria-live",
+      "polite",
+    );
 
     const idsAfter = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
@@ -172,6 +179,64 @@ describe("DesignerPage", () => {
     expect(screen.getByRole("heading", { name: "陀螺設計器" })).toBeVisible();
   });
 
+  it("只接受 active pointer 並可靠釋放 capture 及 window listeners", async () => {
+    const user = userEvent.setup();
+    const addListener = vi.spyOn(window, "addEventListener");
+    const removeListener = vi.spyOn(window, "removeEventListener");
+    const { container } = render(<DesignerPage />);
+    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+
+    const idsBefore = Array.from(container.querySelectorAll("[data-layer-id]"), (item) =>
+      item.getAttribute("data-layer-id"),
+    );
+    const firstHandle = screen.getByRole("button", {
+      name: "拖動中層以重新排序",
+    });
+    const secondHandle = screen.getByRole("button", {
+      name: "拖動頂層以重新排序",
+    });
+    const setPointerCapture = vi.fn();
+    const releasePointerCapture = vi.fn();
+    Object.defineProperties(firstHandle, {
+      setPointerCapture: { configurable: true, value: setPointerCapture },
+      releasePointerCapture: { configurable: true, value: releasePointerCapture },
+    });
+    stubElementFromPoint(() => screen.getAllByRole("listitem")[0]!);
+
+    fireEvent.pointerDown(firstHandle, { pointerId: 11 });
+    fireEvent.pointerDown(secondHandle, { pointerId: 22 });
+    fireEvent.pointerMove(secondHandle, {
+      pointerId: 22,
+      clientX: 30,
+      clientY: 30,
+    });
+    fireEvent.pointerUp(secondHandle, { pointerId: 22 });
+    fireEvent.pointerCancel(window, { pointerId: 22 });
+
+    expect(firstHandle).toHaveAttribute("aria-pressed", "true");
+    expect(
+      container.querySelectorAll("[data-layer-id]")[0]?.getAttribute("data-layer-id"),
+    ).toBe(idsBefore[0]);
+
+    fireEvent.pointerMove(firstHandle, {
+      pointerId: 11,
+      clientX: 30,
+      clientY: 30,
+    });
+    fireEvent.pointerUp(firstHandle, { pointerId: 11 });
+
+    expect(
+      container.querySelectorAll("[data-layer-id]")[0]?.getAttribute("data-layer-id"),
+    ).toBe(idsBefore[1]);
+    expect(setPointerCapture).toHaveBeenCalledTimes(1);
+    expect(setPointerCapture).toHaveBeenCalledWith(11);
+    expect(releasePointerCapture).toHaveBeenCalledTimes(1);
+    expect(releasePointerCapture).toHaveBeenCalledWith(11);
+    expect(removeListener).toHaveBeenCalledWith("pointerup", expect.any(Function));
+    expect(removeListener).toHaveBeenCalledWith("pointercancel", expect.any(Function));
+    expect(addListener).toHaveBeenCalledWith("pointerup", expect.any(Function));
+  });
+
   it("只有一組共用螺絲控制並即時顯示違規", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
@@ -183,7 +248,7 @@ describe("DesignerPage", () => {
 
     expect(screen.getByText("螺絲孔與軸心重疊")).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "規格通過，可參戰" }),
+      screen.getByRole("button", { name: "規格未通過，請先修正" }),
     ).toBeDisabled();
   });
 
@@ -226,6 +291,60 @@ describe("DesignerPage", () => {
 
     expect(screen.getByRole("heading", { name: "陀螺設計器" })).toBeVisible();
     expect(screen.getByLabelText("直徑（mm）")).toHaveValue(null);
+    expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("請輸入 20 至 80 的有效數值")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "規格未通過，請先修正" }),
+    ).toBeDisabled();
+  });
+
+  it("超出 schema 範圍的暫態數值會標示錯誤並停用參戰", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+
+    await replaceNumber(user, "直徑（mm）", "999");
+
+    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(999);
+    expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("請輸入 20 至 80 的有效數值")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "規格未通過，請先修正" }),
+    ).toBeDisabled();
+  });
+
+  it("角數不接受小數或 step mismatch", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+    await user.selectOptions(screen.getByLabelText("形狀"), "polygon");
+
+    fireEvent.change(screen.getByLabelText("角數"), {
+      target: { value: "3.5" },
+    });
+
+    expect(screen.getByLabelText("角數")).toHaveValue(3.5);
+    expect(screen.getByLabelText("角數")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("請輸入 3 至 16 的有效整數")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "規格未通過，請先修正" }),
+    ).toBeDisabled();
+  });
+
+  it("切換至 canonical value 相同的另一層會重設 draft 並清除舊錯誤", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+    await replaceNumber(user, "直徑（mm）", "55");
+    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+    await user.clear(screen.getByLabelText("直徑（mm）"));
+    expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
+
+    await user.selectOptions(screen.getByLabelText("目前編輯層"), "top");
+
+    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(55);
+    expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "false");
+    expect(screen.queryByText("請輸入 20 至 80 的有效數值")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "規格通過，可參戰" }),
+    ).toBeEnabled();
   });
 
   it("主要控制都有可存取標籤及鍵盤按鈕", () => {
