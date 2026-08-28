@@ -17,6 +17,7 @@ export type RoomBattleView = Readonly<{
   matchFinished?: MatchFinishedEvent | undefined;
   cancelledReason?: "attempt-limit" | "server-error" | undefined;
   clockReady?: boolean;
+  clockSamples?: number;
 }>;
 
 function publicToDesign(started: BattleStartedEvent, side: "player1" | "player2"): TopDesign {
@@ -39,7 +40,7 @@ export function RoomPage({ snapshot, battle, design, designId, onUseDesign, onCo
   return <main className="app-shell"><header className="room-heading"><div><p className="eyebrow">房間碼 {snapshot.code}</p><h1>{snapshot.name}</h1></div><button type="button" onClick={onLeave} disabled={actionsDisabled || departurePending || (active && snapshot.viewer.role !== "spectator")}>{departurePending ? "正在離房……" : active && snapshot.viewer.role !== "spectator" ? "對戰完成後可離房" : "離開房間"}</button></header>
     <section className="seat-grid" aria-label="對戰玩家區">{([snapshot.player1, snapshot.player2] as const).map((seat, index) => <article className={`seat-card ${seat?.ready ? "is-ready" : ""}`} key={index}><span className="seat-number">玩家{index === 0 ? "一" : "二"}</span><h2>{seat?.displayName ?? "等待玩家"}{seat?.participantId === snapshot.ownerParticipantId ? <span title="房主" aria-label="房主"> ♛</span> : null}</h2><p>{seat ? (seat.ready ? "已準備·設計已鎖定" : seat.designId ? "已選設計，未準備" : "未準備") : "可自由補上空位"}</p>{snapshot.viewer.role === "spectator" && !active && seat === null ? <button disabled={actionsDisabled} onClick={() => onCommand({ type: "room.move", roomId: snapshot.roomId, target: index === 0 ? "player1" : "player2" })}>坐上此位</button> : null}</article>)}</section>
     <section className="room-controls panel" aria-label="房間操作">{snapshot.viewer.role !== "spectator" && !active ? <><button className="primary-button" disabled={actionsDisabled} onClick={() => void onUseDesign?.()}>{designId ? "以已選設計準備" : "上載當前設計並準備"}</button><button disabled={actionsDisabled} onClick={() => onCommand({ type: "room.move", roomId: snapshot.roomId, target: "spectator" })}>轉到觀賽區</button></> : null}{snapshot.viewer.isOwner && !active ? <button className="danger-button" disabled={actionsDisabled || departurePending} onClick={() => onCommand({ type: "room.close", roomId: snapshot.roomId })}>{departurePending ? "正在關閉房間……" : "關閉房間"}</button> : null}</section>
-    {canLaunch ? <RhythmLaunch schedule={battle.schedule!} onCommand={onCommand} reducedMotion={reducedMotion} clockReady={battle.clockReady ?? true} /> : null}
+    {canLaunch ? <RhythmLaunch schedule={battle.schedule!} onCommand={onCommand} reducedMotion={reducedMotion} clockReady={battle.clockReady ?? true} clockSamples={battle.clockSamples ?? 0} /> : null}
     {snapshot.viewer.role !== "spectator" && battle.privateGrade ? <p className="grade-card">你的判定：{battle.privateGrade}</p> : null}
     {snapshot.viewer.role === "spectator" && battle.spectatorGrades ? <div className="spectator-grades"><p>玩家一：{battle.spectatorGrades.player1}</p><p>玩家二：{battle.spectatorGrades.player2}</p></div> : null}
     {(snapshot.phase === "battle" || battle.frames?.length) ? <BattleArena designs={battleDesigns} frames={battle.frames ?? []} reducedMotion={reducedMotion} /> : null}

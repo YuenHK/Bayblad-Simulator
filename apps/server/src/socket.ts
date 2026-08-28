@@ -603,7 +603,7 @@ export class RealtimeGateway {
     const previous = session.events.get(event.eventId);
     if (previous !== undefined) {
       if (previous !== fingerprint) throw Object.assign(new Error("EVENT_ID_CONFLICT"), { code: "EVENT_ID_CONFLICT" });
-      this.#ack(socket, event.eventId, "replayed");
+      this.#ack(socket, event.eventId, event.type, "replayed");
       return;
     }
     if (event.type === "room.create") {
@@ -718,7 +718,7 @@ export class RealtimeGateway {
     }
     session.events.set(event.eventId, fingerprint);
     if (session.events.size > 512) session.events.delete(session.events.keys().next().value!);
-    this.#ack(socket, event.eventId, "applied");
+    this.#ack(socket, event.eventId, event.type, "applied");
   }
 
   #broadcastRoom(roomId: string): void {
@@ -1173,9 +1173,9 @@ export class RealtimeGateway {
 
   #user(session: Session) { return { id: session.id, displayName: session.displayName }; }
 
-  #ack(socket: Socket, causedByEventId: string, status: "applied" | "replayed"): void {
+  #ack(socket: Socket, causedByEventId: string, commandType: V1CommandEvent["type"], status: "applied" | "replayed"): void {
     this.#emit(socket, {
-      type: "command.ack", causedByEventId, status,
+      type: "command.ack", causedByEventId, commandType, status,
       protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId(),
     });
   }

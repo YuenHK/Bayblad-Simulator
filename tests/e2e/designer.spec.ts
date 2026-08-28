@@ -1,4 +1,6 @@
 import { expect, test, type CDPSession, type Locator, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 const DRAFT_KEY = "steam-top:designer-draft:v1";
 
@@ -67,6 +69,19 @@ test("iPad student creates a legal three-layer design and loads the real 3D chun
     body: JSON.stringify(measurement, null, 2),
     contentType: "application/json",
   });
+});
+
+test("production 首屏不預載3D heavy chunk，選擇3D後才載入", async ({ page, request }) => {
+  const manifest = JSON.parse(await readFile(resolve(process.cwd(), "apps/web/dist/.vite/manifest.json"), "utf8")) as Record<string, { file: string }>;
+  const heavyFile = manifest["src/features/designer/TopPreview3D.tsx"]?.file;
+  expect(heavyFile).toBeTruthy();
+  const initialResources = await page.evaluate(() => performance.getEntriesByType("resource").map((entry) => new URL(entry.name).pathname));
+  expect(initialResources).not.toContain(`/${heavyFile}`);
+  const html = await (await request.get("/")).text();
+  expect(html).not.toContain(heavyFile!);
+  await page.getByRole("tab", { name: "3D 預覽" }).click();
+  await expect(page.getByTestId("top-preview-3d")).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => page.evaluate((file) => performance.getEntriesByType("resource").some((entry) => new URL(entry.name).pathname === `/${file}`), heavyFile!)).toBe(true);
 });
 
 test("60.00 mm is valid while 60.01 mm reaches the course boundary rule", async ({ page }) => {
