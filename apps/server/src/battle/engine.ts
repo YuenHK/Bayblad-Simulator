@@ -45,9 +45,13 @@ const MAX_TICKS = MAX_ROUND_SECONDS / STEP_SECONDS;
 const METRES_PER_MM = 0.001;
 const KG_PER_G = 0.001;
 const KG_M2_PER_G_MM2 = 1e-9;
-// Leaves at least 10 mm of solver travel before a top centre reaches the 70 mm
-// authoritative out-of-bounds circle, including the maximum 30 mm silhouette.
-const ARENA_WALL_RADIUS_M = 0.09;
+const MAX_LEGAL_TOP_RADIUS_MM = 30;
+const ARENA_WALL_MARGIN_MM = 5;
+// The solid wall is deliberately outside the authoritative centre boundary:
+// even a maximum legal top crosses 70 mm before its silhouette reaches Planck.
+const ARENA_WALL_RADIUS_M = (
+  ARENA_CENTER_SAFE_RADIUS_MM + MAX_LEGAL_TOP_RADIUS_MM + ARENA_WALL_MARGIN_MM
+) * METRES_PER_MM;
 const ARENA_WALL_SEGMENTS = 64;
 const VELOCITY_ITERATIONS = 8;
 const POSITION_ITERATIONS = 3;
@@ -62,6 +66,7 @@ export const DEFAULT_BATTLE_CACHE_MAX_ENTRIES = 128;
 export const DEFAULT_BATTLE_MAX_CONCURRENT = 2;
 export const DEFAULT_BATTLE_MAX_QUEUED = 64;
 export const DEFAULT_ASYNC_YIELD_BUDGET_MS = 8;
+export const DEFAULT_RESULT_STORE_MAX_RESULTS = 128;
 
 export type BattleBodyFrame = Readonly<ProtocolBattleBody>;
 
@@ -102,6 +107,59 @@ export type BattleResult = Readonly<{
   outcome: BattleOutcome;
   finalStats: BattleFinalStats;
 }>;
+
+export type StoredBattleResult = Readonly<{
+  fingerprint: string;
+  result?: BattleResult;
+}>;
+
+/**
+ * Authoritative completed-round boundary. Production composition must inject
+ * a durable implementation; saveIfAbsent is an atomic put-if-absent contract.
+ */
+export interface ResultRepository {
+  get(correlationKey: string): StoredBattleResult | undefined;
+  saveIfAbsent(correlationKey: string, value: StoredBattleResult): StoredBattleResult;
+}
+
+/**
+ * Bounded full-result repository for tests/local processes. Evicted results
+ * become small lifetime tombstones, so a completed correlation is never run
+ * again. Production must replace this with persistent storage.
+ */
+export class InMemoryCompletedRoundStore implements ResultRepository {
+  readonly #records = new Map<string, StoredBattleResult>();
+  readonly #maxResults: number;
+  #fullResultCount = 0;
+
+  constructor(options: Readonly<{ maxResults?: number }> = {}) {
+    this.#maxResults = options.maxResults ?? DEFAULT_RESULT_STORE_MAX_RESULTS;
+    if (!Number.isSafeInteger(this.#maxResults) || this.#maxResults < 1) {
+      throw new RangeError("maxResults must be a positive safe integer");
+    }
+  }
+
+  get(key: string): StoredBattleResult | undefined {
+    const stored = this.#records.get(key);
+    return stored === undefined ? undefined : structuredClone(stored);
+  }
+
+  saveIfAbsent(key: string, value: StoredBattleResult): StoredBattleResult {
+    const existing = this.#records.get(key);
+    if (existing !== undefined) return structuredClone(existing);
+    const stored = structuredClone(value);
+    this.#records.set(key, stored);
+    if (stored.result !== undefined) this.#fullResultCount += 1;
+    while (this.#fullResultCount > this.#maxResults) {
+      const oldestFullResult = [...this.#records].find(([, record]) => record.result !== undefined);
+      if (oldestFullResult === undefined) break;
+      const [oldestKey, record] = oldestFullResult;
+      this.#records.set(oldestKey, { fingerprint: record.fingerprint });
+      this.#fullResultCount -= 1;
+    }
+    return structuredClone(this.#records.get(key)!);
+  }
+}
 
 export type BattleInputs = Readonly<{
   player1: TopDesign;
@@ -619,6 +677,7 @@ function* simulateMatchRoundSteps(
   const headingJitter = prng.nextRange(-Math.PI / 90, Math.PI / 90);
   const positionJitter = prng.nextRange(-0.0005, 0.0005);
   const impulseJitter = prng.nextRange(0.99, 1.01);
+  const mirroredImpulseJitter = 2 - impulseJitter;
   const baseAngular1 = 45 + top1.performance.spinDuration * 0.55 + top1.performance.stability * 0.1;
   const baseAngular2 = 45 + top2.performance.spinDuration * 0.55 + top2.performance.stability * 0.1;
   const baseSpeed1 = 0.05 + top1.performance.speed * 0.0008;
@@ -637,7 +696,7 @@ function* simulateMatchRoundSteps(
     { x: 0.04, y: -positionJitter },
     Math.PI + headingJitter,
     -baseAngular2 * internalLaunch2.angularMultiplier,
-    { x: -Math.cos(headingJitter) * baseSpeed2 * internalLaunch2.impulseMultiplier * impulseJitter, y: -Math.sin(headingJitter) * baseSpeed2 * internalLaunch2.impulseMultiplier * impulseJitter },
+    { x: -Math.cos(headingJitter) * baseSpeed2 * internalLaunch2.impulseMultiplier * mirroredImpulseJitter, y: -Math.sin(headingJitter) * baseSpeed2 * internalLaunch2.impulseMultiplier * mirroredImpulseJitter },
   );
 
   const frames: BattleFrame[] = [makeFrame(0, body1, body2)];
@@ -854,6 +913,7 @@ export class BattleEngine {
   readonly #maxConcurrent: number;
   readonly #maxQueued: number;
   readonly #yieldBudgetMs: number;
+  readonly #resultRepository: ResultRepository;
   readonly #now: () => number;
   #simulationCount = 0;
   #runningCount = 0;
@@ -865,6 +925,7 @@ export class BattleEngine {
     maxConcurrent?: number;
     maxQueued?: number;
     yieldBudgetMs?: number;
+    resultRepository?: ResultRepository;
     now?: () => number;
   }> = {}) {
     this.#chunkTicks = options.chunkTicks ?? 120;
@@ -873,6 +934,7 @@ export class BattleEngine {
     this.#maxConcurrent = options.maxConcurrent ?? DEFAULT_BATTLE_MAX_CONCURRENT;
     this.#maxQueued = options.maxQueued ?? DEFAULT_BATTLE_MAX_QUEUED;
     this.#yieldBudgetMs = options.yieldBudgetMs ?? DEFAULT_ASYNC_YIELD_BUDGET_MS;
+    this.#resultRepository = options.resultRepository ?? new InMemoryCompletedRoundStore();
     this.#now = options.now ?? Date.now;
     if (!Number.isSafeInteger(this.#chunkTicks) || this.#chunkTicks < 1 || this.#chunkTicks > MAX_TICKS) {
       throw new RangeError("chunkTicks must be a safe integer within one round");
@@ -952,6 +1014,26 @@ export class BattleEngine {
     }
   }
 
+  #getAuthoritative(key: string, fingerprint: string): BattleResult | undefined {
+    const stored = this.#resultRepository.get(key);
+    if (stored === undefined) return undefined;
+    if (stored.fingerprint !== fingerprint) throw new Error("Battle correlation conflict");
+    if (stored.result === undefined) {
+      throw new Error("Authoritative battle result expired; replay is forbidden");
+    }
+    this.#storeCached(key, fingerprint, stored.result);
+    return structuredClone(stored.result);
+  }
+
+  #saveAuthoritative(key: string, fingerprint: string, result: BattleResult): BattleResult {
+    const stored = this.#resultRepository.saveIfAbsent(key, { fingerprint, result });
+    if (stored.fingerprint !== fingerprint) throw new Error("Battle correlation conflict");
+    if (stored.result === undefined) {
+      throw new Error("Authoritative battle result expired; replay is forbidden");
+    }
+    return structuredClone(stored.result);
+  }
+
   simulateOnce(matchId: string, roundId: string, inputs: BattleInputs): BattleResult {
     const key = correlationKey(matchId, roundId);
     const canonical = canonicalizeBattleInputs(inputs);
@@ -960,9 +1042,12 @@ export class BattleEngine {
     if (existing !== undefined) {
       return structuredClone(existing.result);
     }
+    const authoritative = this.#getAuthoritative(key, fingerprint);
+    if (authoritative !== undefined) return authoritative;
     const active = this.#inFlight.get(key);
     if (active !== undefined) throw new Error("Active battle correlation conflict");
-    const result = simulateMatchRound(canonical.player1, canonical.player2, canonical);
+    const simulated = simulateMatchRound(canonical.player1, canonical.player2, canonical);
+    const result = this.#saveAuthoritative(key, fingerprint, simulated);
     this.#storeCached(key, fingerprint, result);
     this.#simulationCount += 1;
     return structuredClone(result);
@@ -982,6 +1067,8 @@ export class BattleEngine {
     if (existing !== undefined) {
       return structuredClone(existing.result);
     }
+    const authoritative = this.#getAuthoritative(key, fingerprint);
+    if (authoritative !== undefined) return authoritative;
     const active = this.#inFlight.get(key);
     if (active !== undefined) {
       if (active.fingerprint !== fingerprint) throw new Error("Active battle correlation conflict");
@@ -1061,8 +1148,14 @@ export class BattleEngine {
       yieldBudgetMs: this.#yieldBudgetMs,
       signal: job.controller.signal,
     }).then((result) => {
-      if (!job.controller.signal.aborted) this.#storeCached(job.key, job.fingerprint, result);
-      job.resolve(result);
+      try {
+        if (job.controller.signal.aborted) throw abortError();
+        const authoritative = this.#saveAuthoritative(job.key, job.fingerprint, result);
+        if (!job.controller.signal.aborted) this.#storeCached(job.key, job.fingerprint, authoritative);
+        job.resolve(authoritative);
+      } catch (error) {
+        job.reject(error);
+      }
     }, (error: unknown) => {
       job.reject(error);
     }).finally(() => {

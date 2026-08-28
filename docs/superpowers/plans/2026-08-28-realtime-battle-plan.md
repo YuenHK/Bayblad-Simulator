@@ -216,6 +216,8 @@ git commit -m "feat: add synchronized rhythm launch judgement"
 **文件：**
 - 建立：`apps/server/src/battle/engine.ts`
 - 建立：`apps/server/src/battle/prng.ts`
+- 建立：`apps/server/src/battle/collision-proxy.ts`
+- 建立：`apps/server/src/battle/planck-config.ts`
 - 測試：`apps/server/src/battle/engine.test.ts`
 
 - [ ] **步驟 1：編寫可重播測試**
@@ -237,18 +239,22 @@ it("replays identical frames from one seed", () => {
 - [ ] **步驟 3：實作固定步長世界**
 
 ```ts
-export const PHYSICS_MODEL_VERSION = "1.0.0";
+export const PHYSICS_MODEL_VERSION = "2.0.0";
 export const STEP_SECONDS = 1 / 60;
 export const MAX_ROUND_SECONDS = 90;
 
 export type BattleFrame = Readonly<{
   tick: number;
-  a: { x: number; y: number; angle: number; angularSpeed: number };
-  b: { x: number; y: number; angle: number; angularSpeed: number };
+  player1: { x: number; y: number; angle: number; angularSpeed: number };
+  player2: { x: number; y: number; angle: number; angularSpeed: number };
 }>;
 ```
 
-以 compound convex fixtures 近似 domain 輪廓；seed PRNG 只產生有界起始方向及擾動。物理以 60 Hz 計算，向客戶端廣播 15 Hz frames。
+Planck 建立 server-authoritative SI 世界、dynamic bodies、arena wall 及 top-to-top sensor broadphase；質量、重心、極慣量及性能只由通過 domain 驗證的 canonical design 重算。top-to-top narrow phase 使用誤差不超過 0.35 mm 的 canonical concave radial outline，並以 edge AABB spatial grid 限制候選線段。接觸以 pair-level episode 去重，每個 episode 只施加一次由 impact resistance 映射的自訂 impulse 及 angular retention。
+
+**實作決策記錄（2026-08-28）：** 不再使用 compound solid fixtures 處理 top-to-top 碰撞，因內部三角接縫會令 Planck 在一次碰撞產生多重 solver impulses，造成座位不公平及回合過早終止。實體 convex proxy 只與 arena wall 碰撞；concave silhouette 的 sensor/narrow-phase 不產生 Planck solver impulse。arena wall 位於安全中心界線加最大合法半徑及 margin 之外，確保中心越過 70 mm 的權威出界判定先發生。
+
+seed PRNG 只產生有界起始方向及擾動。物理固定 60 Hz，15 Hz 收集 frames；同步入口只供純函式測試／benchmark，production handler 使用 cooperative async 入口。`BattleEngine` 以 `maxConcurrent`、`maxQueued`、FIFO queue 及每 chunk 運算時間預算限制 event-loop 阻塞；TTL/LRU result cache 只作加速。完成結果先寫入具 atomic `saveIfAbsent` 契約的 authoritative `ResultRepository`，同一 match/round 即使 cache 到期或淘汰也不得重新模擬；本機 bounded store 只供測試／單程序開發，production 必須由 Phase 3 持久 repository 取代。
 
 - [ ] **步驟 4：實作勝負條件**
 
@@ -258,7 +264,7 @@ export type BattleFrame = Readonly<{
 
 執行：`pnpm --filter @steam-top/server test -- engine.test.ts`
 
-預期：相同 seed 完全相同；有明顯優勢的 fixture 在五個校準 seed 下不被小量隨機值反轉。
+預期：相同 seed 完全相同；有明顯優勢的 fixture 在五個校準 seed 下不被小量隨機值反轉；合法最大陀螺有可達的 70 mm 中心出界路徑；cache TTL/LRU 淘汰後仍由 authoritative repository 回傳同一結果而不增加 simulation count；最大 16 角星雙局並行時符合 heartbeat 上限。
 
 ```bash
 git add apps/server/src/battle packages/domain
