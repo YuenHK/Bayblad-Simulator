@@ -2,52 +2,91 @@ import { describe, expect, it } from "vitest";
 import { clientEventSchema, serverEventSchema } from "./events";
 
 const eventId = "550e8400-e29b-41d4-a716-446655440000";
+const serverEventId = "8db11fe0-aca6-45d8-8cf3-13fd42232885";
+const resultServerEventId = "725b3e05-d270-4f9f-8327-45dd5a9fc92e";
 const designId = "7d9e2c75-2ef5-4ea7-aac2-18f385c1f82a";
+const clientEnvelope = { protocolVersion: 1, eventId } as const;
+const serverEnvelope = { protocolVersion: 1, serverEventId } as const;
 
 const clientCases = [
   {
+    type: "protocol.hello",
+    valid: { type: "protocol.hello", eventId, supportedVersions: [1] },
+    invalid: { type: "protocol.hello", eventId, supportedVersions: [] },
+  },
+  {
     type: "room.create",
-    valid: { type: "room.create", name: "  測試房  ", eventId },
-    invalid: { type: "room.create", name: " ", eventId },
+    valid: { type: "room.create", name: "  測試房  ", ...clientEnvelope },
+    invalid: { type: "room.create", name: " ", ...clientEnvelope },
   },
   {
     type: "room.join",
-    valid: { type: "room.join", roomId: "A102", role: "spectator", eventId },
-    invalid: { type: "room.join", roomId: "A102", role: "owner", eventId },
+    valid: {
+      type: "room.join",
+      roomId: "room-1",
+      role: "spectator",
+      ...clientEnvelope,
+    },
+    invalid: {
+      type: "room.join",
+      roomId: "room-1",
+      role: "owner",
+      ...clientEnvelope,
+    },
   },
   {
     type: "room.move",
-    valid: { type: "room.move", roomId: "A102", target: "player1", eventId },
-    invalid: { type: "room.move", roomId: "A102", target: "player3", eventId },
+    valid: {
+      type: "room.move",
+      roomId: "room-1",
+      target: "player1",
+      ...clientEnvelope,
+    },
+    invalid: {
+      type: "room.move",
+      roomId: "room-1",
+      target: "player3",
+      ...clientEnvelope,
+    },
   },
   {
     type: "player.ready",
-    valid: { type: "player.ready", roomId: "A102", designId, eventId },
-    invalid: { type: "player.ready", roomId: "A102", designId: "not-a-uuid", eventId },
+    valid: {
+      type: "player.ready",
+      roomId: "room-1",
+      designId,
+      ...clientEnvelope,
+    },
+    invalid: {
+      type: "player.ready",
+      roomId: "room-1",
+      designId: "not-a-uuid",
+      ...clientEnvelope,
+    },
   },
   {
     type: "launch.tap",
     valid: {
       type: "launch.tap",
-      roomId: "A102",
+      roomId: "room-1",
       roundId: "round-1",
       nonce: "nonce-1",
-      clientTimeMs: 1_000.5,
-      eventId,
+      clientTimeMs: 1_000,
+      ...clientEnvelope,
     },
     invalid: {
       type: "launch.tap",
-      roomId: "A102",
+      roomId: "room-1",
       roundId: "round-1",
       nonce: "nonce-1",
-      clientTimeMs: Number.POSITIVE_INFINITY,
-      eventId,
+      clientTimeMs: 1_000.5,
+      ...clientEnvelope,
     },
   },
   {
     type: "room.close",
-    valid: { type: "room.close", roomId: "A102", eventId },
-    invalid: { type: "room.close", roomId: "", eventId },
+    valid: { type: "room.close", roomId: "room-1", ...clientEnvelope },
+    invalid: { type: "room.close", roomId: "", ...clientEnvelope },
   },
 ] as const;
 
@@ -61,174 +100,272 @@ describe("clientEventSchema", () => {
   });
 
   it("rejects ready without a design id", () => {
-    expect(() =>
-      clientEventSchema.parse({ type: "player.ready", roomId: "A102", eventId }),
-    ).toThrow();
+    expect(
+      clientEventSchema.safeParse({
+        type: "player.ready",
+        roomId: "room-1",
+        ...clientEnvelope,
+      }).success,
+    ).toBe(false);
   });
 
   it("accepts a spectator join", () => {
-    const parsed = clientEventSchema.parse({
-      type: "room.join",
-      roomId: "A102",
-      role: "spectator",
-      eventId,
-    });
-    expect(parsed.type).toBe("room.join");
-    if (parsed.type === "room.join") expect(parsed.role).toBe("spectator");
+    expect(
+      clientEventSchema.safeParse({
+        type: "room.join",
+        roomId: "room-1",
+        role: "spectator",
+        ...clientEnvelope,
+      }).success,
+    ).toBe(true);
   });
 
   it("trims room names", () => {
     expect(
-      clientEventSchema.parse({ type: "room.create", name: "  測試房  ", eventId }),
+      clientEventSchema.parse({
+        type: "room.create",
+        name: "  測試房  ",
+        ...clientEnvelope,
+      }),
     ).toMatchObject({ name: "測試房" });
   });
 
-  it("requires a UUID event id and rejects unknown fields", () => {
+  it("supports self moves and owner-directed moves", () => {
+    const move = {
+      type: "room.move",
+      roomId: "room-1",
+      target: "spectator",
+      ...clientEnvelope,
+    };
+    expect(clientEventSchema.safeParse(move).success).toBe(true);
+    expect(
+      clientEventSchema.safeParse({ ...move, subjectParticipantId: "p2" }).success,
+    ).toBe(true);
     expect(
       clientEventSchema.safeParse({
-        type: "room.close",
-        roomId: "A102",
-        eventId: "event-1",
-      }).success,
-    ).toBe(false);
-    expect(
-      clientEventSchema.safeParse({
-        type: "room.close",
-        roomId: "A102",
-        eventId,
-        unexpected: true,
+        ...move,
+        subjectParticipantId: "x".repeat(33),
       }).success,
     ).toBe(false);
   });
 
-  it("bounds identifiers and rejects non-finite client times", () => {
+  it("requires protocol version 1 on commands", () => {
+    const close = clientCases[6].valid;
+    const { protocolVersion: _version, ...withoutVersion } = close;
+    expect(clientEventSchema.safeParse(withoutVersion).success).toBe(false);
+    expect(
+      clientEventSchema.safeParse({ ...close, protocolVersion: 2 }).success,
+    ).toBe(false);
+  });
+
+  it("only negotiates the supported protocol version", () => {
     expect(
       clientEventSchema.safeParse({
-        type: "room.join",
-        roomId: "x".repeat(129),
-        role: "player",
+        type: "protocol.hello",
         eventId,
+        supportedVersions: [2],
       }).success,
     ).toBe(false);
-    for (const clientTimeMs of [Number.NaN, Number.POSITIVE_INFINITY]) {
+  });
+
+  it("requires a UUID event id and rejects unknown fields", () => {
+    const close = clientCases[6].valid;
+    expect(clientEventSchema.safeParse({ ...close, eventId: "event-1" }).success).toBe(
+      false,
+    );
+    expect(clientEventSchema.safeParse({ ...close, unexpected: true }).success).toBe(
+      false,
+    );
+  });
+
+  it("bounds command identifiers", () => {
+    const join = clientCases[2].valid;
+    expect(clientEventSchema.safeParse({ ...join, roomId: "x".repeat(129) }).success).toBe(
+      false,
+    );
+    const tap = clientCases[5].valid;
+    for (const field of ["roundId", "nonce"] as const) {
       expect(
-        clientEventSchema.safeParse({
-          type: "launch.tap",
-          roomId: "A102",
-          roundId: "round-1",
-          nonce: "nonce-1",
-          clientTimeMs,
-          eventId,
-        }).success,
+        clientEventSchema.safeParse({ ...tap, [field]: "x".repeat(129) }).success,
       ).toBe(false);
+    }
+  });
+
+  it("rejects malicious client timestamps", () => {
+    const tap = clientCases[5].valid;
+    for (const clientTimeMs of [
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      expect(clientEventSchema.safeParse({ ...tap, clientTimeMs }).success).toBe(false);
     }
   });
 });
 
-const seat = {
-  userId: "user-a",
-  displayName: "Player A",
+const occupiedSeat = {
+  participantId: "p1",
+  displayName: "Player 1",
   ready: true,
   designId,
 };
 
 const launchPlayer = {
-  userId: "user-a",
-  displayName: "Player A",
+  participantId: "p1",
+  displayName: "Player 1",
   grade: "Perfect",
   angularMultiplier: 1.1,
   impulseMultiplier: 1.1,
 };
 
-const serverCases = [
-  {
-    type: "lobby.snapshot",
-    value: {
-      type: "lobby.snapshot",
-      rooms: [
-        {
-          id: "room-1",
-          code: "A102",
-          name: "測試房",
-          phase: "waiting",
-          player1: { displayName: "Player A" },
-          player2: { displayName: null },
-          spectatorCount: 3,
-        },
-      ],
-    },
-  },
-  {
-    type: "room.snapshot",
-    value: {
-      type: "room.snapshot",
+const lobbySnapshot = {
+  type: "lobby.snapshot",
+  revision: 4,
+  rooms: [
+    {
       id: "room-1",
       code: "A102",
       name: "測試房",
-      ownerId: "user-a",
-      phase: "launch",
-      player1: seat,
-      player2: { userId: null, displayName: null, ready: null, designId: null },
-      spectators: [{ userId: "user-s", displayName: "Spectator" }],
-      viewerRole: "player1",
-      viewerUserId: "user-a",
+      phase: "waiting",
+      player1: { displayName: "Player 1" },
+      player2: { displayName: null },
+      spectatorCount: 3,
     },
-  },
+  ],
+  ...serverEnvelope,
+} as const;
+
+const roomSnapshot = {
+  type: "room.snapshot",
+  roomId: "room-1",
+  code: "A102",
+  name: "測試房",
+  ownerParticipantId: "p1",
+  phase: "launch",
+  revision: 8,
+  player1: occupiedSeat,
+  player2: null,
+  spectators: [{ participantId: "s1", displayName: "Spectator" }],
+  viewer: { participantId: "p1", isOwner: true, role: "player1" },
+  ...serverEnvelope,
+} as const;
+
+const launchSchedule = {
+  type: "launch.schedule",
+  roomId: "room-1",
+  matchId: "match-1",
+  roundId: "round-1",
+  serverTargetTimeMs: 1_000,
+  nonce: "nonce-1",
+  ...serverEnvelope,
+} as const;
+
+const launchPrivate = {
+  type: "launch.result.private",
+  roomId: "room-1",
+  matchId: "match-1",
+  roundId: "round-1",
+  participantId: "p1",
+  grade: "Great",
+  angularMultiplier: 1,
+  impulseMultiplier: 1,
+  ...serverEnvelope,
+} as const;
+
+const battleFrame = {
+  type: "battle.frame",
+  roomId: "room-1",
+  matchId: "match-1",
+  roundId: "round-1",
+  sequence: 12,
+  tick: 12,
+  player1: { x: 1, y: 2, angle: 0.5, angularSpeed: 10 },
+  player2: { x: 3, y: 4, angle: 0.75, angularSpeed: 9 },
+  ...serverEnvelope,
+} as const;
+
+const matchFinished = {
+  type: "match.finished",
+  roomId: "room-1",
+  matchId: "match-1",
+  player1: { battlePoints: 1, challengePoints: 0.5, total: 1.5 },
+  player2: { battlePoints: 2, challengePoints: 0, total: 2 },
+  roundWinners: ["player1", "player2", "player2"],
+  ...serverEnvelope,
+} as const;
+
+const serverCases = [
   {
-    type: "launch.schedule",
+    type: "protocol.welcome",
+    value: { type: "protocol.welcome", selectedVersion: 1, ...serverEnvelope },
+  },
+  { type: "lobby.snapshot", value: lobbySnapshot },
+  { type: "room.snapshot", value: roomSnapshot },
+  {
+    type: "room.presence.delta",
     value: {
-      type: "launch.schedule",
+      type: "room.presence.delta",
       roomId: "room-1",
-      roundId: "round-1",
-      serverTargetTimeMs: 1_000,
-      nonce: "nonce-1",
+      revision: 9,
+      joined: [{ participantId: "s2", displayName: "New Spectator" }],
+      leftParticipantIds: ["s1"],
+      spectatorCount: 1,
+      ...serverEnvelope,
     },
   },
-  {
-    type: "launch.result.private",
-    value: {
-      type: "launch.result.private",
-      userId: "user-a",
-      grade: "Great",
-      angularMultiplier: 1,
-      impulseMultiplier: 1,
-    },
-  },
+  { type: "launch.schedule", value: launchSchedule },
+  { type: "launch.result.private", value: launchPrivate },
   {
     type: "launch.result.spectator",
     value: {
       type: "launch.result.spectator",
-      A: launchPlayer,
-      B: { ...launchPlayer, userId: "user-b", displayName: "Player B", grade: "Good" },
-    },
-  },
-  {
-    type: "battle.frame",
-    value: {
-      type: "battle.frame",
       roomId: "room-1",
       matchId: "match-1",
-      tick: 12,
-      a: { x: 1, y: 2, angle: 0.5, angularSpeed: 10 },
-      b: { x: 3, y: 4, angle: 0.75, angularSpeed: 9 },
+      roundId: "round-1",
+      player1: launchPlayer,
+      player2: {
+        ...launchPlayer,
+        participantId: "p2",
+        displayName: "Player 2",
+        grade: "Good",
+      },
+      ...serverEnvelope,
     },
   },
+  { type: "battle.frame", value: battleFrame },
   {
     type: "round.finished",
-    value: { type: "round.finished", winner: "A" },
-  },
-  {
-    type: "match.finished",
     value: {
-      type: "match.finished",
-      A: { battlePoints: 2, challengePoints: 0, total: 2 },
-      B: { battlePoints: 1, challengePoints: 0.5, total: 1.5 },
-      roundWinners: ["A", "B", "A"],
+      type: "round.finished",
+      roomId: "room-1",
+      matchId: "match-1",
+      roundId: "round-1",
+      winner: "draw",
+      ...serverEnvelope,
+    },
+  },
+  { type: "match.finished", value: matchFinished },
+  {
+    type: "command.ack",
+    value: {
+      type: "command.ack",
+      causedByEventId: eventId,
+      status: "applied",
+      resultServerEventId,
+      ...serverEnvelope,
     },
   },
   {
     type: "error",
-    value: { type: "error", code: "ROOM_CLOSED", message: "Room closed", eventId },
+    value: {
+      type: "error",
+      code: "ROOM_CLOSED",
+      message: "Room closed",
+      causedByEventId: eventId,
+      ...serverEnvelope,
+    },
   },
 ] as const;
 
@@ -237,79 +374,273 @@ describe("serverEventSchema", () => {
     expect(serverEventSchema.safeParse(value).success).toBe(true);
   });
 
-  it("prevents opponent launch data leaking in private results", () => {
-    const privateResult = serverCases[3].value;
+  it.each(serverCases)("requires the v1 server envelope for $type", ({ value }) => {
+    const { protocolVersion: _version, ...withoutVersion } = value;
+    expect(serverEventSchema.safeParse(withoutVersion).success).toBe(false);
     expect(
-      serverEventSchema.safeParse({ ...privateResult, opponentGrade: "Miss" }).success,
+      serverEventSchema.safeParse({ ...value, protocolVersion: 2 }).success,
+    ).toBe(false);
+    const { serverEventId: _id, ...withoutId } = value;
+    expect(serverEventSchema.safeParse(withoutId).success).toBe(false);
+  });
+
+  it("requires a valid welcome version", () => {
+    expect(
+      serverEventSchema.safeParse({
+        type: "protocol.welcome",
+        selectedVersion: 2,
+        ...serverEnvelope,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("defines acknowledgement correlation without implementing idempotency", () => {
+    const ack = serverCases[10].value;
+    expect(serverEventSchema.safeParse(ack).success).toBe(true);
+    expect(
+      serverEventSchema.safeParse({
+        ...ack,
+        status: "replayed",
+        resultServerEventId: null,
+      }).success,
+    ).toBe(true);
+    const { resultServerEventId: _resultId, ...withoutResultId } = ack;
+    expect(serverEventSchema.safeParse(withoutResultId).success).toBe(true);
+    expect(
+      serverEventSchema.safeParse({ ...ack, causedByEventId: "not-a-uuid" }).success,
+    ).toBe(false);
+  });
+
+  it("prevents opponent launch data leaking in private results", () => {
+    expect(
+      serverEventSchema.safeParse({ ...launchPrivate, opponentGrade: "Miss" }).success,
     ).toBe(false);
     expect(
-      serverEventSchema.safeParse({ ...privateResult, opponent: launchPlayer }).success,
+      serverEventSchema.safeParse({ ...launchPrivate, opponent: launchPlayer }).success,
+    ).toBe(false);
+  });
+
+  it("does not expose internal identity ids", () => {
+    expect(
+      serverEventSchema.safeParse({ ...roomSnapshot, ownerId: "internal-owner" }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({
+        ...roomSnapshot,
+        spectators: [{ participantId: "s1", displayName: "Spectator", userId: "db-1" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({ ...launchPrivate, userId: "db-1" }).success,
     ).toBe(false);
   });
 
   it("keeps spectator names out of lobby snapshots", () => {
-    const lobby = serverCases[0].value;
     expect(
       serverEventSchema.safeParse({
-        ...lobby,
-        rooms: [{ ...lobby.rooms[0], spectators: [{ displayName: "Hidden" }] }],
+        ...lobbySnapshot,
+        rooms: [
+          { ...lobbySnapshot.rooms[0], spectators: [{ displayName: "Hidden" }] },
+        ],
       }).success,
+    ).toBe(false);
+  });
+
+  it("represents an empty seat as null", () => {
+    expect(serverEventSchema.safeParse(roomSnapshot).success).toBe(true);
+    expect(
+      serverEventSchema.safeParse({
+        ...roomSnapshot,
+        player2: {
+          participantId: null,
+          displayName: null,
+          ready: null,
+          designId: null,
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires a design when an occupied seat is ready", () => {
+    expect(
+      serverEventSchema.safeParse({
+        ...roomSnapshot,
+        player1: { ...occupiedSeat, designId: null },
+      }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({
+        ...roomSnapshot,
+        player1: { ...occupiedSeat, ready: false, designId: null },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("carries full room, match, and round correlation ids", () => {
+    for (const event of [launchSchedule, launchPrivate, serverCases[6].value, battleFrame]) {
+      for (const field of ["roomId", "matchId", "roundId"] as const) {
+        const withoutField = { ...event } as Record<string, unknown>;
+        delete withoutField[field];
+        expect(serverEventSchema.safeParse(withoutField).success).toBe(false);
+      }
+    }
+  });
+
+  it("requires revisions and ordered frame sequence numbers", () => {
+    for (const snapshot of [lobbySnapshot, roomSnapshot, serverCases[3].value]) {
+      for (const revision of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        expect(serverEventSchema.safeParse({ ...snapshot, revision }).success).toBe(false);
+      }
+    }
+    for (const sequence of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(serverEventSchema.safeParse({ ...battleFrame, sequence }).success).toBe(false);
+    }
+  });
+
+  it("accepts 500 spectators without a product array maximum", () => {
+    const spectators = Array.from({ length: 500 }, (_, index) => ({
+      participantId: `s${index}`,
+      displayName: `S${index}`,
+    }));
+    const snapshot = serverEventSchema.parse({ ...roomSnapshot, spectators });
+    expect(snapshot.type).toBe("room.snapshot");
+    expect(JSON.stringify(snapshot).length).toBeLessThan(100_000);
+  });
+
+  it("uses compact presence deltas after the full snapshot", () => {
+    const spectators = Array.from({ length: 500 }, (_, index) => ({
+      participantId: `s${index}`,
+      displayName: `S${index}`,
+    }));
+    const fullSnapshot = serverEventSchema.parse({ ...roomSnapshot, spectators });
+    const delta = serverEventSchema.parse(serverCases[3].value);
+    expect(JSON.stringify(delta).length * 10).toBeLessThan(
+      JSON.stringify(fullSnapshot).length,
+    );
+  });
+
+  it("rejects invalid server times, counters, and frame numbers", () => {
+    for (const serverTargetTimeMs of [
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      expect(
+        serverEventSchema.safeParse({ ...launchSchedule, serverTargetTimeMs }).success,
+      ).toBe(false);
+    }
+    for (const field of ["tick", "sequence"] as const) {
+      for (const value of [-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+        expect(serverEventSchema.safeParse({ ...battleFrame, [field]: value }).success).toBe(
+          false,
+        );
+      }
+    }
+    for (const angularSpeed of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        serverEventSchema.safeParse({
+          ...battleFrame,
+          player1: { ...battleFrame.player1, angularSpeed },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("bounds public and correlation identifiers", () => {
+    expect(
+      serverEventSchema.safeParse({
+        ...roomSnapshot,
+        ownerParticipantId: "x".repeat(33),
+      }).success,
+    ).toBe(false);
+    for (const field of ["roomId", "matchId", "roundId", "nonce"] as const) {
+      expect(
+        serverEventSchema.safeParse({
+          ...launchSchedule,
+          [field]: "x".repeat(129),
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("uses player1/player2 consistently for seats and outcomes", () => {
+    expect(serverEventSchema.safeParse(matchFinished).success).toBe(true);
+    expect(
+      serverEventSchema.safeParse({
+        ...matchFinished,
+        roundWinners: ["A", "B", "A"],
+      }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({ ...battleFrame, a: battleFrame.player1 }).success,
+    ).toBe(false);
+  });
+
+  it("accepts only complete best-of-three match results", () => {
+    const validStraightWin = {
+      ...matchFinished,
+      player1: { battlePoints: 2, challengePoints: 0, total: 2 },
+      player2: { battlePoints: 0, challengePoints: 0.5, total: 0.5 },
+      roundWinners: ["player1", "player1"],
+    };
+    expect(serverEventSchema.safeParse(validStraightWin).success).toBe(true);
+
+    const invalidMatches = [
+      { ...matchFinished, roundWinners: ["player1", "player2"] },
+      { ...matchFinished, roundWinners: ["player1", "player1", "player2"] },
+      { ...matchFinished, roundWinners: ["player1", "player2", "player2", "player1"] },
+      { ...matchFinished, roundWinners: ["player1", "draw", "player2"] },
+      {
+        ...matchFinished,
+        player1: { ...matchFinished.player1, battlePoints: 2, total: 2.5 },
+      },
+      {
+        ...matchFinished,
+        player1: { ...matchFinished.player1, total: 1.4 },
+      },
+      {
+        ...matchFinished,
+        player2: { ...matchFinished.player2, challengePoints: 0.25, total: 2.25 },
+      },
+      {
+        ...matchFinished,
+        player1: { battlePoints: 1, challengePoints: 0.500_001, total: 1.500_001 },
+      },
+    ];
+    for (const match of invalidMatches) {
+      expect(serverEventSchema.safeParse(match).success).toBe(false);
+    }
+  });
+
+  it("allows draws only in round results, not final match winner history", () => {
+    expect(serverEventSchema.safeParse(serverCases[8].value).success).toBe(true);
+    expect(
+      serverEventSchema.safeParse({ ...serverCases[8].value, winner: "A" }).success,
     ).toBe(false);
   });
 
   it("exposes scores only in match.finished", () => {
     expect(
       serverEventSchema.safeParse({
-        type: "round.finished",
-        winner: "A",
-        A: { battlePoints: 1, challengePoints: 0, total: 1 },
+        ...serverCases[8].value,
+        player1: { battlePoints: 1, challengePoints: 0, total: 1 },
       }).success,
     ).toBe(false);
     expect(
       serverEventSchema.safeParse({
-        ...serverCases[5].value,
-        total: { A: 1, B: 0 },
+        ...battleFrame,
+        total: { player1: 1, player2: 0 },
       }).success,
     ).toBe(false);
-  });
-
-  it("accepts 500 spectators in a room snapshot", () => {
-    const room = serverCases[1].value;
-    const spectators = Array.from({ length: 500 }, (_, index) => ({
-      userId: `spectator-${index}`,
-      displayName: `Spectator ${index}`,
-    }));
-    expect(serverEventSchema.safeParse({ ...room, spectators }).success).toBe(true);
-  });
-
-  it("rejects invalid server times, ticks, and frame numbers", () => {
-    const schedule = serverCases[2].value;
-    for (const serverTargetTimeMs of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(
-        serverEventSchema.safeParse({ ...schedule, serverTargetTimeMs }).success,
-      ).toBe(false);
-    }
-
-    const frame = serverCases[5].value;
-    for (const tick of [-1, 1.5, Number.NaN]) {
-      expect(serverEventSchema.safeParse({ ...frame, tick }).success).toBe(false);
-    }
-    for (const angularSpeed of [Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(
-        serverEventSchema.safeParse({
-          ...frame,
-          a: { ...frame.a, angularSpeed },
-        }).success,
-      ).toBe(false);
-    }
   });
 
   it("rejects unknown fields on nested objects", () => {
-    const room = serverCases[1].value;
     expect(
       serverEventSchema.safeParse({
-        ...room,
-        player1: { ...room.player1, secret: "must not leak" },
+        ...roomSnapshot,
+        player1: { ...roomSnapshot.player1, secret: "must not leak" },
       }).success,
     ).toBe(false);
   });

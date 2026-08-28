@@ -1,12 +1,43 @@
 import { z } from "zod";
 
-const boundedIdSchema = z.string().trim().min(1).max(128);
+export const PROTOCOL_VERSION = 1 as const;
+
+export const protocolVersionSchema = z.literal(PROTOCOL_VERSION);
+export type ProtocolVersion = z.infer<typeof protocolVersionSchema>;
+
+export const correlationIdSchema = z.string().trim().min(1).max(128);
+export type CorrelationId = z.infer<typeof correlationIdSchema>;
+
+export const participantIdSchema = z.string().trim().min(1).max(32);
+export type ParticipantId = z.infer<typeof participantIdSchema>;
+
 const roomCodeSchema = z.string().trim().min(1).max(32);
 const roomNameSchema = z.string().trim().min(1).max(30);
 const displayNameSchema = z.string().trim().min(1).max(80);
-const eventIdSchema = z.uuid();
+export const eventIdSchema = z.uuid();
+export type EventId = z.infer<typeof eventIdSchema>;
+
 const finiteNumberSchema = z.number().finite();
 const nonnegativeFiniteNumberSchema = finiteNumberSchema.nonnegative();
+const safeNonnegativeIntegerSchema = z
+  .number()
+  .finite()
+  .int()
+  .nonnegative()
+  .max(Number.MAX_SAFE_INTEGER);
+const commandEnvelopeShape = {
+  protocolVersion: protocolVersionSchema,
+  eventId: eventIdSchema,
+};
+const serverEnvelopeShape = {
+  protocolVersion: protocolVersionSchema,
+  serverEventId: eventIdSchema,
+};
+const battleCorrelationShape = {
+  roomId: correlationIdSchema,
+  matchId: correlationIdSchema,
+  roundId: correlationIdSchema,
+};
 
 export const phaseSchema = z.enum(["waiting", "launch", "battle", "result"]);
 export type Phase = z.infer<typeof phaseSchema>;
@@ -14,61 +45,71 @@ export type Phase = z.infer<typeof phaseSchema>;
 export const launchGradeSchema = z.enum(["Perfect", "Great", "Good", "Miss"]);
 export type LaunchGrade = z.infer<typeof launchGradeSchema>;
 
+export const protocolHelloEventSchema = z
+  .object({
+    type: z.literal("protocol.hello"),
+    eventId: eventIdSchema,
+    supportedVersions: z.array(protocolVersionSchema).min(1),
+  })
+  .strict();
+
 export const roomCreateEventSchema = z
   .object({
     type: z.literal("room.create"),
     name: roomNameSchema,
-    eventId: eventIdSchema,
+    ...commandEnvelopeShape,
   })
   .strict();
 
 export const roomJoinEventSchema = z
   .object({
     type: z.literal("room.join"),
-    roomId: boundedIdSchema,
+    roomId: correlationIdSchema,
     role: z.enum(["player", "spectator"]),
-    eventId: eventIdSchema,
+    ...commandEnvelopeShape,
   })
   .strict();
 
 export const roomMoveEventSchema = z
   .object({
     type: z.literal("room.move"),
-    roomId: boundedIdSchema,
+    roomId: correlationIdSchema,
     target: z.enum(["player1", "player2", "spectator"]),
-    eventId: eventIdSchema,
+    subjectParticipantId: participantIdSchema.optional(),
+    ...commandEnvelopeShape,
   })
   .strict();
 
 export const playerReadyEventSchema = z
   .object({
     type: z.literal("player.ready"),
-    roomId: boundedIdSchema,
+    roomId: correlationIdSchema,
     designId: z.uuid(),
-    eventId: eventIdSchema,
+    ...commandEnvelopeShape,
   })
   .strict();
 
 export const launchTapEventSchema = z
   .object({
     type: z.literal("launch.tap"),
-    roomId: boundedIdSchema,
-    roundId: boundedIdSchema,
-    nonce: boundedIdSchema,
-    clientTimeMs: finiteNumberSchema,
-    eventId: eventIdSchema,
+    roomId: correlationIdSchema,
+    roundId: correlationIdSchema,
+    nonce: correlationIdSchema,
+    clientTimeMs: safeNonnegativeIntegerSchema,
+    ...commandEnvelopeShape,
   })
   .strict();
 
 export const roomCloseEventSchema = z
   .object({
     type: z.literal("room.close"),
-    roomId: boundedIdSchema,
-    eventId: eventIdSchema,
+    roomId: correlationIdSchema,
+    ...commandEnvelopeShape,
   })
   .strict();
 
 export const clientEventSchema = z.discriminatedUnion("type", [
+  protocolHelloEventSchema,
   roomCreateEventSchema,
   roomJoinEventSchema,
   roomMoveEventSchema,
@@ -78,12 +119,21 @@ export const clientEventSchema = z.discriminatedUnion("type", [
 ]);
 export type ClientEvent = z.infer<typeof clientEventSchema>;
 
+export type ProtocolHelloEvent = z.infer<typeof protocolHelloEventSchema>;
 export type RoomCreateEvent = z.infer<typeof roomCreateEventSchema>;
 export type RoomJoinEvent = z.infer<typeof roomJoinEventSchema>;
 export type RoomMoveEvent = z.infer<typeof roomMoveEventSchema>;
 export type PlayerReadyEvent = z.infer<typeof playerReadyEventSchema>;
 export type LaunchTapEvent = z.infer<typeof launchTapEventSchema>;
 export type RoomCloseEvent = z.infer<typeof roomCloseEventSchema>;
+
+export const protocolWelcomeEventSchema = z
+  .object({
+    type: z.literal("protocol.welcome"),
+    selectedVersion: protocolVersionSchema,
+    ...serverEnvelopeShape,
+  })
+  .strict();
 
 export const lobbySeatSchema = z
   .object({ displayName: displayNameSchema.nullable() })
@@ -92,13 +142,13 @@ export type LobbySeat = z.infer<typeof lobbySeatSchema>;
 
 export const lobbyRoomSchema = z
   .object({
-    id: boundedIdSchema,
+    id: correlationIdSchema,
     code: roomCodeSchema,
     name: roomNameSchema,
     phase: phaseSchema,
     player1: lobbySeatSchema,
     player2: lobbySeatSchema,
-    spectatorCount: z.number().int().nonnegative(),
+    spectatorCount: safeNonnegativeIntegerSchema,
   })
   .strict();
 export type LobbyRoom = z.infer<typeof lobbyRoomSchema>;
@@ -106,60 +156,100 @@ export type LobbyRoom = z.infer<typeof lobbyRoomSchema>;
 export const lobbySnapshotEventSchema = z
   .object({
     type: z.literal("lobby.snapshot"),
+    revision: safeNonnegativeIntegerSchema,
     rooms: z.array(lobbyRoomSchema),
+    ...serverEnvelopeShape,
   })
   .strict();
 
-export const roomSeatSchema = z
+export const occupiedSeatSchema = z
   .object({
-    userId: boundedIdSchema.nullable(),
-    displayName: displayNameSchema.nullable(),
-    ready: z.boolean().nullable(),
+    participantId: participantIdSchema,
+    displayName: displayNameSchema,
+    ready: z.boolean(),
     designId: z.uuid().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((seat, context) => {
+    if (seat.ready && seat.designId === null) {
+      context.addIssue({
+        code: "custom",
+        message: "A ready player must have a design id",
+        path: ["designId"],
+      });
+    }
+  });
+export type OccupiedSeat = z.infer<typeof occupiedSeatSchema>;
+
+export const roomSeatSchema = occupiedSeatSchema.nullable();
 export type RoomSeat = z.infer<typeof roomSeatSchema>;
 
-export const spectatorSchema = z
+export const participantSummarySchema = z
   .object({
-    userId: boundedIdSchema,
+    participantId: participantIdSchema,
     displayName: displayNameSchema,
   })
   .strict();
+export type ParticipantSummary = z.infer<typeof participantSummarySchema>;
+
+export const spectatorSchema = participantSummarySchema;
 export type Spectator = z.infer<typeof spectatorSchema>;
 
 export const viewerRoleSchema = z.enum(["player1", "player2", "spectator"]);
 export type ViewerRole = z.infer<typeof viewerRoleSchema>;
 
+export const viewerSchema = z
+  .object({
+    participantId: participantIdSchema,
+    isOwner: z.boolean(),
+    role: viewerRoleSchema,
+  })
+  .strict();
+export type Viewer = z.infer<typeof viewerSchema>;
+
 export const roomSnapshotEventSchema = z
   .object({
     type: z.literal("room.snapshot"),
-    id: boundedIdSchema,
+    roomId: correlationIdSchema,
     code: roomCodeSchema,
     name: roomNameSchema,
-    ownerId: boundedIdSchema,
+    ownerParticipantId: participantIdSchema,
     phase: phaseSchema,
+    revision: safeNonnegativeIntegerSchema,
     player1: roomSeatSchema,
     player2: roomSeatSchema,
     spectators: z.array(spectatorSchema),
-    viewerRole: viewerRoleSchema,
-    viewerUserId: boundedIdSchema,
+    viewer: viewerSchema,
+    ...serverEnvelopeShape,
+  })
+  .strict();
+
+export const roomPresenceDeltaEventSchema = z
+  .object({
+    type: z.literal("room.presence.delta"),
+    roomId: correlationIdSchema,
+    revision: safeNonnegativeIntegerSchema,
+    joined: z.array(participantSummarySchema),
+    leftParticipantIds: z.array(participantIdSchema),
+    spectatorCount: safeNonnegativeIntegerSchema,
+    ...serverEnvelopeShape,
   })
   .strict();
 
 export const launchScheduleEventSchema = z
   .object({
     type: z.literal("launch.schedule"),
-    roomId: boundedIdSchema,
-    roundId: boundedIdSchema,
-    serverTargetTimeMs: nonnegativeFiniteNumberSchema,
-    nonce: boundedIdSchema,
+    ...battleCorrelationShape,
+    serverTargetTimeMs: safeNonnegativeIntegerSchema,
+    nonce: correlationIdSchema,
+    ...serverEnvelopeShape,
   })
   .strict();
 
 export const launchResultSchema = z
   .object({
-    userId: boundedIdSchema,
+    participantId: participantIdSchema,
+    displayName: displayNameSchema,
     grade: launchGradeSchema,
     angularMultiplier: nonnegativeFiniteNumberSchema,
     impulseMultiplier: nonnegativeFiniteNumberSchema,
@@ -170,18 +260,22 @@ export type LaunchResult = z.infer<typeof launchResultSchema>;
 export const launchResultPrivateEventSchema = z
   .object({
     type: z.literal("launch.result.private"),
-    userId: boundedIdSchema,
+    ...battleCorrelationShape,
+    participantId: participantIdSchema,
     grade: launchGradeSchema,
     angularMultiplier: nonnegativeFiniteNumberSchema,
     impulseMultiplier: nonnegativeFiniteNumberSchema,
+    ...serverEnvelopeShape,
   })
   .strict();
 
 export const launchResultSpectatorEventSchema = z
   .object({
     type: z.literal("launch.result.spectator"),
-    A: launchResultSchema.extend({ displayName: displayNameSchema }).strict(),
-    B: launchResultSchema.extend({ displayName: displayNameSchema }).strict(),
+    ...battleCorrelationShape,
+    player1: launchResultSchema,
+    player2: launchResultSchema,
+    ...serverEnvelopeShape,
   })
   .strict();
 
@@ -198,39 +292,102 @@ export type BattleBody = z.infer<typeof battleBodySchema>;
 export const battleFrameEventSchema = z
   .object({
     type: z.literal("battle.frame"),
-    roomId: boundedIdSchema,
-    matchId: boundedIdSchema,
-    tick: z.number().int().nonnegative(),
-    a: battleBodySchema,
-    b: battleBodySchema,
+    ...battleCorrelationShape,
+    sequence: safeNonnegativeIntegerSchema,
+    tick: safeNonnegativeIntegerSchema,
+    player1: battleBodySchema,
+    player2: battleBodySchema,
+    ...serverEnvelopeShape,
   })
   .strict();
 
-export const roundWinnerSchema = z.enum(["A", "B", "draw"]);
+export const roundWinnerSchema = z.enum(["player1", "player2", "draw"]);
 export type RoundWinner = z.infer<typeof roundWinnerSchema>;
+
+export const matchRoundWinnerSchema = z.enum(["player1", "player2"]);
+export type MatchRoundWinner = z.infer<typeof matchRoundWinnerSchema>;
 
 export const roundFinishedEventSchema = z
   .object({
     type: z.literal("round.finished"),
+    ...battleCorrelationShape,
     winner: roundWinnerSchema,
+    ...serverEnvelopeShape,
   })
   .strict();
 
+const SCORE_TOLERANCE = 1e-9;
+
 export const matchScoreSchema = z
   .object({
-    battlePoints: nonnegativeFiniteNumberSchema,
-    challengePoints: nonnegativeFiniteNumberSchema,
+    battlePoints: z.number().int().min(0).max(2),
+    challengePoints: z.number().finite().min(0).max(0.5),
     total: nonnegativeFiniteNumberSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((score, context) => {
+    const expectedTotal = score.battlePoints + score.challengePoints;
+    if (Math.abs(score.total - expectedTotal) > SCORE_TOLERANCE) {
+      context.addIssue({
+        code: "custom",
+        message: "Total must equal battle points plus challenge points",
+        path: ["total"],
+      });
+    }
+  });
 export type MatchScore = z.infer<typeof matchScoreSchema>;
 
 export const matchFinishedEventSchema = z
   .object({
     type: z.literal("match.finished"),
-    A: matchScoreSchema,
-    B: matchScoreSchema,
-    roundWinners: z.array(roundWinnerSchema),
+    roomId: correlationIdSchema,
+    matchId: correlationIdSchema,
+    player1: matchScoreSchema,
+    player2: matchScoreSchema,
+    roundWinners: z.array(matchRoundWinnerSchema).min(2).max(3),
+    ...serverEnvelopeShape,
+  })
+  .strict()
+  .superRefine((match, context) => {
+    const player1Wins = match.roundWinners.filter((winner) => winner === "player1").length;
+    const player2Wins = match.roundWinners.length - player1Wins;
+    const completed = player1Wins === 2 || player2Wins === 2;
+    const endedEarly =
+      match.roundWinners.length === 3 && match.roundWinners[0] === match.roundWinners[1];
+
+    if (!completed || endedEarly) {
+      context.addIssue({
+        code: "custom",
+        message: "Round winners must describe a completed best-of-three match",
+        path: ["roundWinners"],
+      });
+    }
+    if (
+      match.player1.battlePoints !== player1Wins ||
+      match.player2.battlePoints !== player2Wins
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Battle points must match the round winner counts",
+        path: ["roundWinners"],
+      });
+    }
+    if (match.player1.challengePoints > 0 && match.player2.challengePoints > 0) {
+      context.addIssue({
+        code: "custom",
+        message: "At most one player may receive challenge points",
+        path: ["player2", "challengePoints"],
+      });
+    }
+  });
+
+export const commandAckEventSchema = z
+  .object({
+    type: z.literal("command.ack"),
+    causedByEventId: eventIdSchema,
+    status: z.enum(["applied", "replayed"]),
+    resultServerEventId: eventIdSchema.nullable().optional(),
+    ...serverEnvelopeShape,
   })
   .strict();
 
@@ -239,29 +396,36 @@ export const errorEventSchema = z
     type: z.literal("error"),
     code: z.string().trim().min(1).max(64),
     message: z.string().trim().min(1).max(500),
-    eventId: eventIdSchema.optional(),
+    causedByEventId: eventIdSchema.optional(),
+    ...serverEnvelopeShape,
   })
   .strict();
 
 export const serverEventSchema = z.discriminatedUnion("type", [
+  protocolWelcomeEventSchema,
   lobbySnapshotEventSchema,
   roomSnapshotEventSchema,
+  roomPresenceDeltaEventSchema,
   launchScheduleEventSchema,
   launchResultPrivateEventSchema,
   launchResultSpectatorEventSchema,
   battleFrameEventSchema,
   roundFinishedEventSchema,
   matchFinishedEventSchema,
+  commandAckEventSchema,
   errorEventSchema,
 ]);
 export type ServerEvent = z.infer<typeof serverEventSchema>;
 
+export type ProtocolWelcomeEvent = z.infer<typeof protocolWelcomeEventSchema>;
 export type LobbySnapshotEvent = z.infer<typeof lobbySnapshotEventSchema>;
 export type RoomSnapshotEvent = z.infer<typeof roomSnapshotEventSchema>;
+export type RoomPresenceDeltaEvent = z.infer<typeof roomPresenceDeltaEventSchema>;
 export type LaunchScheduleEvent = z.infer<typeof launchScheduleEventSchema>;
 export type LaunchResultPrivateEvent = z.infer<typeof launchResultPrivateEventSchema>;
 export type LaunchResultSpectatorEvent = z.infer<typeof launchResultSpectatorEventSchema>;
 export type BattleFrameEvent = z.infer<typeof battleFrameEventSchema>;
 export type RoundFinishedEvent = z.infer<typeof roundFinishedEventSchema>;
 export type MatchFinishedEvent = z.infer<typeof matchFinishedEventSchema>;
+export type CommandAckEvent = z.infer<typeof commandAckEventSchema>;
 export type ErrorEvent = z.infer<typeof errorEventSchema>;
