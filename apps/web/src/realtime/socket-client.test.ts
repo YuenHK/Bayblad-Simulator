@@ -36,6 +36,25 @@ describe("RealtimeClient", () => {
     expect(estimator.serverToClientTime(7_000)).toBe(2_000);
   });
 
+  it("clock pong只供視覺 offset，client以不含server timestamps的ack回覆", () => {
+    let now = 1_000;
+    const transport = new FakeTransport();
+    const client = new RealtimeClient({ transport, now: () => now });
+    client.start();
+    transport.fire("connect");
+    transport.fire("server.event", { type: "protocol.welcome", selectedVersion: 1, sessionToken: "s".repeat(32), sessionStatus: "new", protocolVersion: 1, serverEventId: uuid(1) });
+    const ping = transport.emitted.map(([, event]) => event as any).find((event) => event.type === "clock.ping");
+    expect(ping).toMatchObject({ clientSentAtMs: 1_000 });
+    expect(ping).not.toHaveProperty("serverReceiveTimeMs");
+    now = 1_050;
+    transport.fire("server.event", { type: "clock.pong", pingId: ping.pingId, clientSentAtMs: 1_000, serverReceiveTimeMs: 6_020, serverSendTimeMs: 6_020, protocolVersion: 1, serverEventId: uuid(2) });
+    const ack = transport.emitted.map(([, event]) => event as any).find((event) => event.type === "clock.ack");
+    expect(ack).toMatchObject({ pingId: ping.pingId });
+    expect(ack).not.toHaveProperty("serverReceiveTimeMs");
+    expect(client.getState()).toMatchObject({ clockReady: true, clockOffsetMs: 4_995 });
+    client.stop();
+  });
+
   it("connect 後送出 v1 hello，並保存伺服器 session token 供重連", () => {
     const transport = new FakeTransport();
     const storage = new Map<string, string>();
@@ -111,8 +130,27 @@ describe("RealtimeClient", () => {
     transport.fire("server.event", { type: "error", code: "ROOM_ACTIVE", message: "ROOM_ACTIVE", causedByEventId: eventId, protocolVersion: 1, serverEventId: uuid(4) });
     expect(client.getState()).toMatchObject({ departurePending: false, room: { roomId: "room-1" } });
     client.command({ type: "room.leave", roomId: "room-1" });
-    transport.fire("server.event", { type: "room.departed", roomId: "room-1", reason: "left", protocolVersion: 1, serverEventId: uuid(5) });
+    const authoritativeDeparture = { type: "room.departed", departureId: uuid(8), roomId: "room-1", reason: "left", protocolVersion: 1, serverEventId: uuid(5) } as const;
+    transport.fire("server.event", authoritativeDeparture);
     expect(client.getState()).toMatchObject({ departurePending: false, room: null });
+    expect(transport.emitted.at(-1)?.[1]).toMatchObject({ type: "room.departed.ack", departureId: uuid(8) });
+    const ackCount = transport.emitted.filter(([, event]) => (event as { type?: string }).type === "room.departed.ack").length;
+    transport.fire("server.event", authoritativeDeparture);
+    expect(transport.emitted.filter(([, event]) => (event as { type?: string }).type === "room.departed.ack")).toHaveLength(ackCount + 1);
+  });
+
+  it("authoritative snapshot 切換房間時原子清空舊 battle state", () => {
+    const transport = new FakeTransport();
+    const client = new RealtimeClient({ transport });
+    client.start();
+    transport.fire("server.event", roomSnapshot());
+    transport.fire("server.event", battleStarted("old-match"));
+    transport.fire("server.event", checkpoint("old-match", "old-round", 1));
+    transport.fire("server.event", frame("old-match", "old-round", 1, 10, uuid(6)));
+    transport.fire("server.event", { ...roomSnapshot(), roomId: "room-2", code: "XYZ789", serverEventId: uuid(7) });
+    expect(client.getState()).toMatchObject({ room: { roomId: "room-2" }, battleStarted: null, schedule: null, frames: [], matchFinished: null, attempt: 0, currentRoundId: null });
+    transport.fire("server.event", frame("old-match", "old-round", 2, 20, uuid(8)));
+    expect(client.getState().frames).toEqual([]);
   });
 
   it("按 room/match/round/attempt/sequence 忽略 stale 與倒序戰況", () => {

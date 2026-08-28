@@ -136,7 +136,6 @@ export class RealtimeClient {
   #token: string | null;
   #started = false;
   #clockTimer: ReturnType<typeof setInterval> | null = null;
-  #lastClockSample: ClientClockSample | null = null;
   #pendingDepartureEventId: string | null = null;
 
   constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number }>) {
@@ -210,7 +209,10 @@ export class RealtimeClient {
       return;
     }
     const event = parsed.data;
-    if (this.#seenServerEvents.has(event.serverEventId)) return;
+    if (this.#seenServerEvents.has(event.serverEventId)) {
+      if (event.type === "room.departed") this.#ackDeparture(event.departureId);
+      return;
+    }
     this.#seenServerEvents.add(event.serverEventId);
     if (this.#seenServerEvents.size > 1_024) this.#seenServerEvents.delete(this.#seenServerEvents.values().next().value!);
     switch (event.type) {
@@ -222,7 +224,10 @@ export class RealtimeClient {
         this.#clockTimer = setInterval(() => this.#sendClockPing(), 15_000);
         break;
       case "lobby.snapshot": this.#set({ lobbyRooms: event.rooms }); break;
-      case "room.snapshot": this.#set({ room: event, departurePending: false }); break;
+      case "room.snapshot": {
+        const changedRoom = this.#state.room !== null && this.#state.room.roomId !== event.roomId;
+        this.#set({ room: event, departurePending: false, ...(changedRoom ? this.#clearedBattleState() : {}) }); break;
+      }
       case "room.delta": {
         if (!this.#state.room || event.roomId !== this.#state.room.roomId) break;
         const room = updateRoomFromDelta(this.#state.room, event);
@@ -260,8 +265,9 @@ export class RealtimeClient {
       case "room.departed":
         if (event.roomId === this.#state.room?.roomId) {
           this.#pendingDepartureEventId = null;
-          this.#set({ room: null, departurePending: false, battleStarted: null, schedule: null, frames: [], matchFinished: null, cancelledReason: null, attempt: 0, currentRoundId: null });
+          this.#set({ room: null, departurePending: false, ...this.#clearedBattleState() });
         }
+        this.#ackDeparture(event.departureId);
         break;
       case "clock.pong": this.#acceptClockPong(event); break;
       case "error":
@@ -281,31 +287,36 @@ export class RealtimeClient {
     return this.#sameMatch(event) && event.roundId === this.#state.currentRoundId;
   }
   #resetClock(): void {
-    this.#clock.clear(); this.#pendingPings.clear(); this.#lastClockSample = null;
+    this.#clock.clear(); this.#pendingPings.clear();
     this.#set({ clockOffsetMs: 0, clockRttMs: 0, clockReady: false });
   }
   #sendClockPing(): void {
     if (this.#state.status !== "online") return;
     const pingId = crypto.randomUUID();
-    const clientSendTimeMs = this.#now();
-    this.#pendingPings.set(pingId, clientSendTimeMs);
-    const previousSample = this.#lastClockSample;
-    this.#lastClockSample = null;
+    const clientSentAtMs = this.#now();
+    this.#pendingPings.set(pingId, clientSentAtMs);
     this.#transport.emit("client.event", {
-      type: "clock.ping", pingId, clientSendTimeMs,
-      ...(previousSample ? { previousSample } : {}),
+      type: "clock.ping", pingId, clientSentAtMs,
       protocolVersion: PROTOCOL_VERSION, eventId: crypto.randomUUID(),
     } satisfies V1CommandEvent);
   }
   #acceptClockPong(event: Extract<ServerEvent, { type: "clock.pong" }>): void {
     const sent = this.#pendingPings.get(event.pingId);
-    if (sent === undefined || sent !== event.clientSendTimeMs) return;
+    if (sent === undefined || sent !== event.clientSentAtMs) return;
     this.#pendingPings.delete(event.pingId);
     const sample = { clientSentAtMs: sent, serverReceivedAtMs: event.serverReceiveTimeMs, serverSentAtMs: event.serverSendTimeMs, clientReceivedAtMs: this.#now() };
     this.#clock.add(sample);
-    this.#lastClockSample = sample;
+    this.#transport.emit("client.event", { type: "clock.ack", pingId: event.pingId, protocolVersion: PROTOCOL_VERSION, eventId: crypto.randomUUID() } satisfies V1CommandEvent);
     this.#set({ clockOffsetMs: this.#clock.offsetMs, clockRttMs: this.#clock.rttMs, clockReady: this.#clock.sampleCount > 0 });
     if (this.#clock.sampleCount < 4) this.#sendClockPing();
+  }
+
+  #clearedBattleState(): Pick<RealtimeState, "battleStarted" | "schedule" | "privateGrade" | "spectatorGrades" | "frames" | "roundFinished" | "matchFinished" | "cancelledReason" | "attempt" | "currentRoundId"> {
+    this.#seenRoundIds.clear();
+    return { battleStarted: null, schedule: null, privateGrade: null, spectatorGrades: null, frames: [], roundFinished: null, matchFinished: null, cancelledReason: null, attempt: 0, currentRoundId: null };
+  }
+  #ackDeparture(departureId: string): void {
+    this.#transport.emit("client.event", { type: "room.departed.ack", departureId, protocolVersion: PROTOCOL_VERSION, eventId: crypto.randomUUID() } satisfies V1CommandEvent);
   }
 }
 

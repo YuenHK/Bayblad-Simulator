@@ -100,7 +100,8 @@ describe("realtime app", () => {
   });
 
   it("可以用公開房間碼進入並真正離房，不會在重連時自動回到舊房", async () => {
-    const app = buildApp({ battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 });
+    let now = 1_000;
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0 });
     closers.push(() => app.close());
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
@@ -122,14 +123,31 @@ describe("realtime app", () => {
     const departed = nextEvent(peer.socket, "room.departed");
     peer.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
     expect(await left).toMatchObject({ patch: { player2: null } });
-    expect(await departed).toMatchObject({ roomId: room.roomId, reason: "left" });
+    const departure = await departed;
+    expect(departure).toMatchObject({ roomId: room.roomId, reason: "left", departureId: expect.any(String) });
     peer.socket.close();
+    const resumedSocket = io(url, { transports: ["websocket"], auth: { displayName: "Peer", sessionToken: peer.token } });
+    await new Promise<void>((resolve) => resumedSocket.once("connect", resolve));
+    const resumedWelcome = nextEvent(resumedSocket, "protocol.welcome");
+    const replayedDeparture = nextEvent(resumedSocket, "room.departed");
+    resumedSocket.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+    expect((await resumedWelcome).sessionStatus).toBe("resumed");
+    expect(await replayedDeparture).toEqual(departure);
+    const departureAck = nextEvent(resumedSocket, "command.ack");
+    resumedSocket.emit("client.event", command("room.departed.ack", { departureId: departure.departureId }));
+    expect((await departureAck).status).toBe("applied");
+    const duplicateAck = nextEvent(resumedSocket, "command.ack");
+    resumedSocket.emit("client.event", command("room.departed.ack", { departureId: departure.departureId }));
+    expect((await duplicateAck).status).toBe("applied");
+    resumedSocket.close();
     const resumed = await connect(url, "Peer", peer.token);
     closers.push(() => { resumed.socket.close(); });
     const unexpected = vi.fn();
-    resumed.socket.on("server.event", (event) => { if (event.type === "room.snapshot") unexpected(event); });
+    resumed.socket.on("server.event", (event) => { if (event.type === "room.snapshot" || event.type === "room.departed") unexpected(event); });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(unexpected).not.toHaveBeenCalled();
+    now += 120_001;
+    app.realtimeGateway.pump(now);
   });
 
   it("回應 clock.ping 四時間戳，並在房主關房時通知全部成員", async () => {
@@ -144,8 +162,21 @@ describe("realtime app", () => {
     const watcher = await connect(url, "Watcher");
     closers.push(() => { owner.socket.close(); }, () => { watcher.socket.close(); });
     const pong = nextEvent(owner.socket, "clock.pong");
-    owner.socket.emit("client.event", command("clock.ping", { pingId: "ping-1", clientSendTimeMs: 1_000 }));
-    expect(await pong).toMatchObject({ pingId: "ping-1", clientSendTimeMs: 1_000, serverReceiveTimeMs: 6_025, serverSendTimeMs: 6_025 });
+    owner.socket.emit("client.event", command("clock.ping", { pingId: "ping-1", clientSentAtMs: 1_000 }));
+    expect(await pong).toMatchObject({ pingId: "ping-1", clientSentAtMs: 1_000, serverReceiveTimeMs: 6_025, serverSendTimeMs: 6_025 });
+    now = 6_065;
+    const clockAck = nextEvent(owner.socket, "command.ack");
+    owner.socket.emit("client.event", command("clock.ack", { pingId: "ping-1" }));
+    expect((await clockAck).status).toBe("applied");
+    const duplicateAck = nextEvent(owner.socket, "command.ack");
+    owner.socket.emit("client.event", command("clock.ack", { pingId: "ping-1" }));
+    expect((await duplicateAck).status).toBe("applied");
+    const replayedPing = nextEvent(owner.socket, "error");
+    owner.socket.emit("client.event", command("clock.ping", { pingId: "ping-1", clientSentAtMs: 9_999 }));
+    expect((await replayedPing).code).toBe("CLOCK_PING_REPLAY");
+    const unknownAck = nextEvent(owner.socket, "error");
+    owner.socket.emit("client.event", command("clock.ack", { pingId: "never-issued" }));
+    expect((await unknownAck).code).toBe("CLOCK_CHALLENGE_INVALID");
     const created = nextEvent(owner.socket, "room.snapshot");
     owner.socket.emit("client.event", command("room.create", { name: "Close room" }));
     const room = await created;
@@ -158,6 +189,37 @@ describe("realtime app", () => {
     owner.socket.emit("client.event", command("room.close", { roomId: room.roomId }));
     expect(await ownerDeparted).toMatchObject({ roomId: room.roomId, reason: "closed" });
     expect(await watcherDeparted).toMatchObject({ roomId: room.roomId, reason: "closed" });
+    expect(app.realtimeGateway.debugCounts.pendingDepartures).toBe(2);
+    now += 120_001;
+    app.realtimeGateway.pump(now);
+    expect(app.realtimeGateway.debugCounts.pendingDepartures).toBe(0);
+  });
+
+  it("每個 session 同時只可加入一個房間，離房後才可加入新房", async () => {
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const first = await connect(url, "First");
+    const second = await connect(url, "Second");
+    closers.push(() => { first.socket.close(); }, () => { second.socket.close(); });
+    const firstCreated = nextEvent(first.socket, "room.snapshot");
+    first.socket.emit("client.event", command("room.create", { name: "First room" }));
+    const room1 = await firstCreated;
+    const secondCreated = nextEvent(second.socket, "room.snapshot");
+    second.socket.emit("client.event", command("room.create", { name: "Second room" }));
+    const room2 = await secondCreated;
+    const blocked = nextEvent(first.socket, "error");
+    first.socket.emit("client.event", command("room.join", { roomId: room2.roomId, role: "spectator" }));
+    expect((await blocked).code).toBe("ALREADY_IN_ROOM");
+    const departed = nextEvent(first.socket, "room.departed");
+    first.socket.emit("client.event", command("room.leave", { roomId: room1.roomId }));
+    await departed;
+    const joined = nextEvent(first.socket, "room.snapshot");
+    first.socket.emit("client.event", command("room.join", { roomId: room2.roomId, role: "spectator" }));
+    expect((await joined).roomId).toBe(room2.roomId);
   });
 
   it("allocates sessions only after hello, enforces handshake timeout, quotas, rate recovery, and payload limits", async () => {
@@ -191,7 +253,7 @@ describe("realtime app", () => {
     now += 1_000;
     const quota = nextEvent(owner.socket, "error");
     owner.socket.emit("client.event", command("room.create", { name: "Too many" }));
-    expect((await quota).code).toBe("ROOM_QUOTA_EXCEEDED");
+    expect((await quota).code).toBe("ALREADY_IN_ROOM");
     const other = await connect(url, "Other owner");
     closers.push(() => { other.socket.close(); });
     const full = nextEvent(other.socket, "error");
@@ -700,6 +762,31 @@ describe("realtime app", () => {
     expect(p1Events.filter((event) => event.type === "match.finished")).toHaveLength(1);
 
     const finishedAt = now;
+    const reconnectingSpectator = spectators[0]!;
+    reconnectingSpectator.socket.close();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    now = finishedAt + 30_000;
+    const restoredSpectator = io(url, { transports: ["websocket"], auth: { displayName: "Watcher 1", sessionToken: reconnectingSpectator.token } });
+    await new Promise<void>((resolve) => restoredSpectator.once("connect", resolve));
+    closers.push(() => { restoredSpectator.close(); });
+    const spectatorWelcome = nextEvent(restoredSpectator, "protocol.welcome");
+    const spectatorTerminal = nextEvent(restoredSpectator, "match.finished");
+    restoredSpectator.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+    expect((await spectatorWelcome).sessionStatus).toBe("resumed");
+    expect(await spectatorTerminal).toEqual(match);
+
+    const revokedSpectator = spectators[1]!;
+    const revokedDeparture = nextEvent(revokedSpectator.socket, "room.departed");
+    revokedSpectator.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
+    await revokedDeparture;
+    const spectatorLeak = vi.fn();
+    revokedSpectator.socket.on("server.event", (event) => { if (event.type === "match.finished") spectatorLeak(event); });
+    const rejoinedSpectator = nextEvent(revokedSpectator.socket, "room.snapshot");
+    revokedSpectator.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "spectator" }));
+    await rejoinedSpectator;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(spectatorLeak).not.toHaveBeenCalled();
+
     const resumeTerminal = async (elapsedMs: number) => {
       p2Socket.close();
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
@@ -721,6 +808,16 @@ describe("realtime app", () => {
     };
     await resumeTerminal(30_000);
     await resumeTerminal(119_000);
+    const playerDeparture = nextEvent(p1.socket, "room.departed");
+    p1.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
+    await playerDeparture;
+    const playerLeak = vi.fn();
+    p1.socket.on("server.event", (event) => { if (event.type === "match.finished") playerLeak(event); });
+    const rejoinedPlayer = nextEvent(p1.socket, "room.snapshot");
+    p1.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
+    await rejoinedPlayer;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(playerLeak).not.toHaveBeenCalled();
     p2Socket.close();
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     now = finishedAt + 120_001;

@@ -13,7 +13,6 @@ import {
   LaunchError,
   estimateClockOffset,
   judgeLaunch,
-  type ClockEstimate,
   type ClockOffsetSample,
 } from "./launch";
 
@@ -35,18 +34,7 @@ const ping = (
   return { clientSentAtMs, serverReceivedAtMs, serverSentAtMs, clientReceivedAtMs };
 };
 
-const clockEstimate = (
-  offsetMs: number,
-  overrides: Partial<ClockEstimate> = {},
-): ClockEstimate => ({
-  offsetMs,
-  medianRttMs: 40,
-  sampleCount: 3,
-  measuredAtServerMs: 3_900,
-  ...overrides,
-});
-
-const makeHarness = (estimates: Readonly<Record<string, ClockEstimate | null>> = {}) => {
+const makeHarness = () => {
   let now = 1_000;
   let nonceSequence = 0;
   let eventSequence = 0;
@@ -55,7 +43,6 @@ const makeHarness = (estimates: Readonly<Record<string, ClockEstimate | null>> =
     createNonce: () => `nonce-${++nonceSequence}`,
     createServerEventId: () =>
       `00000000-0000-4000-8000-${String(++eventSequence).padStart(12, "0")}`,
-    getClockEstimate: (participantId) => estimates[participantId] ?? null,
   });
   return {
     coordinator,
@@ -338,26 +325,25 @@ describe("LaunchCoordinator scheduling", () => {
 });
 
 describe("LaunchCoordinator submissions and result privacy", () => {
-  it("uses corrected client time only with a fresh multi-sample plausible estimate", () => {
-    const { coordinator, schedule } = makeHarness({
-      p1: clockEstimate(100, { measuredAtServerMs: 3_990 }),
-    });
-    schedule();
-    const submitted = coordinator.submit("p1", tap({ clientTimeMs: 3_900 }), 4_020);
-    expect(submitted.replayed).toBe(false);
-    expect(submitted.event.grade).toBe("Perfect");
+  it("client timestamp is diagnostic only and cannot improve the authoritative grade", () => {
+    for (const clientTimeMs of [1, 4_000, 99_999, Number.MAX_SAFE_INTEGER]) {
+      const { coordinator, schedule } = makeHarness();
+      schedule();
+      const submitted = coordinator.submit("p1", tap({ clientTimeMs }), 4_200, 40);
+      expect(submitted.event.grade).not.toBe("Perfect");
+    }
   });
 
-  it("caps trusted compensation at 400ms RTT and half-RTT plus jitter", () => {
+  it("caps compensation from server-observed RTT and never trusts client offset", () => {
     expect(MAX_COMPENSATED_RTT_MS).toBe(400);
 
     const cases = [
       { rtt: 80, receivedAtMs: 4_040, grade: "Perfect" },
-      { rtt: 400, receivedAtMs: 4_250, grade: "Perfect" },
+      { rtt: 400, receivedAtMs: 4_250, grade: "Good" },
       { rtt: 401, receivedAtMs: 4_200, grade: "Miss" },
       { rtt: 800, receivedAtMs: 4_800, grade: "Miss" },
       { rtt: 80, receivedAtMs: 4_091, grade: "Great" },
-      { rtt: 80.5, receivedAtMs: 4_090, grade: "Perfect" },
+      { rtt: 80.5, receivedAtMs: 4_090, grade: "Great" },
     ] as const;
     for (const { rtt, receivedAtMs, grade } of cases) {
       const coordinator = new LaunchCoordinator({
@@ -368,7 +354,6 @@ describe("LaunchCoordinator submissions and result privacy", () => {
           return () =>
             `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`;
         })(),
-        getClockEstimate: () => clockEstimate(0, { medianRttMs: rtt }),
       });
       coordinator.schedule({
         roomId: "room-1",
@@ -376,7 +361,7 @@ describe("LaunchCoordinator submissions and result privacy", () => {
         roundId: "round-1",
         players: [PLAYER_1, PLAYER_2],
       });
-      expect(coordinator.submit("p1", tap(), receivedAtMs).event.grade).toBe(grade);
+      expect(coordinator.submit("p1", tap({ clientTimeMs: Number.MAX_SAFE_INTEGER }), receivedAtMs, rtt).event.grade).toBe(grade);
     }
   });
 
@@ -388,52 +373,10 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     );
   });
 
-  it.each([
-    [clockEstimate(0, { sampleCount: 1 }), 4_000, 4_101, "Good"],
-    [clockEstimate(0, { medianRttMs: 100 }), 4_000, 3_900, "Great"],
-    [clockEstimate(1_000), 3_000, 4_181, "Miss"],
-    [clockEstimate(1), Number.MAX_SAFE_INTEGER, 4_181, "Miss"],
-  ] as const)(
-    "falls back to receivedAt for low-quality or implausible clock evidence %#",
-    (estimate, clientTimeMs, receivedAtMs, grade) => {
-      const { coordinator, schedule } = makeHarness({ p1: estimate });
-      schedule();
-      expect(
-        coordinator.submit("p1", tap({ clientTimeMs }), receivedAtMs).event.grade,
-      ).toBe(grade);
-    },
-  );
-
-  it("falls back when the clock estimate is older than thirty seconds", () => {
-    const coordinator = new LaunchCoordinator({
-      now: () => 1_000,
-      createNonce: () => "nonce-1",
-      createServerEventId: (() => {
-        let sequence = 0;
-        return () =>
-          `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`;
-      })(),
-      getClockEstimate: () =>
-        clockEstimate(0, { measuredAtServerMs: 0, medianRttMs: 100 }),
-    });
-    coordinator.schedule({
-      roomId: "room-1",
-      matchId: "match-1",
-      roundId: "round-1",
-      players: [PLAYER_1, PLAYER_2],
-      serverTargetTimeMs: 40_000,
-    });
-    expect(
-      coordinator.submit("p1", tap({ clientTimeMs: 40_000 }), 40_101).event.grade,
-    ).toBe("Good");
-  });
-
-  it("trusts an exact zero offset backed by three plausible samples", () => {
-    const { coordinator, schedule } = makeHarness({
-      p1: clockEstimate(0, { medianRttMs: 100 }),
-    });
+  it("正常低 RTT 的準時收件仍可獲 Perfect", () => {
+    const { coordinator, schedule } = makeHarness();
     schedule();
-    expect(coordinator.submit("p1", tap(), 4_100).event.grade).toBe("Perfect");
+    expect(coordinator.submit("p1", tap({ clientTimeMs: 99_999 }), 4_040, 80).event.grade).toBe("Perfect");
   });
 
   it.each([
