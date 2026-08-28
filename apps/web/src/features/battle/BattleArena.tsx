@@ -27,14 +27,14 @@ export function BattleArena({ designs, frames, reducedMotion = false }: Readonly
   return (
     <section className="battle-arena-panel" aria-labelledby="arena-heading">
       <h3 id="arena-heading">對戰場</h3>
-      <svg className="battle-arena" viewBox="-105 -105 210 210" role="img" aria-label="兩個自訂陀螺的即時對戰">
+      <svg className="battle-arena" viewBox="-105 -105 210 210" aria-hidden="true">
         <circle cx="0" cy="0" r="100" className="arena-ring" />
         {([p1, p2] as const).map((position, index) => <g key={index} data-testid={`battle-player${index + 1}`} transform={`translate(${position.x} ${position.y}) rotate(${position.angle * 180 / Math.PI}) scale(.72)`}>
           {paths[index]!.map((layer) => <path key={layer.id} d={layer.path} fill={layer.color} fillOpacity=".68" stroke={layer.color} strokeWidth="1" />)}
           <circle r="2.5" fill="#172033" />
         </g>)}
       </svg>
-      <p role="status" className="sr-only">{latest ? `戰況已更新至第 ${latest.tick} tick` : "等待戰況資料"}</p>
+      <p className="sr-only">{latest ? "對戰進行中" : "等待戰況資料"}</p>
     </section>
   );
 }

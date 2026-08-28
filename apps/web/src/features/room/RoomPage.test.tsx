@@ -54,19 +54,24 @@ describe("RoomPage", () => {
     expect(screen.getByRole("button", { name: "正在離房……" })).toBeDisabled();
   });
 
-  it("顯示兩席玩家、觀眾名稱與人數，500 人時只展開虛擬視窗", () => {
+  it("離線或有未完成命令時禁止重複房間操作", () => {
+    render(<RoomPage snapshot={{ ...room("player1"), phase: "waiting" }} battle={{ phase: "waiting" }} design={makeDefaultDesign()} actionsDisabled onCommand={noop} onLeave={noop} />);
+    expect(screen.getByRole("button", { name: "離開房間" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "上載當前設計並準備" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "轉到觀賽區" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "關閉房間" })).toBeDisabled();
+  });
+
+  it("顯示兩席玩家、觀眾名稱與人數，500 人時以分頁讓最後一人可達", async () => {
     render(<RoomPage snapshot={room("spectator", 500)} battle={{ phase: "waiting" }} design={makeDefaultDesign()} onCommand={noop} onLeave={noop} />);
     expect(screen.getAllByText("玩家一").length).toBeGreaterThan(0);
     expect(screen.getAllByText("玩家二").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "500 位觀眾" })).toBeVisible();
     const list = screen.getByRole("list", { name: /觀眾玩家，共 500 人/ });
-    list.focus();
-    expect(list).toHaveFocus();
     expect(within(list).getAllByRole("listitem").length).toBeLessThanOrEqual(60);
-    Object.defineProperty(list, "scrollTop", { configurable: true, value: 22_000 });
-    fireEvent.scroll(list);
+    for (let page = 1; page < 10; page += 1) await userEvent.click(screen.getByRole("button", { name: "下一頁" }));
     expect(within(list).getByText("觀眾 500")).toBeVisible();
-    expect(within(list).getAllByRole("listitem").length).toBeLessThanOrEqual(20);
+    expect(within(list).getAllByRole("listitem").length).toBeLessThanOrEqual(50);
   });
 
   it("節拍可以觸控或 Space 發射且只送一次", () => {

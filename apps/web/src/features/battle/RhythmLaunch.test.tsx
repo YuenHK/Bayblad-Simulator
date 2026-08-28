@@ -4,6 +4,13 @@ import { RhythmLaunch } from "./RhythmLaunch";
 
 describe("RhythmLaunch", () => {
   afterEach(() => vi.useRealTimers());
+  it("schedule早於首個clock sample時只顯示同步並禁止tap", () => {
+    const onCommand = vi.fn();
+    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "sync", serverTargetTimeMs: 3_000 }} onCommand={onCommand} clockReady={false} />);
+    expect(screen.getByText("正在同步時間", { selector: ".launch-countdown" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "在判定線發射" })).toBeDisabled();
+    expect(screen.queryByTestId("moving-marker")).not.toBeInTheDocument();
+  });
   it("低動態模式不以 50ms 移動 marker，但仍可發射", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);

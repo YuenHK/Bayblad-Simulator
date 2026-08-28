@@ -14,11 +14,9 @@ import {
   type V1CommandEvent,
 } from "@steam-top/protocol";
 import { io, type Socket } from "socket.io-client";
+import { createSafeStorage, type SafeStorage } from "./safe-storage";
 
-export type StorageAdapter = Readonly<{
-  get(key: string): string | null;
-  set(key: string, value: string): void;
-}>;
+export type StorageAdapter = SafeStorage;
 
 export interface RealtimeTransport {
   auth: Record<string, unknown>;
@@ -79,9 +77,11 @@ export type RealtimeState = Readonly<{
   clockRttMs: number;
   clockReady: boolean;
   lastError: string | null;
+  pendingActions: number;
 }>;
 
 const SESSION_KEY = "steam-top.session-token";
+const DESIGN_CACHE_KEY = "steam-top.design-cache";
 const initialState: RealtimeState = {
   status: "offline", sessionStatus: null, lobbyRooms: [], room: null,
   battleStarted: null, schedule: null, privateGrade: null, spectatorGrades: null,
@@ -89,10 +89,13 @@ const initialState: RealtimeState = {
   attempt: 0, currentRoundId: null, departurePending: false,
   clockOffsetMs: 0, clockRttMs: 0, clockReady: false,
   lastError: null,
+  pendingActions: 0,
 };
 
 function defaultStorage(): StorageAdapter {
-  return { get: (key) => localStorage.getItem(key), set: (key, value) => localStorage.setItem(key, value) };
+  let candidate: Storage | null = null;
+  try { candidate = localStorage; } catch { /* unavailable */ }
+  return createSafeStorage(candidate);
 }
 
 function updateRoomFromDelta(room: RoomSnapshotEvent, event: Extract<ReturnType<typeof serverEventSchema.parse>, { type: "room.delta" }>): RoomSnapshotEvent | null {
@@ -132,6 +135,8 @@ export class RealtimeClient {
   readonly #pendingPings = new Map<string, number>();
   readonly #seenServerEvents = new Set<string>();
   readonly #seenRoundIds = new Set<string>();
+  readonly #pendingActions = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #actionWaiters = new Map<string, Readonly<{ resolve(): void; reject(error: Error & { code?: string }): void }>>();
   #state: RealtimeState = initialState;
   #token: string | null;
   #started = false;
@@ -172,28 +177,43 @@ export class RealtimeClient {
     this.#bound.clear();
     this.#transport.disconnect();
     if (this.#clockTimer) clearInterval(this.#clockTimer);
+    for (const timer of this.#pendingActions.values()) clearTimeout(timer);
+    this.#pendingActions.clear();
     this.#clockTimer = null;
     this.#started = false;
     this.#set({ status: "offline" });
   }
 
   command(input: CommandInput): string {
+    if (this.#state.status !== "online" || !this.#transport.connected) throw new Error("目前離線，請重新連線後再試。");
     const eventId = crypto.randomUUID();
     this.#transport.emit("client.event", { ...input, protocolVersion: PROTOCOL_VERSION, eventId } satisfies V1CommandEvent);
     if (input.type === "room.leave" || input.type === "room.close") {
       this.#pendingDepartureEventId = eventId;
       this.#set({ departurePending: true, lastError: null });
     }
+    const timer = setTimeout(() => { this.#pendingActions.delete(eventId); this.#actionWaiters.get(eventId)?.reject(new Error("操作逾時，請重試。")); this.#actionWaiters.delete(eventId); this.#set({ pendingActions: this.#pendingActions.size, lastError: "操作逾時，請重試。" }); }, 8_000);
+    this.#pendingActions.set(eventId, timer);
+    this.#set({ pendingActions: this.#pendingActions.size });
     return eventId;
   }
 
-  async uploadDesign(design: TopDesign): Promise<string> {
+  async uploadDesign(design: TopDesign, externalSignal?: AbortSignal): Promise<string> {
     if (!this.#token) throw new Error("尚未連線，請稍後再試。");
-    const response = await this.#fetch(`${this.#apiBase}/api/designs`, {
-      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${this.#token}` }, body: JSON.stringify(design),
-    });
-    const payload = await response.json() as { designId?: string; error?: string };
+    const requestToken = this.#token;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const abort = () => controller.abort(); externalSignal?.addEventListener("abort", abort, { once: true });
+    let response: Response;
+    try { response = await this.#fetch(`${this.#apiBase}/api/designs`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${requestToken}` }, body: JSON.stringify(design), signal: controller.signal,
+    }); } catch (error) { throw new Error(error instanceof Error && error.name === "AbortError" ? "上載設計逾時，請重試。" : "未能連接設計伺服器，請重試。"); }
+    finally { clearTimeout(timeout); externalSignal?.removeEventListener("abort", abort); }
+    let payload: { designId?: string; error?: string };
+    try { payload = await response.json() as typeof payload; } catch { throw new Error("伺服器回應格式錯誤，請重試。"); }
     if (!response.ok || !payload.designId) throw new Error(payload.error ?? "上載設計失敗。");
+    if (this.#token !== requestToken) throw new Error("連線已更新，請重新上載設計。");
+    this.#storage.set(DESIGN_CACHE_KEY, JSON.stringify({ sessionToken: requestToken, fingerprint: JSON.stringify(design), designId: payload.designId }));
     return payload.designId;
   }
 
@@ -218,6 +238,7 @@ export class RealtimeClient {
     switch (event.type) {
       case "protocol.welcome":
         if (event.sessionToken) { this.#token = event.sessionToken; this.#storage.set(SESSION_KEY, event.sessionToken); this.#transport.auth.sessionToken = event.sessionToken; }
+        if ((event.sessionStatus ?? "new") !== "resumed") { this.#storage.remove(DESIGN_CACHE_KEY); this.#clearAllServerState(); }
         this.#set({ status: "online", sessionStatus: event.sessionStatus ?? "new", lastError: null });
         this.#sendClockPing();
         if (this.#clockTimer) clearInterval(this.#clockTimer);
@@ -225,10 +246,12 @@ export class RealtimeClient {
         break;
       case "lobby.snapshot": this.#set({ lobbyRooms: event.rooms }); break;
       case "room.snapshot": {
+        this.#clearPendingActions();
         const changedRoom = this.#state.room !== null && this.#state.room.roomId !== event.roomId;
         this.#set({ room: event, departurePending: false, ...(changedRoom ? this.#clearedBattleState() : {}) }); break;
       }
       case "room.delta": {
+        this.#clearPendingActions();
         if (!this.#state.room || event.roomId !== this.#state.room.roomId) break;
         const room = updateRoomFromDelta(this.#state.room, event);
         this.#set(room ? { room } : { lastError: "房間資料需要同步，請重新進入。" }); break;
@@ -263,6 +286,7 @@ export class RealtimeClient {
       case "match.finished": if (this.#sameMatch(event)) this.#set({ matchFinished: event, schedule: null }); break;
       case "match.cancelled": if (this.#sameMatch(event)) this.#set({ cancelledReason: event.reason, schedule: null }); break;
       case "room.departed":
+        this.#clearPendingActions();
         if (event.roomId === this.#state.room?.roomId) {
           this.#pendingDepartureEventId = null;
           this.#set({ room: null, departurePending: false, ...this.#clearedBattleState() });
@@ -271,12 +295,13 @@ export class RealtimeClient {
         break;
       case "clock.pong": this.#acceptClockPong(event); break;
       case "error":
+        if (event.causedByEventId) { const waiter = this.#actionWaiters.get(event.causedByEventId); const error = Object.assign(new Error(event.message), { code: event.code }); waiter?.reject(error); this.#actionWaiters.delete(event.causedByEventId); this.#clearPendingAction(event.causedByEventId); }
         if (event.causedByEventId && event.causedByEventId === this.#pendingDepartureEventId) {
           this.#pendingDepartureEventId = null;
           this.#set({ departurePending: false, lastError: event.message });
         } else this.#set({ lastError: event.message });
         break;
-      case "command.ack": break;
+      case "command.ack": this.#actionWaiters.get(event.causedByEventId)?.resolve(); this.#actionWaiters.delete(event.causedByEventId); this.#clearPendingAction(event.causedByEventId); break;
     }
   }
 
@@ -318,14 +343,45 @@ export class RealtimeClient {
   #ackDeparture(departureId: string): void {
     this.#transport.emit("client.event", { type: "room.departed.ack", departureId, protocolVersion: PROTOCOL_VERSION, eventId: crypto.randomUUID() } satisfies V1CommandEvent);
   }
+  #clearPendingAction(eventId: string): void { const timer = this.#pendingActions.get(eventId); if (timer) clearTimeout(timer); this.#pendingActions.delete(eventId); this.#set({ pendingActions: this.#pendingActions.size }); }
+  #clearPendingActions(reject = false): void { for (const timer of this.#pendingActions.values()) clearTimeout(timer); for (const waiter of this.#actionWaiters.values()) reject ? waiter.reject(new Error("操作已由最新伺服器狀態取代。")) : waiter.resolve(); this.#actionWaiters.clear(); this.#pendingActions.clear(); this.#set({ pendingActions: 0 }); }
+  #clearAllServerState(): void {
+    this.#seenServerEvents.clear(); this.#seenRoundIds.clear(); this.#pendingDepartureEventId = null; this.#clearPendingActions(true);
+    this.#set({ room: null, lobbyRooms: [], departurePending: false, ...this.#clearedBattleState() });
+  }
+
+  commandAsync(input: CommandInput): Promise<void> {
+    const eventId = this.command(input);
+    return new Promise<void>((resolve, reject) => this.#actionWaiters.set(eventId, { resolve, reject }));
+  }
+
+  async readyWithDesign(roomId: string, design: TopDesign, signal?: AbortSignal): Promise<string> {
+    if (!this.#token) throw new Error("尚未連線，請稍後再試。");
+    const fingerprint = JSON.stringify(design);
+    let cached: { sessionToken: string; fingerprint: string; designId: string } | null = null;
+    try { cached = JSON.parse(this.#storage.get(DESIGN_CACHE_KEY) ?? "null"); } catch { /* invalid cache */ }
+    let designId = cached?.sessionToken === this.#token && cached.fingerprint === fingerprint ? cached.designId : await this.uploadDesign(design, signal);
+    const save = () => this.#storage.set(DESIGN_CACHE_KEY, JSON.stringify({ sessionToken: this.#token, fingerprint, designId }));
+    save();
+    try { await this.commandAsync({ type: "player.ready", roomId, designId }); }
+    catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code !== "DESIGN_NOT_FOUND" && code !== "DESIGN_NOT_OWNED") throw error;
+      this.#storage.remove(DESIGN_CACHE_KEY);
+      designId = await this.uploadDesign(design, signal); save();
+      await this.commandAsync({ type: "player.ready", roomId, designId });
+    }
+    return designId;
+  }
 }
 
 export function createRealtimeClient(apiBase = import.meta.env.VITE_API_BASE_URL ?? window.location.origin): RealtimeClient {
-  const token = localStorage.getItem(SESSION_KEY);
+  const storage = defaultStorage();
+  const token = storage.get(SESSION_KEY);
   const guest = `訪客-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
   const socket: Socket = io(apiBase, {
     autoConnect: false, reconnection: true, reconnectionDelay: 500, reconnectionDelayMax: 8_000,
     randomizationFactor: 0.25, auth: { displayName: guest, sessionToken: token ?? undefined },
   });
-  return new RealtimeClient({ transport: socket as unknown as RealtimeTransport, apiBase });
+  return new RealtimeClient({ transport: socket as unknown as RealtimeTransport, apiBase, storage });
 }
