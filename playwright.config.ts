@@ -1,5 +1,10 @@
 import { defineConfig } from "@playwright/test";
 
+const webPort = Number(process.env.E2E_WEB_PORT ?? 4173);
+const realtimePort = Number(process.env.E2E_REALTIME_PORT ?? 4174);
+const webUrl = `http://127.0.0.1:${webPort}`;
+const realtimeUrl = `http://127.0.0.1:${realtimePort}`;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 30_000,
@@ -7,7 +12,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: webUrl,
     browserName: "chromium",
     viewport: { width: 1024, height: 768 },
     hasTouch: true,
@@ -24,16 +29,16 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "NODE_ENV=test TEST_REALTIME_PORT=4174 TEST_CONTROL_SECRET=steam-top-e2e-only pnpm --filter @steam-top/server exec tsx ../../tests/support/realtime-server.ts",
-      url: "http://127.0.0.1:4174/health",
+      command: `NODE_ENV=test BATTLE_ENGINE=deterministic TEST_REALTIME_PORT=${realtimePort} TEST_CONTROL_SECRET=steam-top-e2e-only pnpm --filter @steam-top/server exec tsx ../../tests/support/realtime-server.ts`,
+      url: `${realtimeUrl}/health`,
       reuseExistingServer: false,
       timeout: 120_000,
       stdout: "pipe",
       stderr: "pipe",
     },
     {
-      command: "TEST_REALTIME_PROXY=http://127.0.0.1:4174 pnpm --filter @steam-top/web build && TEST_REALTIME_PROXY=http://127.0.0.1:4174 pnpm --filter @steam-top/web exec vite preview --host 127.0.0.1 --port 4173",
-      url: "http://127.0.0.1:4173",
+      command: `TEST_REALTIME_PROXY=${realtimeUrl} pnpm --filter @steam-top/web build && TEST_REALTIME_PROXY=${realtimeUrl} pnpm --filter @steam-top/web exec vite preview --host 127.0.0.1 --port ${webPort}`,
+      url: webUrl,
       reuseExistingServer: false,
       timeout: 120_000,
       stdout: "pipe",

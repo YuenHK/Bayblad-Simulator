@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 const CONTROL_SECRET = "steam-top-e2e-only";
+const REALTIME_URL = `http://127.0.0.1:${Number(process.env.E2E_REALTIME_PORT ?? 4174)}`;
 
 async function openGuest(browser: Browser): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true });
@@ -145,13 +146,13 @@ test("發射與對戰斷線可恢復 checkpoint，119 秒可取結果而超過 1
     }
 
     await owner.context.setOffline(true);
-    const advance119 = await request.post("http://127.0.0.1:4174/__test/advance", { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 119_000 } });
+    const advance119 = await request.post(`${REALTIME_URL}/__test/advance`, { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 119_000 } });
     expect(advance119.ok()).toBe(true);
     await owner.context.setOffline(false);
     await expect(owner.page.getByRole("heading", { name: "對戰結果" })).toBeVisible();
 
     await owner.context.setOffline(true);
-    const advance121 = await request.post("http://127.0.0.1:4174/__test/advance", { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 121_000 } });
+    const advance121 = await request.post(`${REALTIME_URL}/__test/advance`, { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 121_000 } });
     expect(advance121.ok()).toBe(true);
     await owner.context.setOffline(false);
     await expect(owner.page.getByText("舊連線已過期，已為你建立新訪客連線。")).toBeVisible();
@@ -174,13 +175,13 @@ test("房主斷線兩分鐘後轉移，空房再過兩分鐘自動刪除", async
 
     await owner.context.setOffline(true);
     await expect(owner.page.getByText("重新連線中……")).toBeVisible();
-    const transfer = await request.post("http://127.0.0.1:4174/__test/advance", { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 120_001 } });
+    const transfer = await request.post(`${REALTIME_URL}/__test/advance`, { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 120_001 } });
     expect(transfer.ok()).toBe(true);
     await expect(peer.page.getByRole("button", { name: "關閉房間" })).toBeVisible();
 
     await peer.page.getByRole("button", { name: "離開房間" }).click();
     await expect(peer.page.getByRole("heading", { name: "對戰大廳" })).toBeVisible();
-    const deletion = await request.post("http://127.0.0.1:4174/__test/advance", { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 120_001 } });
+    const deletion = await request.post(`${REALTIME_URL}/__test/advance`, { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 120_001 } });
     expect(deletion.ok()).toBe(true);
     await expect(peer.page.getByRole("heading", { name: "兩分鐘生命週期房" })).toHaveCount(0);
   } finally {
