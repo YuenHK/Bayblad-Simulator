@@ -92,6 +92,11 @@ class DelayedCreateRoomProjection implements RoomRecordRepository {
   async create() { this.createCalls++; this.#started(); await new Promise<void>((resolve) => { this.releaseCreate = resolve; }); }
   async join() {} async recordBattleStart() {} async updateOwner() {} async syncRoles() {} async leave() {} async leaveAndSync() {} async close() {} async updatePhase() {}
 }
+class FailFirstCreateRoomProjection extends FailWaitingRoomProjection {
+  createCalls = 0; release!: () => void; #started!: () => void;
+  readonly started = new Promise<void>((resolve) => { this.#started = resolve; });
+  override async create() { this.createCalls += 1; if (this.createCalls === 1) { this.#started(); await new Promise<void>((resolve) => { this.release = resolve; }); throw new Error("offline"); } }
+}
 
 function nextEvent(socket: Socket, type: ServerEvent["type"] | "protocol.unsupported", timeoutMs = 3_000): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -148,6 +153,20 @@ describe("realtime app", () => {
     roomProjection.releaseCreate();
     while (acknowledgements.length < 2) await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(acknowledgements.map(({ status }) => status)).toEqual(["applied", "replayed"]);
+  });
+
+  it("orders distinct commands across sockets and continues after the first command fails", async () => {
+    const repository = new FailFirstCreateRoomProjection();
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), roomRecordRepository: repository, sweepIntervalMs: 0 });
+    closers.push(() => app.close()); await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address(); if (!address || typeof address === "string") throw new Error("No address");
+    const url = `http://127.0.0.1:${address.port}`; const first = await connect(url, "Shared"); const second = await connect(url, "Shared", first.token);
+    closers.push(() => { first.socket.close(); }, () => { second.socket.close(); });
+    const firstCommand = command("room.create", { name: "Fails" }); const secondCommand = command("room.create", { name: "Succeeds" });
+    const failed = nextEvent(first.socket, "error"); first.socket.emit("client.event", firstCommand); await repository.started;
+    const created = nextEvent(second.socket, "room.snapshot"); second.socket.emit("client.event", secondCommand); repository.release();
+    expect(await failed).toMatchObject({ causedByEventId: firstCommand.eventId, code: "COMMAND_FAILED" });
+    expect(await created).toMatchObject({ name: "Succeeds" }); expect(repository.createCalls).toBe(2);
   });
 
   it("可以用公開房間碼進入並真正離房，不會在重連時自動回到舊房", async () => {
@@ -789,6 +808,12 @@ describe("realtime app", () => {
     expect(started.player2.design.layers).toHaveLength(3);
     expect(started.player2).not.toHaveProperty("ownerSessionId");
     const schedule1 = await schedule1Promise;
+    const lateSpectator = await connect(url, "Late spectator");
+    closers.push(() => { lateSpectator.socket.close(); });
+    const lateJoined = nextEvent(lateSpectator.socket, "room.snapshot");
+    lateSpectator.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "spectator" }));
+    await lateJoined;
+    expect(app.realtimeGateway.debugCounts.bindings).toBe(23);
     const activeLeaveRejected = nextEvent(p1.socket, "error");
     p1.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
     expect(await activeLeaveRejected).toMatchObject({ code: "ROOM_ACTIVE" });

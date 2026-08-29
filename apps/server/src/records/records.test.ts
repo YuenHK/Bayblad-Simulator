@@ -30,8 +30,8 @@ describe("durable record contracts", () => {
   it("durably keeps only the newest room projection across coordinator restarts", async () => {
     const store = new MemoryRoomProjectionStore({ maxEntries: 2, leaseMs: 1_000, now: () => new Date("2026-08-29T00:00:00Z") });
     const applied: number[] = [];
-    await store.enqueue({ roomId: id(90), revision: 2, payload: { phase: "battle", firstBattleAt: null } });
-    await store.enqueue({ roomId: id(90), revision: 1, payload: { phase: "launch", firstBattleAt: null } });
+    await store.enqueue({ roomId: id(90), revision: 2, payload: { phase: "battle", firstBattleAt: null, closedAt: null } });
+    await store.enqueue({ roomId: id(90), revision: 1, payload: { phase: "launch", firstBattleAt: null, closedAt: null } });
     const first = new RoomProjectionCoordinator({ store, apply: async (job) => { applied.push(job.revision); throw new Error("offline"); }, report: () => undefined });
     await first.pump(new Date("2026-08-29T00:00:00Z"));
     await first.close();
@@ -44,11 +44,23 @@ describe("durable record contracts", () => {
 
   it("claims each due room projection once across workers and refuses capacity loss", async () => {
     const store = new MemoryRoomProjectionStore({ maxEntries: 1, now: () => new Date("2026-08-29T00:00:00Z") });
-    await store.enqueue({ roomId: id(91), revision: 1, payload: { phase: "waiting", firstBattleAt: null } });
-    await expect(store.enqueue({ roomId: id(92), revision: 1, payload: { phase: "waiting", firstBattleAt: null } })).rejects.toThrow("ROOM_PROJECTION_CAPACITY");
+    await store.enqueue({ roomId: id(91), revision: 1, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
+    await expect(store.enqueue({ roomId: id(92), revision: 1, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } })).rejects.toThrow("ROOM_PROJECTION_CAPACITY");
     const now = new Date("2026-08-29T00:00:00Z");
     const [left, right] = await Promise.all([store.claimDue(1, now), store.claimDue(1, now)]);
     expect(left.length + right.length).toBe(1);
+  });
+
+  it("retains and retries a projection when its first durable enqueue fails", async () => {
+    vi.useFakeTimers();
+    try {
+      class FailOnceStore extends MemoryRoomProjectionStore { calls = 0; override async enqueue(input: Parameters<MemoryRoomProjectionStore["enqueue"]>[0]) { this.calls += 1; if (this.calls === 1) throw new Error("offline"); return super.enqueue(input); } }
+      const store = new FailOnceStore(); const coordinator = new RoomProjectionCoordinator({ store, apply: async () => undefined, report: () => undefined });
+      await expect(coordinator.enqueueProjection({ roomId: id(93), revision: 1, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } })).rejects.toThrow("offline");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(store.calls).toBe(2); expect(store.size).toBe(1);
+      await coordinator.close();
+    } finally { vi.useRealTimers(); }
   });
   it("reuses an identical canonical design for one identity and enforces ownership", async () => {
     const repository = new MemoryDesignRepository();
@@ -126,6 +138,22 @@ describe("durable record contracts", () => {
     await repository.retryFailedMatch(first.id);
     now = new Date(now.getTime() + 1_001);
     await expect(repository.queueCompletion(second)).resolves.toBe("created");
+  });
+
+  it("executes the tenth claimed completion attempt once and then terminalizes it", async () => {
+    class AlwaysFailRepository extends MemoryMatchRepository {
+      calls = 0;
+      override async saveCompletedMatch(): Promise<"created"> { this.calls += 1; throw new Error("offline"); }
+    }
+    const repository = new AlwaysFailRepository();
+    await repository.queueCompletion(fixture());
+    for (let attempt = 1; attempt <= 10; attempt += 1) {
+      const [claim] = await repository.claimDueJobs(new Date("2099-01-01"), 1);
+      expect(claim?.attemptCount).toBe(attempt);
+      await expect(repository.retryFailedMatch(claim!.matchId, { claimToken: claim!.claimToken, generation: claim!.generation })).rejects.toThrow("offline");
+    }
+    expect(repository.calls).toBe(10);
+    expect(await repository.claimDueJobs(new Date("9999-01-01"), 1)).toHaveLength(0);
   });
 
   it("rejects round authority collisions even when the input hash is reused", async () => {

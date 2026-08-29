@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lte, ne, or } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, lte, ne, or } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 import { buildCompletedMatchRow, buildRoundRow } from "@steam-top/db/persistence";
@@ -97,13 +97,18 @@ export class MemoryMatchRepository implements MatchRepository {
   readonly records = new Map<string, CompletedMatchRecord>();
   readonly pending = new Map<string, PendingMatchRecord>();
   readonly jobs = new Map<string, MatchRetryJob & { claimToken?: string; generation?: number; completedAt?: Date }>();
+  readonly #completionRounds = new Map<string, CompletedMatchRecord["rounds"]>();
   readonly #maxJobs: number;
   readonly #completedJobTtlMs: number;
   readonly #now: () => Date;
   constructor(options: Readonly<{ maxJobs?: number; completedJobTtlMs?: number; now?: () => Date }> = {}) {
     this.#maxJobs = options.maxJobs ?? 2_000; this.#completedJobTtlMs = options.completedJobTtlMs ?? 300_000; this.#now = options.now ?? (() => new Date());
   }
-  #pruneJobs(now = this.#now()): void { for (const [id, job] of this.jobs) if (job.status === "completed" && job.completedAt && job.completedAt.getTime() + this.#completedJobTtlMs <= now.getTime()) this.jobs.delete(id); }
+  #pruneJobs(now = this.#now()): void { for (const [id, job] of this.jobs) if (job.status === "completed" && job.completedAt && job.completedAt.getTime() + this.#completedJobTtlMs <= now.getTime()) { this.jobs.delete(id); this.#completionRounds.delete(id); } }
+  #hydrateJob(job: MatchRetryJob & { claimToken?: string; generation?: number; completedAt?: Date }): typeof job {
+    const rounds = this.#completionRounds.get(job.matchId);
+    return rounds ? { ...job, payload: { ...job.payload, rounds: structuredClone(rounds) } } : job;
+  }
   async beginMatch(input: PendingMatchRecord): Promise<"created" | "replayed"> {
     const existing = this.pending.get(input.id);
     if (existing) {
@@ -142,36 +147,38 @@ export class MemoryMatchRepository implements MatchRepository {
   }
   async queueCompletion(input: CompletedMatchRecord): Promise<"created" | "replayed"> {
     const parsed = completedMatchRecordSchema.parse(input); assertAuthorityFingerprint(parsed);
-    if (Buffer.byteLength(JSON.stringify(parsed), "utf8") > 8_388_608) throw new RangeError("MATCH_COMPLETION_PAYLOAD_TOO_LARGE");
+    const summary = { ...parsed, rounds: parsed.rounds.map((round) => ({ ...round, battleResult: { ...round.battleResult, frames: [] } })) };
+    if (Buffer.byteLength(JSON.stringify(summary), "utf8") > 65_536) throw new RangeError("MATCH_COMPLETION_SUMMARY_TOO_LARGE");
     this.#pruneJobs();
     const existing = this.jobs.get(parsed.id);
     if (existing) { if (existing.payload.idempotencyFingerprint !== parsed.idempotencyFingerprint) throw new MatchPersistenceConflictError(); return "replayed"; }
     if (this.jobs.size >= this.#maxJobs) throw new Error("MATCH_JOB_CAPACITY");
-    this.jobs.set(parsed.id, { matchId: parsed.id, status: "pending", attemptCount: 0, nextRetryAt: this.#now(), lastSanitizedCode: null, payload: structuredClone(parsed) });
+    this.jobs.set(parsed.id, { matchId: parsed.id, status: "pending", attemptCount: 0, nextRetryAt: this.#now(), lastSanitizedCode: null, payload: structuredClone(summary) });
+    this.#completionRounds.set(parsed.id, structuredClone(parsed.rounds));
     return "created";
   }
-  async getRetryJob(matchId: string): Promise<MatchRetryJob | undefined> { this.#pruneJobs(); const job = this.jobs.get(matchId); return job ? structuredClone(job) : undefined; }
-  async listRetryable(now = new Date(), limit = 100): Promise<readonly MatchRetryJob[]> { if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid retry limit"); this.#pruneJobs(now); return [...this.jobs.values()].filter((job) => job.status !== "completed" && job.nextRetryAt <= now).sort((a, b) => a.nextRetryAt.getTime() - b.nextRetryAt.getTime() || a.matchId.localeCompare(b.matchId)).slice(0, limit).map((job) => structuredClone(job)); }
+  async getRetryJob(matchId: string): Promise<MatchRetryJob | undefined> { this.#pruneJobs(); const job = this.jobs.get(matchId); return job ? structuredClone(this.#hydrateJob(job)) : undefined; }
+  async listRetryable(now = new Date(), limit = 100): Promise<readonly MatchRetryJob[]> { if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid retry limit"); this.#pruneJobs(now); return [...this.jobs.values()].filter((job) => job.status !== "completed" && job.nextRetryAt <= now).sort((a, b) => a.nextRetryAt.getTime() - b.nextRetryAt.getTime() || a.matchId.localeCompare(b.matchId)).slice(0, limit).map((job) => structuredClone(this.#hydrateJob(job))); }
   async claimDueJobs(now = new Date(), limit = 100, leaseMs = 30_000): Promise<readonly ClaimedMatchRetryJob[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid retry limit");
     this.#pruneJobs(now);
-    const due = [...this.jobs.values()].filter((job) => job.status !== "completed" && job.nextRetryAt <= now).sort((a, b) => a.nextRetryAt.getTime() - b.nextRetryAt.getTime() || a.matchId.localeCompare(b.matchId)).slice(0, limit);
+    const due = [...this.jobs.values()].filter((job) => job.status !== "completed" && job.attemptCount < 10 && job.nextRetryAt <= now).sort((a, b) => a.nextRetryAt.getTime() - b.nextRetryAt.getTime() || a.matchId.localeCompare(b.matchId)).slice(0, limit);
     return due.map((job) => {
       const claimToken = randomUUID(); const generation = (job.generation ?? 0) + 1;
       const claimed = { ...job, status: "retrying" as const, attemptCount: job.attemptCount + 1, nextRetryAt: new Date(now.getTime() + leaseMs), claimToken, generation };
       this.jobs.set(job.matchId, claimed);
-      return structuredClone({ ...claimed, claimToken, generation });
+      return structuredClone({ ...this.#hydrateJob(claimed), claimToken, generation });
     });
   }
   async retryFailedMatch(matchId: string, options: Readonly<{ manual?: boolean; claimToken?: string; generation?: number }> = {}): Promise<"created" | "replayed"> {
     const job = this.jobs.get(matchId); if (!job) throw new MatchPersistenceConflictError();
     if (job.status === "completed") return "replayed";
-    if (!options.manual && job.attemptCount >= 10) throw new MatchPersistenceConflictError();
     const claimed = options.claimToken !== undefined;
+    if (!claimed && !options.manual && job.attemptCount >= 10) throw new MatchPersistenceConflictError();
     if (claimed && (job.claimToken !== options.claimToken || job.generation !== options.generation || job.status !== "retrying")) throw new MatchPersistenceConflictError();
     const attemptCount = claimed ? job.attemptCount : job.attemptCount + 1;
     this.jobs.set(matchId, { ...job, status: "retrying", attemptCount, nextRetryAt: claimed ? job.nextRetryAt : new Date(Date.now() + 30_000), lastSanitizedCode: null });
-    try { const result = await this.saveCompletedMatch(job.payload); this.jobs.set(matchId, { ...this.jobs.get(matchId)!, status: "completed", completedAt: this.#now(), lastSanitizedCode: null }); return result; }
+    try { const result = await this.saveCompletedMatch(this.#hydrateJob(job).payload); this.jobs.set(matchId, { ...this.jobs.get(matchId)!, status: "completed", completedAt: this.#now(), lastSanitizedCode: null }); return result; }
     catch (error) {
       const manualOnly = error instanceof MatchPersistenceConflictError || error instanceof z.ZodError || error instanceof RangeError;
       const exhausted = attemptCount >= 10;
@@ -364,6 +371,7 @@ export class PostgresMatchRepository implements MatchRepository {
     return this.db.transaction(async (tx) => {
       const rows = await tx.select().from(matchPersistenceJobs).where(and(
         inArray(matchPersistenceJobs.status, ["pending", "failed", "retrying"]),
+        lt(matchPersistenceJobs.attemptCount, 10),
         lte(matchPersistenceJobs.nextRetryAt, now),
       )).orderBy(asc(matchPersistenceJobs.nextRetryAt), asc(matchPersistenceJobs.createdAt)).limit(limit).for("update", { skipLocked: true });
       if (!rows.length) return [];
@@ -383,8 +391,8 @@ export class PostgresMatchRepository implements MatchRepository {
       const [row] = await tx.select().from(matchPersistenceJobs).where(eq(matchPersistenceJobs.matchId, matchId)).for("update").limit(1);
       if (!row) throw new MatchPersistenceConflictError();
       if (row.status === "completed") return null;
-      if (!options.manual && row.attemptCount >= 10) throw new MatchPersistenceConflictError();
       const claimed = options.claimToken !== undefined;
+      if (!claimed && !options.manual && row.attemptCount >= 10) throw new MatchPersistenceConflictError();
       if (claimed && (row.claimToken !== options.claimToken || row.generation !== options.generation || row.status !== "retrying")) throw new MatchPersistenceConflictError();
       if (!claimed && row.status === "retrying" && row.nextRetryAt > new Date()) throw new MatchPersistenceConflictError();
       const attemptCount = claimed ? row.attemptCount : row.attemptCount + 1;

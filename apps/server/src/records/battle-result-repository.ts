@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 import { battleResults } from "@steam-top/db/schema";
 import { z } from "zod";
-import type { ResultRepository, StoredBattleResult } from "../battle/engine";
+import type { BattleClaimHandle, BattleClaimOutcome, ResultRepository, StoredBattleResult } from "../battle/engine";
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 export const battleResultSchema = z.object({
@@ -43,7 +43,6 @@ type Db = DatabaseClient["db"];
 
 /** PostgreSQL result authority with an expiring cross-process simulation lease. */
 export class PostgresBattleResultRepository implements ResultRepository {
-  readonly #claimTokens = new Map<string, string>();
   readonly #leaseMs: number;
   readonly #pollMs: number;
   readonly #maxWaitMs: number;
@@ -54,12 +53,10 @@ export class PostgresBattleResultRepository implements ResultRepository {
   }
   get leaseRenewIntervalMs(): number { return Math.max(1, Math.floor(this.#leaseMs / 3)); }
 
-  async renewLease(correlationKey: string, fingerprint: string): Promise<boolean> {
-    const authorityKeyHash = keyHash(correlationKey); const claimToken = this.#claimTokens.get(authorityKeyHash);
-    if (!claimToken) return false;
+  async renewLease(handle: BattleClaimHandle): Promise<boolean> {
     const renewed = await this.db.update(battleResults).set({ leaseExpiresAt: new Date(Date.now() + this.#leaseMs) }).where(and(
-      eq(battleResults.authorityKeyHash, authorityKeyHash), eq(battleResults.correlationKey, correlationKey), eq(battleResults.inputFingerprint, fingerprint),
-      eq(battleResults.claimOwner, claimToken), isNull(battleResults.resultJson),
+      eq(battleResults.authorityKeyHash, handle.authority), eq(battleResults.inputFingerprint, handle.fingerprint),
+      eq(battleResults.claimOwner, handle.token), isNull(battleResults.resultJson),
     )).returning({ authorityKeyHash: battleResults.authorityKeyHash });
     return renewed.length === 1;
   }
@@ -70,7 +67,7 @@ export class PostgresBattleResultRepository implements ResultRepository {
     return parseStored(row.inputFingerprint, row.resultJson);
   }
 
-  async claim(correlationKey: string, fingerprint: string): Promise<"acquired" | StoredBattleResult> {
+  async claim(correlationKey: string, fingerprint: string): Promise<BattleClaimOutcome> {
     hash.parse(fingerprint);
     const authorityKeyHash = keyHash(correlationKey);
     const claimToken = randomUUID();
@@ -84,51 +81,50 @@ export class PostgresBattleResultRepository implements ResultRepository {
         if (!row) throw new Error("BATTLE_CLAIM_MISSING");
         if (row.inputFingerprint !== fingerprint || row.correlationKey !== correlationKey) throw new BattleResultConflictError();
         if (row.resultJson) return parseStored(row.inputFingerprint, row.resultJson);
-        if (row.claimOwner === claimToken) return "acquired" as const;
+        if (row.claimOwner === claimToken) return { status: "acquired" as const, handle: { authority: authorityKeyHash, token: claimToken, fingerprint } };
         if (row.leaseExpiresAt && row.leaseExpiresAt <= now) {
           await tx.update(battleResults).set({ claimOwner: claimToken, leaseExpiresAt })
             .where(and(eq(battleResults.authorityKeyHash, authorityKeyHash), isNull(battleResults.resultJson), or(isNull(battleResults.leaseExpiresAt), lt(battleResults.leaseExpiresAt, now))));
-          return "acquired" as const;
+          return { status: "acquired" as const, handle: { authority: authorityKeyHash, token: claimToken, fingerprint } };
         }
         return "busy" as const;
       });
-      if (outcome !== "busy") { if (outcome === "acquired") this.#claimTokens.set(authorityKeyHash, claimToken); return outcome; }
+      if (outcome !== "busy") return outcome;
       if (Date.now() >= deadline) throw new Error("BATTLE_RESULT_LEASE_TIMEOUT");
       await new Promise((resolve) => setTimeout(resolve, this.#pollMs));
     }
   }
 
   async saveIfAbsent(correlationKey: string, value: StoredBattleResult): Promise<StoredBattleResult> {
+    const existing = await this.get(correlationKey);
+    if (existing) return existing;
+    throw new BattleResultConflictError();
+  }
+
+  async saveClaimed(handle: BattleClaimHandle, value: StoredBattleResult): Promise<StoredBattleResult> {
     if (!value.result) throw new TypeError("A durable battle result is required");
     const parsed = storedSchema.parse({ fingerprint: value.fingerprint, result: value.result });
     const encoded = JSON.stringify(parsed.result);
     const resultBytes = Buffer.byteLength(encoded);
     if (resultBytes > 2 * 1_024 * 1_024) throw new RangeError("Battle result exceeds 2 MiB");
-    const authorityKeyHash = keyHash(correlationKey);
-    const claimToken = this.#claimTokens.get(authorityKeyHash);
-    if (!claimToken) throw new BattleResultConflictError();
     return this.db.transaction(async (tx) => {
-      const [row] = await tx.select().from(battleResults).where(eq(battleResults.authorityKeyHash, authorityKeyHash)).for("update").limit(1);
-      if (!row || row.correlationKey !== correlationKey || row.inputFingerprint !== parsed.fingerprint) throw new BattleResultConflictError();
+      const [row] = await tx.select().from(battleResults).where(eq(battleResults.authorityKeyHash, handle.authority)).for("update").limit(1);
+      if (!row || row.inputFingerprint !== parsed.fingerprint || handle.fingerprint !== parsed.fingerprint) throw new BattleResultConflictError();
       if (row.resultJson) return parseStored(row.inputFingerprint, row.resultJson);
-      if (row.claimOwner !== claimToken) throw new BattleResultConflictError();
+      if (row.claimOwner !== handle.token) throw new BattleResultConflictError();
       const [saved] = await tx.update(battleResults).set({ resultJson: parsed.result, resultBytes, completedAt: new Date(), claimOwner: null, leaseExpiresAt: null })
-        .where(and(eq(battleResults.authorityKeyHash, authorityKeyHash), eq(battleResults.claimOwner, claimToken), isNull(battleResults.resultJson))).returning();
+        .where(and(eq(battleResults.authorityKeyHash, handle.authority), eq(battleResults.claimOwner, handle.token), isNull(battleResults.resultJson))).returning();
       if (!saved) throw new BattleResultConflictError();
-      this.#claimTokens.delete(authorityKeyHash);
       return parseStored(saved.inputFingerprint, saved.resultJson);
     });
   }
 
-  async release(correlationKey: string, fingerprint: string): Promise<void> {
-    const authorityKeyHash = keyHash(correlationKey); const claimToken = this.#claimTokens.get(authorityKeyHash);
-    if (!claimToken) return;
+  async release(handle: BattleClaimHandle): Promise<void> {
     await this.db.delete(battleResults).where(and(
-      eq(battleResults.authorityKeyHash, authorityKeyHash),
-      eq(battleResults.inputFingerprint, fingerprint),
-      eq(battleResults.claimOwner, claimToken),
+      eq(battleResults.authorityKeyHash, handle.authority),
+      eq(battleResults.inputFingerprint, handle.fingerprint),
+      eq(battleResults.claimOwner, handle.token),
       isNull(battleResults.resultJson),
     ));
-    this.#claimTokens.delete(authorityKeyHash);
   }
 }

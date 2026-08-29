@@ -469,6 +469,7 @@ export const rooms = pgTable(
       .notNull()
       .defaultNow(),
     firstBattleAt: timestamp("first_battle_at", { withTimezone: true }),
+    appliedProjectionRevision: bigint("applied_projection_revision", { mode: "number" }).notNull().default(-1),
     closedAt: timestamp("closed_at", { withTimezone: true }),
   },
   (table) => [
@@ -485,6 +486,7 @@ export const rooms = pgTable(
       "rooms_closed_status_consistent",
       sql`${table.closedAt} is null or ${table.status} = 'closed'`,
     ),
+    check("rooms_projection_revision", sql`${table.appliedProjectionRevision} >= -1`),
   ],
 );
 
@@ -947,6 +949,7 @@ export const adminAudit = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    sourceOutboxId: uuid("source_outbox_id"),
   },
   (table) => [
     index("admin_audit_created_at_idx").on(table.createdAt),
@@ -956,8 +959,18 @@ export const adminAudit = pgTable(
       table.createdAt,
     ),
     index("admin_audit_target_idx").on(table.targetType, table.targetId),
+    uniqueIndex("admin_audit_source_outbox_uidx").on(table.sourceOutboxId).where(sql`${table.sourceOutboxId} is not null`),
   ],
 );
+
+export const adminAuditOutbox = pgTable("admin_audit_outbox", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  payload: jsonb("payload").$type<Readonly<Record<string, unknown>>>().notNull(),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lastError: varchar("last_error", { length: 128 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("admin_audit_outbox_due_idx").on(table.nextAttemptAt, table.createdAt), check("admin_audit_outbox_attempts", sql`${table.attemptCount} >= 0`)]);
 
 export const deletionAudit = pgTable(
   "deletion_audit",

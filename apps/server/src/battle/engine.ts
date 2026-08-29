@@ -113,6 +113,8 @@ export type StoredBattleResult = Readonly<{
   fingerprint: string;
   result?: BattleResult;
 }>;
+export type BattleClaimHandle = Readonly<{ authority: string; token: string; fingerprint: string }>;
+export type BattleClaimOutcome = Readonly<{ status: "acquired"; handle: BattleClaimHandle }> | StoredBattleResult;
 
 /**
  * Authoritative completed-round boundary. Production composition must inject
@@ -121,9 +123,10 @@ export type StoredBattleResult = Readonly<{
 export interface ResultRepository {
   get(correlationKey: string): Promise<StoredBattleResult | undefined>;
   /** Optional distributed lease. Production repositories use it to avoid duplicate simulations. */
-  claim?(correlationKey: string, fingerprint: string): Promise<"acquired" | StoredBattleResult>;
-  release?(correlationKey: string, fingerprint: string): Promise<void>;
-  renewLease?(correlationKey: string, fingerprint: string): Promise<boolean>;
+  claim?(correlationKey: string, fingerprint: string): Promise<BattleClaimOutcome>;
+  release?(handle: BattleClaimHandle): Promise<void>;
+  renewLease?(handle: BattleClaimHandle): Promise<boolean>;
+  saveClaimed?(handle: BattleClaimHandle, value: StoredBattleResult): Promise<StoredBattleResult>;
   readonly leaseRenewIntervalMs?: number;
   saveIfAbsent(correlationKey: string, value: StoredBattleResult): Promise<StoredBattleResult>;
 }
@@ -1009,6 +1012,7 @@ type ScheduledBattleJob = {
   resolve: (result: BattleResult) => void;
   reject: (reason: unknown) => void;
   state: "queued" | "running" | "settled";
+  claimHandle?: BattleClaimHandle;
 };
 type PendingRepositoryLookup = {
   fingerprint: string;
@@ -1020,6 +1024,7 @@ export class BattleEngine {
   readonly #cache = new Map<string, CacheEntry>();
   readonly #inFlight = new Map<string, ScheduledBattleJob>();
   readonly #pendingRepositoryLookups = new Map<string, PendingRepositoryLookup>();
+  readonly #releasePromises = new Set<Promise<void>>();
   readonly #queue: ScheduledBattleJob[] = [];
   readonly #chunkTicks: number;
   readonly #ttlMs: number;
@@ -1031,6 +1036,7 @@ export class BattleEngine {
   readonly #now: () => number;
   #simulationCount = 0;
   #runningCount = 0;
+  #closed = false;
 
   constructor(options: Readonly<{
     chunkTicks?: number;
@@ -1152,8 +1158,10 @@ export class BattleEngine {
     return result;
   }
 
-  async #saveAuthoritative(key: string, fingerprint: string, result: BattleResult): Promise<BattleResult> {
-    const stored = await this.#resultRepository.saveIfAbsent(key, { fingerprint, result });
+  async #saveAuthoritative(key: string, fingerprint: string, result: BattleResult, claimHandle?: BattleClaimHandle): Promise<BattleResult> {
+    const stored = claimHandle && this.#resultRepository.saveClaimed
+      ? await this.#resultRepository.saveClaimed(claimHandle, { fingerprint, result })
+      : await this.#resultRepository.saveIfAbsent(key, { fingerprint, result });
     return this.#resultFromStored(stored, fingerprint);
   }
 
@@ -1206,6 +1214,7 @@ export class BattleEngine {
     inputs: BattleInputs,
     options: Readonly<{ signal?: AbortSignal }> = {},
   ): Promise<BattleResult> {
+    if (this.#closed) throw new Error("Battle engine is closed");
     const key = correlationKey(matchId, roundId);
     const canonical = canonicalizeBattleInputs(inputs);
     const fingerprint = battleInputFingerprint(canonical);
@@ -1250,12 +1259,18 @@ export class BattleEngine {
     const authoritative = await this.#getAuthoritative(key, fingerprint, () => pending.canceled);
     if (pending.canceled) throw abortError();
     if (authoritative !== undefined) return authoritative;
+    let claimHandle: BattleClaimHandle | undefined;
     if (this.#resultRepository.claim) {
       const claim = await this.#resultRepository.claim(key, fingerprint);
-      if (claim !== "acquired") {
+      if (!("status" in claim)) {
         const claimed = this.#resultFromStored(claim, fingerprint);
         this.#storeCached(key, fingerprint, claimed);
         return claimed;
+      }
+      claimHandle = claim.handle;
+      if (pending.canceled || this.#closed) {
+        await this.#releaseClaim(claimHandle);
+        throw abortError();
       }
     }
     const active = this.#inFlight.get(key);
@@ -1263,10 +1278,10 @@ export class BattleEngine {
       if (active.fingerprint !== fingerprint) throw new Error("Active battle correlation conflict");
       return active.promise;
     }
-    return this.#scheduleJob(key, fingerprint, canonical);
+    return this.#scheduleJob(key, fingerprint, canonical, claimHandle);
   }
 
-  #scheduleJob(key: string, fingerprint: string, canonical: BattleInputs): Promise<BattleResult> {
+  #scheduleJob(key: string, fingerprint: string, canonical: BattleInputs, claimHandle?: BattleClaimHandle): Promise<BattleResult> {
     if (this.#runningCount >= this.#maxConcurrent && this.#queue.length >= this.#maxQueued) {
       throw new Error("Battle scheduler capacity exceeded");
     }
@@ -1285,6 +1300,7 @@ export class BattleEngine {
       resolve,
       reject,
       state: "queued",
+      ...(claimHandle ? { claimHandle } : {}),
     };
     this.#inFlight.set(key, job);
     if (this.#runningCount < this.#maxConcurrent) this.#startJob(job);
@@ -1324,10 +1340,22 @@ export class BattleEngine {
       if (queuedIndex >= 0) this.#queue.splice(queuedIndex, 1);
       job.state = "settled";
       this.#inFlight.delete(job.key);
+      if (job.claimHandle) this.#trackRelease(job.claimHandle);
       job.reject(abortError());
       return;
     }
     job.controller.abort();
+  }
+
+  async #releaseClaim(handle: BattleClaimHandle): Promise<void> {
+    if (!this.#resultRepository.release) return;
+    await this.#resultRepository.release(handle);
+  }
+
+  #trackRelease(handle: BattleClaimHandle): void {
+    const release = this.#releaseClaim(handle).catch(() => undefined);
+    this.#releasePromises.add(release);
+    void release.finally(() => this.#releasePromises.delete(release));
   }
 
   #startJob(job: ScheduledBattleJob): void {
@@ -1339,7 +1367,8 @@ export class BattleEngine {
     const renewTimer = this.#resultRepository.renewLease ? setInterval(() => {
       if (renewing || job.controller.signal.aborted) return;
       renewing = true;
-      void this.#resultRepository.renewLease!(job.key, job.fingerprint).then((renewed) => { if (!renewed) job.controller.abort(); }, () => job.controller.abort()).finally(() => { renewing = false; });
+      if (!job.claimHandle) { job.controller.abort(); renewing = false; return; }
+      void this.#resultRepository.renewLease!(job.claimHandle).then((renewed) => { if (!renewed) job.controller.abort(); }, () => job.controller.abort()).finally(() => { renewing = false; });
     }, this.#resultRepository.leaseRenewIntervalMs ?? 5_000) : null;
     renewTimer?.unref();
     void (async () => {
@@ -1350,13 +1379,13 @@ export class BattleEngine {
           signal: job.controller.signal,
         });
         if (job.controller.signal.aborted) throw abortError();
-        const authoritative = await this.#saveAuthoritative(job.key, job.fingerprint, result);
+        const authoritative = await this.#saveAuthoritative(job.key, job.fingerprint, result, job.claimHandle);
         if (job.controller.signal.aborted) throw abortError();
         if (!job.controller.signal.aborted) this.#storeCached(job.key, job.fingerprint, authoritative);
         job.resolve(authoritative);
       } catch (error) {
         if (this.#resultRepository.release) {
-          try { await this.#resultRepository.release(job.key, job.fingerprint); } catch { /* preserve simulation error */ }
+          if (job.claimHandle) try { await this.#resultRepository.release(job.claimHandle); } catch { /* preserve simulation error */ }
         }
         job.reject(error);
       } finally {
@@ -1393,5 +1422,16 @@ export class BattleEngine {
     if (pending !== undefined) pending.canceled = true;
     if (active !== undefined) this.#cancelJob(active);
     return removed || active !== undefined || pending !== undefined;
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.#closed && this.#pendingRepositoryLookups.size === 0 && this.#inFlight.size === 0 && this.#releasePromises.size === 0) return;
+    this.#closed = true;
+    const pending = [...this.#pendingRepositoryLookups.values()];
+    for (const lookup of pending) lookup.canceled = true;
+    const jobs = [...this.#inFlight.values()];
+    for (const job of jobs) this.#cancelJob(job);
+    await Promise.allSettled([...pending.map((lookup) => lookup.promise), ...jobs.map((job) => job.promise)]);
+    await Promise.allSettled([...this.#releasePromises]);
   }
 }

@@ -76,6 +76,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "source_outbox_id": {
+          "name": "source_outbox_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -141,6 +147,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "admin_audit_source_outbox_uidx": {
+          "name": "admin_audit_source_outbox_uidx",
+          "columns": [
+            {
+              "expression": "source_outbox_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"admin_audit\".\"source_outbox_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -162,6 +184,86 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.admin_audit_outbox": {
+      "name": "admin_audit_outbox",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "payload": {
+          "name": "payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "admin_audit_outbox_due_idx": {
+          "name": "admin_audit_outbox_due_idx",
+          "columns": [
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "admin_audit_outbox_attempts": {
+          "name": "admin_audit_outbox_attempts",
+          "value": "\"admin_audit_outbox\".\"attempt_count\" >= 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.admin_login_limits": {
@@ -2938,6 +3040,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "applied_projection_revision": {
+          "name": "applied_projection_revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": -1
+        },
         "closed_at": {
           "name": "closed_at",
           "type": "timestamp with time zone",
@@ -3042,6 +3151,10 @@
         "rooms_closed_status_consistent": {
           "name": "rooms_closed_status_consistent",
           "value": "\"rooms\".\"closed_at\" is null or \"rooms\".\"status\" = 'closed'"
+        },
+        "rooms_projection_revision": {
+          "name": "rooms_projection_revision",
+          "value": "\"rooms\".\"applied_projection_revision\" >= -1"
         }
       },
       "isRLSEnabled": false

@@ -129,6 +129,7 @@ type MatchState = {
   roundHistory: CompletedMatchRecord["rounds"][number][];
   persistenceAttempts: number;
   officiallyCompleted: boolean;
+  spectatorCountAtStart: number;
 };
 
 type TerminalMatchState = Readonly<{
@@ -286,10 +287,11 @@ export class RealtimeGateway {
           report: this.#logError,
           store: dependencies.roomProjectionStore,
           apply: async (job) => {
-            if (dependencies.roomRecordRepository!.applyProjection) await dependencies.roomRecordRepository!.applyProjection(job.roomId, job.payload);
+            if (dependencies.roomRecordRepository!.applyProjection) await dependencies.roomRecordRepository!.applyProjection(job.roomId, job.revision, job.payload);
             else {
               if (job.payload.firstBattleAt) await dependencies.roomRecordRepository!.recordBattleStart(job.roomId, new Date(job.payload.firstBattleAt));
-              await dependencies.roomRecordRepository!.updatePhase(job.roomId, job.payload.phase);
+              if (job.payload.phase === "closed") await dependencies.roomRecordRepository!.close(job.roomId, new Date(job.payload.closedAt!));
+              else await dependencies.roomRecordRepository!.updatePhase(job.roomId, job.payload.phase);
             }
           },
         })
@@ -368,8 +370,9 @@ export class RealtimeGateway {
   async close(): Promise<void> {
     if (this.#lobbyTimer) clearTimeout(this.#lobbyTimer);
     this.#lobbyTimer = null;
-    for (const [roomId, match] of this.#matches) this.#cancelMatch(roomId, match);
     for (const session of this.#sessionsById.values()) session.commandsStopped = true;
+    await Promise.allSettled([...this.#sessionsById.values()].map((session) => session.commandTail));
+    for (const [roomId, match] of this.#matches) this.#cancelMatch(roomId, match);
     this.#terminalMatches.clear();
     await this.#roomProjections.close();
     await new Promise<void>((resolve) => this.io.close(() => resolve()));
@@ -411,7 +414,7 @@ export class RealtimeGateway {
       const nextRevision = afterSweep.get(roomId);
       if (nextRevision === undefined) {
         lobbyChanged = true;
-        if (this.#roomRecordRepository) void this.#roomRecordRepository.close(roomId, new Date(nowMs)).catch(this.#logError);
+        this.#projectRoomClosure(roomId, revision + 1, nowMs);
         this.#departWholeRoom(roomId, "expired");
         this.#cleanupRoom(roomId);
       } else if (nextRevision !== revision) {
@@ -784,16 +787,19 @@ export class RealtimeGateway {
       this.#broadcastLobby();
       await this.#startMatchIfReady(event.roomId);
     } else if (event.type === "room.close") {
+      const closingRevision = (this.#rooms.get(event.roomId)?.revision ?? 0) + 1;
       const checkpoint = this.#rooms.checkpoint(event.roomId);
       this.#rooms.close(event.roomId, session.id);
       try { if (this.#roomRecordRepository) await this.#roomRecordRepository.close(event.roomId, new Date(this.#now())); }
       catch (error) { this.#rooms.restore(checkpoint); this.#broadcastRoom(event.roomId); this.#broadcastLobby(); throw error; }
+      this.#projectRoomClosure(event.roomId, closingRevision, this.#now());
       const match = this.#matches.get(event.roomId);
       if (match) this.#cancelMatch(event.roomId, match);
       this.#departWholeRoom(event.roomId, "closed");
       this.#cleanupRoom(event.roomId);
       this.#broadcastLobby();
     } else if (event.type === "room.leave") {
+      const closingRevision = (this.#rooms.get(event.roomId)?.revision ?? 0) + 1;
       const beforeLeave = this.#rooms.snapshot(event.roomId, session.id);
       if (beforeLeave.phase !== "waiting" && beforeLeave.viewer.role !== "spectator") {
         throw Object.assign(new Error("ROOM_ACTIVE"), { code: "ROOM_ACTIVE" });
@@ -830,7 +836,7 @@ export class RealtimeGateway {
           : undefined;
         if (nextOwnerSessionId) this.#sessionsById.get(nextOwnerSessionId)?.ownedRoomIds.add(event.roomId);
         this.#broadcastRoom(event.roomId);
-      } else this.#cleanupRoom(event.roomId);
+      } else { this.#projectRoomClosure(event.roomId, closingRevision, this.#now()); this.#cleanupRoom(event.roomId); }
       this.#broadcastLobby();
     } else if (event.type === "clock.ping") {
       this.#pruneSessionOutcomes(session, receivedAtMs);
@@ -937,6 +943,7 @@ export class RealtimeGateway {
       roundHistory: [],
       persistenceAttempts: 0,
       officiallyCompleted: false,
+      spectatorCountAtStart: room.spectators.length,
       };
       if (this.#matchRepository) {
         const identity1 = this.#sessionsById.get(session1)!;
@@ -947,7 +954,7 @@ export class RealtimeGateway {
           player1DesignId: room.player1.designId, player2DesignId: room.player2.designId,
           performanceModelVersion: persistedDesign1.performance.modelVersion,
           physicsModelVersion: PHYSICS_MODEL_VERSION, protocolVersion: PROTOCOL_VERSION,
-          spectatorCount: room.spectators.length, startedAt: match.startedAt,
+          spectatorCount: match.spectatorCountAtStart, startedAt: match.startedAt,
         });
       }
       this.#matches.set(roomId, match);
@@ -1175,7 +1182,7 @@ export class RealtimeGateway {
       },
       roundWinners: [...match.roundWinners], rounds: structuredClone(match.roundHistory),
       performanceModelVersion, physicsModelVersion: finalResult.modelVersion,
-      protocolVersion: PROTOCOL_VERSION, spectatorCount: room.spectators.length,
+      protocolVersion: PROTOCOL_VERSION, spectatorCount: match.spectatorCountAtStart,
       startedAt: match.startedAt, completedAt,
     };
     const record: CompletedMatchRecord = {
@@ -1492,9 +1499,17 @@ export class RealtimeGateway {
     if (this.#roomProjections.usesDurableStore) {
       void this.#roomProjections.enqueueProjection({
         roomId, revision,
-        payload: { phase, firstBattleAt: this.#matches.get(roomId)?.startedAt.toISOString() ?? null },
+        payload: { phase, firstBattleAt: this.#matches.get(roomId)?.startedAt.toISOString() ?? null, closedAt: null },
       }).catch(this.#logError);
     } else this.#roomProjections.enqueue(`${roomId}:phase`, revision, () => this.#roomRecordRepository!.updatePhase(roomId, phase));
+  }
+
+  #projectRoomClosure(roomId: string, revision: number, closedAtMs: number): void {
+    if (!this.#roomRecordRepository) return;
+    const closedAt = new Date(closedAtMs);
+    if (this.#roomProjections.usesDurableStore) {
+      void this.#roomProjections.enqueueProjection({ roomId, revision, payload: { phase: "closed", firstBattleAt: null, closedAt: closedAt.toISOString() } }).catch(this.#logError);
+    } else this.#roomProjections.enqueue(`${roomId}:phase`, revision, () => this.#roomRecordRepository!.close(roomId, closedAt));
   }
 
   #user(session: Session) { return { id: session.id, displayName: session.displayName }; }
