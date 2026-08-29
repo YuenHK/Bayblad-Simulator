@@ -141,10 +141,10 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     designRateRefillPerSecond: requirePositive("designRateRefillPerSecond", options.designRateRefillPerSecond ?? 2, false),
     designClientRateBurst: requirePositive("designClientRateBurst", options.designClientRateBurst ?? 600),
     designClientRateRefillPerSecond: requirePositive("designClientRateRefillPerSecond", options.designClientRateRefillPerSecond ?? 20, false),
-    identityCreationBurst: requirePositive("identityCreationBurst", options.identityCreationBurst ?? 500),
-    identityCreationRefillPerSecond: requirePositive("identityCreationRefillPerSecond", options.identityCreationRefillPerSecond ?? 5, false),
+    identityCreationBurst: requirePositive("identityCreationBurst", options.identityCreationBurst ?? 600),
+    identityCreationRefillPerSecond: requirePositive("identityCreationRefillPerSecond", options.identityCreationRefillPerSecond ?? 0.01, false),
     identityGlobalCreationBurst: requirePositive("identityGlobalCreationBurst", options.identityGlobalCreationBurst ?? 5_000),
-    identityGlobalCreationRefillPerSecond: requirePositive("identityGlobalCreationRefillPerSecond", options.identityGlobalCreationRefillPerSecond ?? 50, false),
+    identityGlobalCreationRefillPerSecond: requirePositive("identityGlobalCreationRefillPerSecond", options.identityGlobalCreationRefillPerSecond ?? 0.1, false),
   };
   if (config.maxConnectionsPerIp > config.maxConnections) throw new TypeError("maxConnectionsPerIp cannot exceed maxConnections");
   if (config.maxOwnedRoomsPerSession > config.maxRooms) throw new TypeError("maxOwnedRoomsPerSession cannot exceed maxRooms");

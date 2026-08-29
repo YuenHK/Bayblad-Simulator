@@ -128,7 +128,7 @@ describe("IdentityResolver", () => {
     const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: "device-concurrent", displayName: "1B 11", studentName: "李同學", className: "1B", studentNumber: "11" }) }).resolve();
     const initial = await resolver.resolve(request(), live!);
     const results = await Promise.all(Array.from({ length: 20 }, () => resolver.resolve(request(initial.cookieToken), live!)));
-    expect(new Set(results.map((item) => item.cookieToken)).size).toBe(20);
+    expect(new Set(results.map((item) => item.cookieToken)).size).toBe(1);
     expect(results.every((item) => item.cookieToken !== initial.cookieToken)).toBe(true);
     expect(new Set(results.map((item) => item.identity.id))).toEqual(new Set([initial.identity.id]));
   });

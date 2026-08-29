@@ -20,6 +20,7 @@ const mapSession = (session: typeof identitySessions.$inferSelect, identity: typ
   identity: mapIdentity(identity), tokenHash: session.tokenHash, createdAt: session.createdAt,
   lastSeenAt: session.lastSeenAt, expiresAt: session.expiresAt,
   ...(session.revokedAt ? { revokedAt: session.revokedAt } : {}),
+  ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
   ...(session.lastIp ? { lastIp: session.lastIp } : {}),
   ...(session.userAgent ? { userAgent: session.userAgent } : {}),
 });
@@ -34,9 +35,9 @@ export class PostgresIdentityStore implements IdentityStore {
     if (!Number.isSafeInteger(this.#maxIdentities) || this.#maxIdentities < 1) throw new TypeError("maxIdentities must be a positive integer");
     if (!Number.isSafeInteger(this.#maxSessions) || this.#maxSessions < 1) throw new TypeError("maxSessions must be a positive integer");
   }
-  async #assertSessionCapacity(tx: Tx): Promise<void> {
+  async #assertSessionCapacity(tx: Tx, now: Date): Promise<void> {
     await tx.execute(sql`select pg_advisory_xact_lock(1937002745)`);
-    const [row] = await tx.select({ value: count() }).from(identitySessions);
+    const [row] = await tx.select({ value: count() }).from(identitySessions).where(and(isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now)));
     if ((row?.value ?? 0) >= this.#maxSessions) throw new IdentityCapacityError();
   }
 
@@ -69,7 +70,7 @@ export class PostgresIdentityStore implements IdentityStore {
     try {
       return await this.#db.transaction(async (tx) => {
         await this.#assertIdentityCapacity(tx);
-        await this.#assertSessionCapacity(tx);
+        await this.#assertSessionCapacity(tx, input.now);
         const [identity] = await tx.insert(identities).values({ status: "guest", displayName: input.displayName, createdAt: input.now, updatedAt: input.now, lastSeenAt: input.now }).returning();
         const [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
         return mapSession(session!, identity!);
@@ -90,14 +91,14 @@ export class PostgresIdentityStore implements IdentityStore {
         const [previous] = await tx.select({ session: identitySessions, identity: identities }).from(identitySessions).innerJoin(identities, eq(identitySessions.identityId, identities.id))
           .where(and(eq(identitySessions.tokenHash, input.previousTokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, input.now))).limit(1);
         if (!previous) throw new SessionTokenUnavailableError();
-        const revoked = await tx.update(identitySessions).set({ revokedAt: input.now }).where(and(eq(identitySessions.id, previous.session.id), isNull(identitySessions.revokedAt))).returning();
+        const revoked = await tx.update(identitySessions).set({ revokedAt: input.now, archivedAt: input.now }).where(and(eq(identitySessions.id, previous.session.id), isNull(identitySessions.revokedAt))).returning();
         if (revoked.length !== 1) throw new SessionTokenUnavailableError();
         if (previous.identity.status === "guest" && previous.identity.id !== identity!.id) {
           await tx.update(identities).set({ mergedIntoIdentityId: identity!.id, mergedAt: input.now, updatedAt: input.now }).where(eq(identities.id, previous.identity.id));
           await tx.insert(identityLinks).values({ sourceIdentityId: previous.identity.id, targetIdentityId: identity!.id, reason: "verified_cookie_and_iclass", verificationFingerprint: createHash("sha256").update(`${input.identity.externalId}:${previous.identity.id}:${identity!.id}`).digest("hex"), linkedAt: input.now }).onConflictDoNothing();
         }
       }
-      await this.#assertSessionCapacity(tx);
+      await this.#assertSessionCapacity(tx, input.now);
       const [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
       return mapSession(session!, identity!);
     }); } catch (error) {
@@ -107,7 +108,7 @@ export class PostgresIdentityStore implements IdentityStore {
   }
 
   async revokeSession(tokenHash: string, now: Date): Promise<boolean> {
-    const rows = await this.#db.update(identitySessions).set({ revokedAt: now }).where(and(eq(identitySessions.tokenHash, tokenHash), isNull(identitySessions.revokedAt))).returning({ id: identitySessions.id });
+    const rows = await this.#db.update(identitySessions).set({ revokedAt: now, archivedAt: now }).where(and(eq(identitySessions.tokenHash, tokenHash), isNull(identitySessions.revokedAt))).returning({ id: identitySessions.id });
     return rows.length > 0;
   }
 }

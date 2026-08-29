@@ -189,6 +189,7 @@ export const identitySessions = pgTable(
       .defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     lastIp: inet("last_ip"),
     userAgent: varchar("user_agent", { length: 512 }),
     // Diagnostic only; retained until explicit audited deletion or decommission.
@@ -199,7 +200,9 @@ export const identitySessions = pgTable(
       table.identityId,
       table.lastSeenAt,
     ),
-    index("identity_sessions_expires_at_idx").on(table.expiresAt),
+    index("identity_sessions_active_expires_at_idx")
+      .on(table.expiresAt)
+      .where(sql`${table.revokedAt} is null`),
     check(
       "identity_sessions_token_hash_format",
       sql`${table.tokenHash} ~ '^[a-f0-9]{64}$'`,

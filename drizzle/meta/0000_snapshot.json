@@ -232,6 +232,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "archived_at": {
+          "name": "archived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "last_ip": {
           "name": "last_ip",
           "type": "inet",
@@ -1478,8 +1484,8 @@
           "method": "btree",
           "with": {}
         },
-        "identity_sessions_expires_at_idx": {
-          "name": "identity_sessions_expires_at_idx",
+        "identity_sessions_active_expires_at_idx": {
+          "name": "identity_sessions_active_expires_at_idx",
           "columns": [
             {
               "expression": "expires_at",
@@ -1491,7 +1497,8 @@
           "isUnique": false,
           "concurrently": false,
           "method": "btree",
-          "with": {}
+          "with": {},
+          "where": "\"identity_sessions\".\"revoked_at\" is null"
         }
       },
       "foreignKeys": {
