@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { and, asc, eq, inArray, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "@steam-top/db";
 import { roomProjectionJobs } from "@steam-top/db/schema";
@@ -51,7 +52,9 @@ type MemoryEntry = RoomProjectionInput & {
 };
 
 export class MemoryRoomProjectionStore implements RoomProjectionStore {
-  readonly #entries = new Map<string, MemoryEntry>();
+  readonly #committedEntries = new Map<string, MemoryEntry>();
+  readonly #transactionEntries = new AsyncLocalStorage<Map<string, MemoryEntry>>();
+  get #entries(): Map<string, MemoryEntry> { return this.#transactionEntries.getStore() ?? this.#committedEntries; }
   readonly #maxEntries: number;
   readonly #leaseMs: number;
   readonly #maxAttempts: number;
@@ -69,9 +72,12 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
     const previous = this.#transactionTail; let release!: () => void;
     this.#transactionTail = new Promise<void>((resolve) => { release = resolve; });
     await previous;
-    const snapshot = structuredClone(this.#entries);
-    try { return await operation(); }
-    catch (error) { this.#entries.clear(); for (const [key, value] of snapshot) this.#entries.set(key, value); throw error; }
+    const staged = structuredClone(this.#committedEntries);
+    try {
+      const result = await this.#transactionEntries.run(staged, operation);
+      this.#committedEntries.clear(); for (const [key, value] of staged) this.#committedEntries.set(key, value);
+      return result;
+    }
     finally { release(); }
   }
 
