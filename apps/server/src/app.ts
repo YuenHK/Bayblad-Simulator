@@ -319,6 +319,13 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
           return reply.redirect(`/start?t=${encodeURIComponent(token)}`, 303);
         }
         const handle = options.webClipTokens.prepareExchange(verified, attempt);
+        const preflight = await options.webClipTokens.preflightVerified(handle);
+        if (preflight.status === "replay" || preflight.status === "missing") { reply.header("X-Identity-Bootstrap", "replay"); return reply.redirect("/", 303); }
+        if (preflight.status === "recovered") {
+          const recovered = await identityResolver.recoverLiveExchange(handle.cookieToken);
+          if (!recovered || recovered.identity.id !== preflight.result.identityId || recovered.sessionId !== preflight.result.sessionId) throw new Error("WEBCLIP_RECOVERY_FAILED");
+          setIdentityCookie(reply, recovered); reply.clearCookie(attemptName, { path: "/start", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict" }); return reply.redirect("/", 303);
+        }
         let device;
         try { device = await options.iClassAdapter.resolveDevice(verified.deviceId); }
         catch { throw new Error("ICLASS_LOOKUP_RETRYABLE"); }

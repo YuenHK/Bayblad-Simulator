@@ -33,6 +33,17 @@ describe("identity routes", () => {
     expect(replay.cookies.find(c=>c.name==="steam_top_identity")).toBeUndefined();
   });
 
+  it("recovers a lost successful response without calling the adapter again", async () => {
+    let calls=0, fail=false; const adapter={resolveDevice:async()=>{calls++;if(fail)throw new Error("adapter must not run");return{externalDeviceId:"ipad-lost",deviceName:"d",studentName:"陳同學",className:"1A",studentNumber:"01"};}};
+    const tokens=new WebClipTokenService({keys:{k1:new Uint8Array(32).fill(11)},activeKeyId:"k1",audience:"steam-top",nonceStore:new InMemoryTokenNonceStore(),exchangeKey:new Uint8Array(32).fill(12)});const token=await tokens.issue("ipad-lost");
+    const app=buildApp({battleEngine,identityResolver:new IdentityResolver(new InMemoryIdentityStore()),iClassAdapter:adapter,webClipTokens:tokens,sweepIntervalMs:0});apps.push(app);
+    const stage=await app.inject({method:"GET",url:`/start?t=${token}`}),attempt=stage.cookies.find(c=>c.name==="steam_top_webclip_attempt")!,attemptCookie=`${attempt.name}=${attempt.value}`;
+    const committed=await app.inject({method:"GET",url:`/start?t=${token}`,headers:{cookie:attemptCookie}}),firstIdentity=committed.cookies.find(c=>c.name==="steam_top_identity")!;expect(calls).toBe(1);
+    fail=true;const recovered=await app.inject({method:"GET",url:`/start?t=${token}`,headers:{cookie:attemptCookie}}),secondIdentity=recovered.cookies.find(c=>c.name==="steam_top_identity")!;
+    expect(calls).toBe(1);expect(secondIdentity.value).toBe(firstIdentity.value);
+    const different=Buffer.alloc(32,99).toString("base64url");const replay=await app.inject({method:"GET",url:`/start?t=${token}`,headers:{cookie:`steam_top_webclip_attempt=${different}`}});expect(calls).toBe(1);expect(replay.cookies.find(c=>c.name==="steam_top_identity")).toBeUndefined();
+  });
+
   it("does not consume a token on transient lookup failure, then upgrades the same guest cookie on retry", async () => {
     const store = new InMemoryIdentityStore(); let available = false;
     const adapter = { resolveDevice: async () => { if (!available) throw new Error("ICLASS_UNAVAILABLE"); return { externalDeviceId: "ipad-retry", deviceName: "d", studentName: "李同學", className: "1B", studentNumber: "02" }; } };

@@ -10,14 +10,17 @@ describe("Web Clip token", () => {
     const store = new InMemoryTokenNonceStore(); let now = 1_000;
     const service = new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: store, now: () => now });
     const token = await service.issue("ipad-lease", 10_000); const verified = await service.inspect(token); const attempt = Buffer.alloc(32,1).toString("base64url"); const handle = service.prepareExchange(verified, attempt);
+    await expect(service.preflightVerified(handle)).resolves.toEqual({status:"unused"});
     const create = async () => ({ identityId:"00000000-0000-0000-0000-000000000001", sessionId:"00000000-0000-0000-0000-000000000002", tokenHash:handle.tokenHash, committedAt:new Date(now) });
     await expect(service.exchange(handle, create)).resolves.toMatchObject({status:"committed"});
+    await expect(service.preflightVerified(handle)).resolves.toMatchObject({status:"recovered"});
     const recovered = service.prepareExchange(await service.inspect(token), attempt); await expect(service.exchange(recovered, create)).resolves.toMatchObject({status:"recovered"});
     const replay = service.prepareExchange(await service.inspect(token), Buffer.alloc(32,2).toString("base64url")); await expect(service.exchange(replay, create)).resolves.toEqual({status:"replay"});
     now += 20_000; expect(await service.pruneExpired(10)).toBe(1);
   });
   it("requires a durable atomic nonce store in production", () => {
-    expect(() => new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore(), production: true })).toThrow("WEBCLIP_DURABLE_NONCE_STORE_REQUIRED");
+    expect(() => new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore(), production: true })).toThrow("WEBCLIP_EXCHANGE_KEY_REQUIRED");
+    expect(() => new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore(), exchangeKey:new Uint8Array(32).fill(8), production: true })).toThrow("WEBCLIP_DURABLE_NONCE_STORE_REQUIRED");
   });
   it("accepts a short-lived opaque token once, including concurrent consumption", async () => {
     const store = new InMemoryTokenNonceStore();
