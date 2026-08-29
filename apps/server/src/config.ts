@@ -1,0 +1,103 @@
+import { readFileSync } from "node:fs";
+import { z } from "zod";
+
+const secretNames = [
+  "DATABASE_URL",
+  "COOKIE_SIGNING_KEY",
+  "ADMIN_INITIAL_PASSWORD",
+  "ADMIN_CSRF_SECRET",
+  "WEBCLIP_SIGNING_KEY",
+  "WEBCLIP_EXCHANGE_KEY",
+  "ANALYTICS_CURSOR_SECRET",
+] as const;
+type SecretName = (typeof secretNames)[number];
+
+const environmentSchema = z.object({
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  PUBLIC_ORIGIN: z.url(),
+  ADMIN_USERNAME: z.string().trim().min(1).max(64).default("admin"),
+  ADMIN_CSRF_KEY_ID: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/u),
+  ICLASS_MODE: z.enum(["api", "csv", "api-csv-fallback", "guest-only-explicit"]),
+  DELETION_LEDGER_FILE: z.string().startsWith("/").min(2),
+  DELETION_SOURCE_INSTANCE_ID: z.uuid(),
+  HOST: z.union([z.ipv4(), z.ipv6()]).default("0.0.0.0"),
+  PORT: z.coerce.number().int().min(1).max(65_535).default(3_000),
+  DATABASE_TLS: z.enum(["require", "disable"]).default("require"),
+}).passthrough();
+
+export type ProductionConfig = Readonly<{
+  nodeEnv: "development" | "test" | "production";
+  databaseUrl: string;
+  databaseTls: boolean;
+  publicOrigin: string;
+  cookieSigningKey: string;
+  adminUsername: string;
+  adminInitialPassword: string;
+  adminCsrfSecret: string;
+  adminCsrfKeyId: string;
+  webclipSigningKey: string;
+  webclipExchangeKey: string;
+  analyticsCursorSecret: string;
+  iClassMode: "api" | "csv" | "api-csv-fallback" | "guest-only-explicit";
+  deletionLedgerFile: string;
+  deletionSourceInstanceId: string;
+  host: string;
+  port: number;
+}>;
+
+function secretValue(environment: NodeJS.ProcessEnv, name: SecretName, readSecret: (path: string) => string): string {
+  const direct = environment[name]?.trim();
+  const file = environment[`${name}_FILE`]?.trim();
+  if (direct && file) throw new Error(`${name} and ${name}_FILE are mutually exclusive`);
+  const value = direct ?? (file ? readSecret(file).trim() : "");
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+export function loadConfig(
+  environment: NodeJS.ProcessEnv,
+  readSecret: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): ProductionConfig {
+  const parsed = environmentSchema.parse(environment);
+  const secrets = Object.fromEntries(secretNames.map((name) => [name, secretValue(environment, name, readSecret)])) as Record<SecretName, string>;
+  z.url().refine((value) => value.startsWith("postgresql://") || value.startsWith("postgres://"), "must be a PostgreSQL URL").parse(secrets.DATABASE_URL);
+  for (const name of ["COOKIE_SIGNING_KEY", "ADMIN_CSRF_SECRET", "WEBCLIP_SIGNING_KEY", "WEBCLIP_EXCHANGE_KEY", "ANALYTICS_CURSOR_SECRET"] as const) {
+    z.string().min(32, `${name} must contain at least 32 characters`).parse(secrets[name]);
+  }
+  z.string().min(8, "ADMIN_INITIAL_PASSWORD must contain at least 8 characters").parse(secrets.ADMIN_INITIAL_PASSWORD);
+  const publicOrigin = new URL(parsed.PUBLIC_ORIGIN);
+  if (publicOrigin.pathname !== "/" || publicOrigin.search || publicOrigin.hash || publicOrigin.username || publicOrigin.password) throw new Error("PUBLIC_ORIGIN must contain only scheme and authority");
+  if (parsed.NODE_ENV === "production" && publicOrigin.protocol !== "https:") throw new Error("PUBLIC_ORIGIN must use HTTPS in production");
+  if (parsed.NODE_ENV === "production" && parsed.DATABASE_TLS !== "require") throw new Error("DATABASE_TLS must be require in production");
+  if (new Set([secrets.COOKIE_SIGNING_KEY, secrets.ADMIN_CSRF_SECRET, secrets.WEBCLIP_SIGNING_KEY, secrets.WEBCLIP_EXCHANGE_KEY, secrets.ANALYTICS_CURSOR_SECRET]).size !== 5) throw new Error("Production secrets must be distinct");
+  return Object.freeze({
+    nodeEnv: parsed.NODE_ENV,
+    databaseUrl: secrets.DATABASE_URL,
+    databaseTls: parsed.DATABASE_TLS === "require",
+    publicOrigin: publicOrigin.origin,
+    cookieSigningKey: secrets.COOKIE_SIGNING_KEY,
+    adminUsername: parsed.ADMIN_USERNAME,
+    adminInitialPassword: secrets.ADMIN_INITIAL_PASSWORD,
+    adminCsrfSecret: secrets.ADMIN_CSRF_SECRET,
+    adminCsrfKeyId: parsed.ADMIN_CSRF_KEY_ID,
+    webclipSigningKey: secrets.WEBCLIP_SIGNING_KEY,
+    webclipExchangeKey: secrets.WEBCLIP_EXCHANGE_KEY,
+    analyticsCursorSecret: secrets.ANALYTICS_CURSOR_SECRET,
+    iClassMode: parsed.ICLASS_MODE,
+    deletionLedgerFile: parsed.DELETION_LEDGER_FILE,
+    deletionSourceInstanceId: parsed.DELETION_SOURCE_INSTANCE_ID,
+    host: parsed.HOST,
+    port: parsed.PORT,
+  });
+}
+
+export function publicConfig(config: ProductionConfig) {
+  return Object.freeze({
+    nodeEnv: config.nodeEnv,
+    publicOrigin: config.publicOrigin,
+    host: config.host,
+    port: config.port,
+    iClassMode: config.iClassMode,
+    databaseTls: config.databaseTls,
+  });
+}
