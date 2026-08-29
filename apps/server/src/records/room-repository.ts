@@ -22,6 +22,7 @@ export interface RoomRecordRepository {
   close(roomId: string, at: Date, revision?: number): Promise<void>;
   closeWithProjection?(roomId: string, at: Date, revision: number, payload: RoomProjectionPayload, leavingParticipantPublicId?: string): Promise<void>;
   transitionPhaseWithProjection?(roomId: string, revision: number, payload: RoomProjectionPayload, at?: Date): Promise<void>;
+  reconcileOrphanedActiveRooms?(at?: Date): Promise<number>;
   applyProjection?(roomId: string, revision: number, payload: RoomProjectionPayload): Promise<boolean>;
 }
 
@@ -124,6 +125,22 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
       else await tx.update(roomProjectionJobs).set({ revision, payloadHash, payloadJson: payload, status: "pending", reservationToken: null, attemptCount: 0, nextAttemptAt: at, leaseToken: null, leaseUntil: null, lastError: null, generation: job.generation + 1, updatedAt: at }).where(and(eq(roomProjectionJobs.roomId, roomId), eq(roomProjectionJobs.generation, job.generation)));
       const updated = await tx.update(rooms).set({ status: payload.phase, appliedProjectionRevision: revision, ...(payload.firstBattleAt ? { firstBattleAt: sql`coalesce(${rooms.firstBattleAt}, ${new Date(payload.firstBattleAt)})` } : {}) }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt), lt(rooms.appliedProjectionRevision, revision))).returning({ id: rooms.id });
       if (updated.length !== 1) throw new Error("ROOM_PHASE_CAS_MISS");
+    });
+  }
+  async reconcileOrphanedActiveRooms(at = new Date()): Promise<number> {
+    return this.db.transaction(async (tx) => {
+      const active = await tx.select().from(rooms).where(isNull(rooms.closedAt)).for("update");
+      for (const room of active) {
+        const [job] = await tx.select().from(roomProjectionJobs).where(eq(roomProjectionJobs.roomId, room.id)).for("update").limit(1);
+        const revision = Math.max(room.appliedProjectionRevision, job?.revision ?? -1) + 1;
+        const payload: RoomProjectionPayload = { phase: "closed", firstBattleAt: room.firstBattleAt?.toISOString() ?? null, closedAt: at.toISOString() };
+        const payloadHash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+        if (!job) await tx.insert(roomProjectionJobs).values({ roomId: room.id, revision, payloadHash, payloadJson: payload, status: "pending", nextAttemptAt: at });
+        else await tx.update(roomProjectionJobs).set({ revision, payloadHash, payloadJson: payload, status: "pending", reservationToken: null, attemptCount: 0, nextAttemptAt: at, leaseToken: null, leaseUntil: null, lastError: null, generation: job.generation + 1, updatedAt: at }).where(and(eq(roomProjectionJobs.roomId, room.id), eq(roomProjectionJobs.generation, job.generation)));
+        await tx.update(roomParticipants).set({ leftAt: at }).where(and(eq(roomParticipants.roomId, room.id), isNull(roomParticipants.leftAt)));
+        await tx.update(rooms).set({ status: "closed", closedAt: at, appliedProjectionRevision: revision }).where(and(eq(rooms.id, room.id), isNull(rooms.closedAt)));
+      }
+      return active.length;
     });
   }
   async applyProjection(roomId: string, revision: number, payload: RoomProjectionPayload): Promise<boolean> {

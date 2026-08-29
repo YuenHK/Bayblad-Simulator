@@ -288,7 +288,7 @@ CREATE TABLE "rooms" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"first_battle_at" timestamp with time zone,
 	"closed_at" timestamp with time zone,
-	CONSTRAINT "rooms_closed_status_consistent" CHECK ("rooms"."closed_at" is null or "rooms"."status" = 'closed')
+	CONSTRAINT "rooms_closed_status_consistent" CHECK (("rooms"."status" = 'closed') = ("rooms"."closed_at" is not null))
 );
 --> statement-breakpoint
 CREATE TABLE "rounds" (

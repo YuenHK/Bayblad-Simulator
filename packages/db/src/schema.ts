@@ -484,7 +484,7 @@ export const rooms = pgTable(
     ),
     check(
       "rooms_closed_status_consistent",
-      sql`${table.closedAt} is null or ${table.status} = 'closed'`,
+      sql`(${table.status} = 'closed') = (${table.closedAt} is not null)`,
     ),
     check("rooms_projection_revision", sql`${table.appliedProjectionRevision} >= -1`),
   ],

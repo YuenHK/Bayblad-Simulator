@@ -3160,7 +3160,7 @@
       "checkConstraints": {
         "rooms_closed_status_consistent": {
           "name": "rooms_closed_status_consistent",
-          "value": "\"rooms\".\"closed_at\" is null or \"rooms\".\"status\" = 'closed'"
+          "value": "(\"rooms\".\"status\" = 'closed') = (\"rooms\".\"closed_at\" is not null)"
         },
         "rooms_projection_revision": {
           "name": "rooms_projection_revision",

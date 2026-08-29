@@ -78,6 +78,7 @@ class FailTwiceMatchRepository extends MemoryMatchRepository {
 
 class FailWaitingRoomProjection implements RoomRecordRepository {
   waitingFailures = 0;
+  reconcileOrphanedActiveRooms: NonNullable<RoomRecordRepository["reconcileOrphanedActiveRooms"]> = async () => 0;
   async create() {} async join() {} async recordBattleStart() {} async updateOwner() {} async syncRoles() {} async leave() {} async leaveAndSync() {} async close() {}
   async updatePhase(_roomId: string, phase: "waiting" | "launch" | "battle" | "result") {
     if (phase === "waiting") { this.waitingFailures += 1; throw new Error("injected room projection failure"); }
@@ -131,6 +132,24 @@ describe("realtime app", () => {
   afterEach(async () => {
     for (const close of closers.splice(0).reverse()) await close();
     vi.unstubAllEnvs();
+  });
+
+  it("reconciles orphaned durable rooms before accepting traffic", async () => {
+    let reconciled = false;
+    const repository = new FailWaitingRoomProjection();
+    repository.reconcileOrphanedActiveRooms = async () => { reconciled = true; return 1; };
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), roomRecordRepository: repository, sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await app.ready();
+    expect(reconciled).toBe(true);
+  });
+
+  it("fails startup when orphan reconciliation fails", async () => {
+    const repository = new FailWaitingRoomProjection();
+    repository.reconcileOrphanedActiveRooms = async () => { throw new Error("database unavailable"); };
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), roomRecordRepository: repository, sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await expect(app.ready()).rejects.toThrow("database unavailable");
   });
 
   it("serializes concurrent duplicate commands per session and shares their outcome", async () => {
