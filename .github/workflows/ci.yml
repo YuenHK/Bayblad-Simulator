@@ -194,8 +194,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: release-images
+    environment: release-host-integration
     permissions: { contents: read, actions: read, deployments: write, packages: read, id-token: write, attestations: write }
     env:
+      BOOTSTRAP_RUN_ID: "${{ vars.BOOTSTRAP_RUN_ID }}"
+      BOOTSTRAP_ARCHIVE_SHA256: "${{ vars.BOOTSTRAP_ARCHIVE_SHA256 }}"
       DEPLOYMENT_PURPOSE: release-integration
       PUBLIC_ORIGIN: https://steam-top.integration.test:18443
       POSTGRES_DB: steam_top
@@ -226,6 +229,29 @@ jobs:
       - run: pnpm install --frozen-lockfile && pnpm build
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { name: "release-manifest-${{ github.sha }}", path: candidate }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: "production-bootstrap-${{ vars.BOOTSTRAP_COMMIT }}"
+          run-id: "${{ vars.BOOTSTRAP_RUN_ID }}"
+          github-token: "${{ github.token }}"
+          path: bootstrap
+      - name: Verify and install the protected default-branch bootstrap
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          BOOTSTRAP_ALLOWED_SIGNERS: "${{ secrets.BOOTSTRAP_ALLOWED_SIGNERS }}"
+          BOOTSTRAP_COMMIT: "${{ vars.BOOTSTRAP_COMMIT }}"
+        run: |
+          set -euo pipefail
+          test "$(sha256sum bootstrap/bootstrap.tgz | awk '{print $1}')" = "$BOOTSTRAP_ARCHIVE_SHA256"
+          gh attestation verify bootstrap/bootstrap.tgz --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/bootstrap.yml"
+          gh attestation verify bootstrap/infra/bootstrap/install-bootstrap.sh --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/bootstrap.yml"
+          printf '%s\n' "$BOOTSTRAP_ALLOWED_SIGNERS" > "$RUNNER_TEMP/bootstrap-allowed-signers"
+          tar -xOf bootstrap/bootstrap.tgz ./bootstrap-files.sha256 > "$RUNNER_TEMP/bootstrap-files.sha256"
+          bootstrap_manifest_sha=$(sha256sum "$RUNNER_TEMP/bootstrap-files.sha256" | awk '{print $1}')
+          node - "$RUNNER_TEMP/bootstrap-trust.json" "$bootstrap_manifest_sha" "$GITHUB_REPOSITORY" "$BOOTSTRAP_COMMIT" <<'NODE'
+          const fs=require("fs"),[out,digest,repo,commit]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256:digest,repository:repo,workflowIdentity:`${repo}/.github/workflows/record-deployment.yml`,workflowRef:"refs/heads/main",workflowSha:commit,githubTokenFile:"/dev/null",authorizationDir:"/dev/null",productionEnvFile:"/dev/null",hostReceiptSigningKey:"/dev/null",adminSmokeSecretFile:"/dev/null",hostReceiptOutbox:"/dev/null",pgServiceFile:"/dev/null",pgPassFile:"/dev/null",pgServiceName:"target"})+"\n",{mode:0o600});
+          NODE
+          sudo env EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$BOOTSTRAP_ARCHIVE_SHA256" BOOTSTRAP_ALLOWED_SIGNERS_FILE="$RUNNER_TEMP/bootstrap-allowed-signers" bootstrap/infra/bootstrap/install-bootstrap.sh bootstrap/bootstrap.tgz bootstrap/bootstrap.tgz.sig bootstrap "$RUNNER_TEMP/bootstrap-trust.json"
       - name: Verify externally attested root runtime manifest
         env: { GH_TOKEN: "${{ github.token }}" }
         run: gh attestation verify candidate/runtime-files.sha256 --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
@@ -237,9 +263,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo install -d -o root -g root -m 0755 /opt/steam-top
-          sudo cp -a . /opt/steam-top/source
-          sudo cp -a /opt/steam-top/source/. /opt/steam-top/
-          sudo rm -rf /opt/steam-top/source
+          sudo cp -a candidate/runtime/. /opt/steam-top/
           sudo chown -R root:root /opt/steam-top
           sudo find /opt/steam-top -type d -exec chmod go-w {} +
           sudo find /opt/steam-top/scripts /opt/steam-top/infra/backup -type f -name '*.sh' -exec chmod 0555 {} +
@@ -313,5 +337,5 @@ jobs:
           sudo rm -f /etc/sudoers.d/steam-top-integration /usr/local/share/ca-certificates/steam-top-integration.crt /tmp/integration-root.crt /tmp/integration-images.env server.key server.crt || failures="$failures secrets"
           sudo update-ca-certificates || failures="$failures ca-trust"
           sudo userdel steam-top-integration || failures="$failures deploy-user"
-          sudo rm -rf /opt/steam-top || failures="$failures integration-root"
+          sudo rm -rf /opt/steam-top /opt/steam-top-bootstrap /etc/steam-top-bootstrap || failures="$failures integration-root"
           if [[ -n "$failures" ]];then echo "cleanup failures:$failures" >&2;exit 1;fi
