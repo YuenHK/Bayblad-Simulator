@@ -25,6 +25,7 @@ import { PostgresRoomRecordRepository, type RoomRecordRepository } from "./recor
 import { PostgresRoomProjectionStore, type RoomProjectionStore } from "./records/room-projection-store";
 import type { AnalyticsService } from "./analytics/service";
 import { registerAnalyticsRoutes } from "./analytics/routes";
+import { registerExportRoutes, type ExportDataSource } from "./exports/workbook";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -105,6 +106,7 @@ export type BuildAppOptions = Readonly<{
   adminMaintenanceIntervalMs?: number;
   persistenceRetryDelaysMs?: readonly number[];
   analyticsService?: AnalyticsService;
+  exportDataSource?: ExportDataSource;
   analyticsRefreshIntervalMs?: number;
 }>;
 
@@ -220,6 +222,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   const adminResolver = (request: IncomingMessage) => ({ clientKey: options.adminClientKeyResolver?.(request) ?? request.socket.remoteAddress ?? "unknown", ...(options.adminClientAddressResolver ? { ip: options.adminClientAddressResolver(request) } : (request.socket.remoteAddress ? { ip: request.socket.remoteAddress } : {})) });
   if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth, adminResolver);
   if (options.adminAuth && options.analyticsService) registerAnalyticsRoutes(app, options.adminAuth, options.analyticsService);
+  if (options.adminAuth && options.exportDataSource) registerExportRoutes(app, options.adminAuth, options.exportDataSource);
   if (options.adminAuth && options.matchRepository) app.post("/api/admin/records/matches/:id/retry", async (request, reply) => {
     const current = await authenticateAdminMutation(request, reply, options.adminAuth!, adminResolver); if (!current) return;
     const id = (request.params as { id?: unknown }).id;

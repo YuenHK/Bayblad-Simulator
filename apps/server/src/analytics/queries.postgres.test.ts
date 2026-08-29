@@ -7,6 +7,9 @@ import { parameterPerformance } from "./parameters";
 import { parameterUsage } from "./parameter-usage";
 import { usageAnalytics } from "./usage";
 import { AnalyticsService, canonicalFilterHash, FILTER_APPLICABILITY, PostgresAnalyticsCache } from "./service";
+import { PostgresExportDataSource } from "../exports/postgres-source";
+import { buildWorkbookBuffer } from "../exports/workbook";
+import ExcelJS from "exceljs";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const schemaName = `analytics_${randomUUID().replaceAll("-", "")}`;
@@ -71,6 +74,11 @@ it.skipIf(!databaseUrl)("filters by immutable event-time class snapshots",async(
   const rows=await parameterPerformance(client.db,{from:"2026-08-01",to:"2026-09-30",className:"1A"});
   expect(rows.length).toBeGreaterThanOrEqual(10); expect(rows.every(row=>row.averageScore===2)).toBe(true);
   expect(await parameterPerformance(client.db,{from:"2026-08-01",to:"2026-09-30",className:"2B"})).toHaveLength(0);
+},30_000);
+
+it.skipIf(!databaseUrl)("exports a reopenable typed snapshot and requires class and status on the same participant",async()=>{
+  const source=new PostgresExportDataSource(client);const empty=await buildWorkbookBuffer(source,{from:"2026-08-01",to:"2026-08-31",className:"1A",identityStatus:"guest"}),emptyBook=new ExcelJS.Workbook();await emptyBook.xlsx.load(empty as never);expect(emptyBook.getWorksheet("對戰紀錄")!.rowCount).toBe(8);
+  const bytes=await buildWorkbookBuffer(source,{from:"2026-08-01",to:"2026-08-31",className:"1A",identityStatus:"iclass"}),book=new ExcelJS.Workbook();await book.xlsx.load(bytes as never);const matches=book.getWorksheet("對戰紀錄")!,rounds=book.getWorksheet("逐輪結果")!;expect(matches.rowCount).toBe(13);expect(matches.getCell("F9").value).toBe("player1");expect(typeof matches.getCell("G9").value).toBe("number");expect(rounds.getCell("E2").value).toBe("player1");expect(rounds.getCell("F2").value).toBe(1);
 },30_000);
 
 it.skipIf(!databaseUrl)("applies physics filters only through eligible completed-match designs",async()=>{
