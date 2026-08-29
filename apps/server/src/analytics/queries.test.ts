@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { analyticsFiltersSchema, hongKongDateBounds, normalizeUsageRows } from "./usage";
-import { normalizeParameterRows } from "./parameters";
+import { normalizeParameterRows, opponentStrength, OPPONENT_STRENGTH_METRIC } from "./parameters";
 import { AnalyticsService, canonicalFilterHash, type AnalyticsCache } from "./service";
 import Fastify from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import { AdminAuthService, InMemoryAdminStore, registerAdminAuthRoutes } from "../auth/admin-auth";
 import { registerAnalyticsRoutes } from "./routes";
+import { normalizeParameterUsage } from "./parameter-usage";
 
 describe("analytics query contracts", () => {
   it("uses Hong Kong midnight while preserving UTC boundaries", () => {
@@ -19,6 +20,8 @@ describe("analytics query contracts", () => {
     expect(() => analyticsFiltersSchema.parse({ from: "2026-09-02", to: "2026-09-01" })).toThrow();
     expect(() => analyticsFiltersSchema.parse({ from: "2020-01-01", to: "2026-09-01" })).toThrow();
     expect(() => analyticsFiltersSchema.parse({ from: "2026-09-01", to: "2026-09-01", secret: true })).toThrow();
+    for (const invalid of ["2026-02-29", "2026-04-31", "2026-13-01", "2026-00-10"]) expect(() => analyticsFiltersSchema.parse({ from: invalid, to: "2026-09-01" })).toThrow();
+    expect(analyticsFiltersSchema.parse({ from: "2028-02-29", to: "2028-02-29" })).toMatchObject({ from: "2028-02-29" });
   });
 
   it("normalizes usage counters and shape proportions without leaking identity fields", () => {
@@ -30,8 +33,8 @@ describe("analytics query contracts", () => {
 
   it("drops parameter groups below ten completed matches and maps launch distribution", () => {
     const result = normalizeParameterRows([
-      { position: "top", shape: "star", points: 8, diameterMm: "70", cornerRoundness: "0.2", screwCount: 6, metalDiscDiameterMm: "30", sampleSize: "10", averageScore: "1.75", winRate: "0.6", opponentAverageStrength: "1.4", perfectCount: "7", greatCount: "6", goodCount: "5", missCount: "2" },
-      { position: "top", shape: "circle", points: 16, diameterMm: "60", cornerRoundness: "1", screwCount: 4, metalDiscDiameterMm: "0", sampleSize: "9", averageScore: "2", winRate: "1", opponentAverageStrength: "1", perfectCount: "9", greatCount: "0", goodCount: "0", missCount: "0" },
+      { position: "top", shape: "star", points: 8, diameterMm: "70", cornerRoundness: "0.2", screwCount: 6, metalDiscDiameterMm: "30", performanceModelVersion: "perf-1", physicsModelVersion: "physics-1", sampleSize: "10", participantObservations: "12", averageScore: "1.75", winRate: "0.6", opponentAverageStrength: "64", perfectCount: "7", greatCount: "6", goodCount: "5", missCount: "2" },
+      { position: "top", shape: "circle", points: 16, diameterMm: "60", cornerRoundness: "1", screwCount: 4, metalDiscDiameterMm: "0", performanceModelVersion: "perf-1", physicsModelVersion: "physics-1", sampleSize: "9", participantObservations: "9", averageScore: "2", winRate: "1", opponentAverageStrength: "60", perfectCount: "9", greatCount: "0", goodCount: "0", missCount: "0" },
     ]);
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ sampleSize: 10, averageScore: 1.75, winRate: 0.6, launchGrades: { Perfect: 7, Great: 6, Good: 5, Miss: 2 } });
@@ -39,10 +42,26 @@ describe("analytics query contracts", () => {
   });
 });
 
+it("returns explicit whole-design parameter usage dimensions without PII", () => {
+  const rows = normalizeParameterUsage([{ dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: "3", total: "4", performanceModelVersion: "perf-1" }]);
+  expect(rows).toEqual([{ dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: 3, proportion: .75, performanceModelVersion: "perf-1" }]);
+  expect(JSON.stringify(rows)).not.toMatch(/student|className|device/iu);
+});
+it("defines opponent strength from the authoritative design prediction rather than match score",()=>{
+  expect(opponentStrength({stability:80,impactResistance:60,spinDuration:40,speed:20})).toBe(60);
+  expect(OPPONENT_STRENGTH_METRIC).toMatchObject({unit:"performance-index-0-100",version:"1"});
+});
+
 describe("analytics summary cache", () => {
   it("uses a stable hash independent of optional property insertion order", () => {
     expect(canonicalFilterHash({ from: "2026-08-01", to: "2026-08-31", className: "1A", identityStatus: "iclass" }))
       .toBe(canonicalFilterHash({ identityStatus: "iclass", className: "1A", to: "2026-08-31", from: "2026-08-01" }));
+  });
+  it("pages parameter groups with a stable bounded offset",async()=>{
+    const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};
+    const service=new AnalyticsService(cache,async()=>[],async(_filters,page)=>Array.from({length:page?.limit??0},(_,index)=>(page?.offset??0)+index));
+    await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2,4)).resolves.toEqual({rows:[4,5],nextOffset:6});
+    await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-02"},101,0)).rejects.toThrow("INVALID_ANALYTICS_PAGE");
   });
 
   it("coalesces refreshes and returns a fresh cached summary", async () => {
@@ -69,5 +88,6 @@ it("exposes analytics only through an authenticated teacher read endpoint", asyn
   const response = await app.inject({ method: "GET", url: query, headers: adminHeaders });
   expect(response.statusCode).toBe(200); expect(response.headers["cache-control"]).toBe("private, no-store"); expect(response.body).not.toContain("studentName");
   expect((await app.inject({ method: "GET", url: "/api/admin/analytics?from=2026-09-01&to=2026-08-01", headers: adminHeaders })).statusCode).toBe(400);
+  expect((await app.inject({ method: "GET", url: "/api/admin/analytics?from=2026-02-30&to=2026-03-01", headers: adminHeaders })).statusCode).toBe(400);
   await app.close();
 });

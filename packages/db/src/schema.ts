@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  date,
   check,
   index,
   inet,
@@ -237,6 +238,35 @@ export const webClipTokenNonces = pgTable(
   ],
 );
 
+export const deviceActivityDays = pgTable("device_activity_days", {
+  activityDate: date("activity_date").notNull(),
+  anonymousDeviceId: uuid("anonymous_device_id").notNull(),
+  identityId: uuid("identity_id").references(() => identities.id, { onDelete: "set null" }),
+  identityStatusSnapshot: identityStatusEnum("identity_status_snapshot").notNull(),
+  classNameSnapshot: varchar("class_name_snapshot", { length: 30 }),
+  firstActivityAt: timestamp("first_activity_at", { withTimezone: true }).notNull(),
+  lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.activityDate, table.anonymousDeviceId] }),
+  index("device_activity_days_identity_date_idx").on(table.identityId, table.activityDate),
+  index("device_activity_days_filters_idx").on(table.activityDate, table.classNameSnapshot, table.identityStatusSnapshot),
+  check("device_activity_days_time_order", sql`${table.lastActivityAt} >= ${table.firstActivityAt}`),
+]);
+
+export const analyticsDailySummaries = pgTable("analytics_daily_summaries", {
+  summaryDate: date("summary_date").notNull(), filterHash: text("filter_hash").notNull(),
+  filtersJson: jsonb("filters_json").$type<Readonly<Record<string, unknown>>>().notNull(),
+  usageJson: jsonb("usage_json").$type<readonly unknown[]>().notNull(),
+  usagePeriodsJson: jsonb("usage_periods_json").$type<Readonly<Record<string, unknown>>>().notNull(),
+  parameterUsageJson: jsonb("parameter_usage_json").$type<readonly unknown[]>().notNull(),
+  parametersJson: jsonb("parameters_json").$type<readonly unknown[]>().notNull(),
+  refreshedAt: timestamp("refreshed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.summaryDate, table.filterHash] }), index("analytics_daily_summaries_refreshed_idx").on(table.refreshedAt),
+  check("analytics_daily_summaries_hash_format", sql`${table.filterHash} ~ '^[a-f0-9]{64}$'`),
+  check("analytics_daily_summaries_json_shape", sql`jsonb_typeof(${table.filtersJson})='object' and jsonb_typeof(${table.usageJson})='array' and jsonb_typeof(${table.usagePeriodsJson})='object' and jsonb_typeof(${table.parameterUsageJson})='array' and jsonb_typeof(${table.parametersJson})='array'`),
+]);
+
 export const designs = pgTable(
   "designs",
   {
@@ -455,6 +485,15 @@ export const designLayers = pgTable(
   ],
 );
 
+export const designEventSnapshots = pgTable("design_event_snapshots", {
+  designId: uuid("design_id").primaryKey().references(() => designs.id, { onDelete: "cascade" }),
+  ownerIdentityIdAtCreation: uuid("owner_identity_id_at_creation"),
+  canonicalIdentityIdAtCreation: uuid("canonical_identity_id_at_creation"),
+  identityStatusSnapshot: identityStatusEnum("identity_status_snapshot"),
+  classNameSnapshot: varchar("class_name_snapshot", { length: 30 }),
+  capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+}, (table) => [index("design_event_snapshots_filters_idx").on(table.capturedAt, table.classNameSnapshot, table.identityStatusSnapshot)]);
+
 export const rooms = pgTable(
   "rooms",
   {
@@ -534,6 +573,12 @@ export const roomParticipants = pgTable(
     ),
   ],
 );
+
+export const roomEventSnapshots = pgTable("room_event_snapshots", {
+  roomId: uuid("room_id").primaryKey().references(() => rooms.id, { onDelete: "cascade" }), ownerIdentityIdAtCreation: uuid("owner_identity_id_at_creation"),
+  canonicalIdentityIdAtCreation: uuid("canonical_identity_id_at_creation"), identityStatusSnapshot: identityStatusEnum("identity_status_snapshot"),
+  classNameSnapshot: varchar("class_name_snapshot", { length: 30 }), capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+}, (table) => [index("room_event_snapshots_filters_idx").on(table.capturedAt, table.classNameSnapshot, table.identityStatusSnapshot)]);
 
 export const roomProjectionJobs = pgTable(
   "room_projection_jobs",
@@ -806,6 +851,21 @@ export const rounds = pgTable(
   ],
 );
 
+export const matchParticipantSnapshots = pgTable("match_participant_snapshots", {
+  matchId: uuid("match_id").notNull().references(() => matches.id, { onDelete: "cascade" }),
+  slot: playerSlotEnum("slot").notNull(),
+  identityIdAtStart: uuid("identity_id_at_start"),
+  canonicalIdentityIdAtStart: uuid("canonical_identity_id_at_start"),
+  identityStatusSnapshot: identityStatusEnum("identity_status_snapshot"),
+  classNameSnapshot: varchar("class_name_snapshot", { length: 30 }),
+  designId: uuid("design_id").notNull().references(() => designs.id, { onDelete: "restrict" }),
+  capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.matchId, table.slot] }),
+  index("match_participant_snapshots_filters_idx").on(table.capturedAt, table.classNameSnapshot, table.identityStatusSnapshot),
+  index("match_participant_snapshots_canonical_idx").on(table.canonicalIdentityIdAtStart, table.capturedAt),
+]);
+
 /** Durable authority for deterministic physics before a completed match exists. */
 export const battleResults = pgTable(
   "battle_results",
@@ -1022,6 +1082,7 @@ export const identitiesRelations = relations(identities, ({ one, many }) => ({
   sourceLinks: many(identityLinks, { relationName: "identityLinkSource" }),
   targetLinks: many(identityLinks, { relationName: "identityLinkTarget" }),
   sessions: many(identitySessions, { relationName: "identitySessions" }),
+  deviceActivityDays: many(deviceActivityDays),
   designs: many(designs, { relationName: "ownedDesigns" }),
   ownedRooms: many(rooms, { relationName: "ownedRooms" }),
   roomParticipations: many(roomParticipants, {
@@ -1059,6 +1120,7 @@ export const designsRelations = relations(designs, ({ one, many }) => ({
     relationName: "ownedDesigns",
   }),
   layers: many(designLayers, { relationName: "designLayers" }),
+  eventSnapshot: one(designEventSnapshots),
   player1Matches: many(matches, { relationName: "matchPlayer1Design" }),
   player2Matches: many(matches, { relationName: "matchPlayer2Design" }),
 }));
@@ -1070,6 +1132,8 @@ export const designLayersRelations = relations(designLayers, ({ one }) => ({
     relationName: "designLayers",
   }),
 }));
+export const designEventSnapshotsRelations = relations(designEventSnapshots, ({ one }) => ({ design: one(designs, { fields: [designEventSnapshots.designId], references: [designs.id] }) }));
+export const deviceActivityDaysRelations = relations(deviceActivityDays, ({ one }) => ({ identity: one(identities, { fields: [deviceActivityDays.identityId], references: [identities.id] }) }));
 
 export const roomsRelations = relations(rooms, ({ one, many }) => ({
   ownerIdentity: one(identities, {
@@ -1079,6 +1143,7 @@ export const roomsRelations = relations(rooms, ({ one, many }) => ({
   }),
   participants: many(roomParticipants, { relationName: "roomParticipants" }),
   matches: many(matches, { relationName: "roomMatches" }),
+  eventSnapshot: one(roomEventSnapshots),
 }));
 
 export const roomParticipantsRelations = relations(
@@ -1096,6 +1161,7 @@ export const roomParticipantsRelations = relations(
     }),
   }),
 );
+export const roomEventSnapshotsRelations = relations(roomEventSnapshots, ({ one }) => ({ room: one(rooms, { fields: [roomEventSnapshots.roomId], references: [rooms.id] }) }));
 
 export const matchesRelations = relations(matches, ({ one, many }) => ({
   room: one(rooms, {
@@ -1124,6 +1190,7 @@ export const matchesRelations = relations(matches, ({ one, many }) => ({
     relationName: "matchPlayer2Design",
   }),
   rounds: many(rounds, { relationName: "matchRounds" }),
+  participantSnapshots: many(matchParticipantSnapshots),
 }));
 
 export const roundsRelations = relations(rounds, ({ one }) => ({
@@ -1132,6 +1199,10 @@ export const roundsRelations = relations(rounds, ({ one }) => ({
     references: [matches.id],
     relationName: "matchRounds",
   }),
+}));
+export const matchParticipantSnapshotsRelations = relations(matchParticipantSnapshots, ({ one }) => ({
+  match: one(matches, { fields: [matchParticipantSnapshots.matchId], references: [matches.id] }),
+  design: one(designs, { fields: [matchParticipantSnapshots.designId], references: [designs.id] }),
 }));
 
 export const adminUsersRelations = relations(adminUsers, ({ many }) => ({

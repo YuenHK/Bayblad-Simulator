@@ -3,7 +3,11 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { z } from "zod";
 import * as schema from "@steam-top/db/schema";
 
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/u);
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).refine((value) => {
+  const [year, month, day] = value.split("-").map(Number);
+  const candidate = new Date(Date.UTC(year!, month! - 1, day));
+  return candidate.getUTCFullYear() === year && candidate.getUTCMonth() === month! - 1 && candidate.getUTCDate() === day;
+}, "invalid Gregorian date");
 const identityStatus = z.enum(["iclass", "cookie", "guest"]);
 
 export const analyticsFiltersSchema = z.object({
@@ -65,11 +69,16 @@ export function normalizeUsageRows(rows: readonly UsageSqlRow[]): readonly Usage
   return [...days.values()].sort((a, b) => a.date.localeCompare(b.date)).map((day) => Object.freeze({ ...day, shapes: Object.freeze(day.shapes.sort((a, b) => a.shape.localeCompare(b.shape)).map((shape) => Object.freeze(shape))) }));
 }
 
-function identityFilters(filters: AnalyticsFilters, alias: "i" | "owner" | "pi") {
+function activityFilters(filters: AnalyticsFilters) {
   const fragments: SQL[] = [];
-  const column = alias === "i" ? sql.raw("i") : alias === "owner" ? sql.raw("owner") : sql.raw("pi");
-  if (filters.className) fragments.push(sql`${column}.class_name = ${filters.className}`);
-  if (filters.identityStatus) fragments.push(sql`${column}.status = ${filters.identityStatus}`);
+  if (filters.className) fragments.push(sql`a.class_name_snapshot=${filters.className}`);
+  if (filters.identityStatus) fragments.push(sql`a.identity_status_snapshot=${filters.identityStatus}`);
+  return fragments.length ? sql`and ${sql.join(fragments, sql` and `)}` : sql``;
+}
+function eventSnapshotFilters(filters: AnalyticsFilters, alias: "ds" | "rs" | "ps") {
+  const prefix = sql.raw(alias); const fragments: SQL[] = [];
+  if (filters.className) fragments.push(sql`${prefix}.class_name_snapshot=${filters.className}`);
+  if (filters.identityStatus) fragments.push(sql`${prefix}.identity_status_snapshot=${filters.identityStatus}`);
   return fragments.length ? sql`and ${sql.join(fragments, sql` and `)}` : sql``;
 }
 
@@ -80,7 +89,7 @@ export async function usageAnalytics(db: PostgresJsDatabase<typeof schema>, inpu
   const designModel = filters.performanceModelVersion ? sql`and d.performance_model_version = ${filters.performanceModelVersion}` : sql``;
   const matchModels = sql`${filters.performanceModelVersion ? sql`and m.performance_model_version = ${filters.performanceModelVersion}` : sql``} ${filters.physicsModelVersion ? sql`and m.physics_model_version = ${filters.physicsModelVersion}` : sql``}`;
   const matchIdentity = filters.className || filters.identityStatus
-    ? sql`and exists (select 1 from identities pi where pi.id in (m.player1_identity_id,m.player2_identity_id) ${identityFilters(filters, "pi")})`
+    ? sql`and exists (select 1 from match_participant_snapshots ps where ps.match_id=m.id ${eventSnapshotFilters(filters, "ps")})`
     : sql``;
   const step = period === "day" ? "1 day" : period === "week" ? "1 week" : "1 month";
   const startBucket = period === "day" ? sql`${filters.from}::date` : sql`date_trunc(${period}, ${filters.from}::date)::date`;
@@ -89,23 +98,22 @@ export async function usageAnalytics(db: PostgresJsDatabase<typeof schema>, inpu
     with days as (
       select generate_series(${startBucket}, ${endBucket}, ${step}::interval)::date as local_date
     ), session_counts as (
-      select ${localBucket(sql`s.last_seen_at`, period)} local_date,
-             count(distinct i.anonymous_device_id)::bigint active_devices
-      from identity_sessions s join identities i on i.id=s.identity_id
-      where s.last_seen_at >= ${bounds.from}::timestamptz and s.last_seen_at < ${bounds.toExclusive}::timestamptz
-        ${identityFilters(filters, "i")}
+      select ${period === "day" ? sql`a.activity_date` : sql`date_trunc(${period},a.activity_date)::date`} local_date,
+             count(distinct a.anonymous_device_id)::bigint active_devices
+      from device_activity_days a
+      where a.activity_date >= ${filters.from}::date and a.activity_date <= ${filters.to}::date ${activityFilters(filters)}
       group by 1
     ), design_counts as (
       select ${localBucket(sql`d.created_at`, period)} local_date, count(*)::bigint design_count
-      from designs d left join identities owner on owner.id=d.owner_identity_id
+      from designs d left join design_event_snapshots ds on ds.design_id=d.id
       where d.created_at >= ${bounds.from}::timestamptz and d.created_at < ${bounds.toExclusive}::timestamptz
-        ${identityFilters(filters, "owner")} ${designModel}
+        ${eventSnapshotFilters(filters, "ds")} ${designModel}
       group by 1
     ), room_counts as (
       select ${localBucket(sql`r.created_at`, period)} local_date, count(*)::bigint room_count
-      from rooms r left join identities owner on owner.id=r.owner_identity_id
+      from rooms r left join room_event_snapshots rs on rs.room_id=r.id
       where r.created_at >= ${bounds.from}::timestamptz and r.created_at < ${bounds.toExclusive}::timestamptz
-        ${identityFilters(filters, "owner")}
+        ${eventSnapshotFilters(filters, "rs")}
       group by 1
     ), match_counts as (
       select ${localBucket(sql`m.completed_at`, period)} local_date, count(distinct m.id)::bigint completed_match_count
@@ -116,9 +124,9 @@ export async function usageAnalytics(db: PostgresJsDatabase<typeof schema>, inpu
       group by 1
     ), shape_counts as (
       select ${localBucket(sql`d.created_at`, period)} local_date, l.shape::text shape, count(*)::bigint shape_count
-      from designs d join design_layers l on l.design_id=d.id left join identities owner on owner.id=d.owner_identity_id
+      from designs d join design_layers l on l.design_id=d.id left join design_event_snapshots ds on ds.design_id=d.id
       where d.created_at >= ${bounds.from}::timestamptz and d.created_at < ${bounds.toExclusive}::timestamptz
-        ${identityFilters(filters, "owner")} ${designModel}
+        ${eventSnapshotFilters(filters, "ds")} ${designModel}
       group by 1,2
     ), shapes as (
       select *, sum(shape_count) over(partition by local_date)::bigint total_shape_count from shape_counts

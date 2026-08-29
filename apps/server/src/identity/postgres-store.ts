@@ -1,7 +1,7 @@
 import { and, count, eq, gt, isNull, sql } from "drizzle-orm";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
-import { identities, identityLinks, identitySessions } from "@steam-top/db/schema";
+import { deviceActivityDays, identities, identityLinks, identitySessions } from "@steam-top/db/schema";
 import type { Identity, IdentitySession, IdentityStore, SessionDiagnostics, TrustedLiveIdentity } from "./resolver";
 import { IdentityCapacityError, SessionTokenUnavailableError } from "./resolver";
 
@@ -25,6 +25,15 @@ const mapSession = (session: typeof identitySessions.$inferSelect, identity: typ
   ...(session.userAgent ? { userAgent: session.userAgent } : {}),
 });
 const diagnosticColumns = (value: SessionDiagnostics) => ({ lastIp: value.ip ?? null, userAgent: value.userAgent ?? null });
+const hongKongDate = (value: Date): string => {
+  const parts = new Intl.DateTimeFormat("en", { timeZone: "Asia/Hong_Kong", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((candidate) => candidate.type === type)!.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+};
+async function recordActivity(tx: Tx, identity: typeof identities.$inferSelect, at: Date): Promise<void> {
+  await tx.insert(deviceActivityDays).values({ activityDate: hongKongDate(at), anonymousDeviceId: identity.anonymousDeviceId, identityId: identity.id, identityStatusSnapshot: identity.status, classNameSnapshot: identity.className, firstActivityAt: at, lastActivityAt: at })
+    .onConflictDoUpdate({ target: [deviceActivityDays.activityDate, deviceActivityDays.anonymousDeviceId], set: { lastActivityAt: sql`greatest(${deviceActivityDays.lastActivityAt}, excluded.last_activity_at)` } });
+}
 
 export class PostgresIdentityStore implements IdentityStore {
   readonly #db: Db;
@@ -62,6 +71,7 @@ export class PostgresIdentityStore implements IdentityStore {
       const [identity] = await tx.select().from(identities).where(eq(identities.id, updated.identityId)).limit(1);
       if (!identity) return null;
       await tx.update(identities).set({ lastSeenAt: now, updatedAt: now }).where(eq(identities.id, identity.id));
+      await recordActivity(tx, identity, now);
       return mapSession(updated, identity);
     });
   }
@@ -73,6 +83,7 @@ export class PostgresIdentityStore implements IdentityStore {
         await this.#assertSessionCapacity(tx, input.now);
         const [identity] = await tx.insert(identities).values({ status: "guest", displayName: input.displayName, createdAt: input.now, updatedAt: input.now, lastSeenAt: input.now }).returning();
         const [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
+        await recordActivity(tx, identity!, input.now);
         return mapSession(session!, identity!);
       });
     } catch (error) { if ((error as { code?: string }).code === "23505") throw new SessionTokenUnavailableError(); throw error; }
@@ -86,7 +97,7 @@ export class PostgresIdentityStore implements IdentityStore {
         [existing] = await tx.insert(identities).values({ status: "iclass", displayName: input.identity.displayName, studentName: input.identity.studentName, className: input.identity.className, studentNumber: input.identity.studentNumber, deviceName: input.identity.deviceName, iclassExternalId: input.identity.externalId, createdAt: input.now, updatedAt: input.now, lastSeenAt: input.now }).returning();
       }
       if (!existing) throw new Error("IDENTITY_UPSERT_FAILED");
-      const [identity] = await tx.update(identities).set({ displayName: input.identity.displayName, studentName: input.identity.studentName, className: input.identity.className, studentNumber: input.identity.studentNumber, deviceName: input.identity.deviceName ?? null, updatedAt: input.now, lastSeenAt: input.now }).where(eq(identities.id, existing.id)).returning();
+      let [identity] = await tx.update(identities).set({ displayName: input.identity.displayName, studentName: input.identity.studentName, className: input.identity.className, studentNumber: input.identity.studentNumber, deviceName: input.identity.deviceName ?? null, updatedAt: input.now, lastSeenAt: input.now }).where(eq(identities.id, existing.id)).returning();
       if (input.previousTokenHash) {
         const [previous] = await tx.select({ session: identitySessions, identity: identities }).from(identitySessions).innerJoin(identities, eq(identitySessions.identityId, identities.id))
           .where(and(eq(identitySessions.tokenHash, input.previousTokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, input.now))).limit(1);
@@ -94,12 +105,20 @@ export class PostgresIdentityStore implements IdentityStore {
         const revoked = await tx.update(identitySessions).set({ revokedAt: input.now, archivedAt: input.now }).where(and(eq(identitySessions.id, previous.session.id), isNull(identitySessions.revokedAt))).returning();
         if (revoked.length !== 1) throw new SessionTokenUnavailableError();
         if (previous.identity.status === "guest" && previous.identity.id !== identity!.id) {
+          const [guestRow] = await tx.select().from(identities).where(eq(identities.id, previous.identity.id)).limit(1);
+          if (guestRow) {
+            const oldLiveDevice = identity!.anonymousDeviceId;
+            await tx.update(identities).set({ anonymousDeviceId: randomUUID() }).where(eq(identities.id, guestRow.id));
+            [identity] = await tx.update(identities).set({ anonymousDeviceId: guestRow.anonymousDeviceId }).where(eq(identities.id, identity!.id)).returning();
+            await tx.update(identities).set({ anonymousDeviceId: oldLiveDevice }).where(eq(identities.id, guestRow.id));
+          }
           await tx.update(identities).set({ mergedIntoIdentityId: identity!.id, mergedAt: input.now, updatedAt: input.now }).where(eq(identities.id, previous.identity.id));
           await tx.insert(identityLinks).values({ sourceIdentityId: previous.identity.id, targetIdentityId: identity!.id, reason: "verified_cookie_and_iclass", verificationFingerprint: createHash("sha256").update(`${input.identity.externalId}:${previous.identity.id}:${identity!.id}`).digest("hex"), linkedAt: input.now }).onConflictDoNothing();
         }
       }
       await this.#assertSessionCapacity(tx, input.now);
       const [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
+      await recordActivity(tx, identity!, input.now);
       return mapSession(session!, identity!);
     };
     try { return transaction ? await operation(transaction as Tx) : await this.#db.transaction(operation); } catch (error) {
