@@ -550,6 +550,19 @@ describe("handshake server events", () => {
 });
 
 describe("serverEventSchema", () => {
+  it("reports persistence progress without exposing match scores", () => {
+    const roomId = "room-1";
+    const matchId = "match-1";
+    for (const value of [
+      { type: "match.persistence", roomId, matchId, status: "saving", attempt: 1, protocolVersion: 1, serverEventId },
+      { type: "match.persistence_failed", roomId, matchId, failureCode: "MATCH_SAVE_FAILED", retryable: true, protocolVersion: 1, serverEventId },
+    ]) {
+      const parsed = serverEventSchema.parse(value);
+      expect(parsed).not.toHaveProperty("player1");
+      expect(parsed).not.toHaveProperty("player2");
+      expect(parsed).not.toHaveProperty("roundWinners");
+    }
+  });
   it("接受 strict clock.pong 與 authoritative room.departed", () => {
     expect(serverEventSchema.safeParse({
       type: "clock.pong", pingId: "ping-1", clientSentAtMs: 1_000,

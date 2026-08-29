@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildApp, type BattleEnginePort } from "../app";
 import { IdentityResolver, InMemoryIdentityStore } from "./resolver";
 import { PostgresIdentityStore } from "./postgres-store";
+import { PostgresDesignRepository } from "../records/design-repository";
+import { PostgresMatchRepository } from "../records/match-repository";
+import { PostgresRoomRecordRepository } from "../records/room-repository";
+import { PostgresBattleResultRepository } from "../records/battle-result-repository";
 import { AdminAuthService } from "../auth/admin-auth";
 import { PostgresAdminStore } from "../auth/postgres-admin-store";
 import { hashIdentityToken } from "./cookie";
@@ -157,7 +161,8 @@ describe("identity routes", () => {
     try {
       const durable = new PostgresIdentityStore(null as never);
       const adminAuth = new AdminAuthService(new PostgresAdminStore(null as never), { allowedOrigins: ["https://school.example"], csrfSecret: Buffer.alloc(32, 1), logError: () => undefined });
-      const app = buildApp({ battleEngine, allowedOrigins: ["https://school.example"], identityResolver: new IdentityResolver(durable), adminAuth, iClassStatus: "disabled", sweepIntervalMs: 0 });
+      const db = null as never;
+      const app = buildApp({ battleEngine, resultRepository: new PostgresBattleResultRepository(db), designRepository: new PostgresDesignRepository(db), matchRepository: new PostgresMatchRepository(db), roomRecordRepository: new PostgresRoomRecordRepository(db), allowedOrigins: ["https://school.example"], identityResolver: new IdentityResolver(durable), adminAuth, iClassStatus: "disabled", sweepIntervalMs: 0 });
       apps.push(app);
       expect(app).toBeDefined();
     } finally { process.env.NODE_ENV = previous; }

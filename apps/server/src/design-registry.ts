@@ -94,6 +94,24 @@ export class DesignRegistry {
     return clone(stored);
   }
 
+  /** Bounded read-through cache entry for a design already authorised by durable storage. */
+  hydrate(ownerSessionId: string, persisted: Readonly<{ designId: string; design: TopDesign; massG: number; performance: PerformancePrediction }>): StoredDesign {
+    const parsed = strictDesignSchema.safeParse(persisted.design);
+    if (!parsed.success || !validateDesign(parsed.data).valid) throw new DesignRegistryError("DESIGN_INVALID");
+    const existing = this.#designs.get(persisted.designId);
+    if (existing && existing.value.ownerSessionId !== ownerSessionId) throw new DesignRegistryError("DESIGN_NOT_OWNED");
+    if (!existing) this.#makeCapacity();
+    const stored: StoredDesign = {
+      designId: persisted.designId,
+      ownerSessionId,
+      design: structuredClone(parsed.data),
+      massG: persisted.massG,
+      performance: structuredClone(persisted.performance),
+    };
+    this.#designs.set(stored.designId, { value: structuredClone(stored), lastUsedAt: this.#readNow(), pins: existing?.pins ?? 0 });
+    return clone(stored);
+  }
+
   assertCanRegister(ownerSessionId: string): void {
     this.#prune();
     const owned = [...this.#designs.values()].filter(({ value }) => value.ownerSessionId === ownerSessionId).length;

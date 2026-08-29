@@ -290,6 +290,7 @@ type RoundState = {
   readonly players: readonly [LaunchParticipant, LaunchParticipant];
   readonly results: Map<string, LaunchResultPrivateEvent>;
   readonly pendingPrivateResults: Map<string, LaunchResultPrivateEvent>;
+  readonly diagnostics: Map<string, Readonly<{ tapReceivedAtMs: number | null; tapOffsetMs: number | null }>>;
   pendingSpectatorResult: LaunchResultSpectatorEvent | null;
   spectatorResult: LaunchResultSpectatorEvent | null;
   closed: boolean;
@@ -445,6 +446,7 @@ export class LaunchCoordinator {
       players,
       results: new Map(),
       pendingPrivateResults: new Map(),
+      diagnostics: new Map(),
       pendingSpectatorResult: null,
       spectatorResult: null,
       closed: false,
@@ -502,6 +504,7 @@ export class LaunchCoordinator {
     this.#commitServerEventIds(stagedServerEventIds, expiresAt);
     this.#addActiveServerEventIds(stagedServerEventIds);
     state.results.set(participantId, privateEvent);
+    state.diagnostics.set(participantId, { tapReceivedAtMs: received, tapOffsetMs: received - state.schedule.serverTargetTimeMs });
     state.pendingPrivateResults.set(participantId, privateEvent);
     this.#events.set(tapEvent.eventId, {
       participantId,
@@ -556,6 +559,7 @@ export class LaunchCoordinator {
     for (const { state, generated, spectatorEvent } of plans) {
       for (const event of generated) {
         state.results.set(event.participantId, event);
+        state.diagnostics.set(event.participantId, { tapReceivedAtMs: null, tapOffsetMs: null });
         state.pendingPrivateResults.set(event.participantId, event);
       }
       this.#closeRound(state, spectatorEvent);
@@ -596,6 +600,11 @@ export class LaunchCoordinator {
     const event = cloneSpectator(state.pendingSpectatorResult);
     state.pendingSpectatorResult = null;
     return event ?? undefined;
+  }
+
+  launchDiagnostic(roomId: string, roundId: string, participantId: string): Readonly<{ tapReceivedAtMs: number | null; tapOffsetMs: number | null }> | undefined {
+    const value = this.#rounds.get(roundKey(roomId, roundId))?.diagnostics.get(participantId);
+    return value ? { ...value } : undefined;
   }
 
   cleanupRound(roomId: string, roundId: string): boolean {

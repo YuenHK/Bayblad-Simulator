@@ -72,6 +72,7 @@ export type PublicRoom = Readonly<{
 }>;
 
 export type RoomView = PublicRoom;
+export type RoomCheckpoint = Readonly<{ roomId: string; room: Room | null; roomIdsByCode: Map<string, string>; lobbyRevision: number }>;
 
 type Participant = {
   readonly internalUserId: string;
@@ -139,6 +140,15 @@ const defaultDependencies: RoomServiceDependencies = {
 export class RoomService {
   readonly #dependencies: RoomServiceDependencies;
   #rooms = new Map<string, Room>();
+
+  checkpoint(roomId: string): RoomCheckpoint {
+    return { roomId, room: this.#rooms.has(roomId) ? this.#copyRoom(this.#rooms.get(roomId)!) : null, roomIdsByCode: new Map(this.#roomIdsByCode), lobbyRevision: this.#lobbyRevision };
+  }
+
+  restore(checkpoint: RoomCheckpoint): void {
+    if (checkpoint.room) this.#rooms.set(checkpoint.roomId, this.#copyRoom(checkpoint.room)); else this.#rooms.delete(checkpoint.roomId);
+    this.#roomIdsByCode = new Map(checkpoint.roomIdsByCode); this.#lobbyRevision = checkpoint.lobbyRevision;
+  }
   #roomIdsByCode = new Map<string, string>();
   #lobbyRevision = 0;
 

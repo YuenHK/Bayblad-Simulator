@@ -1,4 +1,21 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";--> statement-breakpoint
+CREATE TABLE "battle_results" (
+	"authority_key_hash" text PRIMARY KEY NOT NULL,
+	"correlation_key" varchar(264) NOT NULL,
+	"input_fingerprint" text NOT NULL,
+	"result_json" jsonb,
+	"result_bytes" integer,
+	"claim_owner" uuid,
+	"lease_expires_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"completed_at" timestamp with time zone,
+	CONSTRAINT "battle_results_authority_hash_format" CHECK ("battle_results"."authority_key_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "battle_results_input_hash_format" CHECK ("battle_results"."input_fingerprint" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "battle_results_size" CHECK ("battle_results"."result_bytes" is null or "battle_results"."result_bytes" between 1 and 2097152),
+	CONSTRAINT "battle_results_state" CHECK (("battle_results"."result_json" is null and "battle_results"."completed_at" is null and "battle_results"."claim_owner" is not null and "battle_results"."lease_expires_at" is not null) or ("battle_results"."result_json" is not null and "battle_results"."result_bytes" is not null and "battle_results"."completed_at" is not null and "battle_results"."claim_owner" is null and "battle_results"."lease_expires_at" is null))
+);--> statement-breakpoint
+CREATE UNIQUE INDEX "battle_results_correlation_key_uidx" ON "battle_results" USING btree ("correlation_key");--> statement-breakpoint
+CREATE INDEX "battle_results_lease_idx" ON "battle_results" USING btree ("lease_expires_at");--> statement-breakpoint
 CREATE TYPE "public"."admin_login_scope" AS ENUM('account', 'client', 'global');--> statement-breakpoint
 CREATE TYPE "public"."audit_outcome" AS ENUM('success', 'failure', 'denied');--> statement-breakpoint
 CREATE TYPE "public"."battle_outcome" AS ENUM('player1', 'player2', 'draw');--> statement-breakpoint
@@ -367,7 +384,7 @@ CREATE UNIQUE INDEX "design_layers_design_order_uidx" ON "design_layers" USING b
 CREATE UNIQUE INDEX "design_layers_design_position_uidx" ON "design_layers" USING btree ("design_id","position");--> statement-breakpoint
 CREATE UNIQUE INDEX "design_layers_design_source_id_uidx" ON "design_layers" USING btree ("design_id","source_layer_id");--> statement-breakpoint
 CREATE INDEX "design_layers_parameter_analytics_idx" ON "design_layers" USING btree ("shape","points","diameter_mm","corner_roundness");--> statement-breakpoint
-CREATE UNIQUE INDEX "designs_logical_version_uidx" ON "designs" USING btree ("logical_design_id","version");--> statement-breakpoint
+CREATE UNIQUE INDEX "designs_logical_version_uidx" ON "designs" USING btree ("owner_identity_id","logical_design_id","version") WHERE "owner_identity_id" is not null;--> statement-breakpoint
 CREATE INDEX "designs_owner_created_at_idx" ON "designs" USING btree ("owner_identity_id","created_at");--> statement-breakpoint
 CREATE INDEX "designs_performance_model_idx" ON "designs" USING btree ("performance_model_version","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "identities_anonymous_device_id_uidx" ON "identities" USING btree ("anonymous_device_id");--> statement-breakpoint
@@ -574,3 +591,24 @@ CREATE FUNCTION admin_audit_append_only_guard() RETURNS trigger LANGUAGE plpgsql
 CREATE TRIGGER admin_audit_append_only BEFORE UPDATE OR DELETE ON admin_audit FOR EACH ROW EXECUTE FUNCTION admin_audit_append_only_guard();
 --> statement-breakpoint
 CREATE TRIGGER admin_audit_no_truncate BEFORE TRUNCATE ON admin_audit FOR EACH STATEMENT EXECUTE FUNCTION admin_audit_append_only_guard();
+--> statement-breakpoint
+CREATE TABLE "match_persistence_jobs" (
+	"match_id" uuid PRIMARY KEY NOT NULL,
+	"input_fingerprint" text NOT NULL,
+	"completion_payload" jsonb NOT NULL,
+	"status" varchar(16) DEFAULT 'pending' NOT NULL,
+	"attempt_count" integer DEFAULT 0 NOT NULL,
+	"next_retry_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_sanitized_code" varchar(128),
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"completed_at" timestamp with time zone,
+	CONSTRAINT "match_persistence_jobs_fingerprint_format" CHECK ("match_persistence_jobs"."input_fingerprint" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "match_persistence_jobs_status" CHECK ("match_persistence_jobs"."status" in ('pending','retrying','failed','completed')),
+	CONSTRAINT "match_persistence_jobs_attempts" CHECK ("match_persistence_jobs"."attempt_count" >= 0),
+	CONSTRAINT "match_persistence_jobs_completion" CHECK (("match_persistence_jobs"."status" = 'completed' and "match_persistence_jobs"."completed_at" is not null and "match_persistence_jobs"."last_sanitized_code" is null) or ("match_persistence_jobs"."status" <> 'completed' and "match_persistence_jobs"."completed_at" is null))
+);
+--> statement-breakpoint
+ALTER TABLE "match_persistence_jobs" ADD CONSTRAINT "match_persistence_jobs_match_id_matches_id_fk" FOREIGN KEY ("match_id") REFERENCES "public"."matches"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+CREATE INDEX "match_persistence_jobs_due_idx" ON "match_persistence_jobs" USING btree ("status","next_retry_at");

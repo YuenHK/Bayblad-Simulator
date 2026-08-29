@@ -16,8 +16,12 @@ import { createValidatedLiveIdentityProvider, IdentityAdmissionError, IdentityCa
 import { PostgresIdentityStore } from "./identity/postgres-store";
 import type { IClassAdapter } from "./identity/iclass-adapter";
 import type { WebClipTokenService } from "./identity/webclip-token";
-import { type AdminAuthService, registerAdminAuthRoutes } from "./auth/admin-auth";
+import { authenticateAdminMutation, type AdminAuthService, registerAdminAuthRoutes } from "./auth/admin-auth";
 import { PostgresAdminStore } from "./auth/postgres-admin-store";
+import { DesignPersistenceError, PostgresDesignRepository, type DesignRepository } from "./records/design-repository";
+import { PostgresMatchRepository, type MatchRepository } from "./records/match-repository";
+import { PostgresBattleResultRepository } from "./records/battle-result-repository";
+import { PostgresRoomRecordRepository, type RoomRecordRepository } from "./records/room-repository";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -30,6 +34,9 @@ export interface BattleEnginePort {
 export type BuildAppOptions = Readonly<{
   rooms?: RoomService;
   designs?: DesignRegistry;
+  designRepository?: DesignRepository;
+  matchRepository?: MatchRepository;
+  roomRecordRepository?: RoomRecordRepository;
   battleEngine?: BattleEnginePort;
   resultRepository?: ResultRepository;
   launch?: LaunchCoordinator;
@@ -89,6 +96,7 @@ export type BuildAppOptions = Readonly<{
   adminClientKeyResolver?: ClientKeyResolver;
   adminClientAddressResolver?: ClientKeyResolver;
   adminMaintenanceIntervalMs?: number;
+  persistenceRetryDelaysMs?: readonly number[];
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -130,6 +138,10 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (options.iClassStatus === "disabled" && (options.iClassAdapter || options.webClipTokens)) throw new TypeError("Disabled iClass composition cannot include adapters");
   if (options.iClassStatus && options.iClassStatus !== "disabled" && (!options.iClassAdapter || !options.webClipTokens)) throw new TypeError("Enabled iClass composition requires adapter and tokens");
   if (process.env.NODE_ENV === "production" && (!options.adminAuth || !(options.adminAuth.store instanceof PostgresAdminStore))) throw new TypeError("Production composition requires persistent admin authentication");
+  if (process.env.NODE_ENV === "production" && !(options.designRepository instanceof PostgresDesignRepository)) throw new TypeError("Production composition requires a persistent designRepository");
+  if (process.env.NODE_ENV === "production" && !(options.matchRepository instanceof PostgresMatchRepository)) throw new TypeError("Production composition requires a persistent matchRepository");
+  if (process.env.NODE_ENV === "production" && !(options.resultRepository instanceof PostgresBattleResultRepository)) throw new TypeError("Production composition requires a persistent resultRepository");
+  if (process.env.NODE_ENV === "production" && !(options.roomRecordRepository instanceof PostgresRoomRecordRepository)) throw new TypeError("Production composition requires a persistent roomRecordRepository");
   const config = {
     bodyLimit: requirePositive("bodyLimit", options.bodyLimit ?? 64 * 1_024),
     maxHttpBufferSize: requirePositive("maxHttpBufferSize", options.maxHttpBufferSize ?? 64 * 1_024),
@@ -176,13 +188,38 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new TypeError("clientKeyResolver returned an invalid key");
     return key;
   };
+  const diagnosticIp = (request: IncomingMessage): string | null => {
+    const candidate = options.identityIpResolver?.(request) ?? request.socket.remoteAddress;
+    if (!candidate) return null;
+    let normalized = candidate.trim();
+    if (normalized.startsWith("::ffff:") && isIP(normalized.slice(7)) === 4) normalized = normalized.slice(7);
+    return isIP(normalized) ? normalized : null;
+  };
   const app = Fastify({
     logger: process.env.NODE_ENV === "production",
     forceCloseConnections: true,
     bodyLimit: config.bodyLimit,
   });
   void app.register(fastifyCookie);
-  if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth, (request) => ({ clientKey: options.adminClientKeyResolver?.(request) ?? request.socket.remoteAddress ?? "unknown", ...(options.adminClientAddressResolver ? { ip: options.adminClientAddressResolver(request) } : (request.socket.remoteAddress ? { ip: request.socket.remoteAddress } : {})) }));
+  const adminResolver = (request: IncomingMessage) => ({ clientKey: options.adminClientKeyResolver?.(request) ?? request.socket.remoteAddress ?? "unknown", ...(options.adminClientAddressResolver ? { ip: options.adminClientAddressResolver(request) } : (request.socket.remoteAddress ? { ip: request.socket.remoteAddress } : {})) });
+  if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth, adminResolver);
+  if (options.adminAuth && options.matchRepository) app.post("/api/admin/records/matches/:id/retry", async (request, reply) => {
+    const current = await authenticateAdminMutation(request, reply, options.adminAuth!, adminResolver); if (!current) return;
+    const id = (request.params as { id?: unknown }).id;
+    if (typeof id !== "string" || !/^[0-9a-f-]{36}$/iu.test(id)) return reply.code(400).send({ error: "INVALID_MATCH_ID" });
+    try {
+      await options.matchRepository!.retryFailedMatch(id, { manual: true });
+      try { await options.adminAuth!.store.audit({ adminUserId: current.user.id, adminSessionId: current.session.id, action: "match.persistence.retry", outcome: "success", details: { matchId: id } }); }
+      catch (auditError) { options.adminAuth!.report("match.persistence.retry.audit_pending", auditError, request.id); }
+      return reply.code(204).send();
+    } catch (error) {
+      options.adminAuth!.report("match.persistence.retry", error, request.id);
+      try {
+        await options.adminAuth!.store.audit({ adminUserId: current.user.id, adminSessionId: current.session.id, action: "match.persistence.retry", outcome: "failure", details: { matchId: id, code: "MATCH_RETRY_FAILED" } });
+      } catch (auditError) { options.adminAuth!.report("match.persistence.retry.audit", auditError, request.id); }
+      return reply.code(409).send({ error: "MATCH_RETRY_FAILED" });
+    }
+  });
   const rooms = options.rooms ?? new RoomService(options.now ? { now: options.now } : {});
   const designs = options.designs ?? new DesignRegistry({
     ...(options.now ? { now: options.now } : {}),
@@ -219,17 +256,31 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   const authenticateIdentity = options.identityResolver
     ? async (request: IncomingMessage) => {
         const identity = await options.identityResolver!.authenticate(cookieFromRequest(request));
-        return identity ? { identityId: identity.id, displayName: identity.displayName } : null;
+        return identity ? { identityId: identity.id, displayName: identity.displayName, identitySource: identity.status, ...(identity.deviceName ? { deviceName: identity.deviceName } : {}) } : null;
       }
     : options.testIdentityResolver ?? (process.env.NODE_ENV === "test"
       ? async (_request: IncomingMessage, auth?: Record<string, unknown>) => {
           const displayName = typeof auth?.displayName === "string" ? auth.displayName : "";
-          return displayName ? { identityId: `test:${displayName}`, displayName } : null;
+          return displayName ? { identityId: `test:${displayName}`, displayName, identitySource: "guest" as const } : null;
         }
       : async () => null);
+  const retryWorkers = new Map<string, Promise<void>>();
+  const pumpRetryJobs = () => {
+    if (!options.matchRepository) return;
+    void options.matchRepository.listRetryable(new Date(), 25).then((jobs) => {
+      for (const job of jobs) {
+        if (retryWorkers.has(job.matchId)) continue;
+        const operation = options.matchRepository!.retryFailedMatch(job.matchId).then(() => undefined).catch((error) => options.logError?.(error)).finally(() => retryWorkers.delete(job.matchId));
+        retryWorkers.set(job.matchId, operation);
+      }
+    }).catch((error) => options.logError?.(error));
+  };
   const gateway = new RealtimeGateway(app.server, {
     rooms,
     designs,
+    ...(options.designRepository ? { designRepository: options.designRepository } : {}),
+    ...(options.matchRepository ? { matchRepository: options.matchRepository } : {}),
+    ...(options.roomRecordRepository ? { roomRecordRepository: options.roomRecordRepository } : {}),
     battleEngine,
     launch: options.launch ?? new LaunchCoordinator(options.now ? { now: options.now } : {}),
     ...(options.now ? { now: options.now } : {}),
@@ -257,6 +308,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     newSessionGlobalBurst: config.newSessionGlobalBurst,
     newSessionGlobalRefillPerSecond: config.newSessionGlobalRefillPerSecond,
     clientKeyResolver: safeClientKey,
+    diagnosticIpResolver: diagnosticIp,
     authenticateIdentity: options.testIdentityResolver ?? authenticateIdentity,
     maxRooms: config.maxRooms,
     maxOwnedRoomsPerSession: config.maxOwnedRoomsPerSession,
@@ -264,7 +316,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     terminalResultTtlMs: config.terminalResultTtlMs,
     maxTerminalResults: config.maxTerminalResults,
     lobbyDebounceMs: config.lobbyDebounceMs,
-    maintenance: () => { designLimiter.pruneExpired(); designClientLimiter.pruneExpired(); identityCreationLimiter.pruneExpired(); identityGlobalCreationLimiter.pruneExpired(); },
+    ...(options.persistenceRetryDelaysMs ? { persistenceRetryDelaysMs: options.persistenceRetryDelaysMs } : {}),
+    maintenance: () => { designLimiter.pruneExpired(); designClientLimiter.pruneExpired(); identityCreationLimiter.pruneExpired(); identityGlobalCreationLimiter.pruneExpired(); pumpRetryJobs(); },
     ...(options.logError ? { logError: options.logError } : {}),
   });
   app.decorate("realtimeGateway", gateway);
@@ -384,7 +437,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   } }, async (request, reply) => {
     const session = gateway.sessionForBearer(request.headers.authorization)!;
     try {
-      const stored = designs.register(session.id, request.body);
+      const stored = options.designRepository
+        ? designs.hydrate(session.id, await options.designRepository.saveBattleEligible(session.identityId, request.body))
+        : designs.register(session.id, request.body);
       return reply.code(201).send(designUploadResponseSchema.parse({
         designId: stored.designId,
         massG: stored.massG,
@@ -394,6 +449,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       if (error instanceof DesignRegistryError) {
         return reply.code(error.code === "DESIGN_QUOTA_EXCEEDED" ? 429 : 422).send({ error: error.code });
       }
+      if (error instanceof DesignPersistenceError) return reply.code(422).send({ error: error.code });
       throw error;
     }
   });
@@ -421,6 +477,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     if (nonceTimer) clearInterval(nonceTimer);
     if (adminMaintenanceTimer) clearInterval(adminMaintenanceTimer);
     await adminMaintenance;
+    await Promise.allSettled(retryWorkers.values());
     await gateway.close();
   });
   return app as unknown as BuiltApp;

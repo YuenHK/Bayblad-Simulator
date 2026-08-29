@@ -732,6 +732,24 @@ export const roomDepartedEventSchema = z.object({
   ...serverEnvelopeShape,
 }).strict();
 
+export const matchPersistenceEventSchema = z.object({
+  type: z.literal("match.persistence"),
+  roomId: correlationIdSchema,
+  matchId: correlationIdSchema,
+  status: z.enum(["saving", "retrying"]),
+  attempt: z.number().int().safe().positive(),
+  ...serverEnvelopeShape,
+}).strict();
+
+export const matchPersistenceFailedEventSchema = z.object({
+  type: z.literal("match.persistence_failed"),
+  roomId: correlationIdSchema,
+  matchId: correlationIdSchema,
+  failureCode: z.string().regex(/^[A-Z0-9_]{1,64}$/),
+  retryable: z.boolean(),
+  ...serverEnvelopeShape,
+}).strict();
+
 export const serverEventSchema = z.discriminatedUnion("type", [
   protocolWelcomeEventSchema,
   lobbySnapshotEventSchema,
@@ -749,6 +767,8 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   commandAckEventSchema,
   clockPongEventSchema,
   roomDepartedEventSchema,
+  matchPersistenceEventSchema,
+  matchPersistenceFailedEventSchema,
   errorEventSchema,
 ]);
 export type ServerEvent = z.infer<typeof serverEventSchema>;
@@ -769,6 +789,8 @@ export const playerServerEventSchema = z.discriminatedUnion("type", [
   commandAckEventSchema,
   clockPongEventSchema,
   roomDepartedEventSchema,
+  matchPersistenceEventSchema,
+  matchPersistenceFailedEventSchema,
   errorEventSchema,
 ]);
 export type PlayerServerEvent = z.infer<typeof playerServerEventSchema>;
@@ -789,6 +811,8 @@ export const spectatorServerEventSchema = z.discriminatedUnion("type", [
   commandAckEventSchema,
   clockPongEventSchema,
   roomDepartedEventSchema,
+  matchPersistenceEventSchema,
+  matchPersistenceFailedEventSchema,
   errorEventSchema,
 ]);
 export type SpectatorServerEvent = z.infer<typeof spectatorServerEventSchema>;
