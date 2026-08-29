@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "@steam-top/db";
 import { parameterPerformance } from "./parameters";
+import { parameterUsage } from "./parameter-usage";
 import { usageAnalytics } from "./usage";
-import { AnalyticsService, canonicalFilterHash, PostgresAnalyticsCache } from "./service";
+import { AnalyticsService, canonicalFilterHash, FILTER_APPLICABILITY, PostgresAnalyticsCache } from "./service";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const schemaName = `analytics_${randomUUID().replaceAll("-", "")}`;
@@ -30,7 +31,7 @@ beforeAll(async () => {
     ('2026-09-01',${secondDevice},${second},'guest',null,'2026-08-31T16:15:00Z','2026-08-31T16:15:00Z')`;
   const addDesign = async (id: string, owner: string, shape: string, at: string) => {
     await client.sql.unsafe(`insert into designs(id,logical_design_id,owner_identity_id,version,schema_version,name,screw_count,screw_radius_mm,screw_rotation_deg,metal_disc_diameter_mm,total_mass_g,polar_moment_gmm2,center_of_mass_x_mm,center_of_mass_y_mm,performance_speed,performance_spin_duration,performance_stability,performance_impact_resistance,performance_model_version,battle_eligible,validation_issues,created_at) values ($1,$1,$2,1,'1','fixture',6,12,0,30,40,12000,0,0,60,60,60,60,'perf-1',false,'[]',$3)`, [id, owner, at]);
-    for (let order=0; order<3; order++) await client.sql.unsafe(`insert into design_layers(design_id,source_layer_id,layer_order,position,shape,points,diameter_mm,corner_roundness,rotation_deg,color) values ($1,$2,$3,$4,$5,8,70,0.2,0,'#123456')`, [id, `${id}-${order}`, order, ["top","middle","bottom"][order]!, shape]);
+    for (let order=0; order<3; order++) await client.sql.unsafe(`insert into design_layers(design_id,source_layer_id,layer_order,position,shape,points,diameter_mm,actual_area_mm2,corner_roundness,rotation_deg,color) values ($1,$2,$3,$4,$5,8,70,$6,0.2,0,'#123456')`, [id, `${id}-${order}`, order, ["top","middle","bottom"][order]!, shape,shape==="circle"?3848.451:2450]);
     await client.sql`update designs set battle_eligible=true where id=${id}`;
     await client.sql`insert into design_event_snapshots(design_id,owner_identity_id_at_creation,canonical_identity_id_at_creation,identity_status_snapshot,class_name_snapshot,captured_at) select d.id,d.owner_identity_id,d.owner_identity_id,i.status,i.class_name,d.created_at from designs d left join identities i on i.id=d.owner_identity_id where d.id=${id}`;
   };
@@ -59,17 +60,29 @@ it.skipIf(!databaseUrl)("counts Hong Kong days, distinct devices and completed a
 
 it.skipIf(!databaseUrl)("returns only parameter groups backed by at least ten completed matches", async () => {
   const rows = await parameterPerformance(client.db, { from: "2026-08-01", to: "2026-09-30", performanceModelVersion: "perf-1", physicsModelVersion: "physics-1" });
-  expect(rows).toHaveLength(3); // both sides share one group at each of three positions
+  expect(rows.length).toBeGreaterThanOrEqual(20);
   expect(rows.every((row) => row.sampleSize === 10)).toBe(true);
-  expect(rows.every((row) => row.participantObservations === 20)).toBe(true);
-  expect(rows.find((row) => row.parameters.shape === "star")).toMatchObject({ averageScore: 1, winRate: .5, opponentAverageStrength: 60, launchGrades: { Perfect: 20, Good:20 } });
+  expect(rows.some(row=>row.dimension==="totalMassGBucket")).toBe(true); expect(rows.some(row=>row.dimension==="layerOrder")).toBe(true); expect(rows.some(row=>row.dimension==="layerCombination")).toBe(true);
+  expect(rows.find((row) => row.dimension === "totalMassGBucket"&&row.launchGrade==="Perfect")).toMatchObject({ averageScore: 2, winRate: 1, opponentAverageStrength: 60,participantObservations:20 });
 }, 30_000);
 
 it.skipIf(!databaseUrl)("filters by immutable event-time class snapshots",async()=>{
   await client.sql`update identities set class_name='2B' where id=${firstIdentityId}`;
   const rows=await parameterPerformance(client.db,{from:"2026-08-01",to:"2026-09-30",className:"1A"});
-  expect(rows).toHaveLength(3); expect(rows.every(row=>row.participantObservations===10&&row.averageScore===2)).toBe(true);
+  expect(rows.length).toBeGreaterThanOrEqual(10); expect(rows.every(row=>row.averageScore===2)).toBe(true);
   expect(await parameterPerformance(client.db,{from:"2026-08-01",to:"2026-09-30",className:"2B"})).toHaveLength(0);
+},30_000);
+
+it.skipIf(!databaseUrl)("applies physics filters only through eligible completed-match designs",async()=>{
+  const eligible=await parameterUsage(client.db,{from:"2026-08-01",to:"2026-09-30",physicsModelVersion:"physics-1"});
+  expect(eligible.length).toBeGreaterThan(0); expect(eligible.every(row=>row.scope==="completedMatchDesigns")).toBe(true);
+  expect(await parameterUsage(client.db,{from:"2026-08-01",to:"2026-09-30",physicsModelVersion:"physics-missing"})).toHaveLength(0);
+},30_000);
+
+it.skipIf(!databaseUrl)("keeps the completed-match analytics plan indexable at scale",async()=>{
+  await client.sql`set local enable_seqscan=off`;
+  const plan=await client.sql.unsafe(`explain (costs off) select id from matches where status='completed' and completed_at >= '2026-08-01T00:00:00Z' and completed_at < '2026-10-01T00:00:00Z'`);
+  expect(JSON.stringify(plan)).toMatch(/matches_(?:status_completed|completed_at)_idx/u);
 },30_000);
 
 it.skipIf(!databaseUrl)("persists and reuses a bounded materialized summary", async () => {
@@ -88,7 +101,7 @@ it.skipIf(!databaseUrl)("coordinates the same cache hash across service instance
 
 it.skipIf(!databaseUrl)("fences a stale cache writer",async()=>{
   const cache=new PostgresAnalyticsCache(client.sql),filters={from:"2026-07-01",to:"2026-07-02"} as const,hash=canonicalFilterHash(filters);
-  const common={filters,usage:[],usagePeriods:{daily:[],weekly:[],monthly:[]},parameterUsage:[],parameters:[]};
+  const common={filters,filterApplicability:FILTER_APPLICABILITY,usage:[],usagePeriods:{daily:[],weekly:[],monthly:[]},parameterUsage:[],parameters:[],rankings:{top:[],bottom:[],total:0,hasMore:false,snapshotCursor:"test"}};
   await cache.write(hash,{...common,refreshedAt:"2026-10-02T00:00:00.000Z"});
   await cache.write(hash,{...common,refreshedAt:"2026-10-01T00:00:00.000Z"});
   expect((await cache.read(hash,new Date("2020-01-01")))?.refreshedAt).toBe("2026-10-02T00:00:00.000Z");

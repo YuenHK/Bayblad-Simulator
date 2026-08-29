@@ -75,6 +75,9 @@ it.skipIf(!databaseUrl)("allows duplicate guest labels and atomically upgrades c
   expect(identityCount!.value).toBe(4);
   expect(linkCount!.value).toBe(1);
   expect(activeCount!.value).toBe(3);
+  const [upgradedIdentity]=await client.db.select().from(identities).where(eq(identities.id,upgraded[0]!.identity.id));
+  const [sameDay]=await client.db.select().from(deviceActivityDays).where(eq(deviceActivityDays.anonymousDeviceId,upgradedIdentity!.anonymousDeviceId));
+  expect(sameDay).toMatchObject({identityStatusSnapshot:"iclass",classNameSnapshot:"1A"});
 });
 
 it.skipIf(!databaseUrl)("never revives a token during a logout and lookup race", async () => {
@@ -94,6 +97,7 @@ it.skipIf(!databaseUrl)("never revives a token during a logout and lookup race",
 it.skipIf(!databaseUrl)("persists immutable Hong Kong device activity days instead of moving last-seen DAU", async()=>{
   const store=new PostgresIdentityStore(client.db); const first=new Date("2026-08-31T15:59:59Z"); const token="9".repeat(64);
   const session=await store.createGuestSession({tokenHash:token,displayName:"訪客-DAY",now:first,expiresAt:new Date("2027-01-01T00:00:00Z"),diagnostics:{}});
+  await store.recordActivity(token,new Date("2026-08-31T15:59:59.500Z"));
   await store.touchSession(token,new Date("2026-08-31T16:00:01Z"),{},new Date("2027-01-02T00:00:00Z"));
   const rows=await client.db.select().from(deviceActivityDays).where(eq(deviceActivityDays.identityId,session.identity.id));
   expect(rows.map(row=>row.activityDate).sort()).toEqual(["2026-08-31","2026-09-01"]);

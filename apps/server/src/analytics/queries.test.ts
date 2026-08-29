@@ -33,18 +33,18 @@ describe("analytics query contracts", () => {
 
   it("drops parameter groups below ten completed matches and maps launch distribution", () => {
     const result = normalizeParameterRows([
-      { position: "top", shape: "star", points: 8, diameterMm: "70", cornerRoundness: "0.2", screwCount: 6, metalDiscDiameterMm: "30", performanceModelVersion: "perf-1", physicsModelVersion: "physics-1", sampleSize: "10", participantObservations: "12", averageScore: "1.75", winRate: "0.6", opponentAverageStrength: "64", perfectCount: "7", greatCount: "6", goodCount: "5", missCount: "2" },
-      { position: "top", shape: "circle", points: 16, diameterMm: "60", cornerRoundness: "1", screwCount: 4, metalDiscDiameterMm: "0", performanceModelVersion: "perf-1", physicsModelVersion: "physics-1", sampleSize: "9", participantObservations: "9", averageScore: "2", winRate: "1", opponentAverageStrength: "60", perfectCount: "9", greatCount: "0", goodCount: "0", missCount: "0" },
+      { dimension:"totalMassGBucket",value:{fromG:40,toG:45},launchGrade:"Perfect",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"10",participantObservations:"12",averageScore:"1.75",winRate:"0.6",opponentAverageStrength:"64",opponentAdjustedScore:"1.11",totalGroups:"20" },
+      { dimension:"holes",value:{count:4},launchGrade:"Good",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"9",participantObservations:"9",averageScore:"2",winRate:"1",opponentAverageStrength:"60",opponentAdjustedScore:"1.4",totalGroups:"20" },
     ]);
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ sampleSize: 10, averageScore: 1.75, winRate: 0.6, launchGrades: { Perfect: 7, Great: 6, Good: 5, Miss: 2 } });
+    expect(result[0]).toMatchObject({ dimension:"totalMassGBucket",sampleSize: 10, averageScore: 1.75, winRate: 0.6, launchGrade:"Perfect",opponentStrengthBand:"medium" });
     expect(Object.keys(result[0] ?? {})).not.toContain("studentName");
   });
 });
 
 it("returns explicit whole-design parameter usage dimensions without PII", () => {
-  const rows = normalizeParameterUsage([{ dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: "3", total: "4", performanceModelVersion: "perf-1" }]);
-  expect(rows).toEqual([{ dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: 3, proportion: .75, performanceModelVersion: "perf-1" }]);
+  const rows = normalizeParameterUsage([{scope:"allEligibleDesigns", dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: "3", total: "4", performanceModelVersion: "perf-1" }]);
+  expect(rows).toEqual([{scope:"allEligibleDesigns", dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: 3, proportion: .75, performanceModelVersion: "perf-1" }]);
   expect(JSON.stringify(rows)).not.toMatch(/student|className|device/iu);
 });
 it("defines opponent strength from the authoritative design prediction rather than match score",()=>{
@@ -60,8 +60,13 @@ describe("analytics summary cache", () => {
   it("pages parameter groups with a stable bounded offset",async()=>{
     const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};
     const service=new AnalyticsService(cache,async()=>[],async(_filters,page)=>Array.from({length:page?.limit??0},(_,index)=>(page?.offset??0)+index));
-    await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2,4)).resolves.toEqual({rows:[4,5],nextOffset:6});
+    await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2,4)).resolves.toMatchObject({rows:[4,5],nextOffset:6,total:6,hasMore:true});
     await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-02"},101,0)).rejects.toThrow("INVALID_ANALYTICS_PAGE");
+  });
+  it("does not let a forced refresh join a less strict in-flight query",async()=>{
+    const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};let runs=0;
+    const service=new AnalyticsService(cache,async()=>{runs++;return[];},async()=>[]); const filters={from:"2026-08-01",to:"2026-08-02"} as const;
+    await Promise.all([service.query(filters,300_000),service.query(filters,0)]); expect(runs).toBe(6);
   });
 
   it("coalesces refreshes and returns a fresh cached summary", async () => {

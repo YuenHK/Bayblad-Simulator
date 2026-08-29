@@ -43,6 +43,17 @@ describe("authoritative persistence builders", () => {
     expect(rows.design).not.toHaveProperty("canonicalJson");
   });
 
+  it("stores canonical material area rather than a diameter envelope", () => {
+    const circle = buildDesignSnapshotRows({ snapshotId: "20000000-0000-4000-8000-000000000011", ownerIdentityId: null, version: 1, schemaVersion: "1", design });
+    const star = buildDesignSnapshotRows({
+      snapshotId: "20000000-0000-4000-8000-000000000012", ownerIdentityId: null, version: 1, schemaVersion: "1",
+      design: { ...design, layers: [{ ...design.layers[0], shape: "star", points: 6 }, design.layers[1], design.layers[2]] },
+    });
+    expect(circle.layers[0]!.diameterMm).toBe(star.layers[0]!.diameterMm);
+    expect(circle.layers[0]!.actualAreaMm2).toBeGreaterThan(star.layers[0]!.actualAreaMm2);
+    expect(circle.layers[0]!.actualAreaMm2).toBeCloseTo(Math.PI * 20 ** 2, -1);
+  });
+
   it("parses a completed score once and builds only a legal 2:0 or 2:1 row", () => {
     const input: Parameters<typeof buildCompletedMatchRow>[0] = {
       id: "30000000-0000-4000-8000-000000000001",

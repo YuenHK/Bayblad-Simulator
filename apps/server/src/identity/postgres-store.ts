@@ -31,8 +31,11 @@ const hongKongDate = (value: Date): string => {
   return `${part("year")}-${part("month")}-${part("day")}`;
 };
 async function recordActivity(tx: Tx, identity: typeof identities.$inferSelect, at: Date): Promise<void> {
+  // Policy: one physical device contributes once per HK civil day. If it becomes
+  // verified that day, the day's class/status follow the latest canonical identity;
+  // firstActivityAt remains immutable and lastActivityAt is throttled to five minutes.
   await tx.insert(deviceActivityDays).values({ activityDate: hongKongDate(at), anonymousDeviceId: identity.anonymousDeviceId, identityId: identity.id, identityStatusSnapshot: identity.status, classNameSnapshot: identity.className, firstActivityAt: at, lastActivityAt: at })
-    .onConflictDoUpdate({ target: [deviceActivityDays.activityDate, deviceActivityDays.anonymousDeviceId], set: { lastActivityAt: sql`greatest(${deviceActivityDays.lastActivityAt}, excluded.last_activity_at)` } });
+    .onConflictDoUpdate({ target: [deviceActivityDays.activityDate, deviceActivityDays.anonymousDeviceId], set: { identityId: identity.id, identityStatusSnapshot: identity.status, classNameSnapshot: identity.className, lastActivityAt: sql`greatest(${deviceActivityDays.lastActivityAt}, excluded.last_activity_at)` }, setWhere: sql`${deviceActivityDays.lastActivityAt} <= ${at} - interval '5 minutes' or ${deviceActivityDays.identityId} is distinct from ${identity.id} or ${deviceActivityDays.identityStatusSnapshot} is distinct from ${identity.status} or ${deviceActivityDays.classNameSnapshot} is distinct from ${identity.className}` });
 }
 
 export class PostgresIdentityStore implements IdentityStore {
@@ -61,6 +64,9 @@ export class PostgresIdentityStore implements IdentityStore {
       .innerJoin(identities, eq(identitySessions.identityId, identities.id))
       .where(and(eq(identitySessions.tokenHash, tokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now))).limit(1);
     return rows[0] ? mapSession(rows[0].session, rows[0].identity) : null;
+  }
+  async recordActivity(tokenHash: string, now: Date): Promise<boolean> {
+    return this.#db.transaction(async (tx) => { const rows = await tx.select({ session: identitySessions, identity: identities }).from(identitySessions).innerJoin(identities, eq(identitySessions.identityId, identities.id)).where(and(eq(identitySessions.tokenHash, tokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now))).limit(1); if (!rows[0]) return false; await recordActivity(tx, rows[0].identity, now); return true; });
   }
 
   async touchSession(tokenHash: string, now: Date, diagnostic: SessionDiagnostics, rollingExpiresAt: Date): Promise<IdentitySession | null> {

@@ -7,10 +7,11 @@ CREATE TABLE "analytics_daily_summaries" (
 	"usage_periods_json" jsonb NOT NULL,
 	"parameter_usage_json" jsonb NOT NULL,
 	"parameters_json" jsonb NOT NULL,
+	"rankings_json" jsonb NOT NULL,
 	"refreshed_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "analytics_daily_summaries_summary_date_filter_hash_pk" PRIMARY KEY("summary_date","filter_hash"),
 	CONSTRAINT "analytics_daily_summaries_hash_format" CHECK ("filter_hash" ~ '^[a-f0-9]{64}$'),
-	CONSTRAINT "analytics_daily_summaries_json_shape" CHECK (jsonb_typeof("filters_json") = 'object' and jsonb_typeof("usage_json") = 'array' and jsonb_typeof("usage_periods_json") = 'object' and jsonb_typeof("parameter_usage_json") = 'array' and jsonb_typeof("parameters_json") = 'array')
+	CONSTRAINT "analytics_daily_summaries_json_shape" CHECK (jsonb_typeof("filters_json") = 'object' and jsonb_typeof("usage_json") = 'array' and jsonb_typeof("usage_periods_json") = 'object' and jsonb_typeof("parameter_usage_json") = 'array' and jsonb_typeof("parameters_json") = 'array' and jsonb_typeof("rankings_json") = 'object')
 );--> statement-breakpoint
 CREATE INDEX "analytics_daily_summaries_refreshed_idx" ON "analytics_daily_summaries" USING btree ("refreshed_at");--> statement-breakpoint
 CREATE TABLE "battle_results" (
@@ -700,3 +701,6 @@ CREATE TRIGGER design_event_snapshots_append_only BEFORE UPDATE OR DELETE ON des
 CREATE TRIGGER match_participant_snapshots_append_only BEFORE UPDATE OR DELETE ON match_participant_snapshots FOR EACH ROW EXECUTE FUNCTION analytics_snapshot_append_only_guard();
 --> statement-breakpoint
 CREATE TRIGGER room_event_snapshots_append_only BEFORE UPDATE OR DELETE ON room_event_snapshots FOR EACH ROW EXECUTE FUNCTION analytics_snapshot_append_only_guard();
+--> statement-breakpoint
+ALTER TABLE "design_layers" ADD COLUMN "actual_area_mm2" numeric(12,4) NOT NULL;--> statement-breakpoint
+ALTER TABLE "design_layers" ADD CONSTRAINT "design_layers_actual_area_positive" CHECK ("design_layers"."actual_area_mm2" > 0);

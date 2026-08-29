@@ -34,6 +34,7 @@ export interface IdentityStore {
   createGuestSession(input: Readonly<{ tokenHash: string; displayName: string; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics }>): Promise<IdentitySession>;
   upsertLiveSession(input: Readonly<{ tokenHash: string; previousTokenHash?: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; cachedIdentityId?: string }>, transaction?: unknown): Promise<IdentitySession>;
   revokeSession(tokenHash: string, now: Date): Promise<boolean>;
+  recordActivity?(tokenHash: string, now: Date): Promise<boolean>;
 }
 export type TrustedLiveIdentity = Readonly<{
   externalId: string;
@@ -93,6 +94,11 @@ export class IdentityResolver {
       if (!session) return null;
       return session.identity.status === "iclass" ? { ...session.identity, status: "cookie" } : session.identity;
     } catch { throw new IdentityStoreUnavailableError(); }
+  }
+  async recordActivity(cookieToken: unknown): Promise<boolean> {
+    if (!isIdentityToken(cookieToken)) return false;
+    try { return await this.#store.recordActivity?.(hashIdentityToken(cookieToken), this.#now()) ?? false; }
+    catch { throw new IdentityStoreUnavailableError(); }
   }
 
   async resolve(request: Readonly<{ cookieToken?: string; ip?: string; userAgent?: string; admitCreation?: () => boolean }>, live?: TrustedLiveIdentity): Promise<Readonly<{ identity: Identity; cookieToken: string; issuedAt: Date; expiresAt: Date; isNew: boolean }>> {

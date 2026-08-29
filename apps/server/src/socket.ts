@@ -95,6 +95,7 @@ export type RealtimeDependencies = Readonly<{
   clientKeyResolver: ClientKeyResolver;
   diagnosticIpResolver: (request: IncomingMessage) => string | null;
   authenticateIdentity: (request: IncomingMessage, testAuth?: Record<string, unknown>) => Promise<Readonly<{ identityId: string; displayName: string; identitySource?: "iclass" | "cookie" | "guest"; deviceName?: string }> | null>;
+  recordIdentityActivity?: (request: IncomingMessage) => Promise<void>;
   maxRooms: number;
   maxOwnedRoomsPerSession: number;
   maxMatchAttempts: number;
@@ -207,6 +208,7 @@ export class RealtimeGateway {
   readonly #clientKeyResolver: ClientKeyResolver;
   readonly #diagnosticIpResolver: (request: IncomingMessage) => string | null;
   readonly #authenticateIdentity: RealtimeDependencies["authenticateIdentity"];
+  readonly #recordIdentityActivity: RealtimeDependencies["recordIdentityActivity"];
   readonly #newSessionByClientLimiter: TokenBucketLimiter;
   readonly #newSessionGlobalLimiter: TokenBucketLimiter;
   readonly #maxRooms: number;
@@ -271,6 +273,7 @@ export class RealtimeGateway {
     this.#clientKeyResolver = dependencies.clientKeyResolver;
     this.#diagnosticIpResolver = dependencies.diagnosticIpResolver;
     this.#authenticateIdentity = dependencies.authenticateIdentity;
+    this.#recordIdentityActivity = dependencies.recordIdentityActivity;
     this.#newSessionByClientLimiter = new TokenBucketLimiter({
       burst: dependencies.newSessionBurstPerClient,
       refillPerSecond: dependencies.newSessionRefillPerSecond,
@@ -902,6 +905,7 @@ export class RealtimeGateway {
       } else { if (!this.#roomProjections.usesDurableStore) await this.#projectRoomClosure(event.roomId, closingRevision, this.#now()); this.#cleanupRoom(event.roomId); }
       this.#broadcastLobby();
     } else if (event.type === "clock.ping") {
+      void this.#recordIdentityActivity?.(socket.request).catch(this.#logError);
       this.#pruneSessionOutcomes(session, receivedAtMs);
       if (session.clockPingIds.has(event.pingId)) throw Object.assign(new Error("CLOCK_PING_REPLAY"), { code: "CLOCK_PING_REPLAY" });
       const serverSentAtMs = Math.max(receivedAtMs, this.#now());

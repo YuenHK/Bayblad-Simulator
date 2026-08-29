@@ -8,11 +8,7 @@ export function opponentStrength(value: Readonly<{ stability:number; impactResis
   return value.stability*.4+value.impactResistance*.3+value.spinDuration*.2+value.speed*.1;
 }
 
-type ParameterSqlRow = Readonly<Record<"position" | "shape", string> & {
-  points: number; diameterMm: string | number; cornerRoundness: string | number; screwCount: number; metalDiscDiameterMm: string | number;
-  performanceModelVersion: string; physicsModelVersion: string; sampleSize: string | number; participantObservations: string | number; averageScore: string | number; winRate: string | number; opponentAverageStrength: string | number;
-  perfectCount: string | number; greatCount: string | number; goodCount: string | number; missCount: string | number;
-}>;
+type ParameterSqlRow = Readonly<{ dimension:string; value:Record<string,string|number|boolean|null>; launchGrade:"Perfect"|"Great"|"Good"|"Miss"; opponentStrengthBand:"low"|"medium"|"high"; performanceModelVersion:string; physicsModelVersion:string; sampleSize:string|number; participantObservations:string|number; averageScore:string|number; winRate:string|number; opponentAverageStrength:string|number; opponentAdjustedScore:string|number; totalGroups:string|number }>;
 
 function finite(value: string | number): number {
   const result = Number(value);
@@ -22,17 +18,19 @@ function finite(value: string | number): number {
 
 export function normalizeParameterRows(rows: readonly ParameterSqlRow[]) {
   return rows.filter((row) => finite(row.sampleSize) >= 10).map((row) => Object.freeze({
-    parameters: Object.freeze({ position: row.position, shape: row.shape, points: row.points, diameterMm: finite(row.diameterMm), cornerRoundness: finite(row.cornerRoundness), screwCount: row.screwCount, metalDiscDiameterMm: finite(row.metalDiscDiameterMm) }),
+    dimension:row.dimension,value:Object.freeze({...row.value}),launchGrade:row.launchGrade,opponentStrengthBand:row.opponentStrengthBand,
     performanceModelVersion: row.performanceModelVersion, physicsModelVersion: row.physicsModelVersion,
-    sampleSize: finite(row.sampleSize), participantObservations: finite(row.participantObservations), averageScore: finite(row.averageScore), winRate: finite(row.winRate), opponentAverageStrength: finite(row.opponentAverageStrength),
-    launchGrades: Object.freeze({ Perfect: finite(row.perfectCount), Great: finite(row.greatCount), Good: finite(row.goodCount), Miss: finite(row.missCount) }),
+    totalGroups:finite(row.totalGroups),
+    sampleSize: finite(row.sampleSize), participantObservations: finite(row.participantObservations), averageScore: finite(row.averageScore), winRate: finite(row.winRate), opponentAverageStrength: finite(row.opponentAverageStrength),opponentAdjustedScore:finite(row.opponentAdjustedScore),
   }));
 }
 
-export async function parameterPerformance(db: PostgresJsDatabase<typeof schema>, input: AnalyticsFilters, page: Readonly<{ limit?: number; offset?: number }> = {}) {
+export async function parameterPerformance(db: PostgresJsDatabase<typeof schema>, input: AnalyticsFilters, page: Readonly<{ limit?: number; offset?: number; order?:"stable"|"high"|"low" }> = {}) {
   const filters = analyticsFiltersSchema.parse(input);
   const limit=page.limit ?? 100, offset=page.offset ?? 0;
   if (!Number.isSafeInteger(limit)||limit<1||limit>200||!Number.isSafeInteger(offset)||offset<0||offset>1_000_000) throw new RangeError("INVALID_ANALYTICS_PAGE");
+  const order=page.order??"stable";
+  const ordering=order==="high"?sql`"opponentAdjustedScore" desc,"averageScore" desc,"winRate" desc,dimension,value::text,launch_grade`:order==="low"?sql`"opponentAdjustedScore" asc,"averageScore" asc,"winRate" asc,dimension,value::text,launch_grade`:sql`performance_model_version,physics_model_version,dimension,value::text,launch_grade,"opponentStrengthBand"`;
   const bounds = hongKongDateBounds(filters.from, filters.to);
   const matchConditions: SQL[] = [sql`status='completed'`, sql`completed_at >= ${bounds.from}::timestamptz`, sql`completed_at < ${bounds.toExclusive}::timestamptz`];
   if (filters.performanceModelVersion) matchConditions.push(sql`performance_model_version=${filters.performanceModelVersion}`);
@@ -50,26 +48,32 @@ export async function parameterPerformance(db: PostgresJsDatabase<typeof schema>
       select m.id,m.player2_identity_id,m.player2_design_id,m.player1_design_id,m.player2_total,(m.winner='player2')::int,'B'::text,'player2'::player_slot,m.performance_model_version,m.physics_model_version from filtered_matches m
     ), filtered_participants as materialized (
       select p.* from participants p left join match_participant_snapshots ps on ps.match_id=p.match_id and ps.slot=p.slot ${identityWhere}
-    ), launch as (
-      select r.match_id, p.side,
-        count(*) filter(where (case when p.side='A' then r.launch_grade_a else r.launch_grade_b end)='Perfect')::bigint perfect_count,
-        count(*) filter(where (case when p.side='A' then r.launch_grade_a else r.launch_grade_b end)='Great')::bigint great_count,
-        count(*) filter(where (case when p.side='A' then r.launch_grade_a else r.launch_grade_b end)='Good')::bigint good_count,
-        count(*) filter(where (case when p.side='A' then r.launch_grade_a else r.launch_grade_b end)='Miss')::bigint miss_count
-      from rounds r join (select distinct match_id from filtered_participants) fm on fm.match_id=r.match_id
-        cross join (values ('A'::text),('B'::text)) p(side) group by r.match_id,p.side
+    ), launched as materialized (
+      select p.*,case when p.side='A' then r.launch_grade_a else r.launch_grade_b end launch_grade
+      from filtered_participants p join rounds r on r.match_id=p.match_id
+    ), profiles as materialized (
+      select d.id,string_agg(l.shape::text,'>' order by l.layer_order) layer_order,
+        jsonb_agg(jsonb_build_object('position',l.position::text,'shape',l.shape::text,'sidesLabel',case l.shape when 'circle' then 'NA' when 'polygon' then 'sides' when 'star' then 'points' else 'lobes' end,'sidesValue',case when l.shape='circle' then null else l.points end,'diameterMm',l.diameter_mm,'actualAreaMm2',l.actual_area_mm2) order by l.layer_order) layer_combination
+      from designs d join design_layers l on l.design_id=d.id group by d.id
+    ), base as materialized (
+      select p.*,d.total_mass_g,d.screw_count,d.metal_disc_diameter_mm,pr.layer_order,pr.layer_combination,
+        (od.performance_stability*.4+od.performance_impact_resistance*.3+od.performance_spin_duration*.2+od.performance_speed*.1) opponent_strength
+      from launched p join designs d on d.id=p.design_id join designs od on od.id=p.opponent_design_id join profiles pr on pr.id=d.id
+    ), observations as (
+      select b.*,'totalMassGBucket'::text dimension,jsonb_build_object('fromG',floor(b.total_mass_g/5)*5,'toG',floor(b.total_mass_g/5)*5+5) value from base b
+      union all select b.*,'layerOrder',jsonb_build_object('order',b.layer_order) from base b
+      union all select b.*,'layerCombination',jsonb_build_object('layers',b.layer_combination) from base b
+      union all select b.*,'holes',jsonb_build_object('count',b.screw_count) from base b
+      union all select b.*,'metalDiscDiameter',jsonb_build_object('diameterMm',b.metal_disc_diameter_mm,'none',b.metal_disc_diameter_mm=0) from base b
+      union all select b.*,'layerShape',jsonb_build_object('position',l.position::text,'shape',l.shape::text) from base b join design_layers l on l.design_id=b.design_id
+      union all select b.*,'layerActualAreaBucket',jsonb_build_object('position',l.position::text,'fromMm2',floor(l.actual_area_mm2/100)*100,'toMm2',floor(l.actual_area_mm2/100)*100+100) from base b join design_layers l on l.design_id=b.design_id
     )
-    select l.position::text position,l.shape::text shape,l.points,l.diameter_mm::text "diameterMm",l.corner_roundness::text "cornerRoundness",
-      d.screw_count "screwCount",d.metal_disc_diameter_mm::text "metalDiscDiameterMm",p.performance_model_version "performanceModelVersion",p.physics_model_version "physicsModelVersion",
-      count(distinct p.match_id)::text "sampleSize",count(*)::text "participantObservations",
-      avg(p.score)::text "averageScore",avg(p.won)::text "winRate",
-      avg(od.performance_stability * .4 + od.performance_impact_resistance * .3 + od.performance_spin_duration * .2 + od.performance_speed * .1)::text "opponentAverageStrength",
-      sum(la.perfect_count)::text "perfectCount",sum(la.great_count)::text "greatCount",sum(la.good_count)::text "goodCount",sum(la.miss_count)::text "missCount"
-    from filtered_participants p join designs d on d.id=p.design_id join designs od on od.id=p.opponent_design_id
-      join design_layers l on l.design_id=d.id join launch la on la.match_id=p.match_id and la.side=p.side
-    group by p.performance_model_version,p.physics_model_version,l.position,l.shape,l.points,l.diameter_mm,l.corner_roundness,d.screw_count,d.metal_disc_diameter_mm
-    having count(distinct p.match_id) >= 10
-    order by p.performance_model_version,p.physics_model_version,l.position,l.shape,l.points,l.diameter_mm,l.corner_roundness,d.screw_count,d.metal_disc_diameter_mm
+    select dimension,value,launch_grade::text "launchGrade",case when opponent_strength<40 then 'low' when opponent_strength<70 then 'medium' else 'high' end "opponentStrengthBand",
+      performance_model_version "performanceModelVersion",physics_model_version "physicsModelVersion",count(distinct match_id)::text "sampleSize",count(*)::text "participantObservations",
+      avg(score)::text "averageScore",avg(won)::text "winRate",avg(opponent_strength)::text "opponentAverageStrength",avg(score-opponent_strength/100.0)::text "opponentAdjustedScore",count(*) over()::text "totalGroups"
+    from observations group by performance_model_version,physics_model_version,dimension,value,launch_grade,case when opponent_strength<40 then 'low' when opponent_strength<70 then 'medium' else 'high' end
+    having count(distinct match_id)>=10
+    order by ${ordering}
     limit ${limit} offset ${offset}
   `);
   return normalizeParameterRows(result as unknown as ParameterSqlRow[]);

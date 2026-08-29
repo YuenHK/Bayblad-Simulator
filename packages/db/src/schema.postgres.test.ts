@@ -104,8 +104,8 @@ async function insertLayer(
   await transaction.unsafe(
     `insert into design_layers (
       design_id, source_layer_id, layer_order, position, shape, points,
-      diameter_mm, corner_roundness, rotation_deg, color
-    ) values ($1, $2, $3, $4, 'circle', 6, 40, 0.5, 0, '#2563eb')`,
+      diameter_mm, actual_area_mm2, corner_roundness, rotation_deg, color
+    ) values ($1, $2, $3, $4, 'circle', 6, 40, 1256.6371, 0.5, 0, '#2563eb')`,
     [designId, `${designId}-${position}`, layerOrder, position],
   );
 }
@@ -207,6 +207,7 @@ it.skipIf(testDatabaseUrl === undefined)(
                 shape: layerOrder === 1 ? ("polygon" as const) : ("circle" as const),
                 points: 6,
                 diameterMm: 40 + layerOrder * 5,
+                actualAreaMm2: 1_200 + layerOrder * 100,
                 cornerRoundness: 0.5,
                 rotationDeg: 0,
                 color: designIndex === 0 ? "#2563eb" : "#dc2626",

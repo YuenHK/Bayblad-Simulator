@@ -1,6 +1,6 @@
 {
-  "id": "a87bc937-769d-4164-817c-c95180375221",
-  "prevId": "158c773e-5271-4d1e-9237-9fd33ae7517f",
+  "id": "754cf4da-58b0-4cf7-852e-2f121a6bbd57",
+  "prevId": "d363b3a5-ffec-4522-8092-1ce4a7193b67",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -817,6 +817,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "rankings_json": {
+          "name": "rankings_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
         "refreshed_at": {
           "name": "refreshed_at",
           "type": "timestamp with time zone",
@@ -861,7 +867,7 @@
         },
         "analytics_daily_summaries_json_shape": {
           "name": "analytics_daily_summaries_json_shape",
-          "value": "jsonb_typeof(\"analytics_daily_summaries\".\"filters_json\")='object' and jsonb_typeof(\"analytics_daily_summaries\".\"usage_json\")='array' and jsonb_typeof(\"analytics_daily_summaries\".\"usage_periods_json\")='object' and jsonb_typeof(\"analytics_daily_summaries\".\"parameter_usage_json\")='array' and jsonb_typeof(\"analytics_daily_summaries\".\"parameters_json\")='array'"
+          "value": "jsonb_typeof(\"analytics_daily_summaries\".\"filters_json\")='object' and jsonb_typeof(\"analytics_daily_summaries\".\"usage_json\")='array' and jsonb_typeof(\"analytics_daily_summaries\".\"usage_periods_json\")='object' and jsonb_typeof(\"analytics_daily_summaries\".\"parameter_usage_json\")='array' and jsonb_typeof(\"analytics_daily_summaries\".\"parameters_json\")='array' and jsonb_typeof(\"analytics_daily_summaries\".\"rankings_json\")='object'"
         }
       },
       "isRLSEnabled": false
@@ -1265,6 +1271,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "actual_area_mm2": {
+          "name": "actual_area_mm2",
+          "type": "numeric(12, 4)",
+          "primaryKey": false,
+          "notNull": true
+        },
         "corner_roundness": {
           "name": "corner_roundness",
           "type": "numeric(5, 4)",
@@ -1416,6 +1428,10 @@
         "design_layers_diameter_range": {
           "name": "design_layers_diameter_range",
           "value": "\"design_layers\".\"diameter_mm\" between 20 and 80"
+        },
+        "design_layers_actual_area_positive": {
+          "name": "design_layers_actual_area_positive",
+          "value": "\"design_layers\".\"actual_area_mm2\" > 0"
         },
         "design_layers_roundness_range": {
           "name": "design_layers_roundness_range",
