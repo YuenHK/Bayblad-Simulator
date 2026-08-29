@@ -60,6 +60,7 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
   #reserved: Awaited<ReturnType<DatabaseClient["sql"]["reserve"]>> | undefined;
   #leaseBackendPid: number | undefined;
   constructor(readonly db: Db, readonly sql?: DatabaseClient["sql"]) {}
+  get startupLeaseBackendPidForTesting(): number | undefined { return this.#leaseBackendPid; }
   async acquireStartupLease(): Promise<void> {
     if (this.#reserved) return;
     if (!this.sql) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_UNAVAILABLE");
