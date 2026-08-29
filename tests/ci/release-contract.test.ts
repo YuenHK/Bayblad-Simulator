@@ -194,7 +194,7 @@ describe("rollback deletion monotonicity", () => {
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-isolation.sh");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-full.sh");
     const canonical = read("infra/backup/test-canonical-cutover-full.sh");
-    expect(read(".github/workflows/db.yml")).toContain("test-canonical-cutover-full.sh");
+    expect(read(".github/workflows/ci.yml")).toContain("test-canonical-cutover-full.sh");
     for (const entrypoint of ["/opt/steam-top-bootstrap/activate-production-state.sh", "/opt/steam-top/releases/", "/opt/steam-top-bootstrap/record-cutover-current.sh", "/opt/steam-top-bootstrap/finalize-current.sh", "promote-restored-target.sh"])
       expect(canonical).toContain(entrypoint);
     expect(canonical).toContain("steam-top-production.lock");

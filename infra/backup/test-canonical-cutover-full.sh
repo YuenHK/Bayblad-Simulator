@@ -1,74 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Functional CI fixture only. Production trust is established by the separately
-# provisioned bootstrap installer; this test must never be cited as host trust.
 : "${TEST_DATABASE_URL:?}" "${RUNTIME_INSTALL_MANIFEST_SHA256:?}"
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-bootstrap=/opt/steam-top-bootstrap
-activate=/opt/steam-top-bootstrap/activate-production-state.sh
-record=/opt/steam-top-bootstrap/record-cutover-current.sh
-finalize=/opt/steam-top-bootstrap/finalize-current.sh
-[[ -x "$script_dir/promote-restored-target.sh" ]]
-
-for entry in activate-production-state.sh record-cutover-current.sh finalize-current.sh; do
-  [[ -x "$bootstrap/$entry" && ! -L "$bootstrap/$entry" ]] || {
-    echo "packaged canonical bootstrap entry missing: $entry" >&2
-    exit 1
-  }
-done
-[[ -d "/opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256" ]] || {
-  echo "versioned runtime release missing" >&2
-  exit 1
-}
-
-# The production promotion implementation is invoked against PostgreSQL, not
-# replaced with a shell mock. It covers minimum operator privileges, inherited
-# CONNECT rejection, wrong-cluster rejection, crash/outbox reconciliation,
-# promotion_audit, and idempotent finalization.
-"$script_dir/test-promotion-full.sh"
-
-# Prove every canonical entry is fail-closed behind the one production lock.
-# A represents record/finalize holding the lock; activation B must not inspect or
-# mutate state until A releases it.
-lock=/var/lock/steam-top-production.lock
-[[ -f "$lock" && ! -L "$lock" && "$(stat -c '%u %a' "$lock")" == "0 600" ]]
-bundle=$(mktemp)
-trap 'rm -f "$bundle"' EXIT
-printf '{}\n' >"$bundle"
-chmod 0400 "$bundle"
-sudo chown root:root "$bundle"
-(
-  sudo flock "$lock" bash -c 'sleep 2'
-) & holder=$!
-for _ in $(seq 1 100); do
-  sudo flock -n "$lock" true >/dev/null 2>&1 || break
-  sleep 0.01
-done
-set +e
-  sudo "$activate" "$bundle" >/dev/null 2>&1
-activation_rc=$?
-set -e
-wait "$holder"
-[[ $activation_rc -eq 75 ]] || {
-  echo "expected activation B to be locked out" >&2
-  exit 1
-}
-
-# Verify the functional PostgreSQL chain produced the authoritative audit/outbox
-# evidence and did not change the activated runtime pointer if one is present.
-psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -Atqc \
-  "select current_database() is not null" | grep -Fx t
-if [[ -L /opt/steam-top/current ]]; then
-  current=$(realpath /opt/steam-top/current)
-  [[ $current == "/opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256" ]] || {
-    echo "runtime current mismatch" >&2
-    exit 1
-  }
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);bootstrap=/opt/steam-top-bootstrap;activate=/opt/steam-top-bootstrap/activate-production-state.sh;fixture=/run/steam-top-canonical-ci
+if [[ ${1:-} == --hook ]];then
+  sudo install -d -o root -g root -m 0700 "$fixture/outbox/receipts/$cutover_nonce" "$fixture/outbox/deployment-ledger"
+  receipt_digest=$(sudo "$root/scripts/portable-sha256.sh" digest "$tmp/host-receipt.json");receipt_generation="$fixture/outbox/receipts/$cutover_nonce/$receipt_digest";sudo install -d -o root -g root -m 0500 "$receipt_generation";sudo install -o root -g root -m 0400 "$tmp/host-receipt.json" "$receipt_generation/payload.json";sudo install -o root -g root -m 0400 "$tmp/host-receipt.json.sig" "$receipt_generation/payload.json.sig";sudo ln -s "$receipt_digest" "$fixture/outbox/receipts/$cutover_nonce/current"
+  ledger="$fixture/ledger.json";sudo node - "$ledger" "$receipt_digest" "$cutover_nonce" "$manifest_sha" <<'NODE'
+const fs=require("fs"),[out,receiptSha256,nonce,manifestSha256]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:2,purpose:"steam-top-host-deployment-ledger",signerKeyId:"host@test",sequence:1,previousDigest:null,deploymentId:"1",manifestSha256,receiptSha256,nonce,previousState:"none"})+"\n",{mode:0o400});
+NODE
+  sudo ssh-keygen -Y sign -q -f "$tmp/host-signing" -n steam-top-host-deployment-ledger "$ledger";ledger_digest=$(sudo "$root/scripts/portable-sha256.sh" digest "$ledger");ledger_generation="$fixture/outbox/deployment-ledger/00000000000000000001-$ledger_digest";sudo install -d -o root -g root -m 0500 "$ledger_generation";sudo install -o root -g root -m 0400 "$ledger" "$ledger_generation/payload.json";sudo install -o root -g root -m 0400 "$ledger.sig" "$ledger_generation/payload.json.sig"
+  sudo install -o root -g root -m 0400 "$tmp/host-signing" "$fixture/state-key";for name in host ledger state;do sudo install -o root -g root -m 0444 "$tmp/host-signers" "$fixture/$name-allowed";done
+  printf '%s\n' "${GITHUB_TOKEN:-functional-fixture}"|sudo tee "$fixture/github-token" >/dev/null;sudo chmod 0400 "$fixture/github-token"
+  bundle="$fixture/authorization.json";sudo node - "$bundle" "$RUNTIME_INSTALL_MANIFEST_SHA256" "$manifest_sha" "$cutover_nonce" "${GITHUB_REPOSITORY:-school/steam-top}" <<'NODE'
+const fs=require("fs"),[out,runtimeManifestSha256,manifestSha256,nonce,repository]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"production-deployment-authorization",repository,deploymentId:"1",nonce,manifestSha256,runtimeManifestSha256,commit:"a".repeat(40),expectedPreviousState:"none"})+"\n",{mode:0o400});
+NODE
+  sudo install -d -o root -g root -m 0555 "$fixture/bin";printf '#!/usr/bin/env bash\nprintf "%%s\\n" "1|%s|%s"\n' "$cutover_nonce" "$manifest_sha"|sudo tee "$fixture/bin/gh" >/dev/null;sudo chmod 0555 "$fixture/bin/gh";sudo env PATH="$fixture/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "$activate" "$bundle" >"$tmp/activation.frame"
+  [[ $(realpath /opt/steam-top/current) == "/opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256" ]]||{ echo "runtime current mismatch" >&2;exit 1;}
+  sudo rm -f "$cutover" "$cutover.sig";sudo chown root:root "$CANONICAL_ADMIN_SMOKE_SECRET_FILE";sudo chmod 0600 "$CANONICAL_ADMIN_SMOKE_SECRET_FILE";record_env=(PROMOTE_PGSERVICE=target PGSERVICEFILE="$tmp/service" PGPASSFILE="$tmp/pass" CUTOVER_DATABASE_URL_FILE="$tmp/database-url" PUBLIC_ORIGIN="$public_origin" DEPLOYMENT_MANIFEST_SHA256="$manifest_sha" CUTOVER_SIGNING_KEY="$tmp/cutover-signing" ADMIN_SMOKE_SECRET_FILE="$CANONICAL_ADMIN_SMOKE_SECRET_FILE" PRODUCTION_ENV_FILE="$tmp/production.env" HOST_DEPLOYMENT_RECEIPT_FILE="$tmp/host-receipt.json" HOST_DEPLOYMENT_RECEIPT_SIGNATURE="$tmp/host-receipt.json.sig" HOST_RECEIPT_ALLOWED_SIGNERS_FILE="$tmp/host-signers" HOST_RECEIPT_SIGNER_ID="$host_signer" PROTECTED_STATE_ALLOWED_SIGNERS_FILE="$tmp/host-signers" PROTECTED_STATE_SIGNER_ID="$host_signer" RUNTIME_INSTALL_MANIFEST_SHA256="$RUNTIME_INSTALL_MANIFEST_SHA256")
+  sudo env "${record_env[@]}" /opt/steam-top-bootstrap/record-cutover-current.sh "$cutover_nonce" "$tmp/state/promotion-ready" "$cutover"
+  PGSERVICE=target psql -X -v ON_ERROR_STOP=1 -c 'select pg_advisory_lock(1937002751);select pg_sleep(3);select pg_advisory_unlock(1937002751)' >/dev/null & blocker=$!;for _ in $(seq 1 100);do [[ $(PGSERVICE=target psql -X -Atqc "select exists(select 1 from pg_locks where locktype='advisory' and granted)") == t ]]&&break;sleep .02;done;sudo env "${finalize_env[@]}" /opt/steam-top-bootstrap/finalize-current.sh "$cutover_nonce" "$tmp/state/promotion-ready" "$cutover" "$cutover.sig" & finalizer=$!;for _ in $(seq 1 100);do sudo flock -n /var/lock/steam-top-production.lock true >/dev/null 2>&1||break;sleep .02;done;set +e;sudo "$bootstrap/activate-production-state.sh" "$bundle" >/dev/null 2>&1;activation_b=$?;set -e;[[ $activation_b -eq 75 ]]||{ echo "expected activation B to be locked out" >&2;exit 1;};wait "$blocker";wait "$finalizer";[[ $(psql "$url" -Atqc 'select count(*) from restore_control.promotion_audit') == 1 ]];return 0
 fi
-
-# Keep these exact canonical invocations visible to the executable CI contract;
-# the production-like HTTPS job supplies the signed state and public probe inputs.
-[[ -x "$record" ]]
-[[ -x "$finalize" ]]
-echo "canonical PostgreSQL promotion and production-lock chain passed"
+for entry in activate-production-state.sh record-cutover-current.sh finalize-current.sh;do [[ -x "$bootstrap/$entry" ]]||exit 1;done;[[ -x "$script_dir/promote-restored-target.sh" ]];CANONICAL_CUTOVER_HOOK="$root/infra/backup/test-canonical-cutover-full.sh" CANONICAL_EXISTING_DATABASE=${CANONICAL_EXISTING_DATABASE:-steam_top} CANONICAL_PUBLIC_ORIGIN=${CANONICAL_PUBLIC_ORIGIN:-https://localhost} "$script_dir/test-promotion-full.sh"

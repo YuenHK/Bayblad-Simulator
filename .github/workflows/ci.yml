@@ -94,7 +94,7 @@ jobs:
           chmod 600 .ci/tls/server.key
       - run: pnpm validate:caddy
       - run: docker compose -f compose.yaml -f compose.build.yaml build
-      - run: docker compose -f compose.yaml -f compose.build.yaml up -d --wait
+      - run: docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml up -d --wait
       - name: Prove untrusted TLS fails, then install the exact Caddy root
         shell: bash
         run: |
@@ -111,6 +111,25 @@ jobs:
           certutil -N --empty-password -d "sql:$HOME/.pki/nssdb" 2>/dev/null || true
           certutil -A -d "sql:$HOME/.pki/nssdb" -n steam-top-ci -t "C,," -i "$GITHUB_WORKSPACE/.ci/caddy-root.crt"
           printf 'SECURITY_TLS_CA_FILE=%s\nNODE_EXTRA_CA_CERTS=%s\n' "$GITHUB_WORKSPACE/.ci/caddy-root.crt" "$GITHUB_WORKSPACE/.ci/caddy-root.crt" >> "$GITHUB_ENV"
+      - name: Install packaged canonical functional fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/install-canonical-ci-fixture.sh > "$RUNNER_TEMP/canonical-fixture.env"
+          cat "$RUNNER_TEMP/canonical-fixture.env" >> "$GITHUB_ENV"
+      - name: Run activate, promote, public probe, record and finalize through canonical wrappers
+        shell: bash
+        env:
+          TEST_DATABASE_URL: postgresql://steam_top:ci-postgres-password@127.0.0.1:15432/steam_top
+          CANONICAL_EXISTING_DATABASE: steam_top
+          CANONICAL_PUBLIC_ORIGIN: https://localhost
+          CANONICAL_ADMIN_SMOKE_SECRET_FILE: ${{ runner.temp }}/admin-smoke.json
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '{"username":"%s","password":"%s"}\n' "$ADMIN_USERNAME" "$ADMIN_INITIAL_PASSWORD" > "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
+          ./infra/backup/test-canonical-cutover-full.sh
+          sudo rm -f "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
       - name: Verify strict Node TLS before browser security tests
         run: node -e 'require("https").get(process.env.SECURITY_HTTPS_ORIGIN,res=>{if(res.statusCode!==200)process.exit(1);res.resume()}).on("error",error=>{console.error(error);process.exit(1)})'
       - name: Run complete production HTTPS and WebSocket smoke through loopback
