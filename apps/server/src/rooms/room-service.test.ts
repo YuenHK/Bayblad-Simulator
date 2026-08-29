@@ -197,6 +197,15 @@ describe("RoomService moves, readiness, and phases", () => {
     expect(service.applyPersistedTransition(reservation)).toBe(true);
     expect(service.get(room.roomId)).toMatchObject({ phase: "launch", revision: reservation.expectedRevision });
   });
+  it("applying one room reservation preserves an interleaved room and current lobby revision", () => {
+    const service = new RoomService(); const first = service.create(user("owner", "Owner"), "First");
+    service.join(first.roomId, user("guest", "Guest"), "player"); service.ready(first.roomId, "owner", DESIGN_A); service.ready(first.roomId, "guest", DESIGN_B);
+    const reservation = service.reservePersistedTransition(first.roomId, "launch");
+    const second = service.create(user("second", "Second"), "Second"); const lobbyBeforeApply = service.lobbySnapshot().revision;
+    expect(service.applyPersistedTransition(reservation)).toBe(true);
+    expect(service.get(second.roomId)?.name).toBe("Second");
+    expect(service.lobbySnapshot().revision).toBe(lobbyBeforeApply + 1);
+  });
   it("keeps ownership when the creator moves to spectator and emits one atomic delta", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");

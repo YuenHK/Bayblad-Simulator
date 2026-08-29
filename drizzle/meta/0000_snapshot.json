@@ -3057,6 +3057,12 @@
           "notNull": true,
           "default": -1
         },
+        "last_transition_hash": {
+          "name": "last_transition_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "closed_at": {
           "name": "closed_at",
           "type": "timestamp with time zone",

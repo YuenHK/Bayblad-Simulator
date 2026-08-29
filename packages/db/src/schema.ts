@@ -470,6 +470,7 @@ export const rooms = pgTable(
       .defaultNow(),
     firstBattleAt: timestamp("first_battle_at", { withTimezone: true }),
     appliedProjectionRevision: bigint("applied_projection_revision", { mode: "number" }).notNull().default(-1),
+    lastTransitionHash: varchar("last_transition_hash", { length: 64 }),
     closedAt: timestamp("closed_at", { withTimezone: true }),
   },
   (table) => [
