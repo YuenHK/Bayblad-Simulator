@@ -477,7 +477,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF steam_top_audited_delete_enabled() THEN
+  IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled() THEN
     RETURN COALESCE(NEW, OLD);
   END IF;
   IF OLD.battle_eligible THEN
@@ -498,7 +498,7 @@ DECLARE
   old_eligible boolean := false;
   new_eligible boolean := false;
 BEGIN
-  IF steam_top_audited_delete_enabled() THEN
+  IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled() THEN
     RETURN COALESCE(NEW, OLD);
   END IF;
   IF TG_OP <> 'INSERT' THEN
@@ -522,7 +522,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF steam_top_audited_delete_enabled() THEN
+  IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled() THEN
     RETURN COALESCE(NEW, OLD);
   END IF;
   IF OLD.status = 'completed' THEN
@@ -540,7 +540,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF steam_top_audited_delete_enabled() THEN
+  IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled() THEN
     RETURN COALESCE(NEW, OLD);
   END IF;
   RAISE EXCEPTION 'Authoritative completed rounds are immutable'

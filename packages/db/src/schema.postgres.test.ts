@@ -640,6 +640,22 @@ it.skipIf(testDatabaseUrl === undefined)(
         await transaction.unsafe(
           "set local steam_top.allow_audited_delete = 'on'",
         );
+        await transaction.unsafe(
+          "update matches set spectator_count = 1 where id = $1",
+          [matchId],
+        );
+      }),
+    ).rejects.toMatchObject({
+      code: "55000",
+      constraint_name: "completed_matches_are_immutable",
+    });
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        await insertCompletedFixture(transaction);
+        await transaction.unsafe(
+          "set local steam_top.allow_audited_delete = 'on'",
+        );
         await transaction.unsafe("delete from matches where id = $1", [matchId]);
         await transaction.unsafe("delete from designs where id = $1", [designId]);
         throw rollbackSentinel;
