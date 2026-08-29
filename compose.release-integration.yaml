@@ -1,0 +1,14 @@
+services:
+  db:
+    ports: !override ["127.0.0.1:15432:5432"]
+  caddy:
+    ports: !override
+      - "127.0.0.1:18080:80"
+      - "127.0.0.1:18443:443"
+
+volumes:
+  postgres_data: { name: steam-top-release-integration-postgres }
+  deletion_ledger: { name: steam-top-release-integration-ledger }
+  deployment_marker: { name: steam-top-release-integration-marker }
+  caddy_data: { name: steam-top-release-integration-caddy-data }
+  caddy_config: { name: steam-top-release-integration-caddy-config }

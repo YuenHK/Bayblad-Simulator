@@ -13,9 +13,14 @@ snapshot=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-deploy.XXXXXX");chmod 700 "$snap
 cp -p "$env_file" "$snapshot/production.env";cp -p "$release_dir/SHA256SUMS" "$snapshot/SHA256SUMS"
 while read -r digest name extra;do [[ -z ${extra:-} && $digest =~ ^[a-f0-9]{64}$ && $name =~ ^[A-Za-z0-9._-]+$ && -f $release_dir/$name && ! -L $release_dir/$name ]]||die "unsafe checksum entry";cp -p "$release_dir/$name" "$snapshot/$name";done <"$snapshot/SHA256SUMS"
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/.."&&pwd -P)
+case ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} in
+  production) compose=(docker compose --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml");;
+  release-integration) compose=(docker compose -p steam-top-release-integration --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml" -f "$root/compose.release-integration.yaml");;
+  *) die "deployment purpose invalid";;
+esac
 "$script_dir/portable-sha256.sh" check "$snapshot" "$snapshot/SHA256SUMS"
 [[ $("$script_dir/portable-sha256.sh" digest "$snapshot/release-manifest.json") == "$expected_manifest_sha" ]]||die "external manifest digest mismatch"
 node "$script_dir/authorize-production-deploy.mjs" "$snapshot/release-manifest.json" "$snapshot/production.env" "$snapshot/canonical.env" "$expected_repository" "$expected_commit"
-docker compose --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml" config --quiet
-docker compose --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml" pull
-docker compose --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml" up -d --wait
+"${compose[@]}" config --quiet
+"${compose[@]}" pull
+"${compose[@]}" up -d --wait
