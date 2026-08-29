@@ -50,13 +50,17 @@ jobs:
           test "$(./scripts/portable-sha256.sh digest sources/current/release-manifest.json)" = "$CURRENT_SHA"
           gh attestation verify sources/previous/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
           current_signer=$(node -p 'require("./current-state.json").sourceWorkflow');gh attestation verify sources/current/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$current_signer"
+          gh attestation verify sources/current/runtime-files.sha256 --repo "$GITHUB_REPOSITORY" --signer-workflow "$current_signer"
           mkdir release
           node scripts/create-authorized-rollback.mjs sources/previous/release-manifest.json sources/current/release-manifest.json "$PREVIOUS_COMMIT" "$CURRENT_COMMIT" "$GITHUB_REPOSITORY" current-state.json release/release-manifest.json
+          cp sources/current/runtime-files.sha256 release/runtime-files.sha256
           gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0].id' | grep -Fx "$(node -p 'require("./current-state.json").deploymentId')"
-          ./scripts/portable-sha256.sh manifest release release-manifest.json > release/SHA256SUMS
+          ./scripts/portable-sha256.sh manifest release release-manifest.json runtime-files.sha256 > release/SHA256SUMS
           ./scripts/portable-sha256.sh digest release/release-manifest.json > release/EXTERNAL-MANIFEST-SHA256
           node scripts/create-rollback-sources.mjs current-state.json "$PREVIOUS_RUN" "$PREVIOUS_ARTIFACT" "$PREVIOUS_COMMIT" "$PREVIOUS_SHA" release/ROLLBACK-SOURCES.json
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: { subject-path: release/release-manifest.json }
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with: { subject-path: release/runtime-files.sha256 }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with: { name: "authorized-rollback-${{ inputs.previous_commit }}-${{ env.CURRENT_COMMIT }}-${{ github.run_id }}", path: release/, if-no-files-found: error, retention-days: 90 }
