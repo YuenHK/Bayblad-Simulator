@@ -10,7 +10,7 @@
     "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.e2e.json && tsc --noEmit -p tsconfig.integration.json",
     "test": "pnpm -r test && vitest run tests/integration",
     "test:e2e": "playwright test",
-    "test:security": "vitest run tests/security/caddy-config.test.ts --maxWorkers=1 --no-file-parallelism && playwright test --config=playwright.security.config.ts",
+    "test:security": "vitest run tests/security/caddy-config.test.ts tests/security/tls-options.test.ts --maxWorkers=1 --no-file-parallelism && playwright test --config=playwright.security.config.ts",
     "test:security:local": "SECURITY_ALLOW_SKIP=1 pnpm test:security",
     "validate:caddy": "caddy validate --config Caddyfile --adapter caddyfile && caddy adapt --config Caddyfile --adapter caddyfile --validate",
     "test:load": "node --test tests/load/child-process.test.mjs tests/load/load-config.test.mjs && node tests/load/spectators.mjs"
