@@ -124,7 +124,13 @@ describe("rollback deletion monotonicity", () => {
     expect(promotion).toContain("revoke connect on database %I from public");
     expect(promotion).toContain("promotion-ready");
     expect(promotion).toContain("RECOVERY-REQUIRED");
+    expect(promotion).toContain("promotion must run as root");
+    expect(promotion).toContain("original-acl");
+    expect(promotion).toContain("restore_acl");
+    expect(promotion).toContain("create-promotion-ready.mjs");
     expect(read("infra/backup/finalize-cutover.sh")).toContain("DATABASE_URL_CUTOVER_SUCCEEDED");
+    expect(read("infra/backup/finalize-cutover.sh")).toContain("backup_trusted_root_deployment");
+    expect(read("infra/backup/finalize-cutover.sh")).toContain("promotion_audit");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-isolation.sh");
     expect(promotion.indexOf("allow_connections false")).toBeLessThan(promotion.indexOf("pg_terminate_backend"));
     expect(promotion.indexOf("pg_terminate_backend")).toBeLessThan(promotion.indexOf("pg_advisory_xact_lock"));
