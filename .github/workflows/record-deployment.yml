@@ -1,4 +1,4 @@
-name: Record protected production deployment
+name: Deploy and record protected production release
 on:
   workflow_dispatch:
     inputs:
@@ -6,27 +6,63 @@ on:
       artifact: { required: true, type: string }
       manifest_sha256: { required: true, type: string }
       commit: { required: true, type: string }
+      signer_kind: { required: true, type: choice, options: [normal, rollback] }
 permissions: { contents: read }
 jobs:
-  record:
+  deploy-record:
     environment: production
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions: { contents: read, actions: read, deployments: write }
+    timeout-minutes: 20
+    permissions: { contents: read, actions: read, deployments: write, id-token: write, attestations: write }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with: { persist-credentials: false }
+      - name: Validate immutable dispatch inputs and production protection
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          RELEASE_RUN: "${{ inputs.release_run_id }}"
+          RELEASE_ARTIFACT: "${{ inputs.artifact }}"
+          MANIFEST_SHA: "${{ inputs.manifest_sha256 }}"
+          RELEASE_COMMIT: "${{ inputs.commit }}"
+          SIGNER_KIND: "${{ inputs.signer_kind }}"
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_RUN" =~ ^[1-9][0-9]{0,19}$ && "$RELEASE_ARTIFACT" =~ ^(release-manifest-[a-f0-9]{40}|authorized-rollback-[a-f0-9]{40}-[a-f0-9]{40}-[0-9]+)$ && "$MANIFEST_SHA" =~ ^[a-f0-9]{64}$ && "$RELEASE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SIGNER_KIND" =~ ^(normal|rollback)$ ]]
+          node scripts/verify-rollback-go-live.mjs "$GITHUB_REPOSITORY" production
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN" > release-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN/artifacts" > release-artifacts.json
+          node scripts/verify-run-artifact.mjs release-artifacts.json "$RELEASE_ARTIFACT"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with: { name: "${{ inputs.artifact }}", run-id: "${{ inputs.release_run_id }}", github-token: "${{ github.token }}", path: release }
-      - name: Verify deployed subject and record immutable state
+      - name: Verify subject, deploy through protected host, and smoke
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          RELEASE_RUN: "${{ inputs.release_run_id }}"
+          RELEASE_ARTIFACT: "${{ inputs.artifact }}"
+          MANIFEST_SHA: "${{ inputs.manifest_sha256 }}"
+          RELEASE_COMMIT: "${{ inputs.commit }}"
+          SIGNER_KIND: "${{ inputs.signer_kind }}"
+          SSH_HOST: "${{ secrets.SSH_HOST }}"
+          SSH_USER: "${{ secrets.SSH_USER }}"
+          SSH_HOST_KEY: "${{ secrets.SSH_HOST_KEY }}"
+          SSH_PRIVATE_KEY: "${{ secrets.SSH_PRIVATE_KEY }}"
+          REMOTE_ENV_FILE: "${{ secrets.REMOTE_ENV_FILE }}"
+        run: |
+          set -euo pipefail
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9.-]+$ && "$SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ && -n "$SSH_HOST_KEY" && -n "$SSH_PRIVATE_KEY" && "$REMOTE_ENV_FILE" =~ ^/[A-Za-z0-9._/-]+$ ]]
+          signer="$GITHUB_REPOSITORY/.github/workflows/ci.yml"; [[ "$SIGNER_KIND" == rollback ]] && signer="$GITHUB_REPOSITORY/.github/workflows/authorize-rollback.yml"
+          test "$(./scripts/portable-sha256.sh digest release/release-manifest.json)" = "$MANIFEST_SHA"
+          gh attestation verify release/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer"
+          install -m 700 -d "$HOME/.ssh"; printf '%s\n' "$SSH_HOST_KEY" > "$HOME/.ssh/known_hosts"; printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"; chmod 600 "$HOME/.ssh/id_ed25519"
+          tar -C release -czf release.tgz .; scp -q release.tgz "$SSH_USER@$SSH_HOST:/tmp/steam-top-release-$GITHUB_RUN_ID.tgz"
+          ssh "$SSH_USER@$SSH_HOST" "set -eu; d=\$(mktemp -d /tmp/steam-top-release.XXXXXX); tar -xzf /tmp/steam-top-release-$GITHUB_RUN_ID.tgz -C \"\$d\"; sudo /opt/steam-top/scripts/deploy-production.sh \"\$d\" '$REMOTE_ENV_FILE' '$MANIFEST_SHA' '$GITHUB_REPOSITORY' '$RELEASE_COMMIT'; curl --fail --silent https://127.0.0.1/health/ready >/dev/null"
+          nonce=$(openssl rand -hex 32); node scripts/create-deployment-request.mjs release/release-manifest.json "$RELEASE_RUN" "$RELEASE_ARTIFACT" "$MANIFEST_SHA" "$RELEASE_COMMIT" "$nonce" deployment-request.json deployment-receipt.json
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with: { subject-path: deployment-receipt.json }
+      - name: Advance protected state only after deploy and smoke
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ inputs.release_run_id }}" > release-run.json
-          node scripts/verify-release-run.mjs release-run.json '${{ inputs.commit }}' >/dev/null
-          test "$(./scripts/portable-sha256.sh digest release/release-manifest.json)" = '${{ inputs.manifest_sha256 }}'
-          gh attestation verify release/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
-          node -e 'const m=require("./release/release-manifest.json");if(m.schemaVersion!==1||m.commit!==process.argv[1]||m.images.migration!==m.images.server)process.exit(1)' '${{ inputs.commit }}'
-          payload=$(printf '{"schemaVersion":1,"runId":"%s","artifact":"%s","manifestSha256":"%s","commit":"%s"}' '${{ inputs.release_run_id }}' '${{ inputs.artifact }}' '${{ inputs.manifest_sha256 }}' '${{ inputs.commit }}')
-          id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" -f ref='${{ inputs.commit }}' -f environment=production -f required_contexts='[]' -f payload="$payload" --jq .id)
-          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=success -f environment=production
+          id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input deployment-request.json --jq .id)
+          node scripts/create-deployment-status.mjs "$id" deployment-status.json
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input deployment-status.json

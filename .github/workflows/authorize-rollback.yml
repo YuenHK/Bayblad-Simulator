@@ -51,7 +51,8 @@ jobs:
           gh attestation verify sources/previous/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
           gh attestation verify sources/current/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
           mkdir release
-          node scripts/create-authorized-rollback.mjs sources/previous/release-manifest.json sources/current/release-manifest.json "$PREVIOUS_COMMIT" "$CURRENT_COMMIT" "$GITHUB_REPOSITORY" release/release-manifest.json
+          node scripts/create-authorized-rollback.mjs sources/previous/release-manifest.json sources/current/release-manifest.json "$PREVIOUS_COMMIT" "$CURRENT_COMMIT" "$GITHUB_REPOSITORY" current-state.json release/release-manifest.json
+          gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0].id' | grep -Fx "$(node -p 'require("./current-state.json").deploymentId')"
           ./scripts/portable-sha256.sh manifest release release-manifest.json > release/SHA256SUMS
           ./scripts/portable-sha256.sh digest release/release-manifest.json > release/EXTERNAL-MANIFEST-SHA256
           printf '{"previousRun":"%s","previousCommit":"%s","currentRun":"%s","currentCommit":"%s"}\n' "$PREVIOUS_RUN" "$PREVIOUS_COMMIT" "$CURRENT_RUN" "$CURRENT_COMMIT" > release/ROLLBACK-SOURCES.json
