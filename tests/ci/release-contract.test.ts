@@ -145,6 +145,11 @@ describe("rollback deletion monotonicity", () => {
     expect(read("infra/backup/test-promotion-full.sh")).toContain("promote-restored-target.sh");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("finalize-cutover.sh");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("promotion_audit");
+    expect(read("infra/backup/test-promotion-full.sh")).toContain("pg_signal_backend");
+    expect(read("infra/backup/test-promotion-full.sh")).toContain("PROMOTE_MAINTENANCE_PGSERVICE=wrong-cluster");
+    expect(read(".github/workflows/db.yml")).toContain("postgres-wrong-cluster:");
+    expect(read(".github/workflows/db.yml")).toContain("5433:5432");
+    expect(promotion).toContain("not has_database_privilege(:'app_role'");
     expect(promotion.indexOf("allow_connections false")).toBeLessThan(promotion.indexOf("pg_terminate_backend"));
     expect(promotion.indexOf("pg_terminate_backend")).toBeLessThan(promotion.indexOf("pg_advisory_xact_lock"));
     expect(promotion).toMatch(/cleanup\(\)[\s\S]*allow_connections true/u);

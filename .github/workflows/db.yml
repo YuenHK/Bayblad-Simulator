@@ -25,6 +25,17 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      postgres-wrong-cluster:
+        image: postgres@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
+        env:
+          POSTGRES_USER: steam_top_test
+          POSTGRES_PASSWORD: steam_top_test
+          POSTGRES_DB: steam_top_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U steam_top_test -d steam_top_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       TEST_DATABASE_URL: postgresql://steam_top_test:steam_top_test@127.0.0.1:5432/steam_top_test
     steps:
