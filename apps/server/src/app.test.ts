@@ -8,6 +8,7 @@ import { LaunchCoordinator } from "./battle/launch";
 import { scoreMatch } from "./battle/scoring";
 import { RoomService } from "./rooms/room-service";
 import { DesignRegistry } from "./design-registry";
+import { AdminAuthService, InMemoryAdminStore } from "./auth/admin-auth";
 
 const uuid = () => crypto.randomUUID();
 const command = (type: string, fields: Record<string, unknown> = {}) => ({
@@ -1237,5 +1238,26 @@ describe("realtime app", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(app.realtimeGateway.activeMatchCount).toBe(0);
     expect(watcherFrames).toHaveLength(framesBeforeClose);
+  });
+
+  it("runs admin maintenance without overlap and awaits an active pass on close", async () => {
+    let resolveMaintenance!: () => void;
+    const pending = new Promise<void>((resolve) => { resolveMaintenance = resolve; });
+    class SlowAdminStore extends InMemoryAdminStore {
+      calls = 0;
+      override async pruneExpiredSessions(): Promise<number> { this.calls++; await pending; return 0; }
+    }
+    const store = new SlowAdminStore();
+    const auth = new AdminAuthService(store, { allowedOrigins: ["https://school.example"], csrfSecret: Buffer.alloc(32, 7) });
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), adminAuth: auth, adminMaintenanceIntervalMs: 5, sweepIntervalMs: 0 });
+    await new Promise<void>((resolve) => setTimeout(resolve, 18));
+    expect(store.calls).toBe(1);
+    let closed = false;
+    const closing = app.close().then(() => { closed = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(closed).toBe(false);
+    resolveMaintenance();
+    await closing;
+    expect(store.calls).toBe(1);
   });
 });

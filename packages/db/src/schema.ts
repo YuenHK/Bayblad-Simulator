@@ -838,6 +838,7 @@ export const adminSessions = pgTable(
       "admin_sessions_expiry_after_creation",
       sql`${table.expiresAt} > ${table.createdAt}`,
     ),
+    check("admin_sessions_archive_requires_revoke", sql`${table.archivedAt} is null or ${table.revokedAt} is not null`),
   ],
 );
 
@@ -847,18 +848,16 @@ export const adminLoginLimits = pgTable("admin_login_limits", {
 
 export const adminReauthGrants = pgTable("admin_reauth_grants", {
   id: uuid("id").primaryKey().defaultRandom(), adminUserId: uuid("admin_user_id").notNull().references(() => adminUsers.id, { onDelete: "cascade" }), adminSessionId: uuid("admin_session_id").notNull().references(() => adminSessions.id, { onDelete: "cascade" }), tokenHash: text("token_hash").notNull(), purpose: varchar("purpose", { length: 64 }).notNull(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(), consumedAt: timestamp("consumed_at", { withTimezone: true }),
-}, (table) => [uniqueIndex("admin_reauth_grants_token_uidx").on(table.tokenHash), index("admin_reauth_grants_expiry_idx").on(table.expiresAt), check("admin_reauth_grants_hash_format", sql`${table.tokenHash} ~ '^[a-f0-9]{64}$'`), check("admin_reauth_grants_purpose_nonblank", sql`length(btrim(${table.purpose})) between 1 and 64`), check("admin_reauth_grants_time_order", sql`${table.expiresAt} > ${table.createdAt} and (${table.consumedAt} is null or ${table.consumedAt} >= ${table.createdAt})`)]);
+}, (table) => [uniqueIndex("admin_reauth_grants_token_uidx").on(table.tokenHash), index("admin_reauth_grants_expiry_idx").on(table.expiresAt), check("admin_reauth_grants_hash_format", sql`${table.tokenHash} ~ '^[a-f0-9]{64}$'`), check("admin_reauth_grants_purpose_nonblank", sql`length(btrim(${table.purpose})) between 1 and 64`), check("admin_reauth_grants_time_order", sql`${table.expiresAt} > ${table.createdAt} and (${table.consumedAt} is null or (${table.consumedAt} >= ${table.createdAt} and ${table.consumedAt} <= ${table.expiresAt}))`)]);
 
 export const adminAudit = pgTable(
   "admin_audit",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     adminUserId: uuid("admin_user_id").references(() => adminUsers.id, {
-      onDelete: "set null",
+      onDelete: "restrict",
     }),
-    adminSessionId: uuid("admin_session_id").references(() => adminSessions.id, {
-      onDelete: "set null",
-    }),
+    adminSessionId: uuid("admin_session_id"),
     action: varchar("action", { length: 128 }).notNull(),
     targetType: varchar("target_type", { length: 64 }),
     targetId: varchar("target_id", { length: 128 }),

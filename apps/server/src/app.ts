@@ -88,6 +88,7 @@ export type BuildAppOptions = Readonly<{
   adminAuth?: AdminAuthService;
   adminClientKeyResolver?: ClientKeyResolver;
   adminClientAddressResolver?: ClientKeyResolver;
+  adminMaintenanceIntervalMs?: number;
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -398,14 +399,28 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   });
 
   const intervalMs = config.sweepIntervalMs;
-  const timer = intervalMs > 0 ? setInterval(() => { gateway.pump(); if (options.adminAuth) void options.adminAuth.pruneExpiredSessions().catch((error) => options.adminAuth!.report("admin.prune", error)); }, intervalMs) : undefined;
+  const timer = intervalMs > 0 ? setInterval(() => { gateway.pump(); }, intervalMs) : undefined;
   const nonceTimer = intervalMs > 0 && options.webClipTokens ? setInterval(() => { void options.webClipTokens!.pruneExpired().catch(() => undefined); }, Math.max(60_000, intervalMs)) : undefined;
+  const adminMaintenanceIntervalMs = options.adminMaintenanceIntervalMs ?? 60_000;
+  if (!Number.isFinite(adminMaintenanceIntervalMs) || adminMaintenanceIntervalMs < 1) throw new TypeError("adminMaintenanceIntervalMs must be a finite positive number");
+  let adminMaintenance: Promise<void> | undefined;
+  const runAdminMaintenance = () => {
+    if (!options.adminAuth || adminMaintenance) return;
+    adminMaintenance = options.adminAuth.pruneExpiredSessions()
+      .then(() => undefined)
+      .catch((error) => options.adminAuth!.report("admin.maintenance", error))
+      .finally(() => { adminMaintenance = undefined; });
+  };
+  const adminMaintenanceTimer = options.adminAuth ? setInterval(runAdminMaintenance, adminMaintenanceIntervalMs) : undefined;
   timer?.unref();
   nonceTimer?.unref();
+  adminMaintenanceTimer?.unref();
   if (options.webClipTokens) void options.webClipTokens.pruneExpired().catch(() => undefined);
   app.addHook("preClose", async () => {
     if (timer) clearInterval(timer);
     if (nonceTimer) clearInterval(nonceTimer);
+    if (adminMaintenanceTimer) clearInterval(adminMaintenanceTimer);
+    await adminMaintenance;
     await gateway.close();
   });
   return app as unknown as BuiltApp;
