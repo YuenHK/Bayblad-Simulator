@@ -34,8 +34,8 @@ jobs:
           for pair in CURRENT_RUN:runId CURRENT_ARTIFACT:artifact CURRENT_SHA:manifestSha256 CURRENT_COMMIT:commit; do key=${pair%%:*}; field=${pair#*:}; value=$(node -p "require('./current-state.json').$field"); echo "$key=$value" >> "$GITHUB_ENV"; done
           current_run=$(node -p 'require("./current-state.json").runId'); current_commit=$(node -p 'require("./current-state.json").commit'); current_artifact=$(node -p 'require("./current-state.json").artifact')
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$current_run" > current-run.json
-          current_tag=$(node scripts/verify-release-run.mjs current-run.json "$current_commit")
-          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$current_tag" --jq '.ref + " " + .object.sha' | grep -Fx "refs/tags/$current_tag $current_commit"
+          current_tag=$(node scripts/verify-deployment-source-run.mjs current-run.json current-state.json)
+          if [[ -n "$current_tag" ]];then gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$current_tag" --jq '.ref + " " + .object.sha' | grep -Fx "refs/tags/$current_tag $current_commit";fi
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$current_run/artifacts" > current-artifacts.json
           node scripts/verify-run-artifact.mjs current-artifacts.json "$current_artifact"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -49,7 +49,7 @@ jobs:
           test "$(./scripts/portable-sha256.sh digest sources/previous/release-manifest.json)" = "$PREVIOUS_SHA"
           test "$(./scripts/portable-sha256.sh digest sources/current/release-manifest.json)" = "$CURRENT_SHA"
           gh attestation verify sources/previous/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
-          gh attestation verify sources/current/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          current_signer=$(node -p 'require("./current-state.json").sourceWorkflow');gh attestation verify sources/current/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$current_signer"
           mkdir release
           node scripts/create-authorized-rollback.mjs sources/previous/release-manifest.json sources/current/release-manifest.json "$PREVIOUS_COMMIT" "$CURRENT_COMMIT" "$GITHUB_REPOSITORY" current-state.json release/release-manifest.json
           gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0].id' | grep -Fx "$(node -p 'require("./current-state.json").deploymentId')"
