@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   postgres-contract:
+    name: PostgreSQL functional integration (not production bootstrap evidence)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -55,7 +56,7 @@ jobs:
       - run: pnpm --filter @steam-top/server test:postgres
       - run: pnpm build
       - run: sha256sum -c infra/backup/trusted-ledger-cli.sha256
-      - name: Install the exact sealed runtime used by real promotion tests
+      - name: Install a root-owned functional fixture (not a production trust root)
         shell: bash
         run: |
           set -euo pipefail

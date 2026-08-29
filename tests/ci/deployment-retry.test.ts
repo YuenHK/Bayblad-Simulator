@@ -17,5 +17,5 @@ async function classify(change?: (items:any[])=>void) {
 describe("partial deployment retry classification",()=>{
   it("accepts only a complete exact immutable observation",async()=>expect(await classify()).toEqual({classification:"complete"}));
   it("fails closed on missing or mismatched services",async()=>{expect((await classify(x=>x.pop())).classification).toBe("partial");expect((await classify(x=>x[0].Config.Image="server:mutable")).classification).toBe("partial")});
-  it("host core keeps deploying retryable and creates a durable incident for partial state",async()=>{const host=await readFile("scripts/host-deploy-and-receipt.sh","utf8");expect(host).toContain('current_state == deploying');expect(host).toContain("classify-host-deployment.mjs");expect(host).toContain("RECOVERY-REQUIRED");expect(host).toContain("partial deployment observed");});
+  it("host core binds a pre-deploy baseline before retry classification",async()=>{const host=await readFile("scripts/host-deploy-and-receipt.sh","utf8");expect(host).toContain("fingerprint-host-baseline.mjs");expect(host).toContain("baselineServices");expect(host).toContain('current_state == deploying');expect(host).toContain("classify-host-deployment.mjs");expect(host).toContain("RECOVERY-REQUIRED");expect(host).toContain("partial deployment observed");});
 });

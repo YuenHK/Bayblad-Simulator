@@ -1,0 +1,28 @@
+name: Protected production host bootstrap
+on:
+  workflow_dispatch:
+permissions: { contents: read }
+jobs:
+  publish-bootstrap:
+    environment: bootstrap-release-approval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: { contents: read, id-token: write, attestations: write }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - name: Require protected default branch
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: test "$GITHUB_REF" = "refs/heads/$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
+      - run: infra/bootstrap/create-package.sh infra/bootstrap bootstrap.tgz
+      - run: sha256sum bootstrap.tgz > BOOTSTRAP-ARCHIVE-SHA256
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with: { subject-path: bootstrap.tgz }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: "production-bootstrap-${{ github.sha }}"
+          path: |
+            bootstrap.tgz
+            BOOTSTRAP-ARCHIVE-SHA256
+          if-no-files-found: error
+          retention-days: 90

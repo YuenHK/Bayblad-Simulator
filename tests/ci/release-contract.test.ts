@@ -184,6 +184,7 @@ describe("rollback deletion monotonicity", () => {
       expect(finalize).toContain(binding);
     expect(finalize).toContain("steam-top-production-deployment");
     expect(read("infra/backup/record-cutover-receipt.sh")).toContain("production-smoke.sh");
+    expect(read("infra/backup/record-cutover-receipt.sh")).toContain('*) die "invalid deployment probe state"');
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-isolation.sh");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-full.sh");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("promote-restored-target.sh");

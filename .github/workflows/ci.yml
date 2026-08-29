@@ -113,8 +113,9 @@ jobs:
           printf '{"username":"%s","password":"%s"}\n' "$ADMIN_USERNAME" "$ADMIN_INITIAL_PASSWORD" > "$RUNNER_TEMP/admin-smoke.json"
           docker compose -f compose.yaml -f compose.build.yaml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v nonce="$nonce" <<'SQL'
           create table if not exists restore_control.deployment_probe(nonce text primary key check(nonce~'^[a-f0-9]{64}$'),restore_target_id uuid not null,system_identifier text not null,created_at timestamptz not null default clock_timestamp(),consumed_at timestamptz);
-          insert into restore_control.deployment_probe(nonce,restore_target_id,system_identifier)
-          select :'nonce',restore_target_id,(select system_identifier::text from pg_control_system())
+          alter table restore_control.deployment_probe add column if not exists state text not null default 'pending';alter table restore_control.deployment_probe add column if not exists observed_at timestamptz;alter table restore_control.deployment_probe add column if not exists receipt_signed_at timestamptz;
+          insert into restore_control.deployment_probe(nonce,restore_target_id,system_identifier,state)
+          select :'nonce',restore_target_id,(select system_identifier::text from pg_control_system()),'pending'
           from restore_control.deployment_environment where singleton;
           SQL
           ADMIN_SMOKE_SECRET_FILE="$RUNNER_TEMP/admin-smoke.json" ./scripts/production-smoke.sh "$PUBLIC_ORIGIN" "$nonce"
@@ -141,7 +142,9 @@ jobs:
           grep -Fx "RECEIPT-END $nonce" "$RUNNER_TEMP/framed-receipt"
       - run: pnpm test:security
       - if: always()
-        run: docker compose -f compose.yaml -f compose.build.yaml down -v
+        run: |
+          failures="";docker compose -f compose.yaml -f compose.build.yaml down -v || failures="${failures} production-security-compose"
+          if [[ -n "$failures" ]];then echo "cleanup failures:$failures" >&2;exit 1;fi
   release-images:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
@@ -151,6 +154,11 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with: { persist-credentials: false }
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4
+        with: { version: 11.19.0 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24.13.0, cache: pnpm }
+      - run: pnpm install --frozen-lockfile && pnpm build
       - name: Authenticate only for immutable GHCR publication
         shell: bash
         run: printf '%s' '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
@@ -165,6 +173,7 @@ jobs:
           docker buildx build --provenance=mode=max --sbom=true --push --metadata-file release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
           node scripts/create-release-manifest.mjs "$GITHUB_SHA" "$repository" release/server.json release/web.json release/database.json release/release-manifest.json
           node scripts/create-runtime-files-manifest.mjs . release/runtime-files.sha256
+          node scripts/stage-runtime-files.mjs . release/runtime-files.sha256 release/runtime
           ./scripts/portable-sha256.sh manifest release server.json web.json database.json release-manifest.json runtime-files.sha256 > release/SHA256SUMS
       - name: Attest the release authorization manifest
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
@@ -298,9 +307,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          sudo docker compose -p steam-top-release-integration --project-directory /opt/steam-top --env-file /opt/steam-top/.release-integration/production.env -f /opt/steam-top/compose.yaml -f /opt/steam-top/compose.release-integration.yaml down -v --remove-orphans
-          docker logout ghcr.io
-          sudo rm -f /etc/sudoers.d/steam-top-integration /usr/local/share/ca-certificates/steam-top-integration.crt /tmp/integration-root.crt /tmp/integration-images.env server.key server.crt
-          sudo update-ca-certificates
-          sudo userdel steam-top-integration
-          sudo rm -rf /opt/steam-top
+          failures=""
+          sudo docker compose -p steam-top-release-integration --project-directory /opt/steam-top --env-file /opt/steam-top/.release-integration/production.env -f /opt/steam-top/compose.yaml -f /opt/steam-top/compose.release-integration.yaml down -v --remove-orphans || failures="$failures compose"
+          docker logout ghcr.io || failures="$failures registry-logout"
+          sudo rm -f /etc/sudoers.d/steam-top-integration /usr/local/share/ca-certificates/steam-top-integration.crt /tmp/integration-root.crt /tmp/integration-images.env server.key server.crt || failures="$failures secrets"
+          sudo update-ca-certificates || failures="$failures ca-trust"
+          sudo userdel steam-top-integration || failures="$failures deploy-user"
+          sudo rm -rf /opt/steam-top || failures="$failures integration-root"
+          if [[ -n "$failures" ]];then echo "cleanup failures:$failures" >&2;exit 1;fi
