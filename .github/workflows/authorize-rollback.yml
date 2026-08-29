@@ -23,7 +23,7 @@ jobs:
           node scripts/validate-rollback-inputs.mjs
           node scripts/verify-rollback-go-live.mjs "$GITHUB_REPOSITORY" production-rollback-approval
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN" > previous-run.json
-          tag=$(node scripts/verify-release-run.mjs previous-run.json "$PREVIOUS_COMMIT")
+          tag=$(node scripts/verify-release-run.mjs previous-run.json "$PREVIOUS_COMMIT");object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.type+"|"+.object.sha');for _ in 1 2 3 4;do type=${object%%|*};sha=${object#*|};[[ $type == tag ]]||break;object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq '.object.type+"|"+.object.sha');done;[[ $object == "commit|$PREVIOUS_COMMIT" ]]
           gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.ref + " " + .object.sha' | grep -Fx "refs/tags/$tag $PREVIOUS_COMMIT"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN/artifacts" > previous-artifacts.json
           node scripts/verify-run-artifact.mjs previous-artifacts.json "$PREVIOUS_ARTIFACT"

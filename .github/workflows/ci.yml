@@ -235,8 +235,8 @@ jobs:
           sudo install -o root -g root -m 0600 server.crt /opt/steam-top/.release-integration/tls/server.crt
           printf '%s' "$GITHUB_TOKEN" | sudo tee /opt/steam-top/.release-integration/secrets/github-token >/dev/null
           printf '{"username":"admin","password":"integration-admin-password"}\n' | sudo tee /opt/steam-top/.release-integration/secrets/admin-smoke.json >/dev/null
-          printf '[target]\nhost=127.0.0.1\nport=15432\ndbname=steam_top\nuser=steam_top\nsslmode=require\n' | sudo tee /opt/steam-top/.release-integration/secrets/pg-service >/dev/null
-          printf '127.0.0.1:15432:steam_top:steam_top:integration-postgres-password\n' | sudo tee /opt/steam-top/.release-integration/secrets/pg-pass >/dev/null
+          printf '[target]\nhost=db\nhostaddr=127.0.0.1\nport=15432\ndbname=steam_top\nuser=steam_top\nsslmode=verify-full\nsslrootcert=/opt/steam-top/.release-integration/tls/server.crt\n' | sudo tee /opt/steam-top/.release-integration/secrets/pg-service >/dev/null
+          printf 'db:15432:steam_top:steam_top:integration-postgres-password\n' | sudo tee /opt/steam-top/.release-integration/secrets/pg-pass >/dev/null
           sudo chmod 0600 /opt/steam-top/.release-integration/secrets/*
           sudo ssh-keygen -q -t ed25519 -N '' -f /opt/steam-top/.release-integration/secrets/host-signing
         env: { GITHUB_TOKEN: "${{ github.token }}" }
