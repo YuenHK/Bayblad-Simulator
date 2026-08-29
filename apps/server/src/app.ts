@@ -40,6 +40,7 @@ export type BuildAppOptions = Readonly<{
   matchRepository?: MatchRepository;
   roomRecordRepository?: RoomRecordRepository;
   roomProjectionStore?: RoomProjectionStore;
+  requireAuthorityLease?: boolean;
   battleEngine?: BattleEnginePort;
   resultRepository?: ResultRepository;
   launch?: LaunchCoordinator;
@@ -120,6 +121,7 @@ function requireNonnegative(name: string, value: number): number {
 }
 
 export function buildApp(options: BuildAppOptions): BuiltApp {
+  if (options.requireAuthorityLease && (!options.roomRecordRepository?.acquireStartupLease || !options.roomRecordRepository.verifyStartupLease || !options.roomRecordRepository.releaseStartupLease)) throw new TypeError("Authority lease lifecycle is required");
   if (process.env.NODE_ENV === "production" && options.testIdentityResolver) throw new TypeError("testIdentityResolver is forbidden in production");
   if (process.env.NODE_ENV === "production" && !options.allowedOrigins?.length) {
     throw new TypeError("Production composition requires allowedOrigins");
@@ -492,9 +494,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   app.addHook("onReady", async () => {
     // We intentionally fail closed rather than attempting to resume battles whose
     // in-memory timing/physics state cannot be reconstructed after a process exit.
-    if (process.env.NODE_ENV === "production") await options.roomRecordRepository?.acquireStartupLease?.();
+    if (process.env.NODE_ENV === "production" || options.requireAuthorityLease) await options.roomRecordRepository?.acquireStartupLease?.();
     await options.roomRecordRepository?.reconcileOrphanedActiveRooms?.(new Date());
-    if (process.env.NODE_ENV === "production" && options.roomRecordRepository?.verifyStartupLease) {
+    if ((process.env.NODE_ENV === "production" || options.requireAuthorityLease) && options.roomRecordRepository?.verifyStartupLease) {
       leaseHealthTimer = setInterval(() => { void options.roomRecordRepository!.verifyStartupLease!().catch((error) => {
         if (!authorityHealthy) return;
         authorityHealthy = false; reportBackgroundError(error);
@@ -504,17 +506,19 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     }
   });
   app.addHook("preClose", async () => {
+    authorityHealthy = false;
     retryPumpClosing = true;
     if (leaseHealthTimer) clearInterval(leaseHealthTimer);
     if (timer) clearInterval(timer);
     if (nonceTimer) clearInterval(nonceTimer);
     if (adminMaintenanceTimer) clearInterval(adminMaintenanceTimer);
+    const failures: unknown[] = [];
+    const stage = async (operations: readonly Promise<unknown>[]) => { const results = await Promise.allSettled(operations); for (const result of results) if (result.status === "rejected") failures.push(result.reason); };
     const drainRetryWorkers = async () => { await retryClaimPump; while (retryWorkers.size) await Promise.allSettled([...retryWorkers.values()]); };
-    const results = await Promise.allSettled([
-      adminMaintenance ?? Promise.resolve(), drainRetryWorkers(), gateway.close(),
-      options.roomRecordRepository?.releaseStartupLease?.() ?? Promise.resolve(), battleEngine.shutdown?.() ?? Promise.resolve(),
-    ]);
-    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    await stage([gateway.close()]);
+    await stage([adminMaintenance ?? Promise.resolve(), drainRetryWorkers()]);
+    await stage([battleEngine.shutdown?.() ?? Promise.resolve()]);
+    await stage([options.roomRecordRepository?.releaseStartupLease?.() ?? Promise.resolve()]);
     if (failures.length) throw new AggregateError(failures, "APP_PRECLOSE_FAILED");
   });
   return app as unknown as BuiltApp;

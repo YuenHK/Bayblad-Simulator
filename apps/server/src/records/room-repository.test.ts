@@ -32,10 +32,12 @@ describe("MemoryRoomRecordRepository authoritative transitions", () => {
     expect(projections.size).toBe(0);
   });
   it("serializes cross-room memory transactions so rollback cannot erase another commit", async () => {
-    const projections = new MemoryRoomProjectionStore(); let release!: () => void;
+    const projections = new MemoryRoomProjectionStore(); let release!: () => void; let entered!: () => void;
     const barrier = new Promise<void>((resolve) => { release = resolve; });
-    const first = projections.transaction(async () => { await projections.enqueue({ roomId: "room-1", revision: 0, payload: { phase: "launch", firstBattleAt: null, closedAt: null } }); await barrier; throw new Error("rollback"); });
+    const staged = new Promise<void>((resolve) => { entered = resolve; });
+    const first = projections.transaction(async () => { await projections.enqueue({ roomId: "room-1", revision: 0, payload: { phase: "launch", firstBattleAt: null, closedAt: null } }); entered(); await barrier; throw new Error("rollback"); });
     const second = projections.transaction(async () => projections.enqueue({ roomId: "room-2", revision: 0, payload: { phase: "launch", firstBattleAt: null, closedAt: null } }));
+    await staged; expect(await projections.claimDue(10, new Date("2099-01-01"))).toHaveLength(0);
     release(); await expect(first).rejects.toThrow("rollback"); await expect(second).resolves.toBe("created");
     const claimed = await projections.claimDue(10, new Date("2099-01-01"));
     expect(claimed.map(({ roomId }) => roomId)).toEqual(["room-2"]);
