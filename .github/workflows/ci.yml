@@ -63,6 +63,7 @@ jobs:
       POSTGRES_DB: steam_top
       POSTGRES_USER: steam_top
       POSTGRES_PASSWORD: ci-postgres-password
+      APP_DATABASE_PASSWORD: ci-app-postgres-password
       DATABASE_URL: postgresql://steam_top:ci-postgres-password@db:5432/steam_top?sslmode=require
       COOKIE_SIGNING_KEY: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
       ADMIN_USERNAME: admin
@@ -94,7 +95,20 @@ jobs:
           chmod 600 .ci/tls/server.key
       - run: pnpm validate:caddy
       - run: docker compose -f compose.yaml -f compose.build.yaml build
-      - run: docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml up -d --wait
+      - name: Start owner migration, provision non-owner app role, then start application
+        shell: bash
+        run: |
+          set -euo pipefail
+          compose=(docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml)
+          "${compose[@]}" up -d --wait db migration
+          "${compose[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v password="$APP_DATABASE_PASSWORD" <<'SQL'
+          select format('create role steam_top_app login password %L', :'password') where not exists(select 1 from pg_roles where rolname='steam_top_app') \gexec
+          grant connect on database steam_top to steam_top_app;
+          grant usage on schema public,restore_control to steam_top_app;
+          grant select,insert,update,delete on all tables in schema public,restore_control to steam_top_app;
+          grant usage,select,update on all sequences in schema public,restore_control to steam_top_app;
+          SQL
+          "${compose[@]}" up -d --wait server web caddy
       - name: Prove untrusted TLS fails, then install the exact Caddy root
         shell: bash
         run: |
@@ -129,6 +143,7 @@ jobs:
           umask 077
           printf '{"username":"%s","password":"%s"}\n' "$ADMIN_USERNAME" "$ADMIN_INITIAL_PASSWORD" > "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
           ./infra/backup/test-canonical-cutover-full.sh
+          docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml up -d --force-recreate --wait server
           sudo rm -f "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
       - name: Verify strict Node TLS before browser security tests
         run: node -e 'require("https").get(process.env.SECURITY_HTTPS_ORIGIN,res=>{if(res.statusCode!==200)process.exit(1);res.resume()}).on("error",error=>{console.error(error);process.exit(1)})'

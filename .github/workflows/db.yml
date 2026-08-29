@@ -83,7 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/bootstrap.tar.gz"
-          ./infra/bootstrap/create-package.sh "$archive"
+          ./infra/bootstrap/create-package.sh infra/bootstrap "$archive"
           mkdir "$RUNNER_TEMP/bootstrap-unpack"
           tar -xzf "$archive" -C "$RUNNER_TEMP/bootstrap-unpack"
           bootstrap_sha=$(./scripts/portable-sha256.sh digest "$RUNNER_TEMP/bootstrap-unpack/bootstrap-files.sha256")
