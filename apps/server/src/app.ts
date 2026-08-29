@@ -27,6 +27,8 @@ import type { AnalyticsService } from "./analytics/service";
 import { registerAnalyticsRoutes } from "./analytics/routes";
 import { registerExportRoutes, type ExportDataSource } from "./exports/workbook";
 import { registerDeleteRecordRoutes, type DeletionStore } from "./admin/delete-records";
+import { registerAdminDashboardRoutes } from "./admin/dashboard-routes";
+import { registerAdminRecordRoutes, type AdminRecordsSource } from "./admin/records-routes";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -109,6 +111,7 @@ export type BuildAppOptions = Readonly<{
   analyticsService?: AnalyticsService;
   exportDataSource?: ExportDataSource;
   deletionStore?: DeletionStore;
+  adminRecordsSource?: AdminRecordsSource;
   analyticsRefreshIntervalMs?: number;
 }>;
 
@@ -226,6 +229,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (options.adminAuth && options.analyticsService) registerAnalyticsRoutes(app, options.adminAuth, options.analyticsService);
   if (options.adminAuth && options.exportDataSource) registerExportRoutes(app, options.adminAuth, options.exportDataSource);
   if (options.adminAuth && options.deletionStore) registerDeleteRecordRoutes(app, options.adminAuth, options.deletionStore, adminResolver);
+  if (options.adminAuth && options.adminRecordsSource) registerAdminRecordRoutes(app, options.adminAuth, options.adminRecordsSource);
   if (options.adminAuth && options.matchRepository) app.post("/api/admin/records/matches/:id/retry", async (request, reply) => {
     const current = await authenticateAdminMutation(request, reply, options.adminAuth!, adminResolver); if (!current) return;
     const id = (request.params as { id?: unknown }).id;
@@ -244,6 +248,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     }
   });
   const rooms = options.rooms ?? new RoomService(options.now ? { now: options.now } : {});
+  if (options.adminAuth) registerAdminDashboardRoutes(app, options.adminAuth, rooms, adminResolver);
   const designs = options.designs ?? new DesignRegistry({
     ...(options.now ? { now: options.now } : {}),
     maxGlobal: config.maxDesigns,
