@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $(id -u) -eq 0 ]]||exit 2
+tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT;install -o root -g root -m 0600 /dev/null /var/lock/steam-top-generation-publish.lock;install -d -o root -g root -m 0700 "$tmp/root"
+make_generation(){ local dir=$1 text=$2;mkdir "$dir";printf '%s\n' "$text" >"$dir/payload.json";printf 'signature\n' >"$dir/payload.json.sig";}
+make_generation "$tmp/a" same;make_generation "$tmp/b" same;digest=$(sha256sum "$tmp/a/payload.json"|awk '{print $1}');"$(dirname "$0")/publish-generation.sh" "$tmp/a" "$tmp/root/$digest" & first=$!;"$(dirname "$0")/publish-generation.sh" "$tmp/b" "$tmp/root/$digest" & second=$!;wait "$first";wait "$second";cmp -s "$tmp/root/$digest/payload.json" <(printf 'same\n')
+make_generation "$tmp/conflict" conflict;if "$(dirname "$0")/publish-generation.sh" "$tmp/conflict" "$tmp/root/$digest";then exit 1;fi
+install -d "$tmp/runtime/scripts";printf 'fixture\n' >"$tmp/runtime/scripts/a";file_digest=$(sha256sum "$tmp/runtime/scripts/a"|awk '{print $1}');printf '%s 0444 scripts/a\n' "$file_digest" >"$tmp/runtime/runtime-files.sha256";printf '{}\n' >"$tmp/runtime/runtime-install-receipt.json";node "$(dirname "$0")/verify-runtime-tree.mjs" "$tmp/runtime" "$tmp/runtime/runtime-files.sha256";printf 'extra\n' >"$tmp/runtime/extra";if node "$(dirname "$0")/verify-runtime-tree.mjs" "$tmp/runtime" "$tmp/runtime/runtime-files.sha256";then exit 1;fi

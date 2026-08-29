@@ -73,3 +73,5 @@ jobs:
       - run: CI=true ./infra/backup/test-backup-restore.sh
       - run: ./infra/backup/test-promotion-isolation.sh
       - run: /opt/steam-top/infra/backup/test-promotion-full.sh
+      - name: Exercise packaged generation collision and runtime-tree fail-closed behavior
+        run: sudo /opt/steam-top/scripts/test-deployment-atomicity.sh
