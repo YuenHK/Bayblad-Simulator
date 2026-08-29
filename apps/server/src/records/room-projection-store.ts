@@ -27,6 +27,7 @@ export interface RoomProjectionStore {
   claimDue(limit: number, now?: Date): Promise<readonly ClaimedRoomProjection[]>;
   complete(claim: ClaimedRoomProjection): Promise<boolean>;
   fail(claim: ClaimedRoomProjection, errorCode: string, now?: Date): Promise<boolean>;
+  pruneDead?(now?: Date, limit?: number): Promise<number>;
   readonly size?: number;
 }
 
@@ -38,6 +39,7 @@ type MemoryEntry = RoomProjectionInput & {
   leaseUntil: Date | null;
   nextAttemptAt: Date;
   createdAt: Date;
+  updatedAt: Date;
   lastError: string | null;
 };
 
@@ -65,7 +67,7 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
     this.#entries.set(input.roomId, {
       ...structuredClone(input), status: "pending", attempt: 0,
       generation: (current?.generation ?? 0) + 1, leaseToken: null,
-      leaseUntil: null, nextAttemptAt: now, createdAt: current?.createdAt ?? now,
+      leaseUntil: null, nextAttemptAt: now, createdAt: current?.createdAt ?? now, updatedAt: now,
       lastError: null,
     });
     return current ? "updated" : "created";
@@ -102,7 +104,15 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
     entry.nextAttemptAt = new Date(entry.status === "dead" ? 8_640_000_000_000_000 : now.getTime() + Math.min(300_000, 1_000 * 2 ** Math.max(0, entry.attempt - 1)));
     entry.leaseToken = null;
     entry.leaseUntil = null;
+    entry.updatedAt = now;
     return true;
+  }
+
+  async pruneDead(now = this.#now(), limit = 1_000): Promise<number> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) throw new RangeError("invalid prune limit");
+    let removed = 0; const cutoff = now.getTime() - 30 * 86_400_000;
+    for (const [id, entry] of this.#entries) if (removed < limit && entry.status === "dead" && entry.updatedAt.getTime() < cutoff) { this.#entries.delete(id); removed++; }
+    return removed;
   }
 
   get size(): number { return this.#entries.size; }
@@ -194,5 +204,10 @@ export class PostgresRoomProjectionStore implements RoomProjectionStore {
       eq(roomProjectionJobs.generation, claim.generation), eq(roomProjectionJobs.leaseToken, claim.leaseToken),
     )).returning({ roomId: roomProjectionJobs.roomId });
     return updated.length === 1;
+  }
+  async pruneDead(now = new Date(), limit = 1_000): Promise<number> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) throw new RangeError("invalid prune limit");
+    const rows = await this.db.execute(sql`with expired as (select room_id from room_projection_jobs where status='dead' and updated_at < ${new Date(now.getTime() - 30 * 86_400_000)} order by updated_at limit ${limit} for update skip locked) delete from room_projection_jobs j using expired where j.room_id=expired.room_id and j.status='dead' returning j.room_id`);
+    return rows.length;
   }
 }

@@ -17,7 +17,7 @@ export interface RoomRecordRepository {
   syncRoles(roomId: string, roles: ReadonlyMap<string, "player1" | "player2" | "spectator">, ownerParticipantId: string | null, ownerIdentityId: string | null): Promise<void>;
   leave(roomId: string, participantPublicId: string, at: Date): Promise<void>;
   leaveAndSync(roomId: string, participantPublicId: string, at: Date, roles: ReadonlyMap<string, "player1" | "player2" | "spectator">, ownerParticipantId: string | null, ownerIdentityId: string | null): Promise<void>;
-  close(roomId: string, at: Date): Promise<void>;
+  close(roomId: string, at: Date, revision?: number): Promise<void>;
   applyProjection?(roomId: string, revision: number, payload: RoomProjectionPayload): Promise<boolean>;
 }
 
@@ -67,10 +67,10 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
       await tx.update(rooms).set({ ownerIdentityId }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
     });
   }
-  async close(roomId: string, at: Date): Promise<void> {
+  async close(roomId: string, at: Date, revision?: number): Promise<void> {
     await this.db.transaction(async (tx) => {
       await tx.update(roomParticipants).set({ leftAt: at }).where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)));
-      await tx.update(rooms).set({ status: "closed", closedAt: at }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
+      await tx.update(rooms).set({ status: "closed", closedAt: at, ...(revision === undefined ? {} : { appliedProjectionRevision: revision }) }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt), ...(revision === undefined ? [] : [lt(rooms.appliedProjectionRevision, revision)])));
     });
   }
   async applyProjection(roomId: string, revision: number, payload: RoomProjectionPayload): Promise<boolean> {

@@ -231,6 +231,14 @@ export class RoomService {
     }
   }
 
+  roomsDueForClosure(): readonly Readonly<{ roomId: string; revision: number }>[] {
+    const now = this.#dependencies.now();
+    return [...this.#rooms.values()].filter((room) =>
+      ![...room.participants.values()].some((participant) => participant.connected) &&
+      room.emptySinceMs !== null && now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
+    ).map((room) => ({ roomId: room.id, revision: room.revision + 1 }));
+  }
+
   #create(user: InternalUser, roomName: string): RoomMembership {
     const name = roomCreateEventSchema.parse({
       type: "room.create",

@@ -72,6 +72,15 @@ it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it 
   expect(await roomsRepository.applyProjection(roomId, 3, { phase: "result", firstBattleAt: null, closedAt: null })).toBe(true);
   expect(await roomsRepository.applyProjection(roomId, 2, { phase: "launch", firstBattleAt: null, closedAt: null })).toBe(false);
   expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "result", appliedProjectionRevision: 3 });
+  await first.enqueue({ roomId, revision: 4, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
+  const staleLease = (await first.claimDue(1, new Date("2099-01-02")))[0]!;
+  const takeover = (await second.claimDue(1, new Date("2099-01-03")))[0]!;
+  expect(await first.complete(staleLease)).toBe(false);
+  expect(await first.fail(staleLease, "STALE", new Date("2099-01-03"))).toBe(false);
+  expect(await second.complete(takeover)).toBe(true);
+  await roomsRepository.close(roomId, new Date("2026-08-29T03:00:00Z"), 5);
+  expect(await roomsRepository.applyProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null })).toBe(false);
+  expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "closed", appliedProjectionRevision: 5 });
 }, 30_000);
 
 afterAll(async () => {
@@ -166,7 +175,12 @@ it.skipIf(!databaseUrl)("persists an exact authoritative round set and rejects a
   const [leftClaims, rightClaims] = await Promise.all([repository.claimDueJobs(new Date("2099-01-01"), 1), restarted.claimDueJobs(new Date("2099-01-01"), 1)]);
   expect(leftClaims.length + rightClaims.length).toBe(1);
   const claim = [...leftClaims, ...rightClaims][0]!;
-  await expect(repository.retryFailedMatch(matchId, { claimToken: claim.claimToken, generation: claim.generation })).resolves.toBe("created");
+  const [takeover] = await restarted.claimDueJobs(new Date("2099-01-02"), 1);
+  expect(takeover).toBeDefined();
+  await expect(repository.retryFailedMatch(matchId, { claimToken: claim.claimToken, generation: claim.generation })).rejects.toBeInstanceOf(MatchPersistenceConflictError);
+  await expect(repository.retryFailedMatch(matchId, { claimToken: takeover!.claimToken, generation: takeover!.generation })).resolves.toBe("created");
   await expect(new PostgresMatchRepository(client.db).retryFailedMatch(matchId)).resolves.toBe("replayed");
   await expect(repository.saveCompletedMatch(completed)).resolves.toBe("replayed");
+  expect(await repository.pruneRetention(new Date("9999-01-01"), 10)).toBe(1);
+  expect(await repository.getRetryJob(matchId)).toBeUndefined();
 }, 30_000);

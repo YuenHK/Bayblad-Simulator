@@ -51,16 +51,17 @@ describe("durable record contracts", () => {
     expect(left.length + right.length).toBe(1);
   });
 
-  it("retains and retries a projection when its first durable enqueue fails", async () => {
-    vi.useFakeTimers();
-    try {
-      class FailOnceStore extends MemoryRoomProjectionStore { calls = 0; override async enqueue(input: Parameters<MemoryRoomProjectionStore["enqueue"]>[0]) { this.calls += 1; if (this.calls === 1) throw new Error("offline"); return super.enqueue(input); } }
-      const store = new FailOnceStore(); const coordinator = new RoomProjectionCoordinator({ store, apply: async () => undefined, report: () => undefined });
-      await expect(coordinator.enqueueProjection({ roomId: id(93), revision: 1, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } })).rejects.toThrow("offline");
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(store.calls).toBe(2); expect(store.size).toBe(1);
-      await coordinator.close();
-    } finally { vi.useRealTimers(); }
+  it("fails admission at the durable boundary and close surfaces an in-flight enqueue failure", async () => {
+    let reject!: (error: Error) => void;
+    class FailingStore extends MemoryRoomProjectionStore {
+      override async enqueue() { return new Promise<"created">((_resolve, rejectPromise) => { reject = rejectPromise; }); }
+    }
+    const coordinator = new RoomProjectionCoordinator({ store: new FailingStore(), apply: async () => undefined });
+    const admission = coordinator.enqueueProjection({ roomId: id(93), revision: 1, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
+    const closing = coordinator.close();
+    reject(new Error("offline"));
+    await expect(admission).rejects.toThrow("offline");
+    await expect(closing).rejects.toThrow("offline");
   });
   it("reuses an identical canonical design for one identity and enforces ownership", async () => {
     const repository = new MemoryDesignRepository();
@@ -154,6 +155,19 @@ describe("durable record contracts", () => {
     }
     expect(repository.calls).toBe(10);
     expect(await repository.claimDueJobs(new Date("9999-01-01"), 1)).toHaveLength(0);
+  });
+
+  it("prunes only terminal envelopes after their bounded retention windows", async () => {
+    let now = new Date("2026-08-29T00:00:00Z");
+    const matches = new MemoryMatchRepository({ now: () => now });
+    const match = fixture(); await matches.queueCompletion(match); await matches.retryFailedMatch(match.id);
+    expect(await matches.pruneRetention(new Date(now.getTime() + 6 * 86_400_000))).toBe(0);
+    expect(await matches.pruneRetention(new Date(now.getTime() + 8 * 86_400_000))).toBe(1);
+    const projections = new MemoryRoomProjectionStore({ maxAttempts: 1, now: () => now });
+    await projections.enqueue({ roomId: id(94), revision: 1, payload: { phase: "closed", firstBattleAt: null, closedAt: now.toISOString() } });
+    const [claim] = await projections.claimDue(1, now); await projections.fail(claim!, "OFFLINE", now);
+    expect(await projections.pruneDead(new Date(now.getTime() + 29 * 86_400_000))).toBe(0);
+    expect(await projections.pruneDead(new Date(now.getTime() + 31 * 86_400_000))).toBe(1);
   });
 
   it("rejects round authority collisions even when the input hash is reused", async () => {
