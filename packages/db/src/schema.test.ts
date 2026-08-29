@@ -341,6 +341,8 @@ describe("persistent PostgreSQL schema", () => {
 
     expect(sql).toContain('CREATE TABLE "matches"');
     expect(sql).toContain('CREATE TABLE "rounds"');
+    expect(sql).toMatch(/CREATE TABLE "room_projection_jobs"[\s\S]*?"reservation_token" uuid[\s\S]*?room_projection_jobs_reservation/);
+    expect(sql.match(/"reservation_token" uuid/g)).toHaveLength(1);
     expect(sql).toContain("matches_completed_score_shape");
     expect(sql).toContain("DEFERRABLE INITIALLY DEFERRED");
     expect(sql).toContain('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');

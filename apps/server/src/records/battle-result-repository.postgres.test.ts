@@ -72,29 +72,32 @@ it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it 
   expect(await roomsRepository.applyProjection(roomId, 3, { phase: "result", firstBattleAt: null, closedAt: null })).toBe(true);
   expect(await roomsRepository.applyProjection(roomId, 2, { phase: "launch", firstBattleAt: null, closedAt: null })).toBe(false);
   expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "result", appliedProjectionRevision: 3 });
+  await roomsRepository.transitionPhaseWithProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null });
+  await roomsRepository.transitionPhaseWithProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null }); // unknown-commit retry
+  expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "waiting", appliedProjectionRevision: 4 });
   await expect(roomsRepository.closeWithProjection(roomId, new Date("2026-08-29T02:30:00Z"), 3, { phase: "closed", firstBattleAt: null, closedAt: "2026-08-29T02:30:00.000Z" })).rejects.toThrow("ROOM_CLOSE_REVISION_CONFLICT");
   expect((await client.db.select().from(roomParticipants).where(eq(roomParticipants.roomId, roomId)))[0]?.leftAt).toBeNull();
-  await first.enqueue({ roomId, revision: 4, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
-  await expect(first.enqueue({ roomId, revision: 4, payload: { phase: "battle", firstBattleAt: null, closedAt: null } })).rejects.toThrow("ROOM_PROJECTION_CONFLICT");
+  await first.enqueue({ roomId, revision: 5, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
+  await expect(first.enqueue({ roomId, revision: 5, payload: { phase: "battle", firstBattleAt: null, closedAt: null } })).rejects.toThrow("ROOM_PROJECTION_CONFLICT");
   const staleLease = (await first.claimDue(1, new Date("2099-01-02")))[0]!;
   const takeover = (await second.claimDue(1, new Date("2099-01-03")))[0]!;
   expect(await first.complete(staleLease)).toBe(false);
   expect(await first.fail(staleLease, "STALE", new Date("2099-01-03"))).toBe(false);
   expect(await second.complete(takeover)).toBe(true);
   const [closeRace, joinRace] = await Promise.allSettled([
-    roomsRepository.closeWithProjection(roomId, new Date("2026-08-29T03:00:00Z"), 5, { phase: "closed", firstBattleAt: null, closedAt: "2026-08-29T03:00:00.000Z" }),
+    roomsRepository.closeWithProjection(roomId, new Date("2026-08-29T03:00:00Z"), 6, { phase: "closed", firstBattleAt: null, closedAt: "2026-08-29T03:00:00.000Z" }),
     roomsRepository.join(roomId, { participantPublicId: "racing-spectator", identityId: null, displayName: "Racer", role: "spectator", isOwner: false, ip: null, userAgent: null, deviceName: null }, new Date("2026-08-29T02:59:59Z")),
   ]);
   expect(closeRace.status).toBe("fulfilled");
   expect(["fulfilled", "rejected"]).toContain(joinRace.status);
   expect(await roomsRepository.applyProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null })).toBe(false);
-  expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "closed", appliedProjectionRevision: 5 });
+  expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "closed", appliedProjectionRevision: 6 });
   expect((await client.db.select().from(roomParticipants).where(eq(roomParticipants.roomId, roomId))).every((participant) => participant.leftAt !== null)).toBe(true);
   const [closedJob] = await first.claimDue(1, new Date("2099-01-04")); expect(closedJob).toBeDefined(); await first.complete(closedJob!);
-  const prepared = await first.prepare({ roomId, revision: 6, payload: { phase: "result", firstBattleAt: null, closedAt: null } });
+  const prepared = await first.prepare({ roomId, revision: 7, payload: { phase: "result", firstBattleAt: null, closedAt: null } });
   expect(await second.claimDue(1, new Date("2099-01-05"))).toHaveLength(0);
   expect(await first.abortPrepared(prepared)).toBe(true);
-  const replacement = await second.prepare({ roomId, revision: 6, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
+  const replacement = await second.prepare({ roomId, revision: 7, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
   expect(await first.commitPrepared(prepared)).toBe(false); expect(await second.commitPrepared(replacement)).toBe(true);
 }, 30_000);
 
