@@ -779,6 +779,7 @@ export const adminUsers = pgTable(
     username: varchar("username", { length: 80 }).notNull(),
     passwordHash: text("password_hash").notNull(),
     active: boolean("active").notNull().default(true),
+    mustChangePassword: boolean("must_change_password").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -809,6 +810,9 @@ export const adminSessions = pgTable(
       .notNull()
       .defaultNow(),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),

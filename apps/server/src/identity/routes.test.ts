@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildApp, type BattleEnginePort } from "../app";
 import { IdentityResolver, InMemoryIdentityStore } from "./resolver";
 import { PostgresIdentityStore } from "./postgres-store";
+import { AdminAuthService } from "../auth/admin-auth";
+import { PostgresAdminStore } from "../auth/postgres-admin-store";
 import { hashIdentityToken } from "./cookie";
 import { ApiIClassAdapter, FallbackIClassAdapter, ImportedDeviceMapAdapter } from "./iclass-adapter";
 import { InMemoryTokenNonceStore, WebClipTokenService } from "./webclip-token";
@@ -154,7 +156,8 @@ describe("identity routes", () => {
     const previous = process.env.NODE_ENV; process.env.NODE_ENV = "production";
     try {
       const durable = new PostgresIdentityStore(null as never);
-      const app = buildApp({ battleEngine, allowedOrigins: ["https://school.example"], identityResolver: new IdentityResolver(durable), iClassStatus: "disabled", sweepIntervalMs: 0 });
+      const adminAuth = new AdminAuthService(new PostgresAdminStore(null as never), { allowedOrigins: ["https://school.example"] });
+      const app = buildApp({ battleEngine, allowedOrigins: ["https://school.example"], identityResolver: new IdentityResolver(durable), adminAuth, iClassStatus: "disabled", sweepIntervalMs: 0 });
       apps.push(app);
       expect(app).toBeDefined();
     } finally { process.env.NODE_ENV = previous; }
