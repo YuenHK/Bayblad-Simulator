@@ -26,6 +26,7 @@ import { PostgresRoomProjectionStore, type RoomProjectionStore } from "./records
 import type { AnalyticsService } from "./analytics/service";
 import { registerAnalyticsRoutes } from "./analytics/routes";
 import { registerExportRoutes, type ExportDataSource } from "./exports/workbook";
+import { registerDeleteRecordRoutes, type DeletionStore } from "./admin/delete-records";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -107,6 +108,7 @@ export type BuildAppOptions = Readonly<{
   persistenceRetryDelaysMs?: readonly number[];
   analyticsService?: AnalyticsService;
   exportDataSource?: ExportDataSource;
+  deletionStore?: DeletionStore;
   analyticsRefreshIntervalMs?: number;
 }>;
 
@@ -223,6 +225,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth, adminResolver);
   if (options.adminAuth && options.analyticsService) registerAnalyticsRoutes(app, options.adminAuth, options.analyticsService);
   if (options.adminAuth && options.exportDataSource) registerExportRoutes(app, options.adminAuth, options.exportDataSource);
+  if (options.adminAuth && options.deletionStore) registerDeleteRecordRoutes(app, options.adminAuth, options.deletionStore, adminResolver);
   if (options.adminAuth && options.matchRepository) app.post("/api/admin/records/matches/:id/retry", async (request, reply) => {
     const current = await authenticateAdminMutation(request, reply, options.adminAuth!, adminResolver); if (!current) return;
     const id = (request.params as { id?: unknown }).id;

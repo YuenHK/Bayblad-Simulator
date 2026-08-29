@@ -132,6 +132,26 @@ CREATE TABLE "deletion_audit" (
 	CONSTRAINT "deletion_audit_counts_nonnegative" CHECK ("deletion_audit"."preview_count" >= 0 and "deletion_audit"."deleted_identity_count" >= 0 and "deletion_audit"."deleted_design_count" >= 0 and "deletion_audit"."deleted_match_count" >= 0)
 );
 --> statement-breakpoint
+CREATE TABLE "deletion_previews" (
+	"token_hash" text PRIMARY KEY NOT NULL,
+	"admin_user_id" uuid NOT NULL,
+	"admin_session_id" uuid NOT NULL,
+	"scope" "deletion_scope" NOT NULL,
+	"filters_json" jsonb NOT NULL,
+	"filter_hash" text NOT NULL,
+	"identity_count" integer NOT NULL,
+	"design_count" integer NOT NULL,
+	"match_count" integer NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"consumed_at" timestamp with time zone,
+	CONSTRAINT "deletion_previews_token_hash_format" CHECK ("deletion_previews"."token_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "deletion_previews_filter_hash_format" CHECK ("deletion_previews"."filter_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "deletion_previews_counts_nonnegative" CHECK ("deletion_previews"."identity_count" >= 0 and "deletion_previews"."design_count" >= 0 and "deletion_previews"."match_count" >= 0),
+	CONSTRAINT "deletion_previews_filter_object" CHECK (jsonb_typeof("deletion_previews"."filters_json") = 'object'),
+	CONSTRAINT "deletion_previews_time_order" CHECK ("deletion_previews"."expires_at" > "deletion_previews"."created_at" and ("deletion_previews"."consumed_at" is null or "deletion_previews"."consumed_at" >= "deletion_previews"."created_at"))
+);
+--> statement-breakpoint
 CREATE TABLE "design_layers" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"design_id" uuid NOT NULL,
@@ -365,6 +385,8 @@ ALTER TABLE "admin_reauth_grants" ADD CONSTRAINT "admin_reauth_grants_admin_user
 ALTER TABLE "admin_reauth_grants" ADD CONSTRAINT "admin_reauth_grants_admin_session_id_admin_sessions_id_fk" FOREIGN KEY ("admin_session_id") REFERENCES "public"."admin_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "admin_sessions" ADD CONSTRAINT "admin_sessions_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_audit" ADD CONSTRAINT "deletion_audit_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deletion_previews" ADD CONSTRAINT "deletion_previews_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deletion_previews" ADD CONSTRAINT "deletion_previews_admin_session_id_admin_sessions_id_fk" FOREIGN KEY ("admin_session_id") REFERENCES "public"."admin_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "design_layers" ADD CONSTRAINT "design_layers_design_id_designs_id_fk" FOREIGN KEY ("design_id") REFERENCES "public"."designs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "designs" ADD CONSTRAINT "designs_owner_identity_id_identities_id_fk" FOREIGN KEY ("owner_identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "identities" ADD CONSTRAINT "identities_merged_into_identity_id_identities_id_fk" FOREIGN KEY ("merged_into_identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -395,6 +417,8 @@ CREATE INDEX "admin_sessions_active_idx" ON "admin_sessions" USING btree ("admin
 CREATE UNIQUE INDEX "admin_users_username_lower_uidx" ON "admin_users" USING btree (lower("username"));--> statement-breakpoint
 CREATE INDEX "deletion_audit_completed_at_idx" ON "deletion_audit" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "deletion_audit_admin_completed_idx" ON "deletion_audit" USING btree ("admin_user_id","completed_at");--> statement-breakpoint
+CREATE INDEX "deletion_previews_expiry_idx" ON "deletion_previews" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "deletion_previews_admin_session_idx" ON "deletion_previews" USING btree ("admin_session_id","expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "design_layers_design_order_uidx" ON "design_layers" USING btree ("design_id","layer_order");--> statement-breakpoint
 CREATE UNIQUE INDEX "design_layers_design_position_uidx" ON "design_layers" USING btree ("design_id","position");--> statement-breakpoint
 CREATE UNIQUE INDEX "design_layers_design_source_id_uidx" ON "design_layers" USING btree ("design_id","source_layer_id");--> statement-breakpoint
