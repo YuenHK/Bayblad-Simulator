@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
-[[ $# -eq 3 ]]||exit 1;set_path=$1;allowed=$2;signer=$3;base=${set_path##*/}
+[[ $# -eq 4 ]]||exit 1;set_path=$1;allowed=$2;signer=$3;ledger_cli=$4;base=${set_path##*/}
+[[ -f $ledger_cli && ! -L $ledger_cli ]]||exit 1
 [[ $base =~ ^steam-top-[0-9]{8}T[0-9]{6}Z-[0-9]{6}\.backup$ && -d $set_path && ! -L $set_path ]]||exit 1
 [[ $(sed -n 's/^set_name=//p' "$set_path/manifest") == "$base" && $(sed -n 's/^backup_id=//p' "$set_path/manifest") =~ ^[0-9a-f-]{36}$ ]]||exit 1
 expected=(COMPLETE SIGNED-METADATA VERIFIED VERIFIED.sig checksum.sha256 deletion-ledger.log dump.age manifest signature)
@@ -17,6 +18,6 @@ grep -qx "sha256=$checksum" "$set_path/manifest"
 if command -v sha256sum >/dev/null 2>&1;then actual_checksum=$(sha256sum "$set_path/dump.age"|awk '{print $1}');else actual_checksum=$(shasum -a 256 "$set_path/dump.age"|awk '{print $1}');fi
 [[ $actual_checksum == "$checksum" ]]
 "$script_dir/verify-retention-set.sh" "$set_path" "$allowed" "$signer" >/dev/null
-ledger_metadata=$(node "$DELETION_LEDGER_CLI" validate "$set_path/deletion-ledger.log")
+ledger_metadata=$(node "$ledger_cli" validate "$set_path/deletion-ledger.log")
 ledger_lines=$(sed -n 's/^deletion_ledger_lines=//p' "$set_path/manifest");ledger_sha=$(sed -n 's/^deletion_ledger_sha256=//p' "$set_path/manifest")
 [[ $ledger_metadata == *\"lines\":$ledger_lines* && $ledger_metadata == *\"sha256\":\"$ledger_sha\"* ]]

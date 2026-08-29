@@ -3,27 +3,29 @@ set -euo pipefail
 umask 077
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/scrub-backups.sh" "$0"; do
+for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/enforce-retention.sh" "$script_dir/scrub-backups.sh" "$0"; do
   bash -n "$script"
 done
 ! grep -q 'mkfifo\|read ignored' "$script_dir/backup.sh"
 grep -q 'loop perform pg_sleep' "$script_dir/backup.sh"
 ! grep -q 'DELETION_LEDGER_CLI_ROOT\|DELETION_LEDGER_CLI_SHA256' "$script_dir/backup.sh" "$script_dir/restore.sh"
-grep -q 'ALLOW_TEST_LEDGER_CLI_INJECTION' "$script_dir/backup.sh"
-grep -q 'ALLOW_TEST_LEDGER_CLI_INJECTION' "$script_dir/restore.sh"
+! grep -q 'ALLOW_TEST_LEDGER_CLI_INJECTION\|TEST_DELETION_LEDGER_CLI' "$script_dir/backup.sh" "$script_dir/restore.sh"
 guard_output=$(env PGPASSWORD=exposed PGSERVICE=source PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass BACKUP_DIR=/tmp/backups AGE_RECIPIENT=age1test DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli DELETION_LEDGER_CLI_ROOT=/tmp DELETION_LEDGER_CLI_SHA256=$(printf '%064d' 0) BACKUP_SIGNING_KEY=/tmp/key BACKUP_SIGNER_ID=test BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers "$script_dir/backup.sh" 2>&1||true)
 [[ $guard_output == *"libpq override PGPASSWORD is forbidden"* ]]
 guard_output=$(env PGPASSWORD=exposed RESTORE_PGSERVICE=restore PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass RESTORE_CONFIRM_DATABASE=test AGE_IDENTITY_FILE=/tmp/key DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli DELETION_LEDGER_CLI_ROOT=/tmp DELETION_LEDGER_CLI_SHA256=$(printf '%064d' 0) RESTORE_ALLOWED_TARGET_ID=x NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers BACKUP_SIGNER_ID=test "$script_dir/restore.sh" /tmp/steam-top-20260101T000000Z-000001.backup 2>&1||true)
 [[ $guard_output == *"libpq override PGPASSWORD is forbidden"* ]]
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/scrub-backups.sh" "$0"
+  shellcheck "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/enforce-retention.sh" "$script_dir/scrub-backups.sh" "$0"
 elif [[ ${CI:-false} == true ]]; then
   echo "shellcheck is required in CI" >&2
   exit 1
 else
   echo "SKIP: shellcheck is not installed" >&2
 fi
+
+retention_root=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-retention.XXXXXX");for index in $(seq 0 24);do mkdir "$retention_root/steam-top-20250101T000000Z-$(printf '%06d' "$index").backup";done;printf 'keep\n' >"$retention_root/outside";ln -s "$retention_root/outside" "$retention_root/steam-top-20250101T000000Z-999999.backup"
+retention_output=$("$script_dir/enforce-retention.sh" "$retention_root" /dev/null nobody 2>&1);[[ $retention_output == *"moved=25"* && $retention_output == *"purged=6"* && $retention_output == *"count=20"* ]];[[ $(find "$retention_root/.quarantine" -mindepth 1 -maxdepth 1 -type d|wc -l|tr -d ' ') == 20 ]];[[ $(find "$retention_root" -mindepth 1 -maxdepth 1 -name 'steam-top-*.backup'|wc -l|tr -d ' ') == 0 && $(<"$retention_root/outside") == keep ]];rm -rf "$retention_root"
 
 required=(age age-keygen pg_dump pg_restore psql createdb dropdb)
 missing=()
@@ -74,8 +76,7 @@ age-keygen -o "$test_root/key.txt" 2>"$test_root/keygen.log"
 recipient=$(awk '/^# public key: /{print $4}' "$test_root/key.txt")
 ledger="$test_root/deletion-ledger.log"; : >"$ledger"; chmod 600 "$ledger"
 ssh-keygen -q -t ed25519 -N '' -f "$test_root/signing-key";chmod 600 "$test_root/signing-key";signer=backup@test;printf '%s %s\n' "$signer" "$(<"$test_root/signing-key.pub")" >"$test_root/allowed-signers"
-pnpm --filter @steam-top/server build >/dev/null;ledger_cli="$script_dir/../../apps/server/dist/admin/deletion-ledger-cli.js";ledger_cli_root="$script_dir/../../apps/server/dist";if command -v sha256sum >/dev/null 2>&1;then ledger_cli_sha=$(sha256sum "$ledger_cli"|awk '{print $1}');else ledger_cli_sha=$(shasum -a 256 "$ledger_cli"|awk '{print $1}');fi
-PGSERVICE=source BACKUP_DIR="$test_root/backups" AGE_RECIPIENT="$recipient" DELETION_LEDGER_FILE="$ledger" DELETION_LEDGER_CLI="$ledger_cli" DELETION_LEDGER_CLI_ROOT="$ledger_cli_root" DELETION_LEDGER_CLI_SHA256="$ledger_cli_sha" BACKUP_SIGNING_KEY="$test_root/signing-key" BACKUP_SIGNER_ID="$signer" BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" "$script_dir/backup.sh"
+PGSERVICE=source BACKUP_DIR="$test_root/backups" AGE_RECIPIENT="$recipient" DELETION_LEDGER_FILE="$ledger" BACKUP_SIGNING_KEY="$test_root/signing-key" BACKUP_SIGNER_ID="$signer" BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" "$script_dir/backup.sh"
 backup_file=$(find "$test_root/backups" -maxdepth 1 -type d -name 'steam-top-*.backup' -print -quit)
 [[ -n $backup_file && -f $backup_file/COMPLETE && ! -L $backup_file ]]
 if stat -c '%a' "$backup_file/dump.age" >/dev/null 2>&1; then mode=$(stat -c '%a' "$backup_file/dump.age"); else mode=$(stat -f '%Lp' "$backup_file/dump.age"); fi
@@ -85,10 +86,10 @@ retention_plain="$test_root/retention.dump";age --decrypt --identity "$test_root
 for index in $(seq 0 29);do copy=$(printf '%s/backups/steam-top-202501%02dT000000Z-%06d.backup' "$test_root" "$((index+1))" "$index");copy_base=${copy##*/};cp -R "$backup_file" "$copy";age --encrypt --recipient "$recipient" --output "$copy/dump.new" "$retention_plain";mv "$copy/dump.new" "$copy/dump.age";if command -v sha256sum >/dev/null 2>&1;then copy_sha=$(sha256sum "$copy/dump.age"|awk '{print $1}');else copy_sha=$(shasum -a 256 "$copy/dump.age"|awk '{print $1}');fi;copy_id=$(printf '70000000-0000-4000-8000-%012d' "$index");awk -v id="$copy_id" -v name="$copy_base" -v hash="$copy_sha" '$0~/^backup_id=/{print "backup_id=" id;next}$0~/^set_name=/{print "set_name=" name;next}$0~/^sha256=/{print "sha256=" hash;next}{print}' "$backup_file/manifest" >"$copy/manifest";printf '%s  dump.age\n' "$copy_sha" >"$copy/checksum.sha256";{ cat "$copy/manifest";cat "$copy/checksum.sha256";} >"$copy/SIGNED-METADATA";ssh-keygen -Y sign -q -f "$test_root/signing-key" -n steam-top-backup "$copy/SIGNED-METADATA";mv "$copy/SIGNED-METADATA.sig" "$copy/signature";if command -v sha256sum >/dev/null 2>&1;then copy_manifest_sha=$(sha256sum "$copy/manifest"|awk '{print $1}');copy_checksum_sha=$(sha256sum "$copy/checksum.sha256"|awk '{print $1}');else copy_manifest_sha=$(shasum -a 256 "$copy/manifest"|awk '{print $1}');copy_checksum_sha=$(shasum -a 256 "$copy/checksum.sha256"|awk '{print $1}');fi;printf 'manifest_sha256=%s\nchecksum_file_sha256=%s\n' "$copy_manifest_sha" "$copy_checksum_sha" >"$copy/VERIFIED";ssh-keygen -Y sign -q -f "$test_root/signing-key" -n steam-top-backup-verified "$copy/VERIFIED";done
 duplicate="$test_root/backups/steam-top-20250131T000000Z-888888.backup";cp -R "$test_root/backups/steam-top-20250101T000000Z-000000.backup" "$duplicate";duplicate_base=${duplicate##*/};awk -v name="$duplicate_base" '$0~/^set_name=/{print "set_name=" name;next}{print}' "$duplicate/manifest" >"$duplicate/manifest.new";mv "$duplicate/manifest.new" "$duplicate/manifest";{ cat "$duplicate/manifest";cat "$duplicate/checksum.sha256";} >"$duplicate/SIGNED-METADATA";ssh-keygen -Y sign -q -f "$test_root/signing-key" -n steam-top-backup "$duplicate/SIGNED-METADATA";mv "$duplicate/SIGNED-METADATA.sig" "$duplicate/signature";if command -v sha256sum >/dev/null 2>&1;then duplicate_manifest_sha=$(sha256sum "$duplicate/manifest"|awk '{print $1}');duplicate_checksum_sha=$(sha256sum "$duplicate/checksum.sha256"|awk '{print $1}');else duplicate_manifest_sha=$(shasum -a 256 "$duplicate/manifest"|awk '{print $1}');duplicate_checksum_sha=$(shasum -a 256 "$duplicate/checksum.sha256"|awk '{print $1}');fi;printf 'manifest_sha256=%s\nchecksum_file_sha256=%s\n' "$duplicate_manifest_sha" "$duplicate_checksum_sha" >"$duplicate/VERIFIED";ssh-keygen -Y sign -q -f "$test_root/signing-key" -n steam-top-backup-verified "$duplicate/VERIFIED"
 invalid_retention="$test_root/backups/steam-top-20250201T000000Z-999996.backup";cp -R "$backup_file" "$invalid_retention";printf 'invalid\n' >"$invalid_retention/VERIFIED"
-PGSERVICE=source BACKUP_DIR="$test_root/backups" AGE_RECIPIENT="$recipient" DELETION_LEDGER_FILE="$ledger" DELETION_LEDGER_CLI="$ledger_cli" DELETION_LEDGER_CLI_ROOT="$ledger_cli_root" DELETION_LEDGER_CLI_SHA256="$ledger_cli_sha" BACKUP_SIGNING_KEY="$test_root/signing-key" BACKUP_SIGNER_ID="$signer" BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" "$script_dir/backup.sh"
-valid_sets=0;while IFS= read -r candidate;do if DELETION_LEDGER_CLI="$ledger_cli" "$script_dir/verify-retention-set.sh" "$candidate" "$test_root/allowed-signers" "$signer" >/dev/null 2>&1;then valid_sets=$((valid_sets+1));fi;done < <(find "$test_root/backups" -mindepth 1 -maxdepth 1 -type d -name 'steam-top-*.backup' -print);[[ $valid_sets -ge 30 && -d $invalid_retention && -d $duplicate ]]
+PGSERVICE=source BACKUP_DIR="$test_root/backups" AGE_RECIPIENT="$recipient" DELETION_LEDGER_FILE="$ledger" BACKUP_SIGNING_KEY="$test_root/signing-key" BACKUP_SIGNER_ID="$signer" BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" "$script_dir/backup.sh"
+valid_sets=0;while IFS= read -r candidate;do if "$script_dir/verify-retention-set.sh" "$candidate" "$test_root/allowed-signers" "$signer" >/dev/null 2>&1;then valid_sets=$((valid_sets+1));fi;done < <(find "$test_root/backups" -mindepth 1 -maxdepth 1 -type d -name 'steam-top-*.backup' -print);[[ $valid_sets -eq 30 && ! -e $invalid_retention && ! -e $duplicate ]];[[ $(find "$test_root/backups/.quarantine" -mindepth 1 -maxdepth 1 -type d|wc -l|tr -d ' ') -ge 2 ]]
 
-restore_env=(RESTORE_PGSERVICE=restore RESTORE_CONFIRM_DATABASE="$restore_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" DELETION_LEDGER_CLI="$ledger_cli" DELETION_LEDGER_CLI_ROOT="$ledger_cli_root" DELETION_LEDGER_CLI_SHA256="$ledger_cli_sha" RESTORE_ALLOWED_TARGET_ID="$restore_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" BACKUP_SIGNER_ID="$signer")
+restore_env=(RESTORE_PGSERVICE=restore RESTORE_CONFIRM_DATABASE="$restore_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" RESTORE_ALLOWED_TARGET_ID="$restore_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" BACKUP_SIGNER_ID="$signer")
 env "${restore_env[@]}" "$script_dir/restore.sh" "$backup_file"
 [[ $(psql "$restore_url" -Atqc "select label from backup_probe where id=1") == encrypted-round-trip ]]
 psql "$restore_url" -v ON_ERROR_STOP=1 -c "update backup_probe set label='before-failed-restore' where id=1" >/dev/null
@@ -105,7 +106,7 @@ if env "${restore_env[@]}" "$script_dir/restore.sh" "$broken_backup" 2>/dev/null
 if env APP_ENV=production "${restore_env[@]}" "$script_dir/restore.sh" "$backup_file" 2>/dev/null; then
   echo "restore unexpectedly allowed production mode" >&2; exit 1
 fi
-if env RESTORE_PGSERVICE=source RESTORE_CONFIRM_DATABASE="$source_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" DELETION_LEDGER_CLI="$ledger_cli" DELETION_LEDGER_CLI_ROOT="$ledger_cli_root" DELETION_LEDGER_CLI_SHA256="$ledger_cli_sha" RESTORE_ALLOWED_TARGET_ID="$source_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" BACKUP_SIGNER_ID="$signer" "$script_dir/restore.sh" "$backup_file" 2>/dev/null; then
+if env RESTORE_PGSERVICE=source RESTORE_CONFIRM_DATABASE="$source_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" RESTORE_ALLOWED_TARGET_ID="$source_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" BACKUP_SIGNER_ID="$signer" "$script_dir/restore.sh" "$backup_file" 2>/dev/null; then
   echo "restore unexpectedly allowed the source database" >&2; exit 1
 fi
 incomplete="$test_root/backups/steam-top-20990101T000001Z-999998.backup";mkdir -m 700 "$incomplete";cp "$backup_file/dump.age" "$incomplete/dump.age";if env "${restore_env[@]}" "$script_dir/restore.sh" "$incomplete" 2>/dev/null;then echo "incomplete set accepted" >&2;exit 1;fi
