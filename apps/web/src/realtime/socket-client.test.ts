@@ -31,6 +31,19 @@ const uuid = (digit: number) => `${digit}0000000-0000-4000-8000-000000000000`;
 const uploadPayload = (designId: string) => ({ designId, massG: 25, performance: { speed: 70, spinDuration: 60, stability: 80, impactResistance: 50, modelVersion: "1.0.0" } });
 
 describe("RealtimeClient", () => {
+  it("bootstraps the HttpOnly identity before opening the socket without storing PII", async () => {
+    const transport = new FakeTransport();
+    const values = new Map<string, string>();
+    const storage = createSafeStorage({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); }, removeItem: (key) => { values.delete(key); } });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ id: crypto.randomUUID(), status: "guest", displayName: "訪客-ABCD" }), { status: 200, headers: { "content-type": "application/json" } }));
+    const client = new RealtimeClient({ transport, storage, fetcher, bootstrapIdentity: true });
+    client.start();
+    expect(transport.connected).toBe(false);
+    await vi.waitFor(() => expect(transport.connected).toBe(true));
+    expect(fetcher).toHaveBeenCalledWith("/api/identity", expect.objectContaining({ credentials: "include" }));
+    expect(client.getState()).toMatchObject({ identityStatus: "ready", identity: { status: "guest", displayName: "訪客-ABCD" } });
+    expect([...values.values()].join(" ")).not.toContain("訪客-ABCD");
+  });
   it("在客戶端時鐘慢 5 秒與 50ms RTT 時收旂 offset，正確轉換 server target", () => {
     const estimator = new ClientClockEstimator();
     estimator.add({ clientSentAtMs: 1_000, serverReceivedAtMs: 6_025, serverSentAtMs: 6_026, clientReceivedAtMs: 1_051 });
@@ -114,7 +127,7 @@ describe("RealtimeClient", () => {
       type: "protocol.welcome", selectedVersion: 1, sessionToken: "s".repeat(32),
       sessionStatus: "resumed", protocolVersion: 1, serverEventId: uuid(1),
     });
-    expect(storage.get("steam-top.session-token")).toBe("s".repeat(32));
+    expect(storage.get("steam-top.session-token")).toBeUndefined();
     expect(transport.auth.sessionToken).toBe("s".repeat(32));
     expect(client.getState()).toMatchObject({ status: "online", sessionStatus: "resumed" });
   });
@@ -323,9 +336,11 @@ describe("RealtimeClient", () => {
   it("response.json pending仍受10秒timeout控制，external abort保留AbortError", async () => {
     vi.useFakeTimers();
     try {
-      const storage = createSafeStorage(); storage.set("steam-top.session-token", "s".repeat(32));
+      const storage = createSafeStorage();
       const pendingJson = new Promise<unknown>(() => undefined);
-      const client = new RealtimeClient({ transport: new FakeTransport(), storage, fetcher: vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => pendingJson } as Response) });
+      const timeoutTransport = new FakeTransport();
+      const client = new RealtimeClient({ transport: timeoutTransport, storage, fetcher: vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => pendingJson } as Response) });
+      client.start(); timeoutTransport.fire("server.event", welcome("resumed"));
       const timed = client.uploadDesign(makeDefaultDesign()); const timedAssertion = expect(timed).rejects.toThrow("上載設計逾時");
       await vi.advanceTimersByTimeAsync(10_000); await timedAssertion;
       const controller = new AbortController(); const aborted = client.uploadDesign(makeDefaultDesign(), controller.signal); controller.abort();

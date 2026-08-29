@@ -171,6 +171,16 @@ CREATE TABLE "identity_sessions" (
 	CONSTRAINT "identity_sessions_expiry_after_creation" CHECK ("identity_sessions"."expires_at" > "identity_sessions"."created_at")
 );
 --> statement-breakpoint
+CREATE TABLE "webclip_token_nonces" (
+	"jti_hash" text PRIMARY KEY NOT NULL,
+	"device_id" varchar(128) NOT NULL,
+	"issued_at" timestamp with time zone NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"used_at" timestamp with time zone,
+	CONSTRAINT "webclip_token_nonces_jti_hash_format" CHECK ("webclip_token_nonces"."jti_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "webclip_token_nonces_expiry_after_issue" CHECK ("webclip_token_nonces"."expires_at" > "webclip_token_nonces"."issued_at")
+);
+--> statement-breakpoint
 CREATE TABLE "matches" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"room_id" uuid,
@@ -326,6 +336,7 @@ CREATE INDEX "identity_links_target_idx" ON "identity_links" USING btree ("targe
 CREATE UNIQUE INDEX "identity_sessions_token_hash_uidx" ON "identity_sessions" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "identity_sessions_identity_last_seen_idx" ON "identity_sessions" USING btree ("identity_id","last_seen_at");--> statement-breakpoint
 CREATE INDEX "identity_sessions_active_expires_at_idx" ON "identity_sessions" USING btree ("expires_at") WHERE "identity_sessions"."revoked_at" is null;--> statement-breakpoint
+CREATE INDEX "webclip_token_nonces_expiry_idx" ON "webclip_token_nonces" USING btree ("expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "matches_idempotency_fingerprint_uidx" ON "matches" USING btree ("idempotency_fingerprint");--> statement-breakpoint
 CREATE INDEX "matches_completed_at_idx" ON "matches" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "matches_status_completed_at_idx" ON "matches" USING btree ("status","completed_at");--> statement-breakpoint

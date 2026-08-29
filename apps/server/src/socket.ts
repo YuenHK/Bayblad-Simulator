@@ -13,7 +13,7 @@ import {
   type ServerEvent,
   type V1CommandEvent,
 } from "@steam-top/protocol";
-import type { Server as HttpServer } from "node:http";
+import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import { DesignRegistry } from "./design-registry";
 import type { BattleEnginePort, ClientKeyResolver } from "./app";
@@ -25,6 +25,7 @@ import { RoomService } from "./rooms/room-service";
 
 type Session = {
   id: string;
+  identityId: string;
   token: string;
   displayName: string;
   roomIds: Set<string>;
@@ -75,6 +76,7 @@ export type RealtimeDependencies = Readonly<{
   newSessionGlobalBurst: number;
   newSessionGlobalRefillPerSecond: number;
   clientKeyResolver: ClientKeyResolver;
+  authenticateIdentity: (request: IncomingMessage, testAuth?: Record<string, unknown>) => Promise<Readonly<{ identityId: string; displayName: string }> | null>;
   maxRooms: number;
   maxOwnedRoomsPerSession: number;
   maxMatchAttempts: number;
@@ -175,6 +177,7 @@ export class RealtimeGateway {
   readonly #maxConnectionsPerIp: number;
   readonly #maxRetainedSessions: number;
   readonly #clientKeyResolver: ClientKeyResolver;
+  readonly #authenticateIdentity: RealtimeDependencies["authenticateIdentity"];
   readonly #newSessionByClientLimiter: TokenBucketLimiter;
   readonly #newSessionGlobalLimiter: TokenBucketLimiter;
   readonly #maxRooms: number;
@@ -227,6 +230,7 @@ export class RealtimeGateway {
     this.#maxConnectionsPerIp = dependencies.maxConnectionsPerIp;
     this.#maxRetainedSessions = dependencies.maxRetainedSessions;
     this.#clientKeyResolver = dependencies.clientKeyResolver;
+    this.#authenticateIdentity = dependencies.authenticateIdentity;
     this.#newSessionByClientLimiter = new TokenBucketLimiter({
       burst: dependencies.newSessionBurstPerClient,
       refillPerSecond: dependencies.newSessionRefillPerSecond,
@@ -256,7 +260,18 @@ export class RealtimeGateway {
       },
       allowRequest: (request, callback) => callback(null, originAllowed(request.headers.origin)),
     });
-    this.io.on("connection", (socket) => this.#connect(socket));
+    this.io.use(async (socket, next) => {
+      try {
+        const auth = socket.handshake.auth as Record<string, unknown>;
+        const identity = await this.#authenticateIdentity(socket.request, auth);
+        if (!identity) { const error = new Error("IDENTITY_REQUIRED") as Error & { data?: unknown }; error.data = { code: "IDENTITY_REQUIRED" }; next(error); return; }
+        socket.data.identity = identity;
+        next();
+      } catch {
+        const error = new Error("IDENTITY_REQUIRED") as Error & { data?: unknown }; error.data = { code: "IDENTITY_REQUIRED" }; next(error);
+      }
+    });
+    this.io.on("connection", (socket) => { void this.#connect(socket); });
   }
 
   get activeMatchCount(): number {
@@ -297,10 +312,10 @@ export class RealtimeGateway {
     this.io.to("protocol:v1").emit("server.event", this.#rooms.lobbySnapshot());
   }
 
-  sessionForBearer(value: string | undefined): Readonly<{ id: string; displayName: string }> | undefined {
+  sessionForBearer(value: string | undefined): Readonly<{ id: string; identityId: string; displayName: string }> | undefined {
     if (!value?.startsWith("Bearer ")) return undefined;
     const session = this.#sessionsByToken.get(value.slice(7));
-    return session ? { id: session.id, displayName: session.displayName } : undefined;
+    return session ? { id: session.id, identityId: session.identityId, displayName: session.displayName } : undefined;
   }
 
   async close(): Promise<void> {
@@ -367,7 +382,7 @@ export class RealtimeGateway {
     }
   }
 
-  #connect(socket: Socket): void {
+  async #connect(socket: Socket): Promise<void> {
     let clientKey: string;
     try { clientKey = this.#clientKeyResolver(socket.request); } catch { socket.disconnect(true); return; }
     const clientCount = this.#connectionsByIp.get(clientKey) ?? 0;
@@ -377,17 +392,17 @@ export class RealtimeGateway {
     }
     this.#connectionsByIp.set(clientKey, clientCount + 1);
     const auth = socket.handshake.auth as Record<string, unknown>;
-    const display = participantSummarySchema.safeParse({
-      participantId: "identity-check",
-      displayName: auth.displayName,
-    });
+    const requestedToken = typeof auth.sessionToken === "string" ? auth.sessionToken : undefined;
+    let authenticated = socket.data.identity as Readonly<{ identityId: string; displayName: string }>;
+    const requestedSession = requestedToken ? this.#sessionsByToken.get(requestedToken) : undefined;
+    if (authenticated?.identityId.startsWith("test:") && requestedSession) authenticated = { identityId: requestedSession.identityId, displayName: requestedSession.displayName };
+    const display = participantSummarySchema.safeParse({ participantId: "identity-check", displayName: authenticated?.displayName });
     if (!display.success) {
       if (clientCount === 0) this.#connectionsByIp.delete(clientKey);
       else this.#connectionsByIp.set(clientKey, clientCount);
       socket.disconnect(true);
       return;
     }
-    const requestedToken = typeof auth.sessionToken === "string" ? auth.sessionToken : undefined;
     const pendingKey = `${clientKey}:${socket.id}`;
     let session: Session | null = null;
     let welcomed = false;
@@ -425,7 +440,7 @@ export class RealtimeGateway {
         clearTimeout(handshakeTimer);
         let established: Readonly<{ session: Session; status: "new" | "resumed" | "replaced" }>;
         try {
-          established = this.#establishSession(display.data.displayName, requestedToken, clientKey);
+          established = this.#establishSession(authenticated.identityId, display.data.displayName, requestedToken, clientKey);
         } catch (error) {
           const code = this.#safeErrorCode(error);
           this.#error(socket, code, code);
@@ -506,16 +521,19 @@ export class RealtimeGateway {
   }
 
   #establishSession(
+    identityId: string,
     displayName: string,
     requestedToken: string | undefined,
     clientKey: string,
   ): Readonly<{ session: Session; status: "new" | "resumed" | "replaced" }> {
     let session = requestedToken ? this.#sessionsByToken.get(requestedToken) : undefined;
+    if (!requestedToken) session = [...this.#sessionsById.values()].find((candidate) => candidate.identityId === identityId && (candidate.disconnectedAt === null || this.#now() - candidate.disconnectedAt < 120_000));
     let status: "new" | "resumed" | "replaced" = requestedToken ? "replaced" : "new";
     if (session?.disconnectedAt !== null && session?.disconnectedAt !== undefined && this.#now() - session.disconnectedAt >= 120_000) {
       this.#expireSession(session);
       session = undefined;
     }
+    if (session?.identityId !== identityId) session = undefined;
     if (session) return { session, status: "resumed" };
     this.#pruneSessionsForCapacity();
     if (this.#sessionsById.size >= this.#maxRetainedSessions) {
@@ -527,6 +545,7 @@ export class RealtimeGateway {
     const now = this.#now();
     session = {
       id: this.#uniqueSessionId(),
+      identityId,
       token: this.#uniqueToken(),
       displayName,
       roomIds: new Set(),

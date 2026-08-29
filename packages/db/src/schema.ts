@@ -214,6 +214,22 @@ export const identitySessions = pgTable(
   ],
 );
 
+export const webClipTokenNonces = pgTable(
+  "webclip_token_nonces",
+  {
+    jtiHash: text("jti_hash").primaryKey(),
+    deviceId: varchar("device_id", { length: 128 }).notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("webclip_token_nonces_expiry_idx").on(table.expiresAt),
+    check("webclip_token_nonces_jti_hash_format", sql`${table.jtiHash} ~ '^[a-f0-9]{64}$'`),
+    check("webclip_token_nonces_expiry_after_issue", sql`${table.expiresAt} > ${table.issuedAt}`),
+  ],
+);
+
 export const designs = pgTable(
   "designs",
   {
