@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/enforce-retention.sh" "$script_dir/scrub-backups.sh" "$0"; do
+for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/enforce-retention.sh" "$script_dir/scrub-backups.sh" "$script_dir/verify-rollback-preflight.sh" "$script_dir/promote-restored-target.sh" "$0"; do
   bash -n "$script"
 done
 ! grep -q 'mkfifo\|read ignored' "$script_dir/backup.sh"
@@ -16,7 +16,7 @@ guard_output=$(env PGPASSWORD=exposed RESTORE_PGSERVICE=restore PGSERVICEFILE=/t
 [[ $guard_output == *"libpq override PGPASSWORD is forbidden"* ]]
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/enforce-retention.sh" "$script_dir/scrub-backups.sh" "$0"
+  shellcheck "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/enforce-retention.sh" "$script_dir/scrub-backups.sh" "$script_dir/verify-rollback-preflight.sh" "$script_dir/promote-restored-target.sh" "$0"
 elif [[ ${CI:-false} == true ]]; then
   echo "shellcheck is required in CI" >&2
   exit 1

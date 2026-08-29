@@ -9,10 +9,9 @@ and will keep `rejectUnauthorized: true`. Set `NODE_EXTRA_CA_CERTS` to the same
 file **before starting pnpm** so Playwright's HTTPS request client also trusts
 the local CA.
 
-`SECURITY_TLS_INSECURE=true` is an emergency local-only fallback. It is accepted
-only when `SECURITY_HTTPS_ORIGIN` is a loopback URL (`localhost`, `127.0.0.0/8`
-or `::1`). It must never be set in CI or a public deployment. Any other value,
-including `TRUE`, is rejected instead of silently weakening TLS.
+Certificate verification cannot be disabled, including on loopback. CI first
+proves the untrusted connection fails, exports Caddy's exact local root, and
+installs it in both the operating-system and Chromium NSS trust stores.
 
 Use `SECURITY_ALLOW_SKIP=1 pnpm test:security` only for an explicit local run
 where no production Compose/TLS stack exists. CI must run `pnpm test:security`

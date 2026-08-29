@@ -5,13 +5,23 @@ const read = (path: string) => readFileSync(path, "utf8");
 
 describe("release CI contract", () => {
   const workflow = read(".github/workflows/ci.yml");
+  const databaseWorkflow = read(".github/workflows/db.yml");
   const packageJson = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
 
   it("pins the toolchain and runs every non-optional quality gate", () => {
     expect(packageJson.scripts.test).toContain("tests/ci");
     expect(workflow).toContain("node-version: 24.13.0");
     expect(workflow).toContain("version: 11.19.0");
-    for (const command of ["pnpm lint", "pnpm typecheck", "pnpm test", "pnpm test:e2e", "pnpm --filter @steam-top/db test:postgres", "pnpm --filter @steam-top/server test:postgres", "docker compose build"]) {
+    expect(workflow).toContain("permissions:\n  contents: read");
+    expect(workflow.match(/persist-credentials: false/gu)?.length).toBeGreaterThanOrEqual(2);
+    const allWorkflows = `${workflow}\n${databaseWorkflow}`;
+    const uses = [...allWorkflows.matchAll(/uses:\s*[^@\s]+@([^\s#]+)/gu)].map((match) => match[1]);
+    expect(uses.length).toBeGreaterThan(0);
+    expect(uses.every((ref) => /^[a-f0-9]{40}$/u.test(ref!))).toBe(true);
+    expect(workflow).toMatch(/image:\s*postgres@sha256:[a-f0-9]{64}/u);
+    expect(databaseWorkflow).toMatch(/image:\s*postgres@sha256:[a-f0-9]{64}/u);
+    expect(databaseWorkflow).toContain("persist-credentials: false");
+    for (const command of ["pnpm lint", "pnpm typecheck", "pnpm test", "pnpm test:e2e", "pnpm --filter @steam-top/db test:postgres", "pnpm --filter @steam-top/server test:postgres"]) {
       expect(workflow).toContain(`run: ${command}`);
     }
   });
@@ -22,15 +32,31 @@ describe("release CI contract", () => {
     expect(validator).toContain("caddy validate");
     expect(validator).toContain("caddy adapt");
     expect(validator).toContain("${CADDY_IMAGE_REPOSITORY}@${CADDY_IMAGE_DIGEST}");
-    expect(workflow).toContain("docker compose up -d --wait");
+    expect(workflow).toContain("up -d --wait");
     expect(workflow).toContain("SECURITY_HTTP_ORIGIN:");
     expect(workflow).toContain("SECURITY_HTTPS_ORIGIN:");
     expect(workflow).toContain("pnpm test:security");
     expect(workflow).not.toContain("SECURITY_ALLOW_SKIP");
+    expect(workflow).not.toContain("SECURITY_TLS_INSECURE");
+    expect(workflow).toContain("SECURITY_TLS_CA_FILE");
+    expect(workflow).toContain("NODE_EXTRA_CA_CERTS");
+    expect(workflow).toContain("TLS unexpectedly trusted before CA installation");
+    expect(read("playwright.security.config.ts")).toContain("ignoreHTTPSErrors: false");
+  });
+
+  it("publishes immutable application images and an auditable release manifest", () => {
+    expect(workflow).toContain("release-images:");
+    expect(workflow).toContain("docker buildx build");
+    expect(workflow).toContain("--provenance=mode=max");
+    expect(workflow).toContain("scripts/create-release-manifest.mjs");
+    expect(workflow).toContain("release-manifest");
+    expect(workflow).not.toContain("Resolve immutable base-image digests");
+    expect(read("scripts/validate-deployment-env.mjs")).toContain("SERVER_IMAGE");
+    expect(read("scripts/validate-deployment-env.mjs")).toContain("repository@sha256");
   });
 
   it("always tears down the production-like stack", () => {
-    expect(workflow).toMatch(/if:\s*always\(\)[\s\S]*docker compose down -v/u);
+    expect(workflow).toMatch(/if:\s*always\(\)[\s\S]*down -v/u);
   });
 });
 
@@ -50,5 +76,22 @@ describe("migration entrypoint contract", () => {
     expect(compose).toMatch(/migration:[\s\S]*command:\s*\["\.\/scripts\/migrate-and-start\.sh",\s*"--migrate-only"\]/u);
     expect(compose).toMatch(/server:[\s\S]*migration:\s*\{ condition: service_completed_successfully \}/u);
     expect(dockerfile).toContain("scripts/migrate-and-start.sh");
+    expect(compose).toMatch(/migration:[\s\S]*image:\s*\$\{SERVER_IMAGE:\?/u);
+    expect(compose).toMatch(/server:[\s\S]*image:\s*\$\{SERVER_IMAGE:\?/u);
+    expect(compose).toMatch(/web:[\s\S]*image:\s*\$\{WEB_IMAGE:\?/u);
+  });
+});
+
+describe("rollback deletion monotonicity", () => {
+  const preflight = read("infra/backup/verify-rollback-preflight.sh");
+  const promotion = read("infra/backup/promote-restored-target.sh");
+  const release = read("docs/operations/release.md");
+
+  it("fails closed when the external tombstone ledger advanced", () => {
+    expect(preflight).toContain("deletion ledger advanced; database rollback forbidden");
+    expect(preflight).toContain("deletion_ledger_sha256");
+    expect(promotion).toContain("hold-lock");
+    expect(promotion).toContain("environment='production',restore_allowed=false");
+    expect(release).toContain("禁止資料庫回復");
   });
 });
