@@ -96,6 +96,17 @@ export const adminLoginScopeEnum = pgEnum("admin_login_scope", ["account", "clie
 
 export type BattleResultSnapshot = Readonly<Record<string, unknown>>;
 
+export const deploymentEnvironment = pgTable("deployment_environment", {
+  singleton: boolean("singleton").primaryKey().notNull().default(true),
+  environment: varchar("environment", { length: 16 }).notNull().default("production"),
+  restoreAllowed: boolean("restore_allowed").notNull().default(false),
+  restoreTargetId: uuid("restore_target_id").notNull().defaultRandom(),
+}, (table) => [
+  check("deployment_environment_singleton", sql`${table.singleton} = true`),
+  check("deployment_environment_value", sql`${table.environment} in ('production','staging','test','development')`),
+  check("deployment_environment_restore_guard", sql`(${table.environment} = 'production' and ${table.restoreAllowed} = false) or ${table.environment} <> 'production'`),
+]);
+
 export const identities = pgTable(
   "identities",
   {
@@ -1090,6 +1101,10 @@ export const deletionPreviews = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    resultAuditId: uuid("result_audit_id"),
+    resultIdentityCount: integer("result_identity_count"),
+    resultDesignCount: integer("result_design_count"),
+    resultMatchCount: integer("result_match_count"),
   },
   (table) => [
     index("deletion_previews_expiry_idx").on(table.expiresAt),
@@ -1099,8 +1114,22 @@ export const deletionPreviews = pgTable(
     check("deletion_previews_counts_nonnegative", sql`${table.identityCount} >= 0 and ${table.designCount} >= 0 and ${table.matchCount} >= 0`),
     check("deletion_previews_filter_object", sql`jsonb_typeof(${table.filtersJson}) = 'object'`),
     check("deletion_previews_time_order", sql`${table.expiresAt} > ${table.createdAt} and (${table.consumedAt} is null or ${table.consumedAt} >= ${table.createdAt})`),
+    check("deletion_previews_result_consistent", sql`(${table.consumedAt} is null and ${table.resultAuditId} is null and ${table.resultIdentityCount} is null and ${table.resultDesignCount} is null and ${table.resultMatchCount} is null) or (${table.consumedAt} is not null and ${table.resultAuditId} is not null and ${table.resultIdentityCount} >= 0 and ${table.resultDesignCount} >= 0 and ${table.resultMatchCount} >= 0)`),
   ],
 );
+
+export const deletionPreviewIdentities = pgTable("deletion_preview_identities", {
+  tokenHash: text("token_hash").notNull().references(() => deletionPreviews.tokenHash, { onDelete: "cascade" }),
+  identityId: uuid("identity_id").notNull(),
+}, (table) => [primaryKey({ columns: [table.tokenHash, table.identityId] })]);
+export const deletionPreviewDesigns = pgTable("deletion_preview_designs", {
+  tokenHash: text("token_hash").notNull().references(() => deletionPreviews.tokenHash, { onDelete: "cascade" }),
+  designId: uuid("design_id").notNull(),
+}, (table) => [primaryKey({ columns: [table.tokenHash, table.designId] })]);
+export const deletionPreviewMatches = pgTable("deletion_preview_matches", {
+  tokenHash: text("token_hash").notNull().references(() => deletionPreviews.tokenHash, { onDelete: "cascade" }),
+  matchId: uuid("match_id").notNull(),
+}, (table) => [primaryKey({ columns: [table.tokenHash, table.matchId] })]);
 
 export const identitiesRelations = relations(identities, ({ one, many }) => ({
   mergedInto: one(identities, {

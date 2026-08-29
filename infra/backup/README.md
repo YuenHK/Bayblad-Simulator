@@ -16,10 +16,13 @@
 export DATABASE_URL='由秘密管理器注入，不要寫入指令紀錄或檔案'
 export BACKUP_DIR='/srv/steam-top/backups'
 export AGE_RECIPIENT='age1...'
+export DELETION_LEDGER_FILE='/srv/steam-top/deletion-ledger/ledger.log'
 ./infra/backup/backup.sh
 ```
 
-腳本以 custom-format `pg_dump` 串流到 age recipient 加密，完成後才原子改名；旁邊的 `.sha256` 與 `.manifest` 記錄密文 checksum、來源資料庫名稱、schema 和一個驗證表的精確列數，不包含 URL、密碼、學生姓名或紀錄內容。排程器應每日執行一次，只有三個完整檔案都存在才視為成功，並對失敗發出告警。
+腳本先在只讀 repeatable-read transaction 以 `pg_export_snapshot()` 固定快照；刪除稽核列數與 `pg_dump --snapshot` 因而來自完全相同的資料狀態，再把 custom-format dump 串流到 age recipient 加密。旁邊的 `.sha256` 與 `.manifest` 記錄密文 checksum、來源資料庫名稱、schema、刪除稽核列數及外部 deletion ledger 的行數／digest，不包含 URL、密碼、學生姓名或篩選內容。排程器應每日執行一次，只有三個完整檔案都存在才視為成功，並對失敗發出告警。
+
+`DELETION_LEDGER_FILE` 是備份目錄以外、`0600` 的外部 append-only tombstone。刪除流程先寫 `P`，資料庫提交後寫 `C`；已知未執行則寫 `A`。任何未解決的 `P` 會令備份 fail closed，須先由管理員核對資料庫 `deletion_audit` 後補記 `C` 或 `A`。絕不可改寫或縮短 ledger；其 digest 令任何早於最新刪除的備份無法還原敏感資料。
 
 ## 私鑰及輪替
 
@@ -33,10 +36,15 @@ age identity 私鑰不可放在程式庫、備份目錄或同一台資料庫主�
 export RESTORE_DATABASE_URL='由秘密管理器注入的全新非正式資料庫'
 export RESTORE_CONFIRM_DATABASE='steam_top_restore_20260829'
 export AGE_IDENTITY_FILE='/受限制位置/steam-top-age-key.txt'
+export DELETION_LEDGER_FILE='/srv/steam-top/deletion-ledger/ledger.log'
+export NONPROD_RESTORE_CONFIRM='RESTORE_NONPRODUCTION_DATA'
+export RESTORE_ALLOWED_TARGET_ID='由目標資料庫 deployment_environment 讀出的 UUID'
 ./infra/backup/restore.sh /srv/steam-top/backups/steam-top-20260829T010000Z-123456.dump.age
 ```
 
-腳本先驗證檔名、非 symlink、manifest 與密文 SHA-256，再以 `age --decrypt` 串流至 `pg_restore --clean --if-exists`。所以目標必須是專為演練建立、可被覆寫的非正式資料庫。完成後會核對來源 schema 存在及驗證表列數。另由教師後台抽查一個已知日期範圍的設計、對戰、排行榜統計和 Excel 匯出，記錄實際 RPO/RTO、操作者、備份檔 checksum 及結果；至少每學期演練一次。
+目標資料庫必須預先套用 migration，並由資料庫管理員在單一 transaction 先執行 `set local steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA'`，再把單例 `deployment_environment` 設為非 `production`、`restore_allowed=true`；一般 update/delete/truncate 均由 trigger 拒絕。操作者還須提供完全相符的 `restore_target_id`。此 marker 不包含在 dump 內，還原前後均會核對。腳本亦要求目前外部 deletion ledger 與備份 manifest 完全一致；舊備份即使密碼正確也會被拒絕。
+
+腳本先驗證檔名、非 symlink、manifest 與密文 SHA-256，再以 `age --decrypt` 串流至 `pg_restore --single-transaction --clean --if-exists`。任何 archive／SQL 錯誤會回滾整次還原，不留下半套 schema 或資料。完成後會核對來源 schema、刪除稽核列數及 target marker。另由教師後台抽查一個已知日期範圍的設計、對戰、排行榜統計和 Excel 匯出，記錄實際 RPO/RTO、操作者、備份檔 checksum 及結果；至少每學期演練一次。
 
 ## 自動測試及事故處理
 
