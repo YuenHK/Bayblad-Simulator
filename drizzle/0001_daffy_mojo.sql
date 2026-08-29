@@ -37,3 +37,5 @@ CREATE INDEX "admin_sessions_active_idx" ON "admin_sessions" USING btree ("admin
 CREATE FUNCTION admin_audit_append_only_guard() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'admin_audit is append-only' USING ERRCODE = '55000'; END $$;
 --> statement-breakpoint
 CREATE TRIGGER admin_audit_append_only BEFORE UPDATE OR DELETE ON admin_audit FOR EACH ROW EXECUTE FUNCTION admin_audit_append_only_guard();
+--> statement-breakpoint
+CREATE TRIGGER admin_audit_no_truncate BEFORE TRUNCATE ON admin_audit FOR EACH STATEMENT EXECUTE FUNCTION admin_audit_append_only_guard();
