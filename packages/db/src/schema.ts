@@ -222,15 +222,17 @@ export const webClipTokenNonces = pgTable(
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     usedAt: timestamp("used_at", { withTimezone: true }),
-    reservationHash: text("reservation_hash"),
-    reservedUntil: timestamp("reserved_until", { withTimezone: true }),
+    attemptHash: text("attempt_hash"),
+    resultIdentityId: uuid("result_identity_id").references(() => identities.id),
+    resultSessionId: uuid("result_session_id").references(() => identitySessions.id),
+    resultTokenHash: text("result_token_hash"),
+    committedAt: timestamp("committed_at", { withTimezone: true }),
   },
   (table) => [
     index("webclip_token_nonces_expiry_idx").on(table.expiresAt),
-    index("webclip_token_nonces_reservation_lease_idx").on(table.reservedUntil),
     check("webclip_token_nonces_jti_hash_format", sql`${table.jtiHash} ~ '^[a-f0-9]{64}$'`),
     check("webclip_token_nonces_expiry_after_issue", sql`${table.expiresAt} > ${table.issuedAt}`),
-    check("webclip_token_nonces_reservation_consistent", sql`(${table.reservationHash} is null and ${table.reservedUntil} is null) or (${table.reservationHash} ~ '^[a-f0-9]{64}$' and ${table.reservedUntil} is not null)`),
+    check("webclip_token_nonces_result_consistent", sql`(${table.usedAt} is null and ${table.attemptHash} is null and ${table.resultIdentityId} is null and ${table.resultSessionId} is null and ${table.resultTokenHash} is null and ${table.committedAt} is null) or (${table.usedAt} is not null and ${table.attemptHash} ~ '^[a-f0-9]{64}$' and ${table.resultIdentityId} is not null and ${table.resultSessionId} is not null and ${table.resultTokenHash} ~ '^[a-f0-9]{64}$' and ${table.committedAt} is not null)`),
   ],
 );
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createIClassComposition } from "./composition";
 
 const key = Buffer.alloc(32, 4).toString("base64url");
-const enabled = { WEBCLIP_SIGNING_KEYS_JSON: JSON.stringify({ k1: key }), WEBCLIP_ACTIVE_KEY_ID: "k1", WEBCLIP_AUDIENCE: "steam-top" };
+const enabled = { WEBCLIP_SIGNING_KEYS_JSON: JSON.stringify({ k1: key }), WEBCLIP_ACTIVE_KEY_ID: "k1", WEBCLIP_EXCHANGE_KEY: Buffer.alloc(32, 9).toString("base64url"), WEBCLIP_AUDIENCE: "steam-top" };
 
 describe("production iClass composition", () => {
   it("requires an explicit mode and reports explicit guest-only as disabled", async () => {

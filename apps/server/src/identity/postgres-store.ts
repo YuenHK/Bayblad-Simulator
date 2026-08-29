@@ -17,7 +17,7 @@ const mapIdentity = (row: typeof identities.$inferSelect): Identity => ({
   ...(row.iclassExternalId ? { externalId: row.iclassExternalId } : {}),
 });
 const mapSession = (session: typeof identitySessions.$inferSelect, identity: typeof identities.$inferSelect): IdentitySession => ({
-  identity: mapIdentity(identity), tokenHash: session.tokenHash, createdAt: session.createdAt,
+  id: session.id, identity: mapIdentity(identity), tokenHash: session.tokenHash, createdAt: session.createdAt,
   lastSeenAt: session.lastSeenAt, expiresAt: session.expiresAt,
   ...(session.revokedAt ? { revokedAt: session.revokedAt } : {}),
   ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
@@ -78,8 +78,8 @@ export class PostgresIdentityStore implements IdentityStore {
     } catch (error) { if ((error as { code?: string }).code === "23505") throw new SessionTokenUnavailableError(); throw error; }
   }
 
-  async upsertLiveSession(input: Readonly<{ tokenHash: string; previousTokenHash?: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; cachedIdentityId?: string }>): Promise<IdentitySession> {
-    try { return await this.#db.transaction(async (tx: Tx) => {
+  async upsertLiveSession(input: Readonly<{ tokenHash: string; previousTokenHash?: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; cachedIdentityId?: string }>, transaction?: unknown): Promise<IdentitySession> {
+    const operation = async (tx: Tx) => {
       let [existing] = await tx.select().from(identities).where(eq(identities.iclassExternalId, input.identity.externalId)).limit(1);
       if (!existing) {
         await this.#assertIdentityCapacity(tx);
@@ -101,7 +101,8 @@ export class PostgresIdentityStore implements IdentityStore {
       await this.#assertSessionCapacity(tx, input.now);
       const [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
       return mapSession(session!, identity!);
-    }); } catch (error) {
+    };
+    try { return transaction ? await operation(transaction as Tx) : await this.#db.transaction(operation); } catch (error) {
       if (error instanceof SessionTokenUnavailableError || (error as { code?: string }).code === "23505") throw new SessionTokenUnavailableError();
       throw error;
     }

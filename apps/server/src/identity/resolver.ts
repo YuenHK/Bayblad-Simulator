@@ -15,6 +15,7 @@ export type Identity = Readonly<{
   externalId?: string;
 }>;
 export type IdentitySession = Readonly<{
+  id: string;
   identity: Identity;
   tokenHash: string;
   createdAt: Date;
@@ -31,7 +32,7 @@ export interface IdentityStore {
   findSession(tokenHash: string, now?: Date): Promise<IdentitySession | null>;
   touchSession(tokenHash: string, now: Date, diagnostics: SessionDiagnostics, rollingExpiresAt: Date): Promise<IdentitySession | null>;
   createGuestSession(input: Readonly<{ tokenHash: string; displayName: string; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics }>): Promise<IdentitySession>;
-  upsertLiveSession(input: Readonly<{ tokenHash: string; previousTokenHash?: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; cachedIdentityId?: string }>): Promise<IdentitySession>;
+  upsertLiveSession(input: Readonly<{ tokenHash: string; previousTokenHash?: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; cachedIdentityId?: string }>, transaction?: unknown): Promise<IdentitySession>;
   revokeSession(tokenHash: string, now: Date): Promise<boolean>;
 }
 export type TrustedLiveIdentity = Readonly<{
@@ -138,6 +139,23 @@ export class IdentityResolver {
     }
   }
 
+  async resolveLiveWithToken(request: Readonly<{ cookieToken?: string; ip?: string; userAgent?: string }>, live: TrustedLiveIdentity, cookieToken: string, transaction?: unknown) {
+    if (!trustedLiveValues.has(live as object) || !isIdentityToken(cookieToken)) throw new TypeError("INVALID_DETERMINISTIC_LIVE_IDENTITY");
+    const now = this.#now(), expiresAt = new Date(now.getTime() + Math.floor(this.#lifetimeMs / 1_000) * 1_000);
+    const previousTokenHash = isIdentityToken(request.cookieToken) ? hashIdentityToken(request.cookieToken) : undefined;
+    const cached = previousTokenHash ? await this.#store.findSession(previousTokenHash, now) : null;
+    const compatible = cached?.identity.status === "guest" || (cached?.identity.status === "iclass" && cached.identity.externalId === live.externalId);
+    const session = await this.#store.upsertLiveSession({ tokenHash: hashIdentityToken(cookieToken), ...(compatible && previousTokenHash && cached ? { previousTokenHash, cachedIdentityId: cached.identity.id } : {}), identity: live, now, expiresAt, diagnostics: diagnostics(request) }, transaction);
+    return { identity: session.identity, sessionId: session.id, cookieToken, issuedAt: now, expiresAt, isNew: true } as const;
+  }
+
+  async recoverLiveExchange(cookieToken: string) {
+    if (!isIdentityToken(cookieToken)) return null;
+    const now = this.#now(); const session = await this.#store.findSession(hashIdentityToken(cookieToken), now);
+    if (!session || session.identity.status !== "iclass") return null;
+    return { identity: session.identity, sessionId: session.id, cookieToken, issuedAt: now, expiresAt: session.expiresAt, isNew: false } as const;
+  }
+
   async revoke(cookieToken: unknown): Promise<boolean> {
     if (!isIdentityToken(cookieToken)) return false;
     try { return await this.#store.revokeSession(hashIdentityToken(cookieToken), this.#now()); }
@@ -171,7 +189,7 @@ export class InMemoryIdentityStore implements IdentityStore {
     if (this.#sessions.size >= this.#maxSessions) throw new IdentityCapacityError();
     if (this.#sessions.has(input.tokenHash)) return this.#sessions.get(input.tokenHash)!;
     const identity: Identity = Object.freeze({ id: randomUUID(), status: "guest", displayName: input.displayName });
-    const session: IdentitySession = Object.freeze({ identity, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...(input.diagnostics.ip ? { lastIp: input.diagnostics.ip } : {}), ...(input.diagnostics.userAgent ? { userAgent: input.diagnostics.userAgent } : {}) });
+    const session: IdentitySession = Object.freeze({ id: randomUUID(), identity, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...(input.diagnostics.ip ? { lastIp: input.diagnostics.ip } : {}), ...(input.diagnostics.userAgent ? { userAgent: input.diagnostics.userAgent } : {}) });
     this.#sessions.set(input.tokenHash, session);
     return session;
   }
@@ -186,7 +204,7 @@ export class InMemoryIdentityStore implements IdentityStore {
       id = randomUUID(); this.#liveByExternal.set(input.identity.externalId, id);
     }
     const identity: Identity = Object.freeze({ id, status: "iclass", displayName: input.identity.displayName, externalId: input.identity.externalId, studentName: input.identity.studentName, className: input.identity.className, studentNumber: input.identity.studentNumber, ...(input.identity.deviceName ? { deviceName: input.identity.deviceName } : {}) });
-    const session: IdentitySession = Object.freeze({ identity, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...(input.diagnostics.ip ? { lastIp: input.diagnostics.ip } : {}), ...(input.diagnostics.userAgent ? { userAgent: input.diagnostics.userAgent } : {}) });
+    const session: IdentitySession = Object.freeze({ id: randomUUID(), identity, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...(input.diagnostics.ip ? { lastIp: input.diagnostics.ip } : {}), ...(input.diagnostics.userAgent ? { userAgent: input.diagnostics.userAgent } : {}) });
     this.#sessions.set(input.tokenHash, session);
     if (input.previousTokenHash) {
       this.#sessions.delete(input.previousTokenHash);

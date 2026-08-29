@@ -3,6 +3,7 @@ import fastifyCookie from "@fastify/cookie";
 import { designUploadResponseSchema } from "@steam-top/domain";
 import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
+import { randomBytes } from "node:crypto";
 import type { BattleInputs, BattleResult, ResultRepository } from "./battle/engine";
 import { BattleEngine } from "./battle/engine";
 import { LaunchCoordinator } from "./battle/launch";
@@ -306,30 +307,40 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     app.get("/start", async (request, reply) => {
       reply.header("Referrer-Policy", "no-referrer").header("Cache-Control", "no-store");
       const token = (request.query as { t?: unknown }).t;
-      let resolved;
-      let reservation: Awaited<ReturnType<WebClipTokenService["reserveVerified"]>> | undefined;
       if (!allowIdentityRequest(request.headers) || (request.headers["content-length"] && request.headers["content-length"] !== "0")) return reply.redirect("/", 303);
       try {
         if (!options.webClipTokens || !options.iClassAdapter || typeof token !== "string") throw new Error("INVALID_DEVICE_TOKEN");
         const verified = await options.webClipTokens.inspect(token);
+        const attemptName = "steam_top_webclip_attempt";
+        const attempt = request.cookies[attemptName];
+        if (!attempt) {
+          const created = randomBytes(32).toString("base64url");
+          reply.setCookie(attemptName, created, { path: "/start", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", maxAge: Math.max(1, Math.floor((verified.expiresAt.getTime() - Date.now()) / 1_000)), expires: verified.expiresAt });
+          return reply.redirect(`/start?t=${encodeURIComponent(token)}`, 303);
+        }
+        const handle = options.webClipTokens.prepareExchange(verified, attempt);
         let device;
         try { device = await options.iClassAdapter.resolveDevice(verified.deviceId); }
         catch { throw new Error("ICLASS_LOOKUP_RETRYABLE"); }
-        reservation = await options.webClipTokens.reserveVerified(verified);
-        if (!device) { await options.webClipTokens.commitReservation(reservation); reservation = undefined; throw new Error("ICLASS_DEVICE_NOT_FOUND"); }
+        if (!device) throw new Error("ICLASS_DEVICE_NOT_FOUND");
         const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: device.externalDeviceId, displayName: device.studentName, studentName: device.studentName, className: device.className, studentNumber: device.studentNumber, deviceName: device.deviceName }) }).resolve();
-        resolved = await resolveIdentityRequest(request, live ?? undefined);
-        await options.webClipTokens.commitReservation(reservation); reservation = undefined;
+        if (!live) throw new Error("ICLASS_DEVICE_NOT_FOUND");
+        let created: Awaited<ReturnType<IdentityResolver["resolveLiveWithToken"]>> | undefined;
+        const requestIp = identityIp(request.raw);
+        const exchanged = await options.webClipTokens.exchange(handle, async (transaction) => {
+          created = await identityResolver.resolveLiveWithToken({ ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}), ...(requestIp ? { ip: requestIp } : {}), ...(typeof request.headers["user-agent"] === "string" ? { userAgent: request.headers["user-agent"] } : {}) }, live, handle.cookieToken, transaction);
+          return { identityId: created.identity.id, sessionId: created.sessionId, tokenHash: handle.tokenHash, committedAt: created.issuedAt };
+        });
+        if (exchanged.status !== "committed" && exchanged.status !== "recovered") { reply.header("X-Identity-Bootstrap", "replay"); return reply.redirect("/", 303); }
+        const resolved = created ?? await identityResolver.recoverLiveExchange(handle.cookieToken);
+        if (!resolved) throw new Error("WEBCLIP_RECOVERY_FAILED");
+        setIdentityCookie(reply, resolved);
+        reply.clearCookie(attemptName, { path: "/start", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict" });
+        return reply.redirect("/", 303);
       } catch (error) {
-        const failedAfterIdentityWrite = Boolean(resolved && reservation);
-        if (reservation && options.webClipTokens) { try { await options.webClipTokens.releaseReservation(reservation); } catch { /* lease expiry permits retry */ } }
-        if (error instanceof Error && error.message === "DEVICE_TOKEN_IN_PROGRESS") { reply.header("X-Identity-Bootstrap", "in-progress"); return reply.redirect("/", 303); }
-        if (error instanceof Error && error.message === "DEVICE_TOKEN_COMMIT_FAILED") { reply.header("X-Identity-Bootstrap", "retry"); return reply.redirect("/", 303); }
-        if (failedAfterIdentityWrite) { reply.header("X-Identity-Bootstrap", "retry"); return reply.redirect("/", 303); }
-        try { resolved = await resolveIdentityRequest(request); } catch { /* identity API can retry later */ }
+        reply.header("X-Identity-Bootstrap", error instanceof Error && error.message === "ICLASS_LOOKUP_RETRYABLE" ? "retry" : "invalid");
+        return reply.redirect("/", 303);
       }
-      if (resolved) setIdentityCookie(reply, resolved);
-      return reply.redirect("/", 303);
     });
     app.post("/api/identity/logout", async (request, reply) => {
       if (!allowIdentityRequest(request.headers) || request.headers["x-steam-top-action"] !== "logout") return reply.code(403).send({ error: "IDENTITY_ACTION_REJECTED" });

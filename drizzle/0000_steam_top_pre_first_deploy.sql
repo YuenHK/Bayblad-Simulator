@@ -177,11 +177,14 @@ CREATE TABLE "webclip_token_nonces" (
 	"issued_at" timestamp with time zone NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"used_at" timestamp with time zone,
-	"reservation_hash" text,
-	"reserved_until" timestamp with time zone,
+	"attempt_hash" text,
+	"result_identity_id" uuid,
+	"result_session_id" uuid,
+	"result_token_hash" text,
+	"committed_at" timestamp with time zone,
 	CONSTRAINT "webclip_token_nonces_jti_hash_format" CHECK ("webclip_token_nonces"."jti_hash" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "webclip_token_nonces_expiry_after_issue" CHECK ("webclip_token_nonces"."expires_at" > "webclip_token_nonces"."issued_at"),
-	CONSTRAINT "webclip_token_nonces_reservation_consistent" CHECK (("webclip_token_nonces"."reservation_hash" is null and "webclip_token_nonces"."reserved_until" is null) or ("webclip_token_nonces"."reservation_hash" ~ '^[a-f0-9]{64}$' and "webclip_token_nonces"."reserved_until" is not null))
+	CONSTRAINT "webclip_token_nonces_result_consistent" CHECK (("webclip_token_nonces"."used_at" is null and "webclip_token_nonces"."attempt_hash" is null and "webclip_token_nonces"."result_identity_id" is null and "webclip_token_nonces"."result_session_id" is null and "webclip_token_nonces"."result_token_hash" is null and "webclip_token_nonces"."committed_at" is null) or ("webclip_token_nonces"."used_at" is not null and "webclip_token_nonces"."attempt_hash" ~ '^[a-f0-9]{64}$' and "webclip_token_nonces"."result_identity_id" is not null and "webclip_token_nonces"."result_session_id" is not null and "webclip_token_nonces"."result_token_hash" ~ '^[a-f0-9]{64}$' and "webclip_token_nonces"."committed_at" is not null))
 );
 --> statement-breakpoint
 CREATE TABLE "matches" (
@@ -304,6 +307,8 @@ ALTER TABLE "identities" ADD CONSTRAINT "identities_merged_into_identity_id_iden
 ALTER TABLE "identity_links" ADD CONSTRAINT "identity_links_source_identity_id_identities_id_fk" FOREIGN KEY ("source_identity_id") REFERENCES "public"."identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "identity_links" ADD CONSTRAINT "identity_links_target_identity_id_identities_id_fk" FOREIGN KEY ("target_identity_id") REFERENCES "public"."identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "identity_sessions" ADD CONSTRAINT "identity_sessions_identity_id_identities_id_fk" FOREIGN KEY ("identity_id") REFERENCES "public"."identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "webclip_token_nonces" ADD CONSTRAINT "webclip_token_nonces_result_identity_id_identities_id_fk" FOREIGN KEY ("result_identity_id") REFERENCES "public"."identities"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "webclip_token_nonces" ADD CONSTRAINT "webclip_token_nonces_result_session_id_identity_sessions_id_fk" FOREIGN KEY ("result_session_id") REFERENCES "public"."identity_sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "matches" ADD CONSTRAINT "matches_room_id_rooms_id_fk" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "matches" ADD CONSTRAINT "matches_player1_identity_id_identities_id_fk" FOREIGN KEY ("player1_identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "matches" ADD CONSTRAINT "matches_player2_identity_id_identities_id_fk" FOREIGN KEY ("player2_identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -340,7 +345,6 @@ CREATE UNIQUE INDEX "identity_sessions_token_hash_uidx" ON "identity_sessions" U
 CREATE INDEX "identity_sessions_identity_last_seen_idx" ON "identity_sessions" USING btree ("identity_id","last_seen_at");--> statement-breakpoint
 CREATE INDEX "identity_sessions_active_expires_at_idx" ON "identity_sessions" USING btree ("expires_at") WHERE "identity_sessions"."revoked_at" is null;--> statement-breakpoint
 CREATE INDEX "webclip_token_nonces_expiry_idx" ON "webclip_token_nonces" USING btree ("expires_at");--> statement-breakpoint
-CREATE INDEX "webclip_token_nonces_reservation_lease_idx" ON "webclip_token_nonces" USING btree ("reserved_until");--> statement-breakpoint
 CREATE UNIQUE INDEX "matches_idempotency_fingerprint_uidx" ON "matches" USING btree ("idempotency_fingerprint");--> statement-breakpoint
 CREATE INDEX "matches_completed_at_idx" ON "matches" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "matches_status_completed_at_idx" ON "matches" USING btree ("status","completed_at");--> statement-breakpoint
