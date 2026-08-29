@@ -26,6 +26,14 @@ const wait = (socket, type, ms = 15_000) => new Promise((resolve, reject) => {
   }, ms);
   socket.on("server.event", listener);
 });
+const waitWhere = (socket, type, predicate, ms = 15_000) => new Promise((resolve, reject) => {
+  const listener = (event) => {
+    if (event.type !== type || !predicate(event)) return;
+    clearTimeout(timer); socket.off("server.event", listener); resolve(event);
+  };
+  const timer = setTimeout(() => { socket.off("server.event", listener); reject(new Error(`timeout ${type} correlation`)); }, ms);
+  socket.on("server.event", listener);
+});
 
 async function connect(name) {
   const socket = io(origin, {
@@ -89,19 +97,28 @@ try {
   await joined;
   const upload = async (client) => (await postJson("/api/designs", client.token, design())).designId;
   const [d1, d2] = await Promise.all([upload(a), upload(b)]);
-  const finished = wait(a.socket, "match.finished", 60_000);
-  let schedules = 0;
-  const tap = (socket, event) => socket.emit("client.event", command("launch.tap", {
-    roomId: room.roomId, roundId: event.roundId, nonce: event.nonce,
-    clientTimeMs: event.serverTargetTimeMs,
+  const finishedA = waitWhere(a.socket, "match.finished", (event) => event.roomId === room.roomId, 60_000);
+  const finishedB = waitWhere(b.socket, "match.finished", (event) => event.roomId === room.roomId, 60_000);
+  const rounds = [new Set(), new Set()];
+  const submissions = [];
+  const tap = async (client, event) => {
+    if (event.roomId !== room.roomId || typeof event.roundId !== "string" || typeof event.nonce !== "string") throw new Error("schedule correlation invalid");
+    const request = command("launch.tap", { roomId: room.roomId, roundId: event.roundId, nonce: event.nonce, clientTimeMs: event.serverTargetTimeMs });
+    const ack = waitWhere(client.socket, "command.ack", (reply) => reply.causedByEventId === request.eventId && reply.commandType === "launch.tap");
+    const result = waitWhere(client.socket, "launch.result.private", (reply) => reply.roomId === room.roomId && reply.roundId === event.roundId);
+    client.socket.emit("client.event", request);
+    await Promise.all([ack, result]);
+  };
+  [a, b].forEach((client, index) => client.socket.on("server.event", (event) => {
+    if (event.type === "launch.schedule") { rounds[index].add(event.roundId); submissions.push(tap(client, event)); }
   }));
-  for (const client of [a, b]) client.socket.on("server.event", (event) => {
-    if (event.type === "launch.schedule") { schedules += 1; tap(client.socket, event); }
-  });
   a.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
   b.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
-  await finished;
-  if (schedules < 2) throw new Error("rhythm not observed");
+  const [matchA, matchB] = await Promise.all([finishedA, finishedB]);
+  await Promise.all(submissions);
+  if (matchA.matchId !== matchB.matchId || matchA.roomId !== room.roomId || matchA.roundWinners.length < 2) throw new Error("match correlation invalid");
+  if (rounds.some((seen) => seen.size !== matchA.roundWinners.length) || [...rounds[0]].some((roundId) => !rounds[1].has(roundId))) throw new Error("per-client rhythm coverage invalid");
+  if (![d1, d2].every((id) => typeof id === "string" && id.length > 0)) throw new Error("design correlation invalid");
   a.socket.emit("client.event", command("room.close", { roomId: room.roomId }));
 } finally {
   for (const socket of clients) socket.close();
