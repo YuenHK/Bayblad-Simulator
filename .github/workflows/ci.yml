@@ -246,6 +246,21 @@ jobs:
           run-id: "${{ vars.BOOTSTRAP_RUN_ID }}"
           github-token: "${{ github.token }}"
           path: bootstrap
+      - name: Validate candidate and create default-branch authorization
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -euo pipefail
+          manifest_sha=$(./scripts/portable-sha256.sh digest candidate/release-manifest.json);nonce=$(openssl rand -hex 32)
+          test "$(node -p 'require("./candidate/release-manifest.json").commit')" = "$RELEASE_COMMIT"
+          gh attestation verify candidate/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          gh attestation verify candidate/runtime-files.sha256 --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=release-host-integration&per_page=1" --jq 'if length==0 then "none" else (.[0].id|tostring)+"|"+.[0].payload.manifestSha256 end')
+          DEPLOYMENT_PURPOSE=release-integration node scripts/create-pending-deployment.mjs candidate/release-manifest.json "$RELEASE_RUN_ID" "release-manifest-$RELEASE_COMMIT" "$manifest_sha" "$RELEASE_COMMIT" "$nonce" integration "$GITHUB_REPOSITORY/.github/workflows/authorize-release.yml" "$GITHUB_SHA" "$GITHUB_REF" workflow_run "$latest" pending.json
+          deployment_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input pending.json --jq .id)
+          node scripts/create-bootstrap-authorization.mjs pending.json candidate/release-manifest.json candidate/runtime-files.sha256 candidate/release-manifest.json "$GITHUB_REPOSITORY" integration "$GITHUB_REPOSITORY/.github/workflows/authorize-release.yml" "$deployment_id" deployment-authorization.json
+          printf 'INTEGRATION_DEPLOYMENT_ID=%s\nINTEGRATION_NONCE=%s\nINTEGRATION_MANIFEST_SHA=%s\nINTEGRATION_PREVIOUS=%s\n' "$deployment_id" "$nonce" "$manifest_sha" "$latest" >> "$GITHUB_ENV"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with: { subject-path: deployment-authorization.json }
       - name: Verify and install the protected default-branch bootstrap
         env:
           GH_TOKEN: "${{ github.token }}"
@@ -275,8 +290,8 @@ jobs:
           printf '%s\n' "$BOOTSTRAP_ALLOWED_SIGNERS" > "$RUNNER_TEMP/bootstrap-allowed-signers"
           tar -xOf bootstrap/bootstrap.tgz ./bootstrap-files.sha256 > "$RUNNER_TEMP/bootstrap-files.sha256"
           bootstrap_manifest_sha=$(sha256sum "$RUNNER_TEMP/bootstrap-files.sha256" | awk '{print $1}')
-          node - "$RUNNER_TEMP/bootstrap-trust.json" "$bootstrap_manifest_sha" "$GITHUB_REPOSITORY" "$BOOTSTRAP_COMMIT" <<'NODE'
-          const fs=require("fs"),[out,digest,repo,commit]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256:digest,repository:repo,workflowIdentity:`${repo}/.github/workflows/record-deployment.yml`,workflowRef:"refs/heads/main",workflowSha:commit,githubTokenFile:"/dev/null",authorizationDir:"/dev/null",productionEnvFile:"/dev/null",hostReceiptSigningKey:"/dev/null",adminSmokeSecretFile:"/dev/null",hostReceiptOutbox:"/dev/null",pgServiceFile:"/dev/null",pgPassFile:"/dev/null",pgServiceName:"target"})+"\n",{mode:0o600});
+          node - "$RUNNER_TEMP/bootstrap-trust.json" "$bootstrap_manifest_sha" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF" <<'NODE'
+          const fs=require("fs"),[out,digest,repo,commit,ref]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256:digest,repository:repo,workflowIdentity:`${repo}/.github/workflows/authorize-release.yml`,workflowRef:ref,workflowSha:commit,deploymentPurpose:"release-integration",githubTokenFile:"/opt/steam-top/.release-integration/secrets/github-token",authorizationDir:"/opt/steam-top/.release-integration/authorization",productionEnvFile:"/opt/steam-top/.release-integration/production.env",hostReceiptSigningKey:"/opt/steam-top/.release-integration/secrets/host-signing",adminSmokeSecretFile:"/opt/steam-top/.release-integration/secrets/admin-smoke.json",hostReceiptOutbox:"/opt/steam-top/.release-integration/outbox",pgServiceFile:"/opt/steam-top/.release-integration/secrets/pg-service",pgPassFile:"/opt/steam-top/.release-integration/secrets/pg-pass",pgServiceName:"target"})+"\n",{mode:0o600});
           NODE
           sudo env EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$BOOTSTRAP_ARCHIVE_SHA256" BOOTSTRAP_ALLOWED_SIGNERS_FILE="$RUNNER_TEMP/bootstrap-allowed-signers" /usr/local/sbin/install-steam-top-bootstrap bootstrap/bootstrap.tgz bootstrap/bootstrap.tgz.sig bootstrap "$RUNNER_TEMP/bootstrap-trust.json"
       - name: Verify externally attested root runtime manifest
@@ -289,15 +304,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo install -d -o root -g root -m 0755 /opt/steam-top
-          sudo cp -a candidate/runtime/. /opt/steam-top/
-          sudo chown -R root:root /opt/steam-top
-          sudo find /opt/steam-top -type d -exec chmod go-w {} +
-          sudo find /opt/steam-top/scripts /opt/steam-top/infra/backup -type f -name '*.sh' -exec chmod 0555 {} +
-          sudo chmod 0555 /opt/steam-top/apps/server/dist/admin/deletion-ledger-cli.js
-          sudo chmod 0444 /opt/steam-top/infra/backup/trusted-ledger-cli.sha256
-          runtime_manifest_sha=$(./scripts/portable-sha256.sh digest candidate/runtime-files.sha256)
-          sudo /opt/steam-top/scripts/seal-runtime-install.sh "$GITHUB_WORKSPACE/candidate/runtime-files.sha256" "$runtime_manifest_sha" "$RELEASE_COMMIT"
           sudo install -d -o root -g root -m 0700 /opt/steam-top/.release-integration/{authorization,outbox,tls,secrets}
           sudo install -o root -g root -m 0600 /dev/null /var/lock/steam-top-release-integration.lock
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=db -addext subjectAltName=DNS:db -keyout server.key -out server.crt
@@ -309,6 +315,7 @@ jobs:
           printf 'db:15432:steam_top:steam_top:integration-postgres-password\n' | sudo tee /opt/steam-top/.release-integration/secrets/pg-pass >/dev/null
           sudo chmod 0600 /opt/steam-top/.release-integration/secrets/*
           sudo ssh-keygen -q -t ed25519 -N '' -f /opt/steam-top/.release-integration/secrets/host-signing
+          sudo /opt/steam-top-bootstrap/prepare-release.sh "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/deployment-authorization.json" "$GITHUB_WORKSPACE/pending.json" /opt/steam-top/.release-integration/secrets/github-token /opt/steam-top/.release-integration/authorization
         env: { GITHUB_TOKEN: "${{ github.token }}" }
       - name: Build canonical environment and seed isolated local CA
         shell: bash
@@ -320,33 +327,29 @@ jobs:
           set -a;source /tmp/integration-images.env;set +a
           env | grep -E '^(PUBLIC_ORIGIN|SERVER_IMAGE|WEB_IMAGE|DATABASE_IMAGE|CADDY_IMAGE_REPOSITORY|CADDY_IMAGE_DIGEST|POSTGRES_DB|POSTGRES_USER|POSTGRES_PASSWORD|DATABASE_URL|COOKIE_SIGNING_KEY|ADMIN_USERNAME|ADMIN_INITIAL_PASSWORD|ADMIN_CSRF_SECRET|WEBCLIP_SIGNING_KEY|WEBCLIP_EXCHANGE_KEY|ANALYTICS_CURSOR_SECRET|ICLASS_API_BEARER_TOKEN|ICLASS_MODE|POSTGRES_TLS_CERT_PATH|POSTGRES_TLS_KEY_PATH)=' | sudo tee /opt/steam-top/.release-integration/production.env >/dev/null
           sudo chmod 0600 /opt/steam-top/.release-integration/production.env
-          sudo docker compose -p steam-top-release-integration --project-directory /opt/steam-top --env-file /opt/steam-top/.release-integration/production.env -f /opt/steam-top/compose.yaml -f /opt/steam-top/compose.release-integration.yaml up -d --wait
-          sudo docker compose -p steam-top-release-integration --project-directory /opt/steam-top --env-file /opt/steam-top/.release-integration/production.env -f /opt/steam-top/compose.yaml -f /opt/steam-top/compose.release-integration.yaml cp caddy:/data/caddy/pki/authorities/local/root.crt /tmp/integration-root.crt
+          runtime=$(readlink -f /opt/steam-top/current)
+          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" up -d --wait
+          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" cp caddy:/data/caddy/pki/authorities/local/root.crt /tmp/integration-root.crt
           sudo cp /tmp/integration-root.crt /usr/local/share/ca-certificates/steam-top-integration.crt
           sudo update-ca-certificates
-          sudo docker compose -p steam-top-release-integration --project-directory /opt/steam-top --env-file /opt/steam-top/.release-integration/production.env -f /opt/steam-top/compose.yaml -f /opt/steam-top/compose.release-integration.yaml exec -T db psql -U steam_top -d steam_top -c "set steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA';update restore_control.deployment_environment set environment='production',restore_allowed=false where singleton"
-          sudo docker compose -p steam-top-release-integration --project-directory /opt/steam-top --env-file /opt/steam-top/.release-integration/production.env -f /opt/steam-top/compose.yaml -f /opt/steam-top/compose.release-integration.yaml down
+          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml exec -T db psql -U steam_top -d steam_top -c "set steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA';update restore_control.deployment_environment set environment='production',restore_allowed=false where singleton"
+          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml down
       - name: Authorize and invoke the complete host core as non-root
         shell: bash
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
-          manifest_sha=$(./scripts/portable-sha256.sh digest candidate/release-manifest.json);nonce=$(openssl rand -hex 32)
-          latest=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=release-host-integration&per_page=1" --jq 'if length==0 then "none" else (.[0].id|tostring)+"|"+.[0].payload.manifestSha256 end')
-          DEPLOYMENT_PURPOSE=release-integration node scripts/create-pending-deployment.mjs candidate/release-manifest.json "$RELEASE_RUN_ID" "release-manifest-$RELEASE_COMMIT" "$manifest_sha" "$RELEASE_COMMIT" "$nonce" integration "$GITHUB_REPOSITORY/.github/workflows/authorize-release.yml" "$GITHUB_SHA" "$GITHUB_REF" workflow_run "$latest" pending.json
-          deployment_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input pending.json --jq .id);echo "INTEGRATION_DEPLOYMENT_ID=$deployment_id" >> "$GITHUB_ENV"
-          sudo DEPLOYMENT_AUTHORIZATION_PURPOSE=release-integration /opt/steam-top/scripts/prepare-deployment-authorization.sh "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/pending.json" "$GITHUB_REPOSITORY" "$deployment_id" /opt/steam-top/.release-integration/secrets/github-token /opt/steam-top/.release-integration/authorization
           sudo useradd --system --no-create-home steam-top-integration
-          sudoers_expected=${latest//|/\\|}
-          printf 'steam-top-integration ALL=(root) NOPASSWD: SETENV: /opt/steam-top/scripts/host-deploy-and-receipt.sh %s %s %s %s %s %s %s %s\n' "$GITHUB_WORKSPACE/candidate" /opt/steam-top/.release-integration/production.env "$manifest_sha" "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$nonce" "$sudoers_expected" "$deployment_id" | sudo tee /etc/sudoers.d/steam-top-integration >/dev/null
+          sudoers_expected=${INTEGRATION_PREVIOUS//|/\\|}
+          printf 'steam-top-integration ALL=(root) NOPASSWD: /opt/steam-top-bootstrap/deploy-release.sh %s %s %s %s %s %s %s %s\n' "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/deployment-authorization.json" "$GITHUB_WORKSPACE/pending.json" "$INTEGRATION_MANIFEST_SHA" "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$INTEGRATION_NONCE" "$sudoers_expected|$INTEGRATION_DEPLOYMENT_ID" | sudo tee /etc/sudoers.d/steam-top-integration >/dev/null
           sudo chmod 0440 /etc/sudoers.d/steam-top-integration;sudo visudo -cf /etc/sudoers.d/steam-top-integration
-          sudo -u steam-top-integration sudo NODE_EXTRA_CA_CERTS=/tmp/integration-root.crt HOST_RECEIPT_SIGNING_KEY=/opt/steam-top/.release-integration/secrets/host-signing PRODUCTION_AUTHORIZATION_DIR=/opt/steam-top/.release-integration/authorization DEPLOYMENT_AUTHORIZATION_PURPOSE=release-integration ADMIN_SMOKE_SECRET_FILE=/opt/steam-top/.release-integration/secrets/admin-smoke.json HOST_RECEIPT_OUTBOX_DIR=/opt/steam-top/.release-integration/outbox PGSERVICEFILE=/opt/steam-top/.release-integration/secrets/pg-service PGPASSFILE=/opt/steam-top/.release-integration/secrets/pg-pass HOST_RECEIPT_PGSERVICE=target /opt/steam-top/scripts/host-deploy-and-receipt.sh "$GITHUB_WORKSPACE/candidate" /opt/steam-top/.release-integration/production.env "$manifest_sha" "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$nonce" "$latest" "$deployment_id" > receipt.frame
-          node scripts/parse-host-receipt-frame.mjs receipt.frame "$nonce" receipt.json receipt.sig
+          sudo -u steam-top-integration sudo /opt/steam-top-bootstrap/deploy-release.sh "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/deployment-authorization.json" "$GITHUB_WORKSPACE/pending.json" "$INTEGRATION_MANIFEST_SHA" "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$INTEGRATION_NONCE" "$INTEGRATION_PREVIOUS|$INTEGRATION_DEPLOYMENT_ID" > receipt.frame
+          node scripts/parse-host-receipt-frame.mjs receipt.frame "$INTEGRATION_NONCE" receipt.json receipt.sig
           node -e 'const r=require("./receipt.json");if(r.schemaVersion!==4||r.purpose!=="release-integration"||r.smoke?.complete!==true)process.exit(1)'
-          test -f "/opt/steam-top/.release-integration/authorization/$nonce.json.consumed"
+          test -f "/opt/steam-top/.release-integration/authorization/$INTEGRATION_NONCE.json.consumed"
           printf '{"state":"success","environment":"release-host-integration","description":"isolated host core and full smoke passed"}\n' > integration-success.json
-          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" --input integration-success.json
-          printf '{"schemaVersion":1,"purpose":"approved-release","commit":"%s","manifestSha256":"%s","integrationDeploymentId":"%s"}\n' "$RELEASE_COMMIT" "$manifest_sha" "$deployment_id" > candidate/APPROVED-RELEASE.json
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$INTEGRATION_DEPLOYMENT_ID/statuses" --input integration-success.json
+          printf '{"schemaVersion":1,"purpose":"approved-release","commit":"%s","manifestSha256":"%s","integrationDeploymentId":"%s"}\n' "$RELEASE_COMMIT" "$INTEGRATION_MANIFEST_SHA" "$INTEGRATION_DEPLOYMENT_ID" > candidate/APPROVED-RELEASE.json
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: candidate/APPROVED-RELEASE.json }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -359,7 +362,7 @@ jobs:
         run: |
           set +e
           failures=""
-          sudo docker compose -p steam-top-release-integration --project-directory /opt/steam-top --env-file /opt/steam-top/.release-integration/production.env -f /opt/steam-top/compose.yaml -f /opt/steam-top/compose.release-integration.yaml down -v --remove-orphans || failures="$failures compose"
+          runtime=$(readlink -f /opt/steam-top/current 2>/dev/null);if [[ -n $runtime ]];then sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" down -v --remove-orphans || failures="$failures compose";fi
           docker logout ghcr.io || failures="$failures registry-logout"
           sudo rm -f /etc/sudoers.d/steam-top-integration /usr/local/share/ca-certificates/steam-top-integration.crt /usr/local/sbin/install-steam-top-bootstrap /tmp/integration-root.crt /tmp/integration-images.env server.key server.crt || failures="$failures secrets"
           sudo update-ca-certificates || failures="$failures ca-trust"

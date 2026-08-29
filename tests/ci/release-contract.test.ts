@@ -67,7 +67,7 @@ describe("release CI contract", () => {
     const verifier = read("scripts/verify-runtime-install.sh");
     expect(workflow).toContain("create-runtime-files-manifest.mjs");
     expect(workflow).toContain("subject-path: release/runtime-files.sha256");
-    expect(workflow).toContain("seal-runtime-install.sh");
+    expect(workflow).toContain("/opt/steam-top-bootstrap/prepare-release.sh");
     expect(read("scripts/seal-runtime-install.sh")).toContain("runtime-install-receipt.json");
     expect(preparer).toContain('gh attestation verify "$snapshot/runtime-files.sha256"');
     for (const script of [preparer, host, finalize]) {
@@ -84,9 +84,9 @@ describe("release CI contract", () => {
     expect(workflow).toContain("github.event_name == 'workflow_call'");
     expect(read(".github/workflows/authorize-release.yml")).toContain("workflow_run:");
     expect(workflow).toContain("environment=release-host-integration");
-    expect(workflow).toContain("DEPLOYMENT_AUTHORIZATION_PURPOSE=release-integration");
+    expect(workflow).toContain("/opt/steam-top-bootstrap/deploy-release.sh");
     expect(workflow).toContain("sudo -u steam-top-integration sudo");
-    expect(workflow).toContain("host-deploy-and-receipt.sh");
+    expect(workflow).not.toContain("sudo cp -a candidate/runtime");
     expect(workflow).toContain("approved-release-${{ inputs.candidate_commit }}");
     expect(workflow).toContain("down -v --remove-orphans");
     const record=read(".github/workflows/record-deployment.yml");

@@ -6,6 +6,9 @@ mapfile -t paths < <(node - "$config" <<'NODE'
 const x=require(process.argv[2]),paths=["githubTokenFile","authorizationDir","productionEnvFile","hostReceiptSigningKey","adminSmokeSecretFile","hostReceiptOutbox","pgServiceFile","pgPassFile"];for(const k of paths)if(typeof x[k]!=="string"||!x[k].startsWith("/"))process.exit(1);if(!/^[A-Za-z0-9._-]+$/.test(x.pgServiceName))process.exit(1);for(const k of paths)console.log(x[k]);console.log(x.pgServiceName);
 NODE
 )
-/opt/steam-top-bootstrap/prepare-release.sh "$artifact" "$bundle" "$pending" "${paths[0]}" "${paths[1]}"
+prepared="${paths[1]}/$nonce.json";if [[ -f $prepared && ! -L $prepared ]];then node - "$prepared" "$deployment_id" "$nonce" "$manifest" <<'NODE'
+const a=require(process.argv[2]);if(a.state!=="pending"||a.deploymentId!==process.argv[3]||a.nonce!==process.argv[4]||a.manifestSha256!==process.argv[5])process.exit(1);
+NODE
+else /opt/steam-top-bootstrap/prepare-release.sh "$artifact" "$bundle" "$pending" "${paths[0]}" "${paths[1]}";fi
 read -r runtime_sha deployment_purpose < <(node -e 'const a=require(process.argv[1]);if(!/^[a-f0-9]{64}$/.test(a.runtimeManifestSha256)||!["production","release-integration"].includes(a.deploymentPurpose))process.exit(1);console.log(a.runtimeManifestSha256,a.deploymentPurpose)' "$bundle");core="/opt/steam-top/releases/$runtime_sha/scripts/host-deploy-and-receipt.sh"
 exec env HOST_RECEIPT_SIGNING_KEY="${paths[3]}" PRODUCTION_AUTHORIZATION_DIR="${paths[1]}" DEPLOYMENT_AUTHORIZATION_PURPOSE="$deployment_purpose" ADMIN_SMOKE_SECRET_FILE="${paths[4]}" HOST_RECEIPT_OUTBOX_DIR="${paths[5]}" PGSERVICEFILE="${paths[6]}" PGPASSFILE="${paths[7]}" HOST_RECEIPT_PGSERVICE="${paths[8]}" "$core" "$artifact" "${paths[2]}" "$manifest" "$repository" "$commit" "$nonce" "$expected" "$deployment_id"
