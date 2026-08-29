@@ -8,6 +8,9 @@ for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/veri
 done
 ! grep -q 'mkfifo\|read ignored' "$script_dir/backup.sh"
 grep -q 'loop perform pg_sleep' "$script_dir/backup.sh"
+! grep -q 'DELETION_LEDGER_CLI_ROOT\|DELETION_LEDGER_CLI_SHA256' "$script_dir/backup.sh" "$script_dir/restore.sh"
+grep -q 'ALLOW_TEST_LEDGER_CLI_INJECTION' "$script_dir/backup.sh"
+grep -q 'ALLOW_TEST_LEDGER_CLI_INJECTION' "$script_dir/restore.sh"
 guard_output=$(env PGPASSWORD=exposed PGSERVICE=source PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass BACKUP_DIR=/tmp/backups AGE_RECIPIENT=age1test DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli DELETION_LEDGER_CLI_ROOT=/tmp DELETION_LEDGER_CLI_SHA256=$(printf '%064d' 0) BACKUP_SIGNING_KEY=/tmp/key BACKUP_SIGNER_ID=test BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers "$script_dir/backup.sh" 2>&1||true)
 [[ $guard_output == *"libpq override PGPASSWORD is forbidden"* ]]
 guard_output=$(env PGPASSWORD=exposed RESTORE_PGSERVICE=restore PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass RESTORE_CONFIRM_DATABASE=test AGE_IDENTITY_FILE=/tmp/key DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli DELETION_LEDGER_CLI_ROOT=/tmp DELETION_LEDGER_CLI_SHA256=$(printf '%064d' 0) RESTORE_ALLOWED_TARGET_ID=x NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers BACKUP_SIGNER_ID=test "$script_dir/restore.sh" /tmp/steam-top-20260101T000000Z-000001.backup 2>&1||true)
