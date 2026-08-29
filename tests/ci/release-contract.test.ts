@@ -188,6 +188,7 @@ describe("rollback deletion monotonicity", () => {
     expect(read("infra/backup/test-promotion-full.sh")).toContain("reconcile-promotion-ready.sh");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("reconcile-finalize-outbox.sh");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("promotion-ready.finalized.$cutover_nonce");
+    const wss=read("scripts/production-wss-smoke.mjs");expect(wss.indexOf("rhythm coverage deadline")).toBeLessThan(wss.lastIndexOf('socket.off("server.event"'));
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-isolation.sh");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-full.sh");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("promote-restored-target.sh");
