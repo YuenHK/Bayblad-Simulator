@@ -58,25 +58,31 @@ export class MemoryRoomRecordRepository implements RoomRecordRepository {
 
 export class PostgresRoomRecordRepository implements RoomRecordRepository {
   #reserved: Awaited<ReturnType<DatabaseClient["sql"]["reserve"]>> | undefined;
+  #leaseBackendPid: number | undefined;
   constructor(readonly db: Db, readonly sql?: DatabaseClient["sql"]) {}
   async acquireStartupLease(): Promise<void> {
     if (this.#reserved) return;
     if (!this.sql) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_UNAVAILABLE");
     const reserved = await this.sql.reserve();
     try {
-      const rows = await reserved<{ acquired: boolean }[]>`select pg_try_advisory_lock(1937006964, 1) as acquired`;
+      const rows = await reserved<{ acquired: boolean; backendPid: number }[]>`select pg_try_advisory_lock(1937006964, 1) as acquired, pg_backend_pid() as "backendPid"`;
       if (!rows[0]?.acquired) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_HELD");
-      this.#reserved = reserved;
+      this.#reserved = reserved; this.#leaseBackendPid = rows[0].backendPid;
     } catch (error) { reserved.release(); throw error; }
   }
   async releaseStartupLease(): Promise<void> {
-    const reserved = this.#reserved; this.#reserved = undefined;
+    const reserved = this.#reserved; this.#reserved = undefined; this.#leaseBackendPid = undefined;
     if (!reserved) return;
     try { await reserved`select pg_advisory_unlock(1937006964, 1)`; } finally { reserved.release(); }
   }
   async verifyStartupLease(): Promise<void> {
-    if (!this.#reserved) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_LOST");
-    await this.#reserved`select 1`;
+    if (!this.#reserved || this.#leaseBackendPid === undefined) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_LOST");
+    const rows = await this.#reserved<{ backendPid: number; held: boolean }[]>`
+      select pg_backend_pid() as "backendPid", exists(
+        select 1 from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()
+          and classid = 1937006964 and objid = 1 and granted
+      ) as held`;
+    if (rows[0]?.backendPid !== this.#leaseBackendPid || !rows[0]?.held) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_LOST");
   }
   async create(input: Readonly<{ id: string; code: string; name: string; ownerIdentityId: string | null; participant: RoomParticipantRecord; at: Date }>): Promise<void> {
     await this.db.transaction(async (tx) => {
