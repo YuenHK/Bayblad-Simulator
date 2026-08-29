@@ -15,6 +15,7 @@ import { MemoryRoomProjectionStore } from "./records/room-projection-store";
 import { shouldRecordRealtimeActivity } from "./socket";
 
 const uuid = () => crypto.randomUUID();
+async function waitForCleanup(predicate:()=>boolean){for(let attempt=0;attempt<1_000;attempt++){if(predicate())return;await new Promise<void>(resolve=>setImmediate(resolve));}throw new Error("CLEANUP_TIMEOUT");}
 const command = (type: string, fields: Record<string, unknown> = {}) => ({
   type,
   protocolVersion: 1,
@@ -461,8 +462,11 @@ describe("realtime app", () => {
     const url = `http://127.0.0.1:${address.port}`;
     for (let wave = 0; wave < 5; wave += 1) {
       const client = await connect(url, `Churn ${wave}`);
+      const disconnected = new Promise<void>((resolve) => client.socket.once("disconnect", () => resolve()));
       client.socket.close();
-      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      await disconnected;
+      await waitForCleanup(() => app.realtimeGateway.debugCounts.connections === 0);
+      await app.realtimeGateway.pump(now);
       expect(app.realtimeGateway.debugCounts.sessions).toBeLessThanOrEqual(3);
       now += 1_000;
     }
@@ -477,8 +481,11 @@ describe("realtime app", () => {
     blocked.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
     expect((await limited).code).toBe("SESSION_RATE_LIMITED");
     await blockedDisconnected;
+    const firstDisconnected = new Promise<void>((resolve) => first.socket.once("disconnect", () => resolve()));
+    const secondDisconnected = new Promise<void>((resolve) => second.socket.once("disconnect", () => resolve()));
     first.socket.close(); second.socket.close();
-    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    await Promise.all([firstDisconnected, secondDisconnected]);
+    await waitForCleanup(() => app.realtimeGateway.debugCounts.connections === 0);
     now += 120_001;
     await app.realtimeGateway.pump(now);
     expect(app.realtimeGateway.debugCounts).toMatchObject({ sessions: 0, connections: 0, newSessionClientBuckets: 0 });
