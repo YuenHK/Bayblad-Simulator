@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {readFileSync,writeFileSync} from "node:fs";
+import {DEPLOYMENT_SCHEMA} from "./deployment-schema.mjs";
 const [manifestPath,containersPath,imagesPath,databasePath,caddyRef,manifestDigest,commit,nonce,origin,out]=process.argv.slice(2);
 const manifest=JSON.parse(readFileSync(manifestPath,"utf8")),containers=JSON.parse(readFileSync(containersPath,"utf8")),images=JSON.parse(readFileSync(imagesPath,"utf8")),database=JSON.parse(readFileSync(databasePath,"utf8"));
 const purpose=process.env.DEPLOYMENT_AUTHORIZATION_PURPOSE,expectedProject={production:"steam-top-simulator","release-integration":"steam-top-release-integration"}[purpose];if(!expectedProject)throw new Error("receipt purpose invalid");
@@ -9,4 +10,4 @@ for(const item of containers){const labels=item.Config?.Labels??{},service=label
 if(services.size!==Object.keys(expected).length)throw new Error("missing container observation");
 const observedImages={};for(const [service,ref] of Object.entries(expected)){const hits=images.filter(x=>Array.isArray(x.RepoDigests)&&x.RepoDigests.includes(ref));if(hits.length!==1)throw new Error("image digest observation invalid");observedImages[service]={reference:ref,imageId:hits[0].Id,repoDigests:hits[0].RepoDigests};}
 if(observedImages.migration.imageId!==observedImages.server.imageId)throw new Error("migration image mismatch");
-writeFileSync(out,JSON.stringify({schemaVersion:4,purpose,manifestDigest,commit,nonce,publicOrigin:origin,smoke:{complete:true},images:manifest.images,observedImages,observedContainers:[...services.values()],database,createdAt:new Date().toISOString()},null,2)+"\n",{flag:"wx",mode:0o400});
+writeFileSync(out,JSON.stringify({schemaVersion:DEPLOYMENT_SCHEMA.hostReceipt,purpose,manifestDigest,commit,nonce,publicOrigin:origin,smoke:{complete:true},images:manifest.images,observedImages,observedContainers:[...services.values()],database,createdAt:new Date().toISOString()},null,2)+"\n",{flag:"wx",mode:0o400});
