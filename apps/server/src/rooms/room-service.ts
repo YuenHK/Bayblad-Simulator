@@ -104,6 +104,7 @@ type Room = {
 };
 
 export type RoomServiceErrorCode =
+  | "PLATFORM_PAUSED"
   | "ROOM_NOT_FOUND"
   | "NOT_IN_ROOM"
   | "ROOM_FULL"
@@ -142,6 +143,13 @@ const defaultDependencies: RoomServiceDependencies = {
 export class RoomService {
   readonly #dependencies: RoomServiceDependencies;
   #rooms = new Map<string, Room>();
+  #platformPaused = false;
+
+  get platformPaused(): boolean { return this.#platformPaused; }
+  setPlatformPaused(paused: boolean): void { this.#platformPaused = paused; }
+  adminRooms() { return [...this.#rooms.values()].map((room) => ({ roomId: room.id, roomCode: room.code, status: room.phase, players: [room.player1, room.player2].flatMap((id) => { const participant = id ? room.participants.get(id) : undefined; return participant ? [{ id: participant.participantId, displayName: participant.displayName }] : []; }), spectators: room.spectators.flatMap((id) => { const participant = room.participants.get(id); return participant ? [{ id: participant.participantId, displayName: participant.displayName }] : []; }) })); }
+  adminClose(roomId: string): boolean { if (!this.#rooms.has(roomId)) return false; this.discardPersistedRoom(roomId); return true; }
+  adminRemove(roomId: string, participantId: string): boolean { const room = this.#rooms.get(roomId); if (!room) return false; const participant = [...room.participants.values()].find((candidate) => candidate.participantId === participantId); if (!participant) return false; this.leave(roomId, participant.internalUserId); return true; }
 
   checkpoint(roomId: string): RoomCheckpoint {
     return { roomId, room: this.#rooms.has(roomId) ? this.#copyRoom(this.#rooms.get(roomId)!) : null, roomIdsByCode: new Map(this.#roomIdsByCode), lobbyRevision: this.#lobbyRevision };
@@ -192,6 +200,7 @@ export class RoomService {
   }
 
   create(user: InternalUser, roomName: string): RoomMembership {
+    if (this.#platformPaused) throw new RoomServiceError("PLATFORM_PAUSED");
     return this.#transaction(null, () => this.#create(user, roomName));
   }
 
@@ -202,6 +211,7 @@ export class RoomService {
   }
 
   join(roomId: string, user: InternalUser, role: JoinRole): RoomMembership {
+    if (this.#platformPaused) throw new RoomServiceError("PLATFORM_PAUSED");
     const result = this.#transaction(roomId, () => this.#join(roomId, user, role));
     if (result === ROOM_EXPIRED) throw new RoomServiceError("ROOM_NOT_FOUND");
     return result;
