@@ -104,6 +104,21 @@ jobs:
           printf 'SECURITY_TLS_CA_FILE=%s\nNODE_EXTRA_CA_CERTS=%s\n' "$GITHUB_WORKSPACE/.ci/caddy-root.crt" "$GITHUB_WORKSPACE/.ci/caddy-root.crt" >> "$GITHUB_ENV"
       - name: Verify strict Node TLS before browser security tests
         run: node -e 'require("https").get(process.env.SECURITY_HTTPS_ORIGIN,res=>{if(res.statusCode!==200)process.exit(1);res.resume()}).on("error",error=>{console.error(error);process.exit(1)})'
+      - name: Run complete production HTTPS and WebSocket smoke through loopback
+        shell: bash
+        run: |
+          set -euo pipefail
+          nonce="$(printf '6%.0s' {1..64})"
+          umask 077
+          printf '{"username":"%s","password":"%s"}\n' "$ADMIN_USERNAME" "$ADMIN_INITIAL_PASSWORD" > "$RUNNER_TEMP/admin-smoke.json"
+          docker compose -f compose.yaml -f compose.build.yaml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v nonce="$nonce" <<'SQL'
+          create table if not exists restore_control.deployment_probe(nonce text primary key check(nonce~'^[a-f0-9]{64}$'),restore_target_id uuid not null,system_identifier text not null,created_at timestamptz not null default clock_timestamp(),consumed_at timestamptz);
+          insert into restore_control.deployment_probe(nonce,restore_target_id,system_identifier)
+          select :'nonce',restore_target_id,(select system_identifier::text from pg_control_system())
+          from restore_control.deployment_environment where singleton;
+          SQL
+          ADMIN_SMOKE_SECRET_FILE="$RUNNER_TEMP/admin-smoke.json" ./scripts/production-smoke.sh "$PUBLIC_ORIGIN" "$nonce"
+          rm -f "$RUNNER_TEMP/admin-smoke.json"
       - run: pnpm test:security
       - if: always()
         run: docker compose -f compose.yaml -f compose.build.yaml down -v
