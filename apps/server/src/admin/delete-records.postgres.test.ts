@@ -4,6 +4,10 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "@steam-top/db";
 import { PostgresDeletionStore } from "./delete-records";
+import { PostgresExportDataSource } from "../exports/postgres-source";
+import { buildWorkbookBuffer } from "../exports/workbook";
+import { usageAnalytics } from "../analytics/usage";
+import ExcelJS from "exceljs";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const schemaName = `deletion_${randomUUID().replaceAll("-", "")}`;
@@ -34,16 +38,29 @@ async function recordFixture(suffix: string) {
   return { identity1, identity2, design1, design2, match };
 }
 
+async function completeFixture(ids: Awaited<ReturnType<typeof recordFixture>>) {
+  const at = new Date("2026-08-15T04:00:00Z");
+  await client.sql.unsafe(`update matches set status='completed',player1_battle_points=2,player2_battle_points=0,player1_challenge_points=0,player2_challenge_points=0.5,player1_total=2,player2_total=0.5,winner='player1',round_winners='["player1","player1"]',started_at=$2,completed_at=$2 where id=$1`, [ids.match, at]);
+  await client.sql.unsafe(`insert into match_participant_snapshots(match_id,slot,identity_id_at_start,canonical_identity_id_at_start,identity_status_snapshot,class_name_snapshot,design_id,captured_at) values($1,'player1',$2,$2,'iclass','1A',$3,$6),($1,'player2',$4,$4,'iclass','1B',$5,$6)`, [ids.match, ids.identity1, ids.design1, ids.identity2, ids.design2, at]);
+}
+
 it.skipIf(!databaseUrl)("serializes concurrent execution, keeps one immutable content-free audit, and hides deleted rows", async () => {
   const ids = await recordFixture("1"), storeA = new PostgresDeletionStore(client), storeB = new PostgresDeletionStore(client), now = new Date();
+  const identitySession = "70000000-0000-4000-8000-000000000001";
+  await client.sql.unsafe("insert into identity_sessions(id,identity_id,token_hash,expires_at) values($1,$2,$3,now()+interval '1 hour')", [identitySession, ids.identity1, "7".repeat(64)]);
+  await client.sql.unsafe("insert into webclip_token_nonces(jti_hash,device_id,issued_at,expires_at,used_at,attempt_hash,result_identity_id,result_session_id,result_token_hash,committed_at) values($1,'device-delete',now(),now()+interval '1 hour',now(),$2,$3,$4,$5,now())", ["8".repeat(64), "9".repeat(64), ids.identity1, identitySession, "a".repeat(64)]);
   const preview = await storeA.createPreview({ filter: { scope: "identity", identityId: ids.identity1 }, adminUserId: adminId, adminSessionId: sessionId, now, expiresAt: new Date(now.getTime() + 300_000) });
   expect(preview.counts).toEqual({ identities: 1, designs: 1, matches: 1 });
   const results = await Promise.all([storeA.execute({ previewToken: preview.previewToken, filterHash: preview.filterHash, adminUserId: adminId, adminSessionId: sessionId, now }), storeB.execute({ previewToken: preview.previewToken, filterHash: preview.filterHash, adminUserId: adminId, adminSessionId: sessionId, now })]);
-  expect(results.map((result) => result.status).sort()).toEqual(["consumed", "ok"]);
+  expect(results.every((result) => result.status === "ok")).toBe(true);
   expect((await client.sql.unsafe("select id from deletion_audit where filter_hash=$1", [preview.filterHash]))).toHaveLength(1);
   expect((await client.sql.unsafe("select id from identities where id=$1", [ids.identity1]))).toHaveLength(0);
   expect((await client.sql.unsafe("select id from matches where id=$1", [ids.match]))).toHaveLength(0);
+  expect((await client.sql.unsafe("select id from designs where id=$1", [ids.design2]))).toHaveLength(1);
+  expect((await client.sql.unsafe("select jti_hash from webclip_token_nonces where result_identity_id=$1", [ids.identity1]))).toHaveLength(0);
   expect(JSON.stringify(await client.sql.unsafe("select * from deletion_audit where filter_hash=$1", [preview.filterHash]))).not.toContain("Student A");
+  const scrubbed=(await client.sql.unsafe("select filters_json from deletion_previews where filter_hash=$1",[preview.filterHash]))[0];expect(scrubbed?.filters_json).toEqual({});
+  expect((await client.sql.unsafe("select identity_id from deletion_preview_identities where token_hash=(select token_hash from deletion_previews where filter_hash=$1)",[preview.filterHash]))).toHaveLength(0);
 }, 30_000);
 
 it.skipIf(!databaseUrl)("rejects a stale preview without consuming it or deleting anything", async () => {
@@ -56,6 +73,14 @@ it.skipIf(!databaseUrl)("rejects a stale preview without consuming it or deletin
   expect((await client.sql.unsafe("select consumed_at from deletion_previews where filter_hash=$1", [preview.filterHash]))[0]?.consumed_at).toBeNull();
 });
 
+it.skipIf(!databaseUrl)("rejects a same-count member swap against the materialized preview set", async () => {
+  const ids = await recordFixture("4"), store = new PostgresDeletionStore(client), now = new Date();
+  const preview = await store.createPreview({ filter: { scope: "class", className: "1A" }, adminUserId: adminId, adminSessionId: sessionId, now, expiresAt: new Date(now.getTime() + 300_000) });
+  await client.sql.unsafe("update identities set class_name=case id when $1 then '1B' else '1A' end where id in($1,$2)", [ids.identity1, ids.identity2]);
+  expect(await store.execute({ previewToken: preview.previewToken, filterHash: preview.filterHash, adminUserId: adminId, adminSessionId: sessionId, now })).toEqual({ status: "stale" });
+  expect((await client.sql.unsafe("select id from matches where id=$1", [ids.match]))).toHaveLength(1);
+});
+
 it.skipIf(!databaseUrl)("rolls back audit, preview consumption and records when any delete fails", async () => {
   const ids = await recordFixture("3"), store = new PostgresDeletionStore(client), now = new Date();
   const preview = await store.createPreview({ filter: { scope: "identity", identityId: ids.identity1 }, adminUserId: adminId, adminSessionId: sessionId, now, expiresAt: new Date(now.getTime() + 300_000) });
@@ -65,4 +90,19 @@ it.skipIf(!databaseUrl)("rolls back audit, preview consumption and records when 
   expect((await client.sql.unsafe("select id from matches where id=$1", [ids.match]))).toHaveLength(1);
   expect((await client.sql.unsafe("select id from deletion_audit where filter_hash=$1", [preview.filterHash]))).toHaveLength(0);
   expect((await client.sql.unsafe("select consumed_at from deletion_previews where filter_hash=$1", [preview.filterHash]))[0]?.consumed_at).toBeNull();
+  await client.sql.unsafe("drop trigger fail_identity_delete on identities; drop function fail_identity_delete()");
 });
+
+it.skipIf(!databaseUrl).each([
+  ["identity", "5"], ["class", "6"], ["date_range", "7"], ["all", "8"],
+] as const)("removes %s records from real analytics, export source and generated workbook", async (scope,suffix) => {
+  const ids = await recordFixture(suffix); await completeFixture(ids); const filters={from:"2026-08-15",to:"2026-08-15"} as const, source=new PostgresExportDataSource(client);
+  expect(await source.withSnapshot(filters,undefined,async snapshot=>snapshot.metadata.rowCounts?.matches??-1)).toBe(1);
+  expect((await usageAnalytics(client.db,filters,"day")).reduce((sum,row)=>sum+row.completedMatches,0)).toBe(1);
+  const filter=scope==="identity"?{scope,identityId:ids.identity1}:scope==="class"?{scope,className:"1A"}:scope==="date_range"?{scope,from:"2026-08-15",to:"2026-08-15"}:{scope};
+  const store=new PostgresDeletionStore(client),now=new Date(),preview=await store.createPreview({filter,adminUserId:adminId,adminSessionId:sessionId,now,expiresAt:new Date(now.getTime()+300_000)});
+  expect((await store.execute({previewToken:preview.previewToken,filterHash:preview.filterHash,adminUserId:adminId,adminSessionId:sessionId,now})).status).toBe("ok");
+  expect(await source.withSnapshot(filters,undefined,async snapshot=>snapshot.metadata.rowCounts?.matches??-1)).toBe(0);
+  expect((await usageAnalytics(client.db,filters,"day")).reduce((sum,row)=>sum+row.completedMatches,0)).toBe(0);
+  const workbook=new ExcelJS.Workbook();await workbook.xlsx.load(await buildWorkbookBuffer(source,filters) as never);expect(workbook.getWorksheet("對戰紀錄")!.rowCount).toBe(8);
+},30_000);

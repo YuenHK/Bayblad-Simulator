@@ -798,6 +798,15 @@ it.skipIf(testDatabaseUrl === undefined)(
       code: "55000",
       constraint_name: "deletion_audit_is_immutable",
     });
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        await transaction.unsafe("truncate deletion_audit");
+      }),
+    ).rejects.toMatchObject({
+      code: "55000",
+      constraint_name: "deletion_audit_is_immutable",
+    });
   },
   30_000,
 );

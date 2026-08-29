@@ -1,4 +1,24 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";--> statement-breakpoint
+CREATE TABLE "deployment_environment" (
+	"singleton" boolean PRIMARY KEY DEFAULT true NOT NULL,
+	"environment" varchar(16) DEFAULT 'production' NOT NULL,
+	"restore_allowed" boolean DEFAULT false NOT NULL,
+	"restore_target_id" uuid DEFAULT gen_random_uuid() NOT NULL,
+	CONSTRAINT "deployment_environment_singleton" CHECK ("singleton" = true),
+	CONSTRAINT "deployment_environment_value" CHECK ("environment" in ('production','staging','test','development')),
+	CONSTRAINT "deployment_environment_restore_guard" CHECK (("environment" = 'production' and "restore_allowed" = false) or "environment" <> 'production')
+);--> statement-breakpoint
+INSERT INTO "deployment_environment" ("singleton") VALUES (true);--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "steam_top_protect_deployment_environment"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'TRUNCATE' THEN RAISE EXCEPTION 'deployment_environment is protected' USING ERRCODE='55000', CONSTRAINT='deployment_environment_is_protected'; END IF;
+  IF current_setting('steam_top.configure_restore_target', true) <> 'RESTORE_NONPRODUCTION_DATA' THEN
+    RAISE EXCEPTION 'deployment_environment is protected' USING ERRCODE='55000', CONSTRAINT='deployment_environment_is_protected';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END; $$;--> statement-breakpoint
+CREATE TRIGGER "deployment_environment_is_protected" BEFORE UPDATE OR DELETE ON "deployment_environment" FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_deployment_environment"();--> statement-breakpoint
+CREATE TRIGGER "deployment_environment_truncate_is_protected" BEFORE TRUNCATE ON "deployment_environment" FOR EACH STATEMENT EXECUTE FUNCTION "steam_top_protect_deployment_environment"();--> statement-breakpoint
 CREATE TABLE "analytics_daily_summaries" (
 	"summary_date" date NOT NULL,
 	"filter_hash" text NOT NULL,
@@ -82,6 +102,10 @@ CREATE TABLE "admin_reauth_grants" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"consumed_at" timestamp with time zone,
+	"result_audit_id" uuid,
+	"result_identity_count" integer,
+	"result_design_count" integer,
+	"result_match_count" integer,
 	CONSTRAINT "admin_reauth_grants_hash_format" CHECK ("admin_reauth_grants"."token_hash" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "admin_reauth_grants_purpose_nonblank" CHECK (length(btrim("admin_reauth_grants"."purpose")) between 1 and 64),
 	CONSTRAINT "admin_reauth_grants_time_order" CHECK ("admin_reauth_grants"."expires_at" > "admin_reauth_grants"."created_at" and ("admin_reauth_grants"."consumed_at" is null or ("admin_reauth_grants"."consumed_at" >= "admin_reauth_grants"."created_at" and "admin_reauth_grants"."consumed_at" <= "admin_reauth_grants"."expires_at")))
@@ -149,8 +173,15 @@ CREATE TABLE "deletion_previews" (
 	CONSTRAINT "deletion_previews_filter_hash_format" CHECK ("deletion_previews"."filter_hash" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "deletion_previews_counts_nonnegative" CHECK ("deletion_previews"."identity_count" >= 0 and "deletion_previews"."design_count" >= 0 and "deletion_previews"."match_count" >= 0),
 	CONSTRAINT "deletion_previews_filter_object" CHECK (jsonb_typeof("deletion_previews"."filters_json") = 'object'),
-	CONSTRAINT "deletion_previews_time_order" CHECK ("deletion_previews"."expires_at" > "deletion_previews"."created_at" and ("deletion_previews"."consumed_at" is null or "deletion_previews"."consumed_at" >= "deletion_previews"."created_at"))
+	CONSTRAINT "deletion_previews_time_order" CHECK ("deletion_previews"."expires_at" > "deletion_previews"."created_at" and ("deletion_previews"."consumed_at" is null or "deletion_previews"."consumed_at" >= "deletion_previews"."created_at")),
+	CONSTRAINT "deletion_previews_result_consistent" CHECK (("deletion_previews"."consumed_at" is null and "deletion_previews"."result_audit_id" is null and "deletion_previews"."result_identity_count" is null and "deletion_previews"."result_design_count" is null and "deletion_previews"."result_match_count" is null) or ("deletion_previews"."consumed_at" is not null and "deletion_previews"."result_audit_id" is not null and "deletion_previews"."result_identity_count" >= 0 and "deletion_previews"."result_design_count" >= 0 and "deletion_previews"."result_match_count" >= 0))
 );
+--> statement-breakpoint
+CREATE TABLE "deletion_preview_identities" ("token_hash" text NOT NULL,"identity_id" uuid NOT NULL,CONSTRAINT "deletion_preview_identities_token_hash_identity_id_pk" PRIMARY KEY("token_hash","identity_id"));
+--> statement-breakpoint
+CREATE TABLE "deletion_preview_designs" ("token_hash" text NOT NULL,"design_id" uuid NOT NULL,CONSTRAINT "deletion_preview_designs_token_hash_design_id_pk" PRIMARY KEY("token_hash","design_id"));
+--> statement-breakpoint
+CREATE TABLE "deletion_preview_matches" ("token_hash" text NOT NULL,"match_id" uuid NOT NULL,CONSTRAINT "deletion_preview_matches_token_hash_match_id_pk" PRIMARY KEY("token_hash","match_id"));
 --> statement-breakpoint
 CREATE TABLE "design_layers" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -387,6 +418,9 @@ ALTER TABLE "admin_sessions" ADD CONSTRAINT "admin_sessions_admin_user_id_admin_
 ALTER TABLE "deletion_audit" ADD CONSTRAINT "deletion_audit_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_previews" ADD CONSTRAINT "deletion_previews_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_previews" ADD CONSTRAINT "deletion_previews_admin_session_id_admin_sessions_id_fk" FOREIGN KEY ("admin_session_id") REFERENCES "public"."admin_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deletion_preview_identities" ADD CONSTRAINT "deletion_preview_identities_token_hash_deletion_previews_token_hash_fk" FOREIGN KEY ("token_hash") REFERENCES "public"."deletion_previews"("token_hash") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deletion_preview_designs" ADD CONSTRAINT "deletion_preview_designs_token_hash_deletion_previews_token_hash_fk" FOREIGN KEY ("token_hash") REFERENCES "public"."deletion_previews"("token_hash") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deletion_preview_matches" ADD CONSTRAINT "deletion_preview_matches_token_hash_deletion_previews_token_hash_fk" FOREIGN KEY ("token_hash") REFERENCES "public"."deletion_previews"("token_hash") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "design_layers" ADD CONSTRAINT "design_layers_design_id_designs_id_fk" FOREIGN KEY ("design_id") REFERENCES "public"."designs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "designs" ADD CONSTRAINT "designs_owner_identity_id_identities_id_fk" FOREIGN KEY ("owner_identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "identities" ADD CONSTRAINT "identities_merged_into_identity_id_identities_id_fk" FOREIGN KEY ("merged_into_identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -610,6 +644,8 @@ END;
 $$;--> statement-breakpoint
 CREATE TRIGGER "deletion_audit_is_immutable" BEFORE UPDATE OR DELETE ON "deletion_audit"
 FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_deletion_audit"();--> statement-breakpoint
+CREATE TRIGGER "deletion_audit_truncate_is_forbidden" BEFORE TRUNCATE ON "deletion_audit"
+FOR EACH STATEMENT EXECUTE FUNCTION "steam_top_protect_deletion_audit"();--> statement-breakpoint
 
 COMMENT ON COLUMN "identities"."device_name" IS
   'Diagnostic context retained until explicit audited admin deletion or platform decommission; never an identity key.';--> statement-breakpoint

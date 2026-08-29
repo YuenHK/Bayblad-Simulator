@@ -2,7 +2,8 @@ import Fastify from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import { describe, expect, it } from "vitest";
 import { AdminAuthService, InMemoryAdminStore, registerAdminAuthRoutes } from "../auth/admin-auth";
-import { InMemoryDeletionStore, registerDeleteRecordRoutes } from "./delete-records";
+import { InMemoryDeletionStore, PostgresDeletionStore, registerDeleteRecordRoutes } from "./delete-records";
+import type { DatabaseClient } from "@steam-top/db";
 
 const origin = "https://teacher.test";
 
@@ -34,6 +35,7 @@ async function fixture() {
 const mutationHeaders = (cookie: string, csrf: string) => ({ origin, host: "teacher.test", "sec-fetch-site": "same-origin", "content-type": "application/json", cookie, "x-csrf-token": csrf });
 
 describe("audited record deletion routes", () => {
+  it("retries bounded serialization failures internally under one ledger operation", async()=>{let attempts=0;const sql={begin:async(...args:unknown[])=>{attempts++;if(attempts===1)throw Object.assign(new Error("retry"),{code:"40001"});const callback=args.at(-1) as (tx:{unsafe:(query:string)=>Promise<unknown[]>})=>Promise<unknown>;return callback({unsafe:async()=>[]});}};const events:string[]=[];const ledger={recordPending:async()=>{events.push("P");},recordCommitted:async()=>{events.push("C");},recordAborted:async()=>{events.push("A");}};const store=new PostgresDeletionStore({sql} as unknown as DatabaseClient,10,ledger);expect(await store.execute({previewToken:"A".repeat(43),filterHash:"a".repeat(64),adminUserId:crypto.randomUUID(),adminSessionId:crypto.randomUUID(),now:new Date()})).toEqual({status:"invalid"});expect(attempts).toBe(2);expect(events).toEqual(["P","A"]);});
   it("requires an active admin session and same-origin CSRF before previewing", async () => {
     const { app, cookie } = await fixture();
     expect((await app.inject({ method: "POST", url: "/api/admin/records/deletion-preview", headers: { origin, host: "teacher.test", "sec-fetch-site": "same-origin", "content-type": "application/json" }, payload: { scope: "all" } })).statusCode).toBe(401);
@@ -49,6 +51,11 @@ describe("audited record deletion routes", () => {
     expect(response.json().previewToken).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect(JSON.stringify(response.json())).not.toContain("10000000-0000");
     await app.close();
+  });
+
+  it("uses a different non-enumerable operation digest for the same low-entropy class filter", async () => {
+    const { app, cookie, csrf } = await fixture(); const request=()=>app.inject({method:"POST",url:"/api/admin/records/deletion-preview",headers:mutationHeaders(cookie,csrf),payload:{scope:"class",className:"1A"}});
+    expect((await request()).json().filterHash).not.toBe((await request()).json().filterHash); await app.close();
   });
 
   it.each([
@@ -75,8 +82,9 @@ describe("audited record deletion routes", () => {
     expect(deletion.audits).toHaveLength(1);
     expect(deletion.audits[0]).toEqual({ auditId: response.json().auditId, adminUserId: expect.any(String), scope: "date_range", filterHash: preview.filterHash, previewCount: 6, deletedIdentityCount: 1, deletedDesignCount: 2, deletedMatchCount: 3 });
     expect(JSON.stringify(deletion.audits[0])).not.toContain("1A");
-    const replay = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload });
-    expect(replay.statusCode).toBe(409);
+    const replay = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload: { previewToken: preview.previewToken, filterHash: preview.filterHash, confirmation: "DELETE" } });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ auditId: response.json().auditId, recovered: true });
     expect(deletion.audits).toHaveLength(1);
     await app.close();
   });
