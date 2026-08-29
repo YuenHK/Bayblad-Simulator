@@ -1075,6 +1075,33 @@ export const deletionAudit = pgTable(
   ],
 );
 
+export const deletionPreviews = pgTable(
+  "deletion_previews",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    adminUserId: uuid("admin_user_id").notNull().references(() => adminUsers.id, { onDelete: "cascade" }),
+    adminSessionId: uuid("admin_session_id").notNull().references(() => adminSessions.id, { onDelete: "cascade" }),
+    scope: deletionScopeEnum("scope").notNull(),
+    filtersJson: jsonb("filters_json").$type<Readonly<Record<string, unknown>>>().notNull(),
+    filterHash: text("filter_hash").notNull(),
+    identityCount: integer("identity_count").notNull(),
+    designCount: integer("design_count").notNull(),
+    matchCount: integer("match_count").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("deletion_previews_expiry_idx").on(table.expiresAt),
+    index("deletion_previews_admin_session_idx").on(table.adminSessionId, table.expiresAt),
+    check("deletion_previews_token_hash_format", sql`${table.tokenHash} ~ '^[a-f0-9]{64}$'`),
+    check("deletion_previews_filter_hash_format", sql`${table.filterHash} ~ '^[a-f0-9]{64}$'`),
+    check("deletion_previews_counts_nonnegative", sql`${table.identityCount} >= 0 and ${table.designCount} >= 0 and ${table.matchCount} >= 0`),
+    check("deletion_previews_filter_object", sql`jsonb_typeof(${table.filtersJson}) = 'object'`),
+    check("deletion_previews_time_order", sql`${table.expiresAt} > ${table.createdAt} and (${table.consumedAt} is null or ${table.consumedAt} >= ${table.createdAt})`),
+  ],
+);
+
 export const identitiesRelations = relations(identities, ({ one, many }) => ({
   mergedInto: one(identities, {
     fields: [identities.mergedIntoIdentityId],
