@@ -269,6 +269,7 @@ jobs:
           INSTALLER_URL: "${{ vars.INSTALLER_URL }}"
           INSTALLER_SIGNATURE_URL: "${{ vars.INSTALLER_SIGNATURE_URL }}"
           INSTALLER_SHA256: "${{ vars.INSTALLER_SHA256 }}"
+          INSTALLER_ALLOWED_HOSTS: "${{ vars.INSTALLER_ALLOWED_HOSTS }}"
           INSTALLER_ALLOWED_SIGNERS: "${{ secrets.INSTALLER_ALLOWED_SIGNERS }}"
         run: |
           set -euo pipefail
@@ -278,20 +279,31 @@ jobs:
           [[ "$ancestry" == ahead || "$ancestry" == identical ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BOOTSTRAP_RUN_ID" > "$RUNNER_TEMP/bootstrap-run.json"
           node scripts/verify-bootstrap-source-run.mjs "$RUNNER_TEMP/bootstrap-run.json" "$BOOTSTRAP_RUN_ID" "$BOOTSTRAP_COMMIT" "$default_branch"
-          [[ "$INSTALLER_URL" == https://* && "$INSTALLER_SIGNATURE_URL" == https://* && "$INSTALLER_SHA256" =~ ^[a-f0-9]{64}$ ]]
-          curl --fail --proto '=https' --tlsv1.2 --output "$RUNNER_TEMP/install-bootstrap" "$INSTALLER_URL"
-          curl --fail --proto '=https' --tlsv1.2 --output "$RUNNER_TEMP/install-bootstrap.sig" "$INSTALLER_SIGNATURE_URL"
+          mkdir -p candidate/verification-evidence
+          gh attestation verify deployment-authorization.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/authorize-release.yml" --format json > candidate/verification-evidence/authorization-attestation.json
+          node - "$RUNNER_TEMP/authorization-source-trust.json" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF" <<'NODE'
+          const fs=require("fs"),[out,repository,workflowSha,workflowRef]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({repository,workflowIdentity:`${repository}/.github/workflows/authorize-release.yml`,workflowRef,workflowSha})+"\n");
+          NODE
+          node infra/bootstrap/verify-attestation-identity.mjs candidate/verification-evidence/authorization-attestation.json "$RUNNER_TEMP/authorization-source-trust.json" deployment-authorization.json
+          [[ "$INSTALLER_URL" == https://* && "$INSTALLER_SIGNATURE_URL" == https://* && "$INSTALLER_SHA256" =~ ^[a-f0-9]{64}$ && "$INSTALLER_ALLOWED_HOSTS" =~ ^[A-Za-z0-9.,-]+$ ]]
+          node -e 'for(const raw of [process.env.INSTALLER_URL,process.env.INSTALLER_SIGNATURE_URL]){const u=new URL(raw);if(u.protocol!=="https:"||u.username||u.password||u.port||!process.env.INSTALLER_ALLOWED_HOSTS.split(",").includes(u.hostname))process.exit(1)}'
+          curl --fail --proto '=https' --tlsv1.3 --max-redirs 0 --output "$RUNNER_TEMP/install-bootstrap" "$INSTALLER_URL"
+          curl --fail --proto '=https' --tlsv1.3 --max-redirs 0 --output "$RUNNER_TEMP/install-bootstrap.sig" "$INSTALLER_SIGNATURE_URL"
           test "$(sha256sum "$RUNNER_TEMP/install-bootstrap" | awk '{print $1}')" = "$INSTALLER_SHA256"
           printf '%s\n' "$INSTALLER_ALLOWED_SIGNERS" > "$RUNNER_TEMP/installer-allowed-signers"
           ssh-keygen -Y verify -q -f "$RUNNER_TEMP/installer-allowed-signers" -I installer -n steam-top-bootstrap-installer -s "$RUNNER_TEMP/install-bootstrap.sig" < "$RUNNER_TEMP/install-bootstrap"
           sudo install -o root -g root -m 0555 "$RUNNER_TEMP/install-bootstrap" /usr/local/sbin/install-steam-top-bootstrap
           test "$(sha256sum bootstrap/bootstrap.tgz | awk '{print $1}')" = "$BOOTSTRAP_ARCHIVE_SHA256"
-          gh attestation verify bootstrap/bootstrap.tgz --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/bootstrap.yml"
+          gh attestation verify bootstrap/bootstrap.tgz --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/bootstrap.yml" --format json > candidate/verification-evidence/bootstrap-attestation.json
+          node - "$RUNNER_TEMP/bootstrap-source-trust.json" "$GITHUB_REPOSITORY" "$BOOTSTRAP_COMMIT" "$default_branch" <<'NODE'
+          const fs=require("fs"),[out,repository,workflowSha,branch]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({repository,workflowIdentity:`${repository}/.github/workflows/bootstrap.yml`,workflowRef:`refs/heads/${branch}`,workflowSha})+"\n");
+          NODE
+          node infra/bootstrap/verify-attestation-identity.mjs candidate/verification-evidence/bootstrap-attestation.json "$RUNNER_TEMP/bootstrap-source-trust.json" bootstrap/bootstrap.tgz
           printf '%s\n' "$BOOTSTRAP_ALLOWED_SIGNERS" > "$RUNNER_TEMP/bootstrap-allowed-signers"
           tar -xOf bootstrap/bootstrap.tgz ./bootstrap-files.sha256 > "$RUNNER_TEMP/bootstrap-files.sha256"
           bootstrap_manifest_sha=$(sha256sum "$RUNNER_TEMP/bootstrap-files.sha256" | awk '{print $1}')
           node - "$RUNNER_TEMP/bootstrap-trust.json" "$bootstrap_manifest_sha" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF" <<'NODE'
-          const fs=require("fs"),[out,digest,repo,commit,ref]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256:digest,repository:repo,workflowIdentity:`${repo}/.github/workflows/authorize-release.yml`,workflowRef:ref,workflowSha:commit,deploymentPurpose:"release-integration",githubTokenFile:"/opt/steam-top/.release-integration/secrets/github-token",authorizationDir:"/opt/steam-top/.release-integration/authorization",productionEnvFile:"/opt/steam-top/.release-integration/production.env",hostReceiptSigningKey:"/opt/steam-top/.release-integration/secrets/host-signing",adminSmokeSecretFile:"/opt/steam-top/.release-integration/secrets/admin-smoke.json",hostReceiptOutbox:"/opt/steam-top/.release-integration/outbox",pgServiceFile:"/opt/steam-top/.release-integration/secrets/pg-service",pgPassFile:"/opt/steam-top/.release-integration/secrets/pg-pass",pgServiceName:"target"})+"\n",{mode:0o600});
+          const fs=require("fs"),[out,digest,repo,commit,ref]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256:digest,repository:repo,workflowIdentity:`${repo}/.github/workflows/authorize-release.yml`,workflowRef:ref,workflowSha:commit,deploymentPurpose:"release-integration",installer:{url:process.env.INSTALLER_URL,signatureUrl:process.env.INSTALLER_SIGNATURE_URL,sha256:process.env.INSTALLER_SHA256,allowedHosts:process.env.INSTALLER_ALLOWED_HOSTS.split(",")},githubTokenFile:"/opt/steam-top/.release-integration/secrets/github-token",authorizationDir:"/opt/steam-top/.release-integration/authorization",productionEnvFile:"/opt/steam-top/.release-integration/production.env",hostReceiptSigningKey:"/opt/steam-top/.release-integration/secrets/host-signing",adminSmokeSecretFile:"/opt/steam-top/.release-integration/secrets/admin-smoke.json",hostReceiptOutbox:"/opt/steam-top/.release-integration/outbox",pgServiceFile:"/opt/steam-top/.release-integration/secrets/pg-service",pgPassFile:"/opt/steam-top/.release-integration/secrets/pg-pass",pgServiceName:"target"})+"\n",{mode:0o600});
           NODE
           sudo env EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$BOOTSTRAP_ARCHIVE_SHA256" BOOTSTRAP_ALLOWED_SIGNERS_FILE="$RUNNER_TEMP/bootstrap-allowed-signers" /usr/local/sbin/install-steam-top-bootstrap bootstrap/bootstrap.tgz bootstrap/bootstrap.tgz.sig bootstrap "$RUNNER_TEMP/bootstrap-trust.json"
       - name: Verify externally attested root runtime manifest
@@ -341,9 +353,9 @@ jobs:
           set -euo pipefail
           sudo useradd --system --no-create-home steam-top-integration
           sudoers_expected=${INTEGRATION_PREVIOUS//|/\\|}
-          printf 'steam-top-integration ALL=(root) NOPASSWD: /opt/steam-top-bootstrap/deploy-release.sh %s %s %s %s %s %s %s %s\n' "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/deployment-authorization.json" "$GITHUB_WORKSPACE/pending.json" "$INTEGRATION_MANIFEST_SHA" "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$INTEGRATION_NONCE" "$sudoers_expected|$INTEGRATION_DEPLOYMENT_ID" | sudo tee /etc/sudoers.d/steam-top-integration >/dev/null
+          printf 'steam-top-integration ALL=(root) NOPASSWD: /opt/steam-top-bootstrap/deploy-release.sh --prepared-authorization %s %s %s %s %s %s %s %s %s\n' "/opt/steam-top/.release-integration/authorization/$INTEGRATION_NONCE.json" "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/deployment-authorization.json" "$GITHUB_WORKSPACE/pending.json" "$INTEGRATION_MANIFEST_SHA" "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$INTEGRATION_NONCE" "$sudoers_expected|$INTEGRATION_DEPLOYMENT_ID" | sudo tee /etc/sudoers.d/steam-top-integration >/dev/null
           sudo chmod 0440 /etc/sudoers.d/steam-top-integration;sudo visudo -cf /etc/sudoers.d/steam-top-integration
-          sudo -u steam-top-integration sudo /opt/steam-top-bootstrap/deploy-release.sh "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/deployment-authorization.json" "$GITHUB_WORKSPACE/pending.json" "$INTEGRATION_MANIFEST_SHA" "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$INTEGRATION_NONCE" "$INTEGRATION_PREVIOUS|$INTEGRATION_DEPLOYMENT_ID" > receipt.frame
+          sudo -u steam-top-integration sudo /opt/steam-top-bootstrap/deploy-release.sh --prepared-authorization "/opt/steam-top/.release-integration/authorization/$INTEGRATION_NONCE.json" "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/deployment-authorization.json" "$GITHUB_WORKSPACE/pending.json" "$INTEGRATION_MANIFEST_SHA" "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" "$INTEGRATION_NONCE" "$INTEGRATION_PREVIOUS|$INTEGRATION_DEPLOYMENT_ID" > receipt.frame
           node scripts/parse-host-receipt-frame.mjs receipt.frame "$INTEGRATION_NONCE" receipt.json receipt.sig
           node -e 'const r=require("./receipt.json");if(r.schemaVersion!==4||r.purpose!=="release-integration"||r.smoke?.complete!==true)process.exit(1)'
           test -f "/opt/steam-top/.release-integration/authorization/$INTEGRATION_NONCE.json.consumed"

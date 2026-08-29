@@ -29,6 +29,8 @@ Protected current 並非可覆寫的單一 JSON：主機以 root0400 payload/sig
 
 `bootstrap-release-approval` 環境必須有 required reviewers 及 restrictive branch policy，並預先由管理員輪換 `EXPECTED_BOOTSTRAP_ARCHIVE_SHA256` 與 `BOOTSTRAP_SIGNING_KEY`。`release-host-integration` 環境只接受管理員固定的 `BOOTSTRAP_RUN_ID`/`BOOTSTRAP_COMMIT`/`BOOTSTRAP_ARCHIVE_SHA256` 及 `BOOTSTRAP_ALLOWED_SIGNERS`；tag job 會從該 protected run 下載 bootstrap，核對外部 digest、GitHub attestation 及 SSH signature，不會用 tag checkout 內的 bootstrap 作信任根。任何 digest 輪換都必須先審閱 bootstrap source，再更新受保護 environment variable；release workflow 無權自行改寫。
 
+Installer 來源必須同時受 `INSTALLER_ALLOWED_HOSTS`、無 redirect HTTPS/TLS 1.3、外部 SHA256 及 SSH signature 限制；URL、signature URL、digest 及 allowlist 會寫入 root-private bootstrap trust audit。輪換時要先由主機管理員審閱新 installer bytes/簽署，再同步更新受保護 variables，不可只改 URL。Hard gate 保留 `gh attestation verify --format json` 的 bootstrap 與 authorization 真實 evidence，並使用與 production bootstrap 相同的 exact subject/ref/workflow SHA verifier；schema 漂移必須 fail closed。
+
 `install-bootstrap.sh` 是主機 image provisioning 前置條件，不包在 bootstrap release artifact，也不允許從 candidate path 直接 sudo。主機管理員必須以校外已審核 `INSTALLER_SHA256` 及 `steam-top-bootstrap-installer` SSH signature 驗證 bytes，再安裝為 root-owned 0555 `/usr/local/sbin/install-steam-top-bootstrap`；sudoers 只可列出這個 canonical pinned path。更新 installer 時必須同時輪換外部 digest/signature，不可由 release artifact 自證。
 
 Receipt 不可先複製成非 root 可讀檔案；非 root deploy user 只能透過上述 exact sudo command 取得 `RECEIPT-BEGIN`／base64 payload／`RECEIPT-SIGNATURE`／`RECEIPT-END` framed stdout。CI 會實際建立受限帳號及 sudoers、驗證 direct outbox read 被拒，並解析完整 frame。
