@@ -418,5 +418,8 @@ describe("persistent PostgreSQL schema", () => {
     expect(snapshot.tables).toHaveProperty("public.design_event_snapshots");
     expect(snapshot.tables).toHaveProperty("public.match_participant_snapshots");
     expect(snapshot.tables).toHaveProperty("public.room_event_snapshots");
+    expect(snapshot.tables).toHaveProperty("public.platform_settings");
+    expect(snapshot.tables).toHaveProperty("public.admin_command_operations");
+    expect(snapshot.tables["public.match_participant_snapshots"]?.columns).toHaveProperty("display_name_snapshot");
   });
 });

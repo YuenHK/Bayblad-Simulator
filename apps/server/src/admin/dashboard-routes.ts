@@ -41,8 +41,8 @@ const actionSchema = z.discriminatedUnion("action", [
 ]);
 export interface AdminRealtimeCommands {
   setPlatformPaused(paused: boolean): void;
-  adminCloseRoom(roomId: string): Promise<void>;
-  adminRemoveParticipant(roomId: string, participantId: string): Promise<void>;
+  adminCloseRoom(roomId: string, signal?: AbortSignal): Promise<void>;
+  adminRemoveParticipant(roomId: string, participantId: string, signal?: AbortSignal, progress?: (step: string) => Promise<void>): Promise<void>;
 }
 export function registerAdminDashboardRoutes(
   app: FastifyInstance,
@@ -73,6 +73,13 @@ export function registerAdminDashboardRoutes(
     const command = parsed.data,
       raw = request.cookies[ADMIN_COOKIE_NAME],
       purpose = `room-action:${command.operationId}`;
+    const priorOperation = await commandStore.get(command.operationId);
+    if (!priorOperation && command.action !== "platform.pause") {
+      const room = rooms.adminRooms().find((candidate) => candidate.roomId === command.roomId);
+      if (!room) return reply.code(404).send({ error: "ROOM_NOT_FOUND" });
+      if (command.action === "room.remove" && !room.players.concat(room.spectators).some((participant) => participant.id === command.participantId))
+        return reply.code(404).send({ error: "PARTICIPANT_NOT_FOUND" });
+    }
     if (!raw) return reply.code(401).send({ error: "UNAUTHORIZED" });
     let grant: string | null;
     try {

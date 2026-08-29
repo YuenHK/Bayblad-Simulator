@@ -109,11 +109,10 @@ export function AdminDashboard({
       queryController.current = controller;
       setError("");
       const params = filterParams(next),
-        leaderboardParams=filterParams({...next,page:leaderboardPage}),
         analyticsParams = new URLSearchParams({ from: next.from, to: next.to });
       if (next.className) analyticsParams.set("className", next.className);
       try {
-        const [roomPage, recordPage, leaderboardPage, summary] = await Promise.all([
+        const [roomPage, recordPage, summary] = await Promise.all([
           guarded(() =>
             requestJson<RoomsResponse>(fetcher, "/api/admin/rooms", { signal: controller.signal }),
           ),
@@ -124,9 +123,6 @@ export function AdminDashboard({
               { signal: controller.signal },
               adminRecordsPageSchema,
             ),
-          ),
-          guarded(() =>
-            requestJson(fetcher, `/api/admin/leaderboard?${leaderboardParams}`, { signal: controller.signal }, adminLeaderboardPageSchema),
           ),
           guarded(() =>
             requestJson(
@@ -140,7 +136,6 @@ export function AdminDashboard({
         if (generation !== queryGeneration.current) return;
         setRooms(roomPage);
         setRecords(recordPage);
-        setLeaderboard(leaderboardPage);
         setAnalytics(summary);
       } catch (reason) {
         if (generation !== queryGeneration.current || controller.signal.aborted) return;
@@ -152,17 +147,24 @@ export function AdminDashboard({
         );
       }
     },
-    [fetcher, guarded,leaderboardPage],
+    [fetcher, guarded],
   );
   useEffect(() => {
     setRecords({ ...emptyRecords, pageSize: filters.pageSize });
-    setLeaderboard({ rows: [], total: 0, page: filters.page, pageSize: filters.pageSize });
     setAnalytics(null);
     setSelected(new Set());
     const timer = window.setTimeout(() => void query(filters), 250);
     return () => window.clearTimeout(timer);
   }, [filters, query]);
   useEffect(()=>setLeaderboardPage(1),[filters.from,filters.to,filters.className,filters.identity,filters.device,filters.parameter]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = filterParams({ ...filters, page: leaderboardPage });
+    void guarded(() => requestJson(fetcher, `/api/admin/leaderboard?${params}`, { signal: controller.signal }, adminLeaderboardPageSchema))
+      .then(setLeaderboard)
+      .catch((reason) => { if (!controller.signal.aborted && !(reason instanceof AdminApiError && reason.status === 401)) setError("排行榜暫時無法載入。"); });
+    return () => controller.abort();
+  }, [fetcher, filters.from, filters.to, filters.className, filters.identity, filters.device, filters.parameter, filters.pageSize, guarded, leaderboardPage]);
   useEffect(() => {
     const timer = window.setInterval(
       () =>
