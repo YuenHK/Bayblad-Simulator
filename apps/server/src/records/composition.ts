@@ -6,11 +6,12 @@ import { PostgresRoomRecordRepository } from "./room-repository";
 import { PostgresRoomProjectionStore } from "./room-projection-store";
 
 /** The only production record composition; memory stores are deliberately absent. */
-export function createProductionRecordRepositories(db: DatabaseClient["db"]) {
+export function createProductionRecordRepositories(client: DatabaseClient) {
+  const { db } = client;
   return Object.freeze({
     designRepository: new PostgresDesignRepository(db),
     matchRepository: new PostgresMatchRepository(db),
-    roomRecordRepository: new PostgresRoomRecordRepository(db),
+    roomRecordRepository: new PostgresRoomRecordRepository(db, client.sql),
     roomProjectionStore: new PostgresRoomProjectionStore(db),
     resultRepository: new PostgresBattleResultRepository(db),
   });

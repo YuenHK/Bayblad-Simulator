@@ -152,6 +152,17 @@ describe("realtime app", () => {
     await expect(app.ready()).rejects.toThrow("database unavailable");
   });
 
+  it("clears terminal recovery callbacks during gateway close", async () => {
+    const rooms = new RoomService(); const room = rooms.create({ id: "owner", displayName: "Owner" }, "Timer");
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), rooms, sweepIntervalMs: 0 }); closers.push(() => app.close());
+    app.realtimeGateway.scheduleTerminalRecoveryForTesting(room.roomId);
+    expect(app.realtimeGateway.debugCounts.terminalRecoveryTimers).toBe(1);
+    const revision = rooms.get(room.roomId)!.revision; await app.close();
+    expect(app.realtimeGateway.debugCounts.terminalRecoveryTimers).toBe(0);
+    await new Promise<void>((resolve) => setTimeout(resolve, 1_050));
+    expect(rooms.get(room.roomId)?.revision).toBe(revision);
+  });
+
   it("serializes concurrent duplicate commands per session and shares their outcome", async () => {
     const roomProjection = new DelayedCreateRoomProjection();
     const app = buildApp({ battleEngine: new FakeBattleEngine(), roomRecordRepository: roomProjection, sweepIntervalMs: 0 });

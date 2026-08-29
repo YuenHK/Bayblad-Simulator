@@ -342,6 +342,7 @@ export class RealtimeGateway {
     newSessionClientBuckets: number;
     pendingBuckets: number;
     sessionCommandBuckets: number;
+    terminalRecoveryTimers: number;
   }> {
     return {
       sessions: this.#sessionsById.size,
@@ -354,8 +355,11 @@ export class RealtimeGateway {
       newSessionClientBuckets: this.#newSessionByClientLimiter.size,
       pendingBuckets: this.#pendingLimiter.size,
       sessionCommandBuckets: this.#sessionCommandLimiter.size,
+      terminalRecoveryTimers: this.#terminalRecoveryTimers.size,
     };
   }
+
+  scheduleTerminalRecoveryForTesting(roomId: string): void { this.#scheduleTerminalRecovery(roomId); }
 
   flushLobby(): void {
     if (this.#lobbyTimer) clearTimeout(this.#lobbyTimer);
@@ -373,6 +377,8 @@ export class RealtimeGateway {
 
   async close(): Promise<void> {
     this.#closing = true;
+    for (const timer of this.#terminalRecoveryTimers.values()) clearTimeout(timer);
+    this.#terminalRecoveryTimers.clear();
     if (this.#lobbyTimer) clearTimeout(this.#lobbyTimer);
     this.#lobbyTimer = null;
     for (const session of this.#sessionsById.values()) session.commandsStopped = true;

@@ -23,4 +23,12 @@ describe("MemoryRoomRecordRepository authoritative transitions", () => {
     expect(room).toMatchObject({ status: "closed", revision: 0 });
     expect(room.participants.get("participant-1")?.leftAt).toEqual(new Date(1_000));
   });
+  it("rolls back the memory outbox when authority commit fails", async () => {
+    const projections = new MemoryRoomProjectionStore();
+    const repository = new MemoryRoomRecordRepository(projections, { beforeAuthorityCommit: () => { throw new Error("authority failed"); } });
+    await repository.create({ id: "room-1", code: "ABC123", name: "Room", ownerIdentityId: null, participant, at: new Date(0) });
+    await expect(repository.transitionPhaseWithProjection("room-1", 0, { phase: "launch", firstBattleAt: null, closedAt: null })).rejects.toThrow("authority failed");
+    expect(repository.snapshot("room-1")).toMatchObject({ status: "waiting", revision: -1 });
+    expect(projections.size).toBe(0);
+  });
 });
