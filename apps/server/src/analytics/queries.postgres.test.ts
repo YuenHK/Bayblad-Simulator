@@ -62,8 +62,8 @@ it.skipIf(!databaseUrl)("returns only parameter groups backed by at least ten co
   const rows = await parameterPerformance(client.db, { from: "2026-08-01", to: "2026-09-30", performanceModelVersion: "perf-1", physicsModelVersion: "physics-1" });
   expect(rows.length).toBeGreaterThanOrEqual(20);
   expect(rows.every((row) => row.sampleSize === 10)).toBe(true);
-  expect(rows.some(row=>row.dimension==="totalMassGBucket")).toBe(true); expect(rows.some(row=>row.dimension==="layerOrder")).toBe(true); expect(rows.some(row=>row.dimension==="layerCombination")).toBe(true);
-  expect(rows.find((row) => row.dimension === "totalMassGBucket"&&row.launchGrade==="Perfect")).toMatchObject({ averageScore: 2, winRate: 1, opponentAverageStrength: 60,participantObservations:20 });
+  expect(rows.some(row=>row.dimension==="totalMassGBucket")).toBe(true); expect(rows.some(row=>row.dimension==="layerOrder")).toBe(true); expect(rows.some(row=>row.dimension==="layerCombination")).toBe(true); expect(rows.some(row=>row.dimension==="layerSides")).toBe(true);
+  expect(rows.find((row) => row.dimension === "totalMassGBucket"&&row.launchGrade==="Perfect")).toMatchObject({ averageScore: 2, winRate: 1, opponentAverageStrength: 60,expectedWinRate:.5,outcomeResidual:.5,participantObservations:10 });
 }, 30_000);
 
 it.skipIf(!databaseUrl)("filters by immutable event-time class snapshots",async()=>{

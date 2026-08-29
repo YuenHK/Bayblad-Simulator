@@ -12,6 +12,7 @@ import { AdminAuthService, InMemoryAdminStore } from "./auth/admin-auth";
 import { MemoryMatchRepository } from "./records/match-repository";
 import type { RoomRecordRepository } from "./records/room-repository";
 import { MemoryRoomProjectionStore } from "./records/room-projection-store";
+import { shouldRecordRealtimeActivity } from "./socket";
 
 const uuid = () => crypto.randomUUID();
 const command = (type: string, fields: Record<string, unknown> = {}) => ({
@@ -134,6 +135,12 @@ async function connect(url: string, displayName: string, sessionToken?: string) 
 }
 
 describe("realtime app", () => {
+  it("throttles a thousand heartbeat pings but records immediately across HK midnight",()=>{
+    const start=Date.parse("2026-08-31T15:59:59Z");let recorded=start,count=0;
+    for(let index=1;index<=1_000;index++){const at=start+index*100;if(shouldRecordRealtimeActivity(recorded,at)){recorded=at;count++;}}
+    expect(count).toBe(1);
+    expect(shouldRecordRealtimeActivity(Date.parse("2026-08-30T15:59:59Z"),Date.parse("2026-08-30T16:00:00Z"))).toBe(true);
+  });
   const closers: Array<() => Promise<void> | void> = [];
   afterEach(async () => {
     for (const close of closers.splice(0).reverse()) await close();

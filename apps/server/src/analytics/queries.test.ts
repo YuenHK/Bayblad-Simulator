@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyticsFiltersSchema, hongKongDateBounds, normalizeUsageRows } from "./usage";
-import { normalizeParameterRows, opponentStrength, OPPONENT_STRENGTH_METRIC } from "./parameters";
+import { expectedWinProbability, normalizeParameterRows, opponentStrength, outcomeResidual, OPPONENT_STRENGTH_METRIC } from "./parameters";
 import { AnalyticsService, canonicalFilterHash, type AnalyticsCache } from "./service";
 import Fastify from "fastify";
 import fastifyCookie from "@fastify/cookie";
@@ -33,8 +33,8 @@ describe("analytics query contracts", () => {
 
   it("drops parameter groups below ten completed matches and maps launch distribution", () => {
     const result = normalizeParameterRows([
-      { dimension:"totalMassGBucket",value:{fromG:40,toG:45},launchGrade:"Perfect",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"10",participantObservations:"12",averageScore:"1.75",winRate:"0.6",opponentAverageStrength:"64",opponentAdjustedScore:"1.11",totalGroups:"20" },
-      { dimension:"holes",value:{count:4},launchGrade:"Good",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"9",participantObservations:"9",averageScore:"2",winRate:"1",opponentAverageStrength:"60",opponentAdjustedScore:"1.4",totalGroups:"20" },
+      { dimension:"totalMassGBucket",value:{fromG:40,toG:45},launchGrade:"Perfect",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"10",participantObservations:"12",averageScore:"1.75",winRate:"0.6",opponentAverageStrength:"64",expectedWinRate:"0.45",outcomeResidual:"0.15",totalGroups:"20" },
+      { dimension:"holes",value:{count:4},launchGrade:"Good",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"9",participantObservations:"9",averageScore:"2",winRate:"1",opponentAverageStrength:"60",expectedWinRate:"0.5",outcomeResidual:"0.5",totalGroups:"20" },
     ]);
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ dimension:"totalMassGBucket",sampleSize: 10, averageScore: 1.75, winRate: 0.6, launchGrade:"Perfect",opponentStrengthBand:"medium" });
@@ -51,22 +51,35 @@ it("defines opponent strength from the authoritative design prediction rather th
   expect(opponentStrength({stability:80,impactResistance:60,spinDuration:40,speed:20})).toBe(60);
   expect(OPPONENT_STRENGTH_METRIC).toMatchObject({unit:"performance-index-0-100",version:"1"});
 });
+it("uses an interpretable expected-outcome residual that rewards equal results against stronger opponents",()=>{
+  expect(expectedWinProbability(60,60)).toBe(.5);
+  expect(outcomeResidual(.5,60,60)).toBe(0);
+  expect(outcomeResidual(1,60,80)).toBeGreaterThan(outcomeResidual(1,60,40));
+  expect(outcomeResidual(0,60,80)).toBeGreaterThan(outcomeResidual(0,60,40));
+});
 
 describe("analytics summary cache", () => {
   it("uses a stable hash independent of optional property insertion order", () => {
     expect(canonicalFilterHash({ from: "2026-08-01", to: "2026-08-31", className: "1A", identityStatus: "iclass" }))
       .toBe(canonicalFilterHash({ identityStatus: "iclass", className: "1A", to: "2026-08-31", from: "2026-08-01" }));
   });
-  it("pages parameter groups with a stable bounded offset",async()=>{
+  it("pages an immutable signed snapshot without skips when source rows mutate",async()=>{
     const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};
-    const service=new AnalyticsService(cache,async()=>[],async(_filters,page)=>Array.from({length:page?.limit??0},(_,index)=>(page?.offset??0)+index));
-    await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2,4)).resolves.toMatchObject({rows:[4,5],nextOffset:6,total:6,hasMore:true});
-    await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-02"},101,0)).rejects.toThrow("INVALID_ANALYTICS_PAGE");
+    let source=[0,1,2,3,4];const service=new AnalyticsService(cache,async()=>[],async()=>source,async()=>[],()=>new Date("2026-08-01T00:00:00Z"),Buffer.alloc(32,7));
+    const first=await service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2);expect(first).toMatchObject({rows:[0,1],total:5,hasMore:true});
+    source=[-1,...source,5];const second=await service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2,first.nextCursor!);expect(second.rows).toEqual([2,3]);
+    await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-03"},2,first.nextCursor!)).rejects.toThrow("INVALID_ANALYTICS_CURSOR");
+    await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-02"},101)).rejects.toThrow("INVALID_ANALYTICS_PAGE");
   });
   it("does not let a forced refresh join a less strict in-flight query",async()=>{
     const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};let runs=0;
     const service=new AnalyticsService(cache,async()=>{runs++;return[];},async()=>[]); const filters={from:"2026-08-01",to:"2026-08-02"} as const;
     await Promise.all([service.query(filters,300_000),service.query(filters,0)]); expect(runs).toBe(6);
+  });
+  it("loads every summary metric inside one consistency boundary",async()=>{
+    const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};let boundaries=0;
+    const service=new AnalyticsService(cache,async()=>[],async()=>[],async()=>[],()=>new Date("2026-08-01T00:00:00Z"),Buffer.alloc(32,8),async(operation)=>{boundaries++;return operation();});
+    await service.query({from:"2026-08-01",to:"2026-08-02"});expect(boundaries).toBe(1);
   });
 
   it("coalesces refreshes and returns a fresh cached summary", async () => {
