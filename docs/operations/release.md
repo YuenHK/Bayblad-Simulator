@@ -27,6 +27,8 @@ Protected current 並非可覆寫的單一 JSON：主機以 root0400 payload/sig
 
 `db.yml` 的 root-owned `/opt/steam-top` 只是一次性 PostgreSQL 功能 integration fixture，不是 production bootstrap 證據、不會產生可供正式部署信任的 state。正式 acceptance 必須取得校方主機上 `/opt/steam-top-bootstrap/verify-bootstrap.sh` 的 digest 證據，並與受保護 `bootstrap.yml` artifact 及主機 root0400 config 相符。
 
+`production-security` 另會在全新 runner 以簽署 bootstrap archive 安裝一次性功能 fixture，對同一個 production-like HTTPS/WSS Compose PostgreSQL 實際執行 activate → promotion → public probe/record → finalize，並驗 finalize 持有 production lock 時另一個 activation 被拒。這是不可 skip 的行為關卡，但仍不是校方正式主機的 bootstrap 或部署證據。
+
 `bootstrap-release-approval` 環境必須有 required reviewers 及 restrictive branch policy，並預先由管理員輪換 `EXPECTED_BOOTSTRAP_ARCHIVE_SHA256` 與 `BOOTSTRAP_SIGNING_KEY`。`release-host-integration` 環境只接受管理員固定的 `BOOTSTRAP_RUN_ID`/`BOOTSTRAP_COMMIT`/`BOOTSTRAP_ARCHIVE_SHA256` 及 `BOOTSTRAP_ALLOWED_SIGNERS`；tag job 會從該 protected run 下載 bootstrap，核對外部 digest、GitHub attestation 及 SSH signature，不會用 tag checkout 內的 bootstrap 作信任根。任何 digest 輪換都必須先審閱 bootstrap source，再更新受保護 environment variable；release workflow 無權自行改寫。
 
 Installer 來源必須同時受 `INSTALLER_ALLOWED_HOSTS`、無 redirect HTTPS/TLS 1.3、外部 SHA256 及 SSH signature 限制；URL、signature URL、digest 及 allowlist 會寫入 root-private bootstrap trust audit。輪換時要先由主機管理員審閱新 installer bytes/簽署，再同步更新受保護 variables，不可只改 URL。Hard gate 保留 `gh attestation verify --format json` 的 bootstrap 與 authorization 真實 evidence，並使用與 production bootstrap 相同的 exact subject/ref/workflow SHA verifier；schema 漂移必須 fail closed。

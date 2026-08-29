@@ -101,5 +101,3 @@ jobs:
       - run: /opt/steam-top/infra/backup/test-promotion-full.sh
       - name: Exercise packaged generation collision and runtime-tree fail-closed behavior
         run: sudo /opt/steam-top/scripts/test-deployment-atomicity.sh
-      - name: Exercise the packaged canonical PostgreSQL cutover chain
-        run: /opt/steam-top/infra/backup/test-canonical-cutover-full.sh
