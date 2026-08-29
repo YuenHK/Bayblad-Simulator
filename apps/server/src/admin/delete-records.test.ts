@@ -36,6 +36,7 @@ const mutationHeaders = (cookie: string, csrf: string) => ({ origin, host: "teac
 
 describe("audited record deletion routes", () => {
   it("retries bounded serialization failures internally under one ledger operation", async()=>{let attempts=0;const sql={begin:async(...args:unknown[])=>{attempts++;if(attempts===1)throw Object.assign(new Error("retry"),{code:"40001"});const callback=args.at(-1) as (tx:{unsafe:(query:string)=>Promise<unknown[]>})=>Promise<unknown>;return callback({unsafe:async()=>[]});}};const events:string[]=[];const ledger={recordPending:async()=>{events.push("P");},recordCommitted:async()=>{events.push("C");},recordAborted:async()=>{events.push("A");}};const store=new PostgresDeletionStore({sql} as unknown as DatabaseClient,10,ledger);expect(await store.execute({previewToken:"A".repeat(43),filterHash:"a".repeat(64),adminUserId:crypto.randomUUID(),adminSessionId:crypto.randomUUID(),now:new Date()})).toEqual({status:"invalid"});expect(attempts).toBe(2);expect(events).toEqual(["P","A"]);});
+  it("marks a three-times serialization rollback aborted and leaves commit-uncertain failures pending",async()=>{for(const code of ["40001","ECONNRESET"]){let attempts=0;const sql={begin:async()=>{attempts++;throw Object.assign(new Error(code),{code});},unsafe:async()=>[]};const events:string[]=[];const ledger={recordPending:async()=>{events.push("P");},recordCommitted:async()=>{events.push("C");},recordAborted:async()=>{events.push("A");}};const store=new PostgresDeletionStore({sql} as unknown as DatabaseClient,10,ledger);await expect(store.execute({previewToken:"A".repeat(43),filterHash:"a".repeat(64),adminUserId:crypto.randomUUID(),adminSessionId:crypto.randomUUID(),now:new Date()})).rejects.toThrow(code);expect(attempts).toBe(code==="40001"?3:1);expect(events).toEqual(code==="40001"?["P","A"]:["P"]);}});
   it("requires an active admin session and same-origin CSRF before previewing", async () => {
     const { app, cookie } = await fixture();
     expect((await app.inject({ method: "POST", url: "/api/admin/records/deletion-preview", headers: { origin, host: "teacher.test", "sec-fetch-site": "same-origin", "content-type": "application/json" }, payload: { scope: "all" } })).statusCode).toBe(401);
@@ -77,10 +78,10 @@ describe("audited record deletion routes", () => {
     const payload = { previewToken: preview.previewToken, filterHash: preview.filterHash, password: "correct-password-2026", confirmation: "DELETE" };
     const response = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ auditId: expect.stringMatching(/^[0-9a-f-]{36}$/u), counts: { identities: 1, designs: 2, matches: 3 } });
-    expect(deletion.remainingIdentities).toBe(1);
+    expect(response.json()).toMatchObject({ auditId: expect.stringMatching(/^[0-9a-f-]{36}$/u), counts: { identities: 0, designs: 2, matches: 3 } });
+    expect(deletion.remainingIdentities).toBe(2);
     expect(deletion.audits).toHaveLength(1);
-    expect(deletion.audits[0]).toEqual({ auditId: response.json().auditId, adminUserId: expect.any(String), scope: "date_range", filterHash: preview.filterHash, previewCount: 6, deletedIdentityCount: 1, deletedDesignCount: 2, deletedMatchCount: 3 });
+    expect(deletion.audits[0]).toEqual({ auditId: response.json().auditId, adminUserId: expect.any(String), scope: "date_range", filterHash: preview.filterHash, previewCount: 5, deletedIdentityCount: 0, deletedDesignCount: 2, deletedMatchCount: 3 });
     expect(JSON.stringify(deletion.audits[0])).not.toContain("1A");
     const replay = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload: { previewToken: preview.previewToken, filterHash: preview.filterHash, confirmation: "DELETE" } });
     expect(replay.statusCode).toBe(200);

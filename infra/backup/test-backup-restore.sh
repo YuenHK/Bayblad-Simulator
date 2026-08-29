@@ -48,40 +48,50 @@ createdb --maintenance-db="$TEST_DATABASE_URL" "$restore_db"
 base_url=${TEST_DATABASE_URL%/*}
 source_url="$base_url/$source_db"
 restore_url="$base_url/$restore_db"
+service_file="$test_root/pg_service.conf";pass_file="$test_root/pgpass"
+node - "$TEST_DATABASE_URL" "$source_db" "$restore_db" "$service_file" "$pass_file" <<'NODE'
+const fs=require("fs"),[url,source,restore,file,pass]=process.argv.slice(2),u=new URL(url),host=u.hostname,port=u.port||"5432",user=decodeURIComponent(u.username),password=decodeURIComponent(u.password);const common=`host=${host}\nport=${port}\nuser=${user}\n`;fs.writeFileSync(file,`[source]\n${common}dbname=${source}\n[restore]\n${common}dbname=${restore}\n`,{mode:0o600});fs.writeFileSync(pass,`${host}:${port}:${source}:${user}:${password}\n${host}:${port}:${restore}:${user}:${password}\n`,{mode:0o600});
+NODE
+chmod 600 "$service_file" "$pass_file";export PGSERVICEFILE="$service_file" PGPASSFILE="$pass_file"
 source_target_id=00000000-0000-4000-8000-000000000001
 restore_target_id=00000000-0000-4000-8000-000000000002
-psql "$source_url" -v ON_ERROR_STOP=1 -c "create table deletion_audit(id uuid primary key); create table deployment_environment(singleton boolean primary key,environment text,restore_allowed boolean,restore_target_id uuid); insert into deployment_environment values(true,'production',false,'$source_target_id'); create table backup_probe(id integer primary key, label text not null); insert into backup_probe values (1, 'encrypted-round-trip');" >/dev/null
-psql "$restore_url" -v ON_ERROR_STOP=1 -c "create table deployment_environment(singleton boolean primary key,environment text,restore_allowed boolean,restore_target_id uuid); insert into deployment_environment values(true,'test',true,'$restore_target_id');" >/dev/null
+migration="$script_dir/../../drizzle/0000_steam_top_pre_first_deploy.sql"
+psql "$source_url" -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
+psql "$restore_url" -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
+psql "$source_url" -v ON_ERROR_STOP=1 -c "create table backup_probe(id integer primary key, label text not null); insert into backup_probe values (1, 'encrypted-round-trip');" >/dev/null
+psql "$restore_url" -v ON_ERROR_STOP=1 -c "begin; set local steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA'; update restore_control.deployment_environment set environment='test',restore_allowed=true,restore_target_id='$restore_target_id' where singleton=true; commit;" >/dev/null
 
 age-keygen -o "$test_root/key.txt" 2>"$test_root/keygen.log"
 recipient=$(awk '/^# public key: /{print $4}' "$test_root/key.txt")
 ledger="$test_root/deletion-ledger.log"; : >"$ledger"; chmod 600 "$ledger"
-DATABASE_URL="$source_url" BACKUP_DIR="$test_root/backups" AGE_RECIPIENT="$recipient" DELETION_LEDGER_FILE="$ledger" "$script_dir/backup.sh"
-backup_file=$(find "$test_root/backups" -maxdepth 1 -type f -name 'steam-top-*.dump.age' -print -quit)
-[[ -n $backup_file && -f $backup_file && ! -L $backup_file ]]
-if stat -c '%a' "$backup_file" >/dev/null 2>&1; then mode=$(stat -c '%a' "$backup_file"); else mode=$(stat -f '%Lp' "$backup_file"); fi
+ssh-keygen -q -t ed25519 -N '' -f "$test_root/signing-key";chmod 600 "$test_root/signing-key";signer=backup@test;printf '%s %s\n' "$signer" "$(<"$test_root/signing-key.pub")" >"$test_root/allowed-signers"
+PGSERVICE=source BACKUP_DIR="$test_root/backups" AGE_RECIPIENT="$recipient" DELETION_LEDGER_FILE="$ledger" BACKUP_SIGNING_KEY="$test_root/signing-key" BACKUP_SIGNER_ID="$signer" "$script_dir/backup.sh"
+backup_file=$(find "$test_root/backups" -maxdepth 1 -type d -name 'steam-top-*.backup' -print -quit)
+[[ -n $backup_file && -f $backup_file/COMPLETE && ! -L $backup_file ]]
+if stat -c '%a' "$backup_file/dump.age" >/dev/null 2>&1; then mode=$(stat -c '%a' "$backup_file/dump.age"); else mode=$(stat -f '%Lp' "$backup_file/dump.age"); fi
 [[ $mode == 600 ]]
 
-restore_env=(RESTORE_DATABASE_URL="$restore_url" RESTORE_CONFIRM_DATABASE="$restore_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" RESTORE_ALLOWED_TARGET_ID="$restore_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA)
+restore_env=(RESTORE_PGSERVICE=restore RESTORE_CONFIRM_DATABASE="$restore_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" RESTORE_ALLOWED_TARGET_ID="$restore_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" BACKUP_SIGNER_ID="$signer")
 env "${restore_env[@]}" "$script_dir/restore.sh" "$backup_file"
 [[ $(psql "$restore_url" -Atqc "select label from backup_probe where id=1") == encrypted-round-trip ]]
 psql "$restore_url" -v ON_ERROR_STOP=1 -c "update backup_probe set label='before-failed-restore' where id=1" >/dev/null
-plain_dump="$test_root/plain.dump"; broken_dump="$test_root/broken.dump"; broken_backup="$test_root/backups/steam-top-20990101T000000Z-999999.dump.age"
-age --decrypt --identity "$test_root/key.txt" --output "$plain_dump" "$backup_file"
+plain_dump="$test_root/plain.dump"; broken_dump="$test_root/broken.dump"; broken_backup="$test_root/backups/steam-top-20990101T000000Z-999999.backup";cp -R "$backup_file" "$broken_backup"
+age --decrypt --identity "$test_root/key.txt" --output "$plain_dump" "$backup_file/dump.age"
 plain_size=$(wc -c <"$plain_dump" | tr -d ' '); (( plain_size > 256 )); dd if="$plain_dump" of="$broken_dump" bs=1 count="$((plain_size-128))" 2>/dev/null
-age --encrypt --recipient "$recipient" --output "$broken_backup" "$broken_dump"
-if command -v sha256sum >/dev/null 2>&1; then broken_sha=$(sha256sum "$broken_backup" | awk '{print $1}'); else broken_sha=$(shasum -a 256 "$broken_backup" | awk '{print $1}'); fi
-printf '%s  %s\n' "$broken_sha" "${broken_backup##*/}" >"$broken_backup.sha256"
-awk -v hash="$broken_sha" '$0~/^sha256=/{print "sha256=" hash;next}{print}' "$backup_file.manifest" >"$broken_backup.manifest"
+age --encrypt --recipient "$recipient" --output "$broken_backup/dump.age" "$broken_dump"
+if command -v sha256sum >/dev/null 2>&1; then broken_sha=$(sha256sum "$broken_backup/dump.age" | awk '{print $1}'); else broken_sha=$(shasum -a 256 "$broken_backup/dump.age" | awk '{print $1}'); fi
+printf '%s  dump.age\n' "$broken_sha" >"$broken_backup/checksum.sha256";awk -v hash="$broken_sha" '$0~/^sha256=/{print "sha256=" hash;next}{print}' "$backup_file/manifest" >"$broken_backup/manifest";{ cat "$broken_backup/manifest";cat "$broken_backup/checksum.sha256";} >"$broken_backup/SIGNED-METADATA";ssh-keygen -Y sign -q -f "$test_root/signing-key" -n steam-top-backup "$broken_backup/SIGNED-METADATA";mv "$broken_backup/SIGNED-METADATA.sig" "$broken_backup/signature"
 if env "${restore_env[@]}" "$script_dir/restore.sh" "$broken_backup" 2>/dev/null; then echo "corrupt restore unexpectedly succeeded" >&2; exit 1; fi
 [[ $(psql "$restore_url" -Atqc "select label from backup_probe where id=1") == before-failed-restore ]]
 
 if env APP_ENV=production "${restore_env[@]}" "$script_dir/restore.sh" "$backup_file" 2>/dev/null; then
   echo "restore unexpectedly allowed production mode" >&2; exit 1
 fi
-if env RESTORE_DATABASE_URL="$source_url" RESTORE_CONFIRM_DATABASE="$source_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" RESTORE_ALLOWED_TARGET_ID="$source_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA "$script_dir/restore.sh" "$backup_file" 2>/dev/null; then
+if env RESTORE_PGSERVICE=source RESTORE_CONFIRM_DATABASE="$source_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" RESTORE_ALLOWED_TARGET_ID="$source_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" BACKUP_SIGNER_ID="$signer" "$script_dir/restore.sh" "$backup_file" 2>/dev/null; then
   echo "restore unexpectedly allowed the source database" >&2; exit 1
 fi
+incomplete="$test_root/backups/steam-top-20990101T000001Z-999998.backup";mkdir -m 700 "$incomplete";cp "$backup_file/dump.age" "$incomplete/dump.age";if env "${restore_env[@]}" "$script_dir/restore.sh" "$incomplete" 2>/dev/null;then echo "incomplete set accepted" >&2;exit 1;fi
+tampered="$test_root/backups/steam-top-20990101T000002Z-999997.backup";cp -R "$backup_file" "$tampered";printf 'tamper\n' >>"$tampered/manifest";if env "${restore_env[@]}" "$script_dir/restore.sh" "$tampered" 2>/dev/null;then echo "tampered signature accepted" >&2;exit 1;fi
 printf 'P 10000000-0000-4000-8000-000000000001 %064d\nC 10000000-0000-4000-8000-000000000001 %064d\n' 0 0 >>"$ledger"
 if env "${restore_env[@]}" "$script_dir/restore.sh" "$backup_file" 2>/dev/null; then echo "restore unexpectedly accepted a backup older than the deletion ledger" >&2; exit 1; fi
 
