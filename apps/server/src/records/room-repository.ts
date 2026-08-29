@@ -2,7 +2,7 @@ import { and, eq, isNull, lt, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 import { roomParticipants, roomProjectionJobs, rooms } from "@steam-top/db/schema";
-import type { RoomProjectionPayload } from "./room-projection-store";
+import type { RoomProjectionPayload, RoomProjectionStore } from "./room-projection-store";
 import { RoomProjectionConflictError } from "./room-projection-store";
 
 export type RoomParticipantRecord = Readonly<{
@@ -32,6 +32,26 @@ const participantValues = (roomId: string, value: RoomParticipantRecord, joinedA
   displayNameSnapshot: value.displayName, role: value.role, isOwner: value.isOwner,
   lastIp: value.ip, userAgent: value.userAgent, deviceNameSnapshot: value.deviceName, joinedAt,
 });
+
+type MemoryRoomRecord = { status: "waiting" | "launch" | "battle" | "result" | "closed"; revision: number; closedAt: Date | null; firstBattleAt: Date | null; participants: Map<string, { record: RoomParticipantRecord; leftAt: Date | null }> };
+export class MemoryRoomRecordRepository implements RoomRecordRepository {
+  readonly #rooms = new Map<string, MemoryRoomRecord>();
+  constructor(readonly projections: RoomProjectionStore) {}
+  async create(input: Parameters<RoomRecordRepository["create"]>[0]) { this.#rooms.set(input.id, { status: "waiting", revision: -1, closedAt: null, firstBattleAt: null, participants: new Map([[input.participant.participantPublicId, { record: input.participant, leftAt: null }]]) }); }
+  async join(roomId: string, participant: RoomParticipantRecord) { const room = this.#active(roomId); room.participants.set(participant.participantPublicId, { record: participant, leftAt: null }); }
+  async recordBattleStart(roomId: string, at: Date) { const room = this.#active(roomId); room.firstBattleAt ??= at; }
+  async updatePhase(roomId: string, phase: "waiting" | "launch" | "battle" | "result") { this.#active(roomId).status = phase; }
+  async updateOwner() {} async syncRoles() {}
+  async leave(roomId: string, participantPublicId: string, at: Date) { const participant = this.#rooms.get(roomId)?.participants.get(participantPublicId); if (participant) participant.leftAt ??= at; }
+  async leaveAndSync(roomId: string, participantPublicId: string, at: Date) { await this.leave(roomId, participantPublicId, at); }
+  async close(roomId: string, at: Date, revision?: number) { const room = this.#rooms.get(roomId); if (!room || room.closedAt) return; room.status = "closed"; room.closedAt = at; if (revision !== undefined) room.revision = revision; for (const participant of room.participants.values()) participant.leftAt ??= at; }
+  async closeWithProjection(roomId: string, at: Date, revision: number, payload: RoomProjectionPayload) { const room = this.#active(roomId); if (revision <= room.revision) throw new Error("ROOM_CLOSE_REVISION_CONFLICT"); await this.projections.enqueue({ roomId, revision, payload }); await this.close(roomId, at, revision); }
+  async transitionPhaseWithProjection(roomId: string, revision: number, payload: RoomProjectionPayload) { const room = this.#active(roomId); if (revision <= room.revision) { if (revision === room.revision && room.status === payload.phase) return; throw new Error("ROOM_PHASE_REVISION_CONFLICT"); } await this.projections.enqueue({ roomId, revision, payload }); room.status = payload.phase; room.revision = revision; if (payload.firstBattleAt) room.firstBattleAt ??= new Date(payload.firstBattleAt); }
+  async reconcileOrphanedActiveRooms(at = new Date()) { let count = 0; for (const [roomId, room] of this.#rooms) if (!room.closedAt) { const revision = room.revision + 1; const payload: RoomProjectionPayload = { phase: "closed", firstBattleAt: room.firstBattleAt?.toISOString() ?? null, closedAt: at.toISOString() }; await this.projections.enqueue({ roomId, revision, payload }); await this.close(roomId, at, revision); count++; } return count; }
+  async applyProjection(roomId: string, revision: number, payload: RoomProjectionPayload) { const room = this.#rooms.get(roomId); if (!room || revision <= room.revision) return false; room.revision = revision; room.status = payload.phase; if (payload.closedAt) room.closedAt = new Date(payload.closedAt); return true; }
+  snapshot(roomId: string) { return this.#rooms.get(roomId); }
+  #active(roomId: string) { const room = this.#rooms.get(roomId); if (!room || room.closedAt) throw new Error("ROOM_CLOSED"); return room; }
+}
 
 export class PostgresRoomRecordRepository implements RoomRecordRepository {
   constructor(readonly db: Db) {}
@@ -112,11 +132,11 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
     await this.db.transaction(async (tx) => {
       const [room] = await tx.select().from(rooms).where(eq(rooms.id, roomId)).for("update").limit(1);
       if (!room || room.closedAt) throw new Error("ROOM_CLOSED");
+      const [job] = await tx.select().from(roomProjectionJobs).where(eq(roomProjectionJobs.roomId, roomId)).for("update").limit(1);
       if (room.appliedProjectionRevision >= revision) {
-        if (room.appliedProjectionRevision === revision && room.status === payload.phase) return;
+        if (room.appliedProjectionRevision === revision && room.status === payload.phase && job?.revision === revision && job.payloadHash === payloadHash && job.status !== "aborted") return;
         throw new Error("ROOM_PHASE_REVISION_CONFLICT");
       }
-      const [job] = await tx.select().from(roomProjectionJobs).where(eq(roomProjectionJobs.roomId, roomId)).for("update").limit(1);
       if (job && job.revision >= revision) {
         if (job.revision === revision && job.payloadHash === payloadHash && job.status !== "aborted") return;
         throw new RoomProjectionConflictError();

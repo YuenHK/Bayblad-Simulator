@@ -183,6 +183,20 @@ describe("RoomService membership and public state", () => {
 });
 
 describe("RoomService moves, readiness, and phases", () => {
+  it("reserves without mutation, applies once, and fences a changed RAM snapshot", () => {
+    const service = new RoomService();
+    const room = service.create(user("owner", "Owner"), "Reserved");
+    service.join(room.roomId, user("guest", "Guest"), "player");
+    service.ready(room.roomId, "owner", DESIGN_A); service.ready(room.roomId, "guest", DESIGN_B);
+    const before = service.get(room.roomId)!;
+    const reservation = service.reservePersistedTransition(room.roomId, "launch");
+    expect(service.get(room.roomId)).toEqual(before);
+    service.resetReady(room.roomId, "owner");
+    expect(service.applyPersistedTransition(reservation)).toBe(false);
+    service.restore(reservation.before);
+    expect(service.applyPersistedTransition(reservation)).toBe(true);
+    expect(service.get(room.roomId)).toMatchObject({ phase: "launch", revision: reservation.expectedRevision });
+  });
   it("keeps ownership when the creator moves to spectator and emits one atomic delta", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
