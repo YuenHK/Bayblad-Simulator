@@ -30,6 +30,7 @@ export interface RoomProjectionStore {
   pruneDead?(now?: Date, limit?: number): Promise<number>;
   readonly size?: number;
 }
+export class RoomProjectionConflictError extends Error { constructor() { super("ROOM_PROJECTION_CONFLICT"); this.name = "RoomProjectionConflictError"; } }
 
 type MemoryEntry = RoomProjectionInput & {
   status: "pending" | "leased" | "dead";
@@ -61,7 +62,11 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
   async enqueue(input: RoomProjectionInput): Promise<"created" | "updated" | "stale"> {
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new RangeError("invalid room projection revision");
     const current = this.#entries.get(input.roomId);
-    if (current && current.revision >= input.revision) return "stale";
+    if (current && current.revision === input.revision) {
+      if (JSON.stringify(current.payload) !== JSON.stringify(input.payload)) throw new RoomProjectionConflictError();
+      return "stale";
+    }
+    if (current && current.revision > input.revision) return "stale";
     if (!current && this.#entries.size >= this.#maxEntries) throw new Error("ROOM_PROJECTION_CAPACITY");
     const now = this.#now();
     this.#entries.set(input.roomId, {
@@ -139,7 +144,11 @@ export class PostgresRoomProjectionStore implements RoomProjectionStore {
     const payloadHash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
     try { return await this.db.transaction(async (tx) => {
       const [existing] = await tx.select().from(roomProjectionJobs).where(eq(roomProjectionJobs.roomId, input.roomId)).for("update").limit(1);
-      if (existing && existing.revision >= input.revision) return "stale" as const;
+      if (existing && existing.revision === input.revision) {
+        if (existing.payloadHash !== payloadHash) throw new RoomProjectionConflictError();
+        return "stale" as const;
+      }
+      if (existing && existing.revision > input.revision) return "stale" as const;
       const now = new Date();
       if (!existing) {
         await tx.insert(roomProjectionJobs).values({ roomId: input.roomId, revision: input.revision, payloadHash, payloadJson: payload, nextAttemptAt: now });
