@@ -5,8 +5,9 @@ die(){ echo "promotion refused: $1" >&2;exit 1;}
 source_set=$1;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
 # shellcheck source=host-trust-guard.sh
 source "$script_dir/host-trust-guard.sh"
-for name in PROMOTE_PGSERVICE PROMOTE_APP_ROLE PGSERVICEFILE PGPASSFILE PROMOTE_CONFIRM_DATABASE RESTORE_ALLOWED_TARGET_ID DELETION_LEDGER_FILE BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID PROMOTE_CONFIRM;do [[ -n ${!name:-} ]]||die "$name is required";done
+for name in PROMOTE_PGSERVICE PROMOTE_MAINTENANCE_PGSERVICE PROMOTE_APP_ROLE PGSERVICEFILE PGPASSFILE PROMOTE_CONFIRM_DATABASE RESTORE_ALLOWED_TARGET_ID DELETION_LEDGER_FILE BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID PROMOTE_CONFIRM;do [[ -n ${!name:-} ]]||die "$name is required";done
 [[ $PROMOTE_APP_ROLE =~ ^[a-z_][a-z0-9_]{0,62}$ ]]||die "application role invalid"
+[[ $PROMOTE_CONFIRM_DATABASE =~ ^[a-z_][a-z0-9_]{0,62}$ ]]||die "database name invalid"
 [[ $PROMOTE_CONFIRM == PROMOTE_VERIFIED_RESTORE_TO_PRODUCTION && ${APP_ENV:-} != production && ${NODE_ENV:-} != production && -z ${DATABASE_URL:-} && -z ${RESTORE_DATABASE_URL:-} ]]||die "promotion confirmation/environment guard"
 backup_reject_libpq_overrides PROMOTE_PGSERVICE||die "libpq trust boundary"
 for private in "$PGSERVICEFILE" "$PGPASSFILE" "$DELETION_LEDGER_FILE" "$BACKUP_ALLOWED_SIGNERS_FILE";do backup_private_file "$private"||die "private file trust boundary";done
@@ -14,7 +15,7 @@ ledger_cli="$script_dir/../../apps/server/dist/admin/deletion-ledger-cli.js";dep
 backup_trusted_deployment "$deployment_root" "$script_dir" "${ledger_cli%/*}"||die "deployment trust boundary"
 backup_trusted_ledger_cli "$deployment_root" "$script_dir" "$ledger_cli"||die "ledger CLI trust boundary"
 ready_dir=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-promotion.XXXXXX");chmod 700 "$ready_dir";guard_pid=""
-cleanup(){ if [[ -n $guard_pid ]];then kill "$guard_pid" >/dev/null 2>&1||true;wait "$guard_pid" >/dev/null 2>&1||true;fi;rm -rf "$ready_dir";};trap cleanup EXIT;trap 'cleanup;exit 130' INT TERM
+cleanup(){ if [[ -f $ready_dir/connections-disabled ]];then PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_database="$PROMOTE_CONFIRM_DATABASE" -c "select format('alter database %I allow_connections true', :'target_database')" -At | PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 >/dev/null||echo "CRITICAL: manual ALLOW_CONNECTIONS recovery required" >&2;fi;if [[ -n $guard_pid ]];then kill "$guard_pid" >/dev/null 2>&1||true;wait "$guard_pid" >/dev/null 2>&1||true;fi;rm -rf "$ready_dir";};trap cleanup EXIT;trap 'cleanup;exit 130' INT TERM
 node "$ledger_cli" hold-lock "$DELETION_LEDGER_FILE" "$ready_dir/ready" & guard_pid=$!
 for _ in {1..100};do [[ -f $ready_dir/ready && $(<"$ready_dir/ready") == ready ]]&&break;kill -0 "$guard_pid" >/dev/null 2>&1||die "ledger guard exited";sleep 0.1;done
 [[ -f $ready_dir/ready && $(<"$ready_dir/ready") == ready ]]||die "ledger guard timeout"
@@ -27,16 +28,16 @@ for file in COMPLETE SIGNED-METADATA VERIFIED VERIFIED.sig checksum.sha256 delet
 expected_rows=$(sed -n 's/^verification_rows=//p' "$snapshot/manifest");[[ $expected_rows =~ ^[0-9]+$ ]]||die "verification row metadata invalid"
 export PGSERVICE=$PROMOTE_PGSERVICE
 target=$(psql -X -v ON_ERROR_STOP=1 -Atqc 'select current_database()');[[ $target == "$PROMOTE_CONFIRM_DATABASE" ]]||die "target database confirmation mismatch"
+touch "$ready_dir/connections-disabled"
 psql -X -v ON_ERROR_STOP=1 -v target_id="$RESTORE_ALLOWED_TARGET_ID" -v expected_rows="$expected_rows" -v app_role="$PROMOTE_APP_ROLE" <<'SQL'
-begin;
-select pg_advisory_xact_lock(1937002751);
-select format('revoke connect on database %I from public',current_database()) \gexec
-select format('revoke connect on database %I from %I',current_database(),:'app_role') \gexec
+select format('alter database %I allow_connections false',current_database()) \gexec
 select pg_terminate_backend(pid) from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid();
 select not exists(select 1 from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid()) as isolated_ok \gset
+\if :isolated_ok
+begin;
+select pg_advisory_xact_lock(1937002751);
 select exists (select 1 from restore_control.deployment_environment where singleton=true and environment in ('staging','test') and restore_allowed=true and restore_target_id=:'target_id'::uuid) as marker_ok \gset
 select (select count(*) from deletion_audit)=:'expected_rows'::bigint as ledger_ok \gset
-\if :isolated_ok
 \if :marker_ok
 \if :ledger_ok
 set local steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA';
@@ -51,9 +52,10 @@ rollback;
 \quit 3
 \endif
 \else
-rollback;
 \quit 3
 \endif
 SQL
+PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_database="$PROMOTE_CONFIRM_DATABASE" -c "select format('alter database %I allow_connections true', :'target_database')" -At | PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 >/dev/null
+rm "$ready_dir/connections-disabled"
 [[ $(psql -X -v ON_ERROR_STOP=1 -AtF '|' -c 'select environment,restore_allowed,restore_target_id from restore_control.deployment_environment where singleton=true') == "production|f|$RESTORE_ALLOWED_TARGET_ID" ]]||die "production marker verification failed"
 echo "promotion verified; target $target is ready for guarded DATABASE_URL cutover"

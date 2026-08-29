@@ -123,20 +123,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .release
+          mkdir -p release
           repository="ghcr.io/${GITHUB_REPOSITORY,,}/steam-top"
-          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file .release/server.json --tag "$repository/server:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST -f Dockerfile.server .
-          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file .release/web.json --tag "$repository/web:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST --build-arg CADDY_IMAGE_REPOSITORY --build-arg CADDY_IMAGE_DIGEST -f Dockerfile.web .
-          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file .release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
-          node scripts/create-release-manifest.mjs "$GITHUB_SHA" "$repository" .release/server.json .release/web.json .release/database.json .release/release-manifest.json
-          ./scripts/portable-sha256.sh manifest .release server.json web.json database.json release-manifest.json > .release/SHA256SUMS
+          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file release/server.json --tag "$repository/server:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST -f Dockerfile.server .
+          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file release/web.json --tag "$repository/web:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST --build-arg CADDY_IMAGE_REPOSITORY --build-arg CADDY_IMAGE_DIGEST -f Dockerfile.web .
+          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
+          node scripts/create-release-manifest.mjs "$GITHUB_SHA" "$repository" release/server.json release/web.json release/database.json release/release-manifest.json
+          ./scripts/portable-sha256.sh manifest release server.json web.json database.json release-manifest.json > release/SHA256SUMS
       - name: Attest the release authorization manifest
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
-          subject-path: .release/release-manifest.json
+          subject-path: release/release-manifest.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-manifest-${{ github.sha }}
-          path: .release/
+          path: release/
           if-no-files-found: error
           retention-days: 90
