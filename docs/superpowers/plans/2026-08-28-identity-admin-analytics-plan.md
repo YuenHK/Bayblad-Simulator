@@ -140,7 +140,7 @@ git commit -m "feat: resolve cached and guest identities safely"
 
 威脅及容量說明：瀏覽器送出不在 allowlist 的 Origin 或 `Sec-Fetch-Site: cross-site` 會在任何寫入前被拒；缺少這兩個 header 則刻意容許受管理 Web Clip、CLI 及非瀏覽器客戶端，並由建立限流與容量上限防濫用。每個可信 client key 預設可突發 600 個新身份、其後每秒只補 0.01 個；全平台可突發 5,000 個、每秒補 0.1 個。以單校 NAT 計算，600 部同時首次進站可全數通過，第 601 個需等待約 100 秒；有效 Cookie 重用不扣建立額度。Postgres 只把 `revoked_at is null and expires_at > now` 計入 auth capacity，並以 `revoked_at is null` partial index配合到期時間查詢；已撤銷／到期 session 可永久保留作稽核，`archivedAt` 標示已撤銷封存，絕不再作驗證容量。未來清理只可刪除或不可逆遮蔽 token hash 等驗證材料，必須保留獲授權的診斷／稽核紀錄，不會自動刪除永久紀錄。Task 3 正式組裝只接受經簽署 Web Clip 或可信 API adapter 的輸出；禁止以 request body、query 或 client JSON 建立 live identity provider。
 
-### 任務 3：iClass Web Clip 整合接口
+### 任務 3：iClass Web Clip 整合接口（已完成）
 
 **文件：**
 - 建立：`apps/server/src/identity/iclass-adapter.ts`
@@ -148,7 +148,7 @@ git commit -m "feat: resolve cached and guest identities safely"
 - 建立：`apps/server/src/identity/import-device-map.ts`
 - 測試：`apps/server/src/identity/iclass-adapter.test.ts`
 
-- [ ] **步驟 1：編寫簽署 token 測試**
+- [x] **步驟 1：編寫簽署 token 測試**
 
 ```ts
 it("accepts a valid device token once", async () => {
@@ -158,13 +158,13 @@ it("accepts a valid device token once", async () => {
 });
 ```
 
-- [ ] **步驟 2：執行確認失敗**
+- [x] **步驟 2：執行確認失敗**
 
 執行：`pnpm --filter @steam-top/server test -- iclass-adapter.test.ts`
 
 預期：FAIL，adapter 未建立。
 
-- [ ] **步驟 3：定義 adapter 接口**
+- [x] **步驟 3：定義 adapter 接口**
 
 ```ts
 export interface IClassAdapter {
@@ -176,11 +176,11 @@ export interface IClassAdapter {
 
 提供 `ApiIClassAdapter` 和 `ImportedDeviceMapAdapter`。API URL／憑證只從環境變數讀取；若 iClass 尚未提供 API，CSV 匯入欄位固定為 `externalDeviceId,deviceName,studentName,className,studentNumber`。
 
-- [ ] **步驟 4：實作身份升級而不誤合併**
+- [x] **步驟 4：實作身份升級而不誤合併**
 
 只有同一安全 Cookie 和已驗證 signed device token 同時出現時，才把該匿名裝置舊紀錄連到 iClass identity；不以 IP、user-agent 或相似姓名合併。
 
-- [ ] **步驟 5：測試並 Commit**
+- [x] **步驟 5：測試並 Commit**
 
 執行：`pnpm --filter @steam-top/server test -- identity`
 
@@ -190,6 +190,8 @@ export interface IClassAdapter {
 git add apps/server/src/identity
 git commit -m "feat: add iclass web clip identity adapter"
 ```
+
+實作決策：Web Clip 網址只含不透明的一次性 `jti`，不含姓名、班別、學號、裝置名稱或外部裝置 id。伺服器先驗證簽署及查閱未使用 nonce，待 iClass API／CSV 成功解析後才原子消耗；API 5xx、逾時或 circuit open 不消耗，可在五分鐘內重試。API 404 及短暫錯誤在 `api-csv-fallback` 模式會查 CSV；未知裝置在兩個來源都不存在時會消耗 token，但仍建立受限流保護的訪客身份。`/start` 與 `/api/identity` 共用信任 IP、user-agent、雙層建立限流及容量處理，並立即 303 轉到乾淨 `/`。正式環境必須明確設定 `ICLASS_MODE=api|csv|api-csv-fallback|guest-only-explicit`；啟用模式必須有簽署密鑰、audience 及 PostgreSQL nonce store，訪客模式在 health 明確顯示 `disabled`。
 
 ### 任務 4：教師登入及權限守衛
 

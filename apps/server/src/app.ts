@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import { designUploadResponseSchema } from "@steam-top/domain";
 import type { IncomingMessage } from "node:http";
@@ -80,7 +80,8 @@ export type BuildAppOptions = Readonly<{
   identityGlobalCreationRefillPerSecond?: number;
   iClassAdapter?: IClassAdapter;
   webClipTokens?: WebClipTokenService;
-  testIdentityResolver?: (request: IncomingMessage) => Promise<Readonly<{ identityId: string; displayName: string }> | null>;
+  iClassStatus?: "api" | "csv" | "api-csv-fallback" | "disabled";
+  testIdentityResolver?: (request: IncomingMessage, testAuth?: Record<string, unknown>) => Promise<Readonly<{ identityId: string; displayName: string }> | null>;
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -116,6 +117,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (process.env.NODE_ENV === "production" && (!options.identityResolver || !options.identityResolver.isBackedBy(PostgresIdentityStore))) {
     throw new TypeError("Production composition requires a persistent identityResolver");
   }
+  if (process.env.NODE_ENV === "production" && !options.iClassStatus) throw new TypeError("Production composition requires explicit iClassStatus");
+  if (options.iClassStatus === "disabled" && (options.iClassAdapter || options.webClipTokens)) throw new TypeError("Disabled iClass composition cannot include adapters");
+  if (options.iClassStatus && options.iClassStatus !== "disabled" && (!options.iClassAdapter || !options.webClipTokens)) throw new TypeError("Enabled iClass composition requires adapter and tokens");
   const config = {
     bodyLimit: requirePositive("bodyLimit", options.bodyLimit ?? 64 * 1_024),
     maxHttpBufferSize: requirePositive("maxHttpBufferSize", options.maxHttpBufferSize ?? 64 * 1_024),
@@ -255,7 +259,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   app.decorate("realtimeGateway", gateway);
   app.decorate("battleEngine", battleEngine);
 
-  app.get("/health", async () => ({ status: "ok" }));
+  app.get("/health", async () => ({ status: "ok", identity: { iclass: options.iClassStatus ?? (options.iClassAdapter ? "api" : "disabled") } }));
   if (options.identityResolver) {
     const identityResolver = options.identityResolver;
     const allowedIdentityOrigins = new Set(options.allowedOrigins ?? []);
@@ -271,46 +275,53 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       if (normalized.startsWith("::ffff:") && isIP(normalized.slice(7)) === 4) normalized = normalized.slice(7);
       return isIP(normalized) ? normalized : undefined;
     };
+    const resolveIdentityRequest = async (request: { raw: IncomingMessage; cookies: Record<string, string | undefined>; headers: Record<string, string | string[] | undefined> }, live?: Parameters<IdentityResolver["resolve"]>[1]) => {
+      const clientKey = safeClientKey(request.raw);
+      const ip = identityIp(request.raw);
+      return identityResolver.resolve({
+        ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}),
+        ...(ip ? { ip } : {}),
+        ...(typeof request.headers["user-agent"] === "string" ? { userAgent: request.headers["user-agent"] } : {}),
+        admitCreation: () => identityCreationLimiter.consume(clientKey) && identityGlobalCreationLimiter.consume("global"),
+      }, live);
+    };
+    const setIdentityCookie = (reply: FastifyReply, resolved: Awaited<ReturnType<typeof resolveIdentityRequest>>) => reply.setCookie(COOKIE_NAME, resolved.cookieToken, {
+      path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
+      maxAge: Math.max(0, Math.floor((resolved.expiresAt.getTime() - resolved.issuedAt.getTime()) / 1_000)), expires: resolved.expiresAt,
+    });
     app.get("/api/identity", async (request, reply) => {
       if (!allowIdentityRequest(request.headers)) return reply.code(403).send({ error: "IDENTITY_ORIGIN_REJECTED" });
       if (request.headers["content-length"] && request.headers["content-length"] !== "0") return reply.code(413).send({ error: "IDENTITY_BODY_FORBIDDEN" });
       let resolved;
       try {
-        const clientKey = safeClientKey(request.raw);
-        const ip = identityIp(request.raw);
-        resolved = await identityResolver.resolve({
-          ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}),
-          ...(ip ? { ip } : {}),
-          ...(request.headers["user-agent"] ? { userAgent: request.headers["user-agent"] } : {}),
-          admitCreation: () => identityCreationLimiter.consume(clientKey) && identityGlobalCreationLimiter.consume("global"),
-        });
+        resolved = await resolveIdentityRequest(request);
       } catch (error) {
         if (error instanceof IdentityAdmissionError) return reply.code(429).send({ error: error.message });
         if (error instanceof IdentityCapacityError || error instanceof IdentityStoreUnavailableError) return reply.code(503).send({ error: error.message });
         throw error;
       }
-      reply.setCookie(COOKIE_NAME, resolved.cookieToken, {
-        path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
-        maxAge: Math.max(0, Math.floor((resolved.expiresAt.getTime() - resolved.issuedAt.getTime()) / 1_000)), expires: resolved.expiresAt,
-      });
+      setIdentityCookie(reply, resolved);
       return { id: resolved.identity.id, status: resolved.identity.status, displayName: resolved.identity.displayName };
     });
     app.get("/start", async (request, reply) => {
       reply.header("Referrer-Policy", "no-referrer").header("Cache-Control", "no-store");
       const token = (request.query as { t?: unknown }).t;
       let resolved;
+      if (!allowIdentityRequest(request.headers) || (request.headers["content-length"] && request.headers["content-length"] !== "0")) return reply.redirect("/", 303);
       try {
         if (!options.webClipTokens || !options.iClassAdapter || typeof token !== "string") throw new Error("INVALID_DEVICE_TOKEN");
-        const externalDeviceId = await options.webClipTokens.consume(token);
-        const device = await options.iClassAdapter.resolveDevice(externalDeviceId);
-        if (!device) throw new Error("ICLASS_DEVICE_NOT_FOUND");
-        const provider = createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: device.externalDeviceId, displayName: device.studentName, studentName: device.studentName, className: device.className, studentNumber: device.studentNumber, deviceName: device.deviceName }) });
-        const live = await provider.resolve();
-        resolved = await identityResolver.resolve({ ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}) }, live ?? undefined);
+        const verified = await options.webClipTokens.inspect(token);
+        let device;
+        try { device = await options.iClassAdapter.resolveDevice(verified.deviceId); }
+        catch { throw new Error("ICLASS_LOOKUP_RETRYABLE"); }
+        if (!device) { await options.webClipTokens.consumeVerified(verified); throw new Error("ICLASS_DEVICE_NOT_FOUND"); }
+        await options.webClipTokens.consumeVerified(verified);
+        const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: device.externalDeviceId, displayName: device.studentName, studentName: device.studentName, className: device.className, studentNumber: device.studentNumber, deviceName: device.deviceName }) }).resolve();
+        resolved = await resolveIdentityRequest(request, live ?? undefined);
       } catch {
-        try { resolved = await identityResolver.resolve({ ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}) }); } catch { /* identity API can retry later */ }
+        try { resolved = await resolveIdentityRequest(request); } catch { /* identity API can retry later */ }
       }
-      if (resolved) reply.setCookie(COOKIE_NAME, resolved.cookieToken, { path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", maxAge: Math.max(0, Math.floor((resolved.expiresAt.getTime() - resolved.issuedAt.getTime()) / 1_000)), expires: resolved.expiresAt });
+      if (resolved) setIdentityCookie(reply, resolved);
       return reply.redirect("/", 303);
     });
     app.post("/api/identity/logout", async (request, reply) => {

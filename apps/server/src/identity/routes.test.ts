@@ -3,7 +3,7 @@ import { buildApp, type BattleEnginePort } from "../app";
 import { IdentityResolver, InMemoryIdentityStore } from "./resolver";
 import { PostgresIdentityStore } from "./postgres-store";
 import { hashIdentityToken } from "./cookie";
-import { ImportedDeviceMapAdapter } from "./iclass-adapter";
+import { ApiIClassAdapter, FallbackIClassAdapter, ImportedDeviceMapAdapter } from "./iclass-adapter";
 import { InMemoryTokenNonceStore, WebClipTokenService } from "./webclip-token";
 
 const battleEngine: BattleEnginePort = { simulationCount: 0, simulateOnceAsync: async () => { throw new Error("unused"); }, cleanup: () => false };
@@ -26,6 +26,65 @@ describe("identity routes", () => {
     const replay = await app.inject({ method: "GET", url: `/start?t=${encodeURIComponent(token)}` });
     expect(replay.statusCode).toBe(303);
     expect(replay.cookies[0]).toBeDefined();
+  });
+
+  it("does not consume a token on transient lookup failure, then upgrades the same guest cookie on retry", async () => {
+    const store = new InMemoryIdentityStore(); let available = false;
+    const adapter = { resolveDevice: async () => { if (!available) throw new Error("ICLASS_UNAVAILABLE"); return { externalDeviceId: "ipad-retry", deviceName: "d", studentName: "李同學", className: "1B", studentNumber: "02" }; } };
+    const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(2) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() });
+    const token = await tokens.issue("ipad-retry");
+    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(store), iClassAdapter: adapter, webClipTokens: tokens, sweepIntervalMs: 0 }); apps.push(app);
+    const first = await app.inject({ method: "GET", url: `/start?t=${token}` }); const guestCookie = first.cookies[0]!;
+    const guest = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${guestCookie.name}=${guestCookie.value}` } }); expect(guest.json().status).toBe("guest");
+    available = true;
+    const retry = await app.inject({ method: "GET", url: `/start?t=${token}`, headers: { cookie: `${guestCookie.name}=${guestCookie.value}` } }); const liveCookie = retry.cookies[0]!;
+    expect(liveCookie.value).not.toBe(guestCookie.value);
+    const upgraded = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${liveCookie.name}=${liveCookie.value}` } });
+    expect(upgraded.json()).toMatchObject({ status: "cookie", displayName: "李同學" });
+    expect(await store.findSession(hashIdentityToken(guestCookie.value))).toBeNull();
+  });
+
+  it("consumes a permanently unknown mapped device while retaining guest access", async () => {
+    const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(3) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() });
+    const token = await tokens.issue("unknown"); let known = false;
+    const adapter = { resolveDevice: async () => known ? { externalDeviceId: "unknown", deviceName: "d", studentName: "X", className: "1A", studentNumber: "1" } : null };
+    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), iClassAdapter: adapter, webClipTokens: tokens, sweepIntervalMs: 0 }); apps.push(app);
+    const first = await app.inject({ method: "GET", url: `/start?t=${token}` }); expect(first.cookies[0]).toBeDefined();
+    known = true;
+    const replay = await app.inject({ method: "GET", url: `/start?t=${token}`, headers: { cookie: `${first.cookies[0]!.name}=${first.cookies[0]!.value}` } });
+    const identity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${replay.cookies[0]!.name}=${replay.cookies[0]!.value}` } });
+    expect(identity.json().status).toBe("guest");
+  });
+
+  it("upgrades through API-to-CSV fallback and permits only one winner after concurrent adapter lookups", async () => {
+    const csv = new ImportedDeviceMapAdapter(); await csv.replaceFromCsv("externalDeviceId,deviceName,studentName,className,studentNumber\nipad-race,d,黃同學,1C,03");
+    const api = new ApiIClassAdapter({ baseUrl: "https://iclass.example", bearerToken: "secret", fetcher: async () => new Response("down", { status: 503 }), maxAttempts: 1 });
+    const fallback = new FallbackIClassAdapter(api, csv);
+    const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(5) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() });
+    const fallbackToken = await tokens.issue("ipad-race");
+    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), iClassAdapter: fallback, webClipTokens: tokens, sweepIntervalMs: 0 }); apps.push(app);
+    const viaCsv = await app.inject({ method: "GET", url: `/start?t=${fallbackToken}` });
+    const csvIdentity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${viaCsv.cookies[0]!.name}=${viaCsv.cookies[0]!.value}` } });
+    expect(csvIdentity.json().displayName).toBe("黃同學");
+
+    const raceToken = await tokens.issue("ipad-race");
+    const raced = await Promise.all([app.inject({ method: "GET", url: `/start?t=${raceToken}` }), app.inject({ method: "GET", url: `/start?t=${raceToken}` })]);
+    const identities = await Promise.all(raced.map((response) => app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${response.cookies[0]!.name}=${response.cookies[0]!.value}` } })));
+    expect(identities.filter((response) => response.json().displayName === "黃同學")).toHaveLength(1);
+    expect(identities.filter((response) => response.json().status === "guest")).toHaveLength(1);
+  });
+
+  it("applies start admission limits and trusted IP/user-agent diagnostics to guest fallback", async () => {
+    const store = new InMemoryIdentityStore({ maxSessions: 700 }); let clock = 0;
+    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(store), behindProxy: true, clientKeyResolver: () => "managed-nat", identityIpResolver: () => "203.0.113.9", identityCreationBurst: 2, identityGlobalCreationBurst: 2, now: () => clock, sweepIntervalMs: 0 }); apps.push(app);
+    const first = await app.inject({ method: "GET", url: "/start?t=invalid", headers: { "user-agent": "Managed iPad\u0000" } });
+    const second = await app.inject({ method: "GET", url: "/start?t=invalid" });
+    const blocked = await app.inject({ method: "GET", url: "/start?t=invalid" });
+    expect([first, second, blocked].every((response) => response.statusCode === 303)).toBe(true);
+    expect(first.cookies[0]).toBeDefined(); expect(second.cookies[0]).toBeDefined(); expect(blocked.cookies).toHaveLength(0);
+    const session = await store.findSession(hashIdentityToken(first.cookies[0]!.value));
+    expect(session).toMatchObject({ lastIp: "203.0.113.9", userAgent: "Managed iPad" });
+    clock += 100_000;
   });
   it("automatically creates and then reuses an identity without collecting a name", async () => {
     const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), sweepIntervalMs: 0 }); apps.push(app);
@@ -68,7 +127,7 @@ describe("identity routes", () => {
     const previous = process.env.NODE_ENV; process.env.NODE_ENV = "production";
     try {
       const durable = new PostgresIdentityStore(null as never);
-      const app = buildApp({ battleEngine, allowedOrigins: ["https://school.example"], identityResolver: new IdentityResolver(durable), sweepIntervalMs: 0 });
+      const app = buildApp({ battleEngine, allowedOrigins: ["https://school.example"], identityResolver: new IdentityResolver(durable), iClassStatus: "disabled", sweepIntervalMs: 0 });
       apps.push(app);
       expect(app).toBeDefined();
     } finally { process.env.NODE_ENV = previous; }

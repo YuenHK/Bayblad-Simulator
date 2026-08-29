@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiIClassAdapter, ImportedDeviceMapAdapter } from "./iclass-adapter";
+import { ApiIClassAdapter, FallbackIClassAdapter, ImportedDeviceMapAdapter } from "./iclass-adapter";
 import { InMemoryTokenNonceStore, WebClipTokenService } from "./webclip-token";
 
 const row = { externalDeviceId: "ipad-001", deviceName: "1A-iPad-01", studentName: "陳同學", className: "1A", studentNumber: "01" };
@@ -65,6 +65,32 @@ describe("ImportedDeviceMapAdapter", () => {
 });
 
 describe("ApiIClassAdapter", () => {
+  it("retries transient 5xx/timeouts, opens its circuit, and enforces the streamed body cap", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("down", { status: 503 }));
+    const adapter = new ApiIClassAdapter({ baseUrl: "https://iclass.example", bearerToken: "secret", fetcher, maxAttempts: 2, timeoutMs: 100 });
+    await expect(adapter.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_UNAVAILABLE");
+    await expect(adapter.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_UNAVAILABLE");
+    await expect(adapter.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_UNAVAILABLE");
+    const attempts = fetcher.mock.calls.length;
+    await expect(adapter.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_UNAVAILABLE");
+    expect(fetcher).toHaveBeenCalledTimes(attempts);
+    const oversized = new ApiIClassAdapter({ baseUrl: "https://iclass.example", bearerToken: "secret", fetcher: async () => new Response("x".repeat(65_537), { headers: { "content-type": "application/json" } }), maxAttempts: 1 });
+    await expect(oversized.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_INVALID_RESPONSE");
+    const timeoutFetch = vi.fn<typeof fetch>().mockRejectedValue(new DOMException("timed out", "TimeoutError"));
+    const timeout = new ApiIClassAdapter({ baseUrl: "https://iclass.example", bearerToken: "secret", fetcher: timeoutFetch, maxAttempts: 2, timeoutMs: 100 });
+    await expect(timeout.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_UNAVAILABLE");
+    expect(timeoutFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses CSV fallback only for API 404/transient failures", async () => {
+    const csv = new ImportedDeviceMapAdapter(); await csv.replaceFromCsv("externalDeviceId,deviceName,studentName,className,studentNumber\nipad-001,d,陳同學,1A,01");
+    const transient = new FallbackIClassAdapter({ resolveDevice: async () => { throw new Error("ICLASS_UNAVAILABLE"); } }, csv);
+    await expect(transient.resolveDevice("ipad-001")).resolves.toMatchObject({ studentName: "陳同學" });
+    const missing = new FallbackIClassAdapter({ resolveDevice: async () => null }, csv);
+    await expect(missing.resolveDevice("ipad-001")).resolves.toMatchObject({ studentName: "陳同學" });
+    const permanent = new FallbackIClassAdapter({ resolveDevice: async () => { throw new Error("ICLASS_UNAUTHORIZED"); } }, csv);
+    await expect(permanent.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_UNAUTHORIZED");
+  });
   it("uses a secret bearer, validates JSON and maps 404 to null", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify(row), { status: 200, headers: { "content-type": "application/json" } })).mockResolvedValueOnce(new Response(null, { status: 404 }));
     const adapter = new ApiIClassAdapter({ baseUrl: "https://iclass.example/api", bearerToken: "secret-token", fetcher, timeoutMs: 1_000, maxAttempts: 1 });
