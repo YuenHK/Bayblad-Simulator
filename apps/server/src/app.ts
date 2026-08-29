@@ -33,6 +33,7 @@ import { InMemoryAdminCommandStore, PostgresAdminCommandStore, type AdminCommand
 import { AdminCommandExecutor } from "./admin/command-executor";
 import { registerAdminRecordRoutes, type AdminRecordsSource } from "./admin/records-routes";
 import { createSafeFastifyLoggerOptions, registerSafeRequestLogging, safeLogErrorDetails } from "./safe-logging";
+import { registerDeploymentProbeRoute, type DeploymentProbeSource } from "./admin/deployment-probe";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -117,6 +118,7 @@ export type BuildAppOptions = Readonly<{
   exportDataSource?: ExportDataSource;
   deletionStore?: DeletionStore;
   adminRecordsSource?: AdminRecordsSource;
+  deploymentProbeSource?: DeploymentProbeSource;
   platformSettingsStore?: PlatformSettingsStore;
   adminCommandStore?: AdminCommandStore;
   analyticsRefreshIntervalMs?: number;
@@ -239,6 +241,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (options.adminAuth && options.exportDataSource) registerExportRoutes(app, options.adminAuth, options.exportDataSource);
   if (options.adminAuth && options.deletionStore) registerDeleteRecordRoutes(app, options.adminAuth, options.deletionStore, adminResolver);
   if (options.adminAuth && options.adminRecordsSource) registerAdminRecordRoutes(app, options.adminAuth, options.adminRecordsSource);
+  if (options.adminAuth && options.deploymentProbeSource) registerDeploymentProbeRoute(app, options.adminAuth, options.deploymentProbeSource);
   if (options.adminAuth && options.matchRepository) app.post("/api/admin/records/matches/:id/retry", async (request, reply) => {
     const current = await authenticateAdminMutation(request, reply, options.adminAuth!, adminResolver); if (!current) return;
     const id = (request.params as { id?: unknown }).id;

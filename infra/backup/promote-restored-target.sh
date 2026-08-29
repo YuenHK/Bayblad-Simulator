@@ -6,7 +6,8 @@ source_set=$1;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
 # shellcheck source=host-trust-guard.sh
 source "$script_dir/host-trust-guard.sh"
 [[ $(id -u) -eq 0 ]]||die "promotion must run as root"
-for name in PROMOTE_PGSERVICE PROMOTE_MAINTENANCE_PGSERVICE PROMOTE_APP_ROLE PROMOTE_STATE_DIR PGSERVICEFILE PGPASSFILE PROMOTE_CONFIRM_DATABASE RESTORE_ALLOWED_TARGET_ID DELETION_LEDGER_FILE BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID PROMOTE_CONFIRM APP_UID;do [[ -n ${!name:-} ]]||die "$name is required";done
+for name in PROMOTE_PGSERVICE PROMOTE_MAINTENANCE_PGSERVICE PROMOTE_APP_ROLE PROMOTE_STATE_DIR PGSERVICEFILE PGPASSFILE PROMOTE_CONFIRM_DATABASE RESTORE_ALLOWED_TARGET_ID DELETION_LEDGER_FILE BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID PROMOTE_CONFIRM APP_UID PROMOTION_NONCE;do [[ -n ${!name:-} ]]||die "$name is required";done
+[[ $PROMOTION_NONCE =~ ^[a-f0-9]{64}$ ]]||die "promotion nonce invalid"
 [[ $PROMOTE_APP_ROLE =~ ^[a-z_][a-z0-9_]{0,62}$ ]]||die "application role invalid"
 [[ $PROMOTE_CONFIRM_DATABASE =~ ^[a-z_][a-z0-9_]{0,62}$ ]]||die "database name invalid"
 [[ $PROMOTE_STATE_DIR == /* && -d $PROMOTE_STATE_DIR && ! -L $PROMOTE_STATE_DIR ]]||die "state directory invalid"
@@ -22,7 +23,7 @@ for stale in "$PROMOTE_STATE_DIR"/promotion-ready "$PROMOTE_STATE_DIR"/promotion
 reserve="$PROMOTE_STATE_DIR/.promotion-reserved";(set -o noclobber;umask 077;printf '%s\n' "$$" >"$reserve") 2>/dev/null||die "promotion already reserved";chmod 600 "$reserve"
 ready_dir=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-promotion.XXXXXX");chmod 700 "$ready_dir";guard_pid=""
 restore_allow(){ local allowed=true;[[ -f $ready_dir/original-allow && $(<"$ready_dir/original-allow") == f ]]&&allowed=false;PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_database="$PROMOTE_CONFIRM_DATABASE" -v allowed="$allowed" -c "select format('alter database %I allow_connections %s', :'target_database', :'allowed')" -At | PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 >/dev/null;}
-cleanup(){ local original=$1 recovery=0;if [[ -f $ready_dir/connections-disabled ]];then restore_allow||recovery=70;fi;if [[ -f $ready_dir/promotion-committed && $original -ne 0 ]];then recovery=70;fi;if [[ -n $guard_pid ]];then kill "$guard_pid" >/dev/null 2>&1||true;wait "$guard_pid" >/dev/null 2>&1||true;fi;if [[ $recovery -ne 0 ]];then umask 077;incident="$PROMOTE_STATE_DIR/RECOVERY-REQUIRED.$(date -u +%Y%m%dT%H%M%SZ).$$";printf 'incident_path=%s\ndatabase=%s\nsystem_identifier=%s\ntime_utc=%s\nphase=%s\nmanual_action=keep application traffic stopped; inspect marker and restore ALLOW_CONNECTIONS deliberately\n' "$incident" "$PROMOTE_CONFIRM_DATABASE" "${target_system:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([[ -f $ready_dir/promotion-committed ]]&&echo post-commit||echo pre-commit)" >"$incident";chmod 600 "$incident";echo "CRITICAL: durable recovery marker written; preserve $ready_dir" >&2;return "$recovery";fi;rm -f "$reserve";rm -rf "$ready_dir";return "$original";};trap 'rc=$?;trap - EXIT;cleanup "$rc";exit $?' EXIT;trap 'exit 130' INT TERM
+cleanup(){ local original=$1 recovery=0 committed=f;if [[ -f $ready_dir/connections-disabled ]];then restore_allow||recovery=70;fi;if [[ $original -ne 0 && $recovery -eq 0 ]];then committed=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v nonce="$PROMOTION_NONCE" -Atqc "select exists(select 1 from restore_control.promotion_outbox where nonce=:'nonce' and state='committed')")||recovery=70;[[ $committed == t ]]&&recovery=70;fi;if [[ -n $guard_pid ]];then kill "$guard_pid" >/dev/null 2>&1||true;wait "$guard_pid" >/dev/null 2>&1||true;fi;if [[ $recovery -ne 0 ]];then umask 077;incident="$PROMOTE_STATE_DIR/RECOVERY-REQUIRED.$(date -u +%Y%m%dT%H%M%SZ).$$";printf 'incident_path=%s\ndatabase=%s\nsystem_identifier=%s\ntime_utc=%s\nphase=%s\nmanual_action=keep application traffic stopped; reconcile authoritative promotion_outbox\n' "$incident" "$PROMOTE_CONFIRM_DATABASE" "${target_system:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([[ $committed == t ]]&&echo post-commit||echo unknown)" >"$incident";chmod 600 "$incident";return "$recovery";fi;rm -f "$reserve";rm -rf "$ready_dir";return "$original";};trap 'rc=$?;trap - EXIT;cleanup "$rc";exit $?' EXIT;trap 'exit 130' INT TERM
 node "$ledger_cli" hold-lock "$DELETION_LEDGER_FILE" "$ready_dir/ready" & guard_pid=$!
 for _ in {1..100};do [[ -f $ready_dir/ready && $(<"$ready_dir/ready") == ready ]]&&break;kill -0 "$guard_pid" >/dev/null 2>&1||die "ledger guard exited";sleep 0.1;done
 [[ -f $ready_dir/ready && $(<"$ready_dir/ready") == ready ]]||die "ledger guard timeout"
@@ -41,7 +42,7 @@ IFS='|' read -r maintenance_separate target_exists maintenance_system signal_pri
 [[ $maintenance_separate == t && $target_exists == t && $maintenance_system == "$target_system" && $signal_privilege == t ]]||die "maintenance recovery preflight failed"
 PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v db="$PROMOTE_CONFIRM_DATABASE" -Atc "select datallowconn from pg_database where datname=:'db'" >"$ready_dir/original-allow";chmod 400 "$ready_dir/original-allow"
 touch "$ready_dir/connections-disabled";export ready_dir
-psql -X -v ON_ERROR_STOP=1 -v target_id="$RESTORE_ALLOWED_TARGET_ID" -v expected_rows="$expected_rows" -v app_role="$PROMOTE_APP_ROLE" <<'SQL'
+psql -X -v ON_ERROR_STOP=1 -v target_id="$RESTORE_ALLOWED_TARGET_ID" -v expected_rows="$expected_rows" -v app_role="$PROMOTE_APP_ROLE" -v nonce="$PROMOTION_NONCE" <<'SQL'
 select format('alter database %I allow_connections false',current_database()) \gexec
 select pg_terminate_backend(pid) from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid();
 select not exists(select 1 from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid()) as isolated_ok \gset
@@ -56,6 +57,8 @@ select format('revoke connect on database %I from public',current_database()) \g
 select format('revoke connect on database %I from %I',current_database(),:'app_role') \gexec
 set local steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA';
 update restore_control.deployment_environment set environment='production',restore_allowed=false where singleton=true;
+create table if not exists restore_control.promotion_outbox(nonce text primary key,restore_target_id uuid not null,system_identifier text not null,database_name text not null,app_role text not null,ledger_rows bigint not null,state text not null check(state='committed'),created_at timestamptz not null default clock_timestamp());
+insert into restore_control.promotion_outbox(nonce,restore_target_id,system_identifier,database_name,app_role,ledger_rows,state) values(:'nonce',:'target_id'::uuid,(select system_identifier::text from pg_control_system()),current_database(),:'app_role',:'expected_rows'::bigint,'committed') on conflict(nonce) do nothing;
 select not has_database_privilege('public',current_database(),'connect') and not has_database_privilege(:'app_role',current_database(),'connect') as acl_closed \gset
 \if :acl_closed
 \else
@@ -64,10 +67,6 @@ select not has_database_privilege('public',current_database(),'connect') and not
 select exists(select 1 from restore_control.deployment_environment where singleton=true and environment='production' and restore_allowed=false and restore_target_id=:'target_id'::uuid) as final_marker_ok \gset
 \if :final_marker_ok
 commit;
-\! touch "$ready_dir/promotion-committed"
-\if :SHELL_ERROR
-\quit 70
-\endif
 \else
 rollback;
 \quit 4
@@ -86,5 +85,6 @@ rollback;
 SQL
 PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_database="$PROMOTE_CONFIRM_DATABASE" -c "select format('alter database %I allow_connections true', :'target_database')" -At | PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 >/dev/null
 rm "$ready_dir/connections-disabled"
-ready_path="$PROMOTE_STATE_DIR/promotion-ready";node "$deployment_root/scripts/create-promotion-ready.mjs" "$ready_path" "$target_system" "$target" "$PROMOTE_APP_ROLE" "$RESTORE_ALLOWED_TARGET_ID" "$expected_rows";"$deployment_root/scripts/portable-sha256.sh" digest "$ready_path" >"$ready_path.sha256";chmod 400 "$ready_path.sha256";rm -f "$reserve"
+acl_after=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v role="$PROMOTE_APP_ROLE" -AtF '|' -c "select has_database_privilege('public',current_database(),'connect'),has_database_privilege(:'role',current_database(),'connect')");[[ $acl_after == 'f|f' ]]||die "ACL reopened after isolation"
+"$script_dir/reconcile-promotion-ready.sh" "$PROMOTE_STATE_DIR" "$PROMOTION_NONCE";rm -f "$reserve"
 echo "promotion verified; app CONNECT remains revoked until finalize-cutover.sh"
