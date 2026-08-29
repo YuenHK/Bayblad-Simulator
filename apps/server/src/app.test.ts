@@ -84,6 +84,15 @@ class FailWaitingRoomProjection implements RoomRecordRepository {
   }
 }
 
+class DelayedCreateRoomProjection implements RoomRecordRepository {
+  createCalls = 0;
+  releaseCreate!: () => void;
+  #started!: () => void;
+  readonly createStarted = new Promise<void>((resolve) => { this.#started = resolve; });
+  async create() { this.createCalls++; this.#started(); await new Promise<void>((resolve) => { this.releaseCreate = resolve; }); }
+  async join() {} async recordBattleStart() {} async updateOwner() {} async syncRoles() {} async leave() {} async leaveAndSync() {} async close() {} async updatePhase() {}
+}
+
 function nextEvent(socket: Socket, type: ServerEvent["type"] | "protocol.unsupported", timeoutMs = 3_000): Promise<any> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -117,6 +126,28 @@ describe("realtime app", () => {
   afterEach(async () => {
     for (const close of closers.splice(0).reverse()) await close();
     vi.unstubAllEnvs();
+  });
+
+  it("serializes concurrent duplicate commands per session and shares their outcome", async () => {
+    const roomProjection = new DelayedCreateRoomProjection();
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), roomRecordRepository: roomProjection, sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const client = await connect(`http://127.0.0.1:${address.port}`, "Duplicate");
+    closers.push(() => { client.socket.close(); });
+    const createEvent = command("room.create", { name: "Only once" });
+    const acknowledgements: any[] = [];
+    client.socket.on("server.event", (event) => { if (event.type === "command.ack" && event.causedByEventId === createEvent.eventId) acknowledgements.push(event); });
+    client.socket.emit("client.event", createEvent);
+    await roomProjection.createStarted;
+    client.socket.emit("client.event", createEvent);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(roomProjection.createCalls).toBe(1);
+    roomProjection.releaseCreate();
+    while (acknowledgements.length < 2) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(acknowledgements.map(({ status }) => status)).toEqual(["applied", "replayed"]);
   });
 
   it("可以用公開房間碼進入並真正離房，不會在重連時自動回到舊房", async () => {
