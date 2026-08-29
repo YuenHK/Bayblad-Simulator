@@ -81,9 +81,15 @@ it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it 
   expect(await first.complete(staleLease)).toBe(false);
   expect(await first.fail(staleLease, "STALE", new Date("2099-01-03"))).toBe(false);
   expect(await second.complete(takeover)).toBe(true);
-  await roomsRepository.closeWithProjection(roomId, new Date("2026-08-29T03:00:00Z"), 5, { phase: "closed", firstBattleAt: null, closedAt: "2026-08-29T03:00:00.000Z" });
+  const [closeRace, joinRace] = await Promise.allSettled([
+    roomsRepository.closeWithProjection(roomId, new Date("2026-08-29T03:00:00Z"), 5, { phase: "closed", firstBattleAt: null, closedAt: "2026-08-29T03:00:00.000Z" }),
+    roomsRepository.join(roomId, { participantPublicId: "racing-spectator", identityId: null, displayName: "Racer", role: "spectator", isOwner: false, ip: null, userAgent: null, deviceName: null }, new Date("2026-08-29T02:59:59Z")),
+  ]);
+  expect(closeRace.status).toBe("fulfilled");
+  expect(["fulfilled", "rejected"]).toContain(joinRace.status);
   expect(await roomsRepository.applyProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null })).toBe(false);
   expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "closed", appliedProjectionRevision: 5 });
+  expect((await client.db.select().from(roomParticipants).where(eq(roomParticipants.roomId, roomId))).every((participant) => participant.leftAt !== null)).toBe(true);
 }, 30_000);
 
 afterAll(async () => {

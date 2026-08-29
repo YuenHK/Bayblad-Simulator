@@ -40,7 +40,11 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
     });
   }
   async join(roomId: string, participant: RoomParticipantRecord, at: Date): Promise<void> {
-    await this.db.insert(roomParticipants).values(participantValues(roomId, participant, at));
+    await this.db.transaction(async (tx) => {
+      const [room] = await tx.select({ closedAt: rooms.closedAt }).from(rooms).where(eq(rooms.id, roomId)).for("update").limit(1);
+      if (!room || room.closedAt) throw new Error("ROOM_CLOSED");
+      await tx.insert(roomParticipants).values(participantValues(roomId, participant, at));
+    });
   }
   async recordBattleStart(roomId: string, at: Date): Promise<void> {
     await this.db.update(rooms).set({ firstBattleAt: sql`coalesce(${rooms.firstBattleAt}, ${at})` }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
@@ -49,10 +53,11 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
     await this.db.update(rooms).set({ status: phase }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
   }
   async updateOwner(roomId: string, ownerIdentityId: string | null): Promise<void> {
-    await this.db.update(rooms).set({ ownerIdentityId }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
+    await this.db.transaction(async (tx) => { const [room] = await tx.select({ closedAt: rooms.closedAt }).from(rooms).where(eq(rooms.id, roomId)).for("update").limit(1); if (!room || room.closedAt) throw new Error("ROOM_CLOSED"); await tx.update(rooms).set({ ownerIdentityId }).where(eq(rooms.id, roomId)); });
   }
   async syncRoles(roomId: string, roles: ReadonlyMap<string, "player1" | "player2" | "spectator">, ownerParticipantId: string | null, ownerIdentityId: string | null): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const [room] = await tx.select({ closedAt: rooms.closedAt }).from(rooms).where(eq(rooms.id, roomId)).for("update").limit(1); if (!room || room.closedAt) throw new Error("ROOM_CLOSED");
       // Temporarily park active players as spectators so the partial seat index never observes a swap collision.
       await tx.update(roomParticipants).set({ role: "spectator", isOwner: false }).where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)));
       for (const [participantPublicId, role] of roles) await tx.update(roomParticipants).set({ role, isOwner: participantPublicId === ownerParticipantId }).where(and(eq(roomParticipants.roomId, roomId), eq(roomParticipants.participantPublicId, participantPublicId), isNull(roomParticipants.leftAt)));
@@ -60,10 +65,11 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
     });
   }
   async leave(roomId: string, participantPublicId: string, at: Date): Promise<void> {
-    await this.db.update(roomParticipants).set({ leftAt: at }).where(and(eq(roomParticipants.roomId, roomId), eq(roomParticipants.participantPublicId, participantPublicId), isNull(roomParticipants.leftAt)));
+    await this.db.transaction(async (tx) => { await tx.select({ id: rooms.id }).from(rooms).where(eq(rooms.id, roomId)).for("update").limit(1); await tx.update(roomParticipants).set({ leftAt: at }).where(and(eq(roomParticipants.roomId, roomId), eq(roomParticipants.participantPublicId, participantPublicId), isNull(roomParticipants.leftAt))); });
   }
   async leaveAndSync(roomId: string, participantPublicId: string, at: Date, roles: ReadonlyMap<string, "player1" | "player2" | "spectator">, ownerParticipantId: string | null, ownerIdentityId: string | null): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const [room] = await tx.select({ closedAt: rooms.closedAt }).from(rooms).where(eq(rooms.id, roomId)).for("update").limit(1); if (!room || room.closedAt) throw new Error("ROOM_CLOSED");
       await tx.update(roomParticipants).set({ leftAt: at }).where(and(eq(roomParticipants.roomId, roomId), eq(roomParticipants.participantPublicId, participantPublicId), isNull(roomParticipants.leftAt)));
       await tx.update(roomParticipants).set({ role: "spectator", isOwner: false }).where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)));
       for (const [publicId, role] of roles) await tx.update(roomParticipants).set({ role, isOwner: publicId === ownerParticipantId }).where(and(eq(roomParticipants.roomId, roomId), eq(roomParticipants.participantPublicId, publicId), isNull(roomParticipants.leftAt)));
