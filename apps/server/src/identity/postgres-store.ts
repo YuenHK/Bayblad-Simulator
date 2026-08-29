@@ -2,7 +2,7 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "@steam-top/db";
 import { identities, identitySessions } from "@steam-top/db/schema";
 import type { Identity, IdentitySession, IdentityStore, SessionDiagnostics, TrustedLiveIdentity } from "./resolver";
-import { GuestDisplayCollisionError } from "./resolver";
+import { GuestDisplayCollisionError, registerDurableIdentityStore, SessionTokenUnavailableError } from "./resolver";
 
 type Db = DatabaseClient["db"];
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -25,9 +25,8 @@ const mapSession = (session: typeof identitySessions.$inferSelect, identity: typ
 const diagnosticColumns = (value: SessionDiagnostics) => ({ lastIp: value.ip ?? null, userAgent: value.userAgent ?? null });
 
 export class PostgresIdentityStore implements IdentityStore {
-  readonly persistent = true;
   readonly #db: Db;
-  constructor(db: Db) { this.#db = db; }
+  constructor(db: Db) { this.#db = db; registerDurableIdentityStore(this); }
 
   async findSession(tokenHash: string, now = new Date(), diagnostic: SessionDiagnostics = {}, rollingExpiresAt?: Date): Promise<IdentitySession | null> {
     return this.#db.transaction(async (tx) => {
@@ -55,16 +54,25 @@ export class PostgresIdentityStore implements IdentityStore {
     }
   }
 
-  async upsertLiveSession(input: Readonly<{ tokenHash: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; cachedIdentityId?: string }>): Promise<IdentitySession> {
-    return this.#db.transaction(async (tx: Tx) => {
+  async upsertLiveSession(input: Readonly<{ tokenHash: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; reuseValidSession: boolean; cachedIdentityId?: string }>): Promise<IdentitySession> {
+    try { return await this.#db.transaction(async (tx: Tx) => {
       await tx.insert(identities).values({ status: "iclass", displayName: input.identity.displayName, studentName: input.identity.studentName, className: input.identity.className, studentNumber: input.identity.studentNumber, deviceName: input.identity.deviceName, iclassExternalId: input.identity.externalId, createdAt: input.now, updatedAt: input.now, lastSeenAt: input.now }).onConflictDoNothing();
       const [existing] = await tx.select().from(identities).where(eq(identities.iclassExternalId, input.identity.externalId)).limit(1);
       if (!existing) throw new Error("IDENTITY_UPSERT_FAILED");
       const [identity] = await tx.update(identities).set({ displayName: input.identity.displayName, studentName: input.identity.studentName, className: input.identity.className, studentNumber: input.identity.studentNumber, deviceName: input.identity.deviceName ?? null, updatedAt: input.now, lastSeenAt: input.now }).where(eq(identities.id, existing.id)).returning();
-      const [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) })
-        .onConflictDoUpdate({ target: identitySessions.tokenHash, set: { identityId: identity!.id, lastSeenAt: input.now, expiresAt: input.expiresAt, revokedAt: null, ...diagnosticColumns(input.diagnostics) } }).returning();
+      let session: typeof identitySessions.$inferSelect | undefined;
+      if (input.reuseValidSession) {
+        [session] = await tx.update(identitySessions).set({ identityId: identity!.id, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) })
+          .where(and(eq(identitySessions.tokenHash, input.tokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, input.now))).returning();
+        if (!session) throw new SessionTokenUnavailableError();
+      } else {
+        [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
+      }
       return mapSession(session!, identity!);
-    });
+    }); } catch (error) {
+      if (error instanceof SessionTokenUnavailableError || (error as { code?: string }).code === "23505") throw new SessionTokenUnavailableError();
+      throw error;
+    }
   }
 
   async revokeSession(tokenHash: string, now: Date): Promise<boolean> {

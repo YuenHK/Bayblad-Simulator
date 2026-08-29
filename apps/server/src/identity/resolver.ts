@@ -26,12 +26,14 @@ export type IdentitySession = Readonly<{
 export type SessionDiagnostics = Readonly<{ ip?: string; userAgent?: string }>;
 
 export interface IdentityStore {
-  readonly persistent: boolean;
   findSession(tokenHash: string, now?: Date, diagnostics?: SessionDiagnostics, rollingExpiresAt?: Date): Promise<IdentitySession | null>;
   createGuestSession(input: Readonly<{ tokenHash: string; displayName: string; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics }>): Promise<IdentitySession>;
-  upsertLiveSession(input: Readonly<{ tokenHash: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; cachedIdentityId?: string }>): Promise<IdentitySession>;
+  upsertLiveSession(input: Readonly<{ tokenHash: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; reuseValidSession: boolean; cachedIdentityId?: string }>): Promise<IdentitySession>;
   revokeSession(tokenHash: string, now: Date): Promise<boolean>;
 }
+const durableStores = new WeakSet<IdentityStore>();
+/** Internal adapter hook; durability cannot be asserted with a JSON/boolean option. */
+export function registerDurableIdentityStore(store: IdentityStore): void { durableStores.add(store); }
 
 const trustedIdentityBrand: unique symbol = Symbol("trustedLiveIdentity");
 export type TrustedLiveIdentity = Readonly<{
@@ -62,6 +64,7 @@ export class IdentityStoreUnavailableError extends Error {
 }
 
 export class GuestDisplayCollisionError extends Error {}
+export class SessionTokenUnavailableError extends Error {}
 
 export class IdentityResolver {
   readonly #store: IdentityStore;
@@ -72,11 +75,12 @@ export class IdentityResolver {
     this.#now = options.now ?? (() => new Date());
     this.#lifetimeMs = options.lifetimeMs ?? IDENTITY_COOKIE_LIFETIME_MS;
   }
-  get persistent(): boolean { return this.#store.persistent; }
+  get hasDurableStore(): boolean { return durableStores.has(this.#store); }
 
-  async resolve(request: Readonly<{ cookieToken?: string; ip?: string; userAgent?: string }>, live?: TrustedLiveIdentity): Promise<Readonly<{ identity: Identity; cookieToken: string; expiresAt: Date; isNew: boolean }>> {
+  async resolve(request: Readonly<{ cookieToken?: string; ip?: string; userAgent?: string }>, live?: TrustedLiveIdentity): Promise<Readonly<{ identity: Identity; cookieToken: string; issuedAt: Date; expiresAt: Date; isNew: boolean }>> {
     const now = this.#now();
-    const expiresAt = new Date(now.getTime() + this.#lifetimeMs);
+    const maxAgeSeconds = Math.floor(this.#lifetimeMs / 1_000);
+    const expiresAt = new Date(now.getTime() + maxAgeSeconds * 1_000);
     const diagnostic = diagnostics(request);
     try {
       const validToken = isIdentityToken(request.cookieToken) ? request.cookieToken : undefined;
@@ -84,18 +88,29 @@ export class IdentityResolver {
         ? await this.#store.findSession(hashIdentityToken(validToken), now, diagnostic, expiresAt)
         : null;
       if (live) {
-        const token = validToken ?? issueIdentityToken();
-        const session = await this.#store.upsertLiveSession({ tokenHash: hashIdentityToken(token), identity: live, now, expiresAt, diagnostics: diagnostic, ...(cached ? { cachedIdentityId: cached.identity.id } : {}) });
-        return { identity: session.identity, cookieToken: token, expiresAt, isNew: !cached };
+        const compatible = cached?.identity.status === "guest" || (cached?.identity.status === "iclass" && cached.identity.externalId === live.externalId);
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const reuseValidSession = attempt === 0 && compatible === true;
+          const token = reuseValidSession ? validToken! : issueIdentityToken();
+          try {
+            const session = await this.#store.upsertLiveSession({ tokenHash: hashIdentityToken(token), identity: live, now, expiresAt, diagnostics: diagnostic, reuseValidSession, ...(reuseValidSession && cached ? { cachedIdentityId: cached.identity.id } : {}) });
+            return { identity: session.identity, cookieToken: token, issuedAt: now, expiresAt, isNew: !reuseValidSession };
+          } catch (error) {
+            if (error instanceof SessionTokenUnavailableError) continue;
+            throw error;
+          }
+        }
+        throw new Error("IDENTITY_TOKEN_EXHAUSTED");
       }
       if (cached && !cached.revokedAt && cached.expiresAt > now) {
-        return { identity: cached.identity, cookieToken: validToken!, expiresAt, isNew: false };
+        const identity = cached.identity.status === "iclass" ? { ...cached.identity, status: "cookie" as const } : cached.identity;
+        return { identity, cookieToken: validToken!, issuedAt: now, expiresAt, isNew: false };
       }
       for (let attempt = 0; attempt < 32; attempt += 1) {
         const token = issueIdentityToken();
         try {
           const session = await this.#store.createGuestSession({ tokenHash: hashIdentityToken(token), displayName: createGuestDisplayName(), now, expiresAt, diagnostics: diagnostic });
-          return { identity: session.identity, cookieToken: token, expiresAt, isNew: true };
+          return { identity: session.identity, cookieToken: token, issuedAt: now, expiresAt, isNew: true };
         } catch (error) {
           if (error instanceof GuestDisplayCollisionError) continue;
           throw error;
@@ -103,7 +118,7 @@ export class IdentityResolver {
       }
       throw new Error("GUEST_CODE_EXHAUSTED");
     } catch (error) {
-      if (error instanceof IdentityStoreUnavailableError || (error instanceof Error && error.message === "GUEST_CODE_EXHAUSTED")) throw error;
+      if (error instanceof IdentityStoreUnavailableError || (error instanceof Error && (error.message === "GUEST_CODE_EXHAUSTED" || error.message === "IDENTITY_TOKEN_EXHAUSTED"))) throw error;
       throw new IdentityStoreUnavailableError();
     }
   }
@@ -116,7 +131,6 @@ export class IdentityResolver {
 }
 
 export class InMemoryIdentityStore implements IdentityStore {
-  readonly persistent = false;
   readonly #sessions = new Map<string, IdentitySession>();
   readonly #liveByExternal = new Map<string, string>();
   readonly #guestNames = new Set<string>();
@@ -145,7 +159,11 @@ export class InMemoryIdentityStore implements IdentityStore {
     this.#guestNames.add(input.displayName); this.#sessions.set(input.tokenHash, session);
     return session;
   }
-  async upsertLiveSession(input: Readonly<{ tokenHash: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; cachedIdentityId?: string }>): Promise<IdentitySession> {
+  async upsertLiveSession(input: Readonly<{ tokenHash: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; reuseValidSession: boolean; cachedIdentityId?: string }>): Promise<IdentitySession> {
+    const existing = this.#sessions.get(input.tokenHash);
+    if (input.reuseValidSession) {
+      if (!existing || existing.revokedAt || existing.expiresAt <= input.now) throw new SessionTokenUnavailableError();
+    } else if (existing) throw new SessionTokenUnavailableError();
     if (!this.#sessions.has(input.tokenHash) && this.#sessions.size >= this.#maxSessions) throw new Error("IDENTITY_STORE_CAPACITY");
     let id = this.#liveByExternal.get(input.identity.externalId);
     if (!id) {

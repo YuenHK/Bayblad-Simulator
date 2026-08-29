@@ -34,6 +34,8 @@ describe("IdentityResolver", () => {
     const live = trustedLiveIdentity({ externalId: "dev-1", displayName: "1A 陳同學", studentName: "陳同學", className: "1A", studentNumber: "07", deviceName: "1A07 iPad" });
     const result = await resolver.resolve(request(cached.cookieToken), live);
     expect(result.identity).toMatchObject({ status: "iclass", displayName: "1A 陳同學", className: "1A", studentNumber: "07" });
+    const replay = await resolver.resolve(request(result.cookieToken));
+    expect(replay.identity).toMatchObject({ status: "cookie", displayName: "1A 陳同學", className: "1A", studentNumber: "07", deviceName: "1A07 iPad" });
   });
 
   it("creates a unique guest and reuses it across IP changes", async () => {
@@ -73,10 +75,38 @@ describe("IdentityResolver", () => {
     expect(revoked.identity.id).not.toBe(rotated.identity.id);
   });
 
+  it.each(["unknown", "expired", "revoked"] as const)("never revives a %s token when live identity is present", async (state) => {
+    let time = now;
+    const store = new InMemoryIdentityStore();
+    const resolver = new IdentityResolver(store, { now: () => time, lifetimeMs: 1000 });
+    const live = trustedLiveIdentity({ externalId: "device-secure", displayName: "1A 07", studentName: "陳同學", className: "1A", studentNumber: "07" });
+    let oldToken = "B".repeat(43);
+    if (state !== "unknown") {
+      const issued = await resolver.resolve(request(), live); oldToken = issued.cookieToken;
+      if (state === "expired") time = new Date(now.getTime() + 1001);
+      else await store.revokeSession(hashIdentityToken(oldToken), time);
+    }
+    const result = await resolver.resolve(request(oldToken), live);
+    expect(result.cookieToken).not.toBe(oldToken);
+    expect(result.identity.status).toBe("iclass");
+    expect((await resolver.resolve(request(oldToken))).cookieToken).not.toBe(oldToken);
+    expect((await resolver.resolve(request(result.cookieToken))).identity.status).toBe("cookie");
+  });
+
   it("deduplicates concurrent lookup of the same cookie", async () => {
     const resolver = new IdentityResolver(new InMemoryIdentityStore(), { now: () => now });
     const initial = await resolver.resolve(request());
     const results = await Promise.all(Array.from({ length: 20 }, () => resolver.resolve(request(initial.cookieToken))));
+    expect(new Set(results.map((item) => item.identity.id))).toEqual(new Set([initial.identity.id]));
+  });
+
+  it("keeps a valid live session stable under concurrent resolution", async () => {
+    const store = new InMemoryIdentityStore();
+    const resolver = new IdentityResolver(store, { now: () => now });
+    const live = trustedLiveIdentity({ externalId: "device-concurrent", displayName: "1B 11", studentName: "李同學", className: "1B", studentNumber: "11" });
+    const initial = await resolver.resolve(request(), live);
+    const results = await Promise.all(Array.from({ length: 20 }, () => resolver.resolve(request(initial.cookieToken), live)));
+    expect(new Set(results.map((item) => item.cookieToken))).toEqual(new Set([initial.cookieToken]));
     expect(new Set(results.map((item) => item.identity.id))).toEqual(new Set([initial.identity.id]));
   });
 
@@ -91,7 +121,6 @@ describe("IdentityResolver", () => {
 
   it("fails closed without leaking token or PII when storage fails", async () => {
     const resolver = new IdentityResolver({
-      persistent: false,
       findSession: async () => { throw new Error("db unavailable"); },
       createGuestSession: async () => { throw new Error("db unavailable"); },
       upsertLiveSession: async () => { throw new Error("db unavailable"); },

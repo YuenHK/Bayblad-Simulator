@@ -9,7 +9,7 @@ import { DesignRegistry, DesignRegistryError } from "./design-registry";
 import { RoomService } from "./rooms/room-service";
 import { RealtimeGateway, type FrameScheduler, type MatchScorer } from "./socket";
 import { TokenBucketLimiter } from "./rate-limit";
-import { COOKIE_NAME, IDENTITY_COOKIE_LIFETIME_MS } from "./identity/cookie";
+import { COOKIE_NAME } from "./identity/cookie";
 import { IdentityResolver } from "./identity/resolver";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
@@ -98,7 +98,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (options.clientKeyResolver && !options.behindProxy) {
     throw new TypeError("clientKeyResolver requires behindProxy trusted boundary");
   }
-  if (process.env.NODE_ENV === "production" && options.identityResolver?.persistent !== true) {
+  if (process.env.NODE_ENV === "production" && options.identityResolver?.hasDurableStore !== true) {
     throw new TypeError("Production composition requires a persistent identityResolver");
   }
   const config = {
@@ -223,7 +223,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       });
       reply.setCookie(COOKIE_NAME, resolved.cookieToken, {
         path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
-        maxAge: Math.floor(IDENTITY_COOKIE_LIFETIME_MS / 1_000), expires: resolved.expiresAt,
+        maxAge: Math.max(0, Math.floor((resolved.expiresAt.getTime() - resolved.issuedAt.getTime()) / 1_000)), expires: resolved.expiresAt,
       });
       return resolved.identity;
     });
