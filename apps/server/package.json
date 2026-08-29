@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
-    "@fastify/csrf-protection": "8.0.1",
     "@node-rs/argon2": "2.1.0",
     "@steam-top/db": "workspace:*",
     "@steam-top/domain": "workspace:*",

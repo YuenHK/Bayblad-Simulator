@@ -334,7 +334,7 @@ describe("persistent PostgreSQL schema", () => {
     const migrationFiles = readdirSync(migrationDirectory)
       .filter((name) => name.endsWith(".sql"))
       .sort();
-    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql"]);
+    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql", "0001_daffy_mojo.sql"]);
     const sql = migrationFiles
       .map((name) => readFileSync(`${migrationDirectory}/${name}`, "utf8"))
       .join("\n");
@@ -379,17 +379,22 @@ describe("persistent PostgreSQL schema", () => {
     expect(config).toContain("postgresql://localhost/steam_top_schema_generation");
 
     const metadataFiles = readdirSync(`${migrationDirectory}/meta`).sort();
-    expect(metadataFiles).toEqual(["0000_snapshot.json", "_journal.json"]);
+    expect(metadataFiles).toEqual(["0000_snapshot.json", "0001_snapshot.json", "_journal.json"]);
     const journal = JSON.parse(
       readFileSync(`${migrationDirectory}/meta/_journal.json`, "utf8"),
     ) as { entries: Array<{ tag: string }> };
     expect(journal.entries).toEqual([
       expect.objectContaining({ tag: "0000_steam_top_pre_first_deploy" }),
+      expect.objectContaining({ tag: "0001_daffy_mojo" }),
     ]);
     const snapshot = JSON.parse(
       readFileSync(`${migrationDirectory}/meta/0000_snapshot.json`, "utf8"),
     ) as { tables: Record<string, { columns: Record<string, unknown> }> };
     expect(snapshot.tables["public.admin_sessions"]?.columns).not.toHaveProperty("archived_at");
     expect(snapshot.tables["public.identity_sessions"]?.columns).toHaveProperty("archived_at");
+    const latestSnapshot = JSON.parse(readFileSync(`${migrationDirectory}/meta/0001_snapshot.json`, "utf8")) as { tables: Record<string, { columns: Record<string, unknown> }> };
+    expect(latestSnapshot.tables["public.admin_sessions"]?.columns).toHaveProperty("archived_at");
+    expect(latestSnapshot.tables).toHaveProperty("public.admin_login_limits");
+    expect(latestSnapshot.tables).toHaveProperty("public.admin_reauth_grants");
   });
 });
