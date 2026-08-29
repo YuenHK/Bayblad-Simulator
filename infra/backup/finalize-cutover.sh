@@ -2,6 +2,7 @@
 set -euo pipefail
 die(){ echo "cutover finalization refused: $1" >&2;exit 1;}
 [[ $(id -u) -eq 0 && $# -eq 3 ]]||die "root and ready/receipt/signature paths required"
+[[ ${CANONICAL_STATE_RESOLVED:-} == true ]]||die "canonical bootstrap state resolver required"
 ready=$1;cutover=$2;signature=$3;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);source "$script_dir/host-trust-guard.sh"
 for name in PROMOTE_PGSERVICE PGSERVICEFILE PGPASSFILE CUTOVER_ALLOWED_SIGNERS_FILE CUTOVER_SIGNER_ID PRODUCTION_ENV_FILE PROTECTED_DEPLOYMENT_STATE_FILE PROTECTED_DEPLOYMENT_STATE_SIGNATURE PROTECTED_STATE_ALLOWED_SIGNERS_FILE PROTECTED_STATE_SIGNER_ID ACTIVATION_RECEIPT_FILE ACTIVATION_RECEIPT_SIGNATURE HOST_DEPLOYMENT_RECEIPT_FILE HOST_DEPLOYMENT_RECEIPT_SIGNATURE HOST_RECEIPT_ALLOWED_SIGNERS_FILE HOST_RECEIPT_SIGNER_ID;do [[ -n ${!name:-} ]]||die "$name required";done
 [[ -n ${RUNTIME_INSTALL_MANIFEST_SHA256:-} ]]||die "RUNTIME_INSTALL_MANIFEST_SHA256 required";"$root/scripts/verify-runtime-install.sh" "$root"||die "runtime install trust"
