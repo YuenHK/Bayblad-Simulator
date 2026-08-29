@@ -5,6 +5,7 @@ runtime_die(){ echo "runtime install refused: $1" >&2;return 1;}
 runtime_root=$(realpath "$1");manifest="$runtime_root/runtime-files.sha256";receipt="$runtime_root/runtime-install-receipt.json"
 [[ ( $runtime_root == /opt/steam-top || $runtime_root =~ ^/opt/steam-top/releases/[a-f0-9]{64}$ ) && -f $manifest && ! -L $manifest && -f $receipt && ! -L $receipt ]]||runtime_die "canonical sealed files required"||exit 1
 source "$runtime_root/infra/backup/host-trust-guard.sh"
+[[ $runtime_root == /opt/steam-top ]]||backup_root_file_mode "$runtime_root" 555||runtime_die "release root exact mode"||exit 1
 backup_root_file_mode "$manifest" 444&&backup_root_file_mode "$receipt" 444||runtime_die "sealed file root-owned exact mode"||exit 1
 [[ ${RUNTIME_INSTALL_MANIFEST_SHA256:-} =~ ^[a-f0-9]{64}$ ]]||runtime_die "RUNTIME_INSTALL_MANIFEST_SHA256 required"||exit 1
 actual_manifest=$("$runtime_root/scripts/portable-sha256.sh" digest "$manifest")
@@ -20,3 +21,4 @@ seen='';while IFS=' ' read -r digest required_mode path extra;do
   backup_root_file_mode "$file" "${required_mode#0}"||runtime_die "runtime file root-owned exact mode"||exit 1
   [[ $("$runtime_root/scripts/portable-sha256.sh" digest "$file") == "$digest" ]]||runtime_die "runtime file digest mismatch"||exit 1
 done <"$manifest"
+node "$runtime_root/scripts/verify-runtime-tree.mjs" "$runtime_root" "$manifest"||runtime_die "runtime tree contains unsealed entries"||exit 1

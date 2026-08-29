@@ -10,4 +10,5 @@ tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT;tar -xzf "$archive" -C "$tmp" --no-sa
 install -d -o root -g root -m 0555 /opt/steam-top-bootstrap /etc/steam-top-bootstrap
 while IFS=' ' read -r digest mode path extra;do [[ -z ${extra:-} && $path =~ ^[A-Za-z0-9._/-]+$ && $path != *..* ]]||die "manifest grammar";[[ -f $tmp/$path && ! -L $tmp/$path && $(sha "$tmp/$path") == "$digest" ]]||die "package digest";install -D -o root -g root -m "$mode" "$tmp/$path" "/opt/steam-top-bootstrap/$path";done <"$tmp/bootstrap-files.sha256"
 install -o root -g root -m 0400 "$tmp/bootstrap-files.sha256" /opt/steam-top-bootstrap/bootstrap-files.sha256;install -o root -g root -m 0400 "$config" /etc/steam-top-bootstrap/trust.json
+for lock in /var/lock/steam-top-generation-publish.lock /var/lock/steam-top-production.lock /var/lock/steam-top-release-integration.lock;do if [[ ! -e $lock ]];then install -o root -g root -m 0600 /dev/null "$lock";else [[ -f $lock && ! -L $lock ]]||die "lock unsafe";chmod 0600 "$lock";chown root:root "$lock";fi;done
 /opt/steam-top-bootstrap/verify-bootstrap.sh
