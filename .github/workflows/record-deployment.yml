@@ -8,6 +8,9 @@ on:
       commit: { required: true, type: string }
       signer_kind: { required: true, type: choice, options: [normal, rollback] }
 permissions: { contents: read }
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
 jobs:
   deploy-record:
     environment: production
@@ -32,6 +35,9 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN" > release-run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN/artifacts" > release-artifacts.json
           node scripts/verify-run-artifact.mjs release-artifacts.json "$RELEASE_ARTIFACT"
+          if [[ "$SIGNER_KIND" == normal ]];then tag=$(node scripts/verify-release-run.mjs release-run.json "$RELEASE_COMMIT");gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.ref + " " + .object.sha'|grep -Fx "refs/tags/$tag $RELEASE_COMMIT";else node -e 'const r=require("./release-run.json");if(r.path!==".github/workflows/authorize-rollback.yml"||r.event!=="workflow_dispatch"||r.conclusion!=="success")process.exit(1)';fi
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq 'if length==0 then "none" else (.[0].id|tostring)+"|"+.[0].payload.manifestSha256 end')
+          echo "EXPECTED_PRODUCTION_STATE=$latest" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with: { name: "${{ inputs.artifact }}", run-id: "${{ inputs.release_run_id }}", github-token: "${{ github.token }}", path: release }
       - name: Verify subject, deploy through protected host, and smoke
@@ -47,22 +53,33 @@ jobs:
           SSH_HOST_KEY: "${{ secrets.SSH_HOST_KEY }}"
           SSH_PRIVATE_KEY: "${{ secrets.SSH_PRIVATE_KEY }}"
           REMOTE_ENV_FILE: "${{ secrets.REMOTE_ENV_FILE }}"
+          REMOTE_RECEIPT_SIGNING_KEY: "${{ secrets.REMOTE_RECEIPT_SIGNING_KEY }}"
+          REMOTE_PRODUCTION_STATE_TOKEN_FILE: "${{ secrets.REMOTE_PRODUCTION_STATE_TOKEN_FILE }}"
+          REMOTE_ADMIN_SMOKE_PASSWORD_FILE: "${{ secrets.REMOTE_ADMIN_SMOKE_PASSWORD_FILE }}"
+          REMOTE_PGSERVICEFILE: "${{ secrets.REMOTE_PGSERVICEFILE }}"
+          REMOTE_PGPASSFILE: "${{ secrets.REMOTE_PGPASSFILE }}"
+          REMOTE_RECEIPT_PGSERVICE: "${{ secrets.REMOTE_RECEIPT_PGSERVICE }}"
+          HOST_RECEIPT_ALLOWED_SIGNERS: "${{ secrets.HOST_RECEIPT_ALLOWED_SIGNERS }}"
         run: |
           set -euo pipefail
-          [[ "$SSH_HOST" =~ ^[A-Za-z0-9.-]+$ && "$SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ && -n "$SSH_HOST_KEY" && -n "$SSH_PRIVATE_KEY" && "$REMOTE_ENV_FILE" =~ ^/[A-Za-z0-9._/-]+$ ]]
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9.-]+$ && "$SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ && -n "$SSH_HOST_KEY" && -n "$SSH_PRIVATE_KEY" && "$REMOTE_ENV_FILE" =~ ^/[A-Za-z0-9._/-]+$ && "$REMOTE_RECEIPT_SIGNING_KEY" =~ ^/[A-Za-z0-9._/-]+$ && "$REMOTE_PRODUCTION_STATE_TOKEN_FILE" =~ ^/[A-Za-z0-9._/-]+$ && "$REMOTE_ADMIN_SMOKE_PASSWORD_FILE" =~ ^/[A-Za-z0-9._/-]+$ && "$REMOTE_PGSERVICEFILE" =~ ^/[A-Za-z0-9._/-]+$ && "$REMOTE_PGPASSFILE" =~ ^/[A-Za-z0-9._/-]+$ && "$REMOTE_RECEIPT_PGSERVICE" =~ ^[A-Za-z0-9._-]+$ && -n "$HOST_RECEIPT_ALLOWED_SIGNERS" ]]
           signer="$GITHUB_REPOSITORY/.github/workflows/ci.yml"; [[ "$SIGNER_KIND" == rollback ]] && signer="$GITHUB_REPOSITORY/.github/workflows/authorize-rollback.yml"
           test "$(./scripts/portable-sha256.sh digest release/release-manifest.json)" = "$MANIFEST_SHA"
           gh attestation verify release/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer"
           install -m 700 -d "$HOME/.ssh"; printf '%s\n' "$SSH_HOST_KEY" > "$HOME/.ssh/known_hosts"; printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"; chmod 600 "$HOME/.ssh/id_ed25519"
           tar -C release -czf release.tgz .; scp -q release.tgz "$SSH_USER@$SSH_HOST:/tmp/steam-top-release-$GITHUB_RUN_ID.tgz"
-          ssh "$SSH_USER@$SSH_HOST" "set -eu; d=\$(mktemp -d /tmp/steam-top-release.XXXXXX); tar -xzf /tmp/steam-top-release-$GITHUB_RUN_ID.tgz -C \"\$d\"; sudo /opt/steam-top/scripts/deploy-production.sh \"\$d\" '$REMOTE_ENV_FILE' '$MANIFEST_SHA' '$GITHUB_REPOSITORY' '$RELEASE_COMMIT'; curl --fail --silent https://127.0.0.1/health/ready >/dev/null"
-          nonce=$(openssl rand -hex 32); node scripts/create-deployment-request.mjs release/release-manifest.json "$RELEASE_RUN" "$RELEASE_ARTIFACT" "$MANIFEST_SHA" "$RELEASE_COMMIT" "$nonce" deployment-request.json deployment-receipt.json
+          nonce=$(openssl rand -hex 32); remote_receipt="/tmp/steam-top-receipt-$GITHUB_RUN_ID.json"
+          ssh "$SSH_USER@$SSH_HOST" "set -eu; d=\$(mktemp -d /tmp/steam-top-release.XXXXXX); tar -xzf /tmp/steam-top-release-$GITHUB_RUN_ID.tgz -C \"\$d\"; sudo HOST_RECEIPT_SIGNING_KEY='$REMOTE_RECEIPT_SIGNING_KEY' PRODUCTION_STATE_TOKEN_FILE='$REMOTE_PRODUCTION_STATE_TOKEN_FILE' ADMIN_SMOKE_PASSWORD_FILE='$REMOTE_ADMIN_SMOKE_PASSWORD_FILE' PGSERVICEFILE='$REMOTE_PGSERVICEFILE' PGPASSFILE='$REMOTE_PGPASSFILE' HOST_RECEIPT_PGSERVICE='$REMOTE_RECEIPT_PGSERVICE' /opt/steam-top/scripts/host-deploy-and-receipt.sh \"\$d\" '$REMOTE_ENV_FILE' '$MANIFEST_SHA' '$GITHUB_REPOSITORY' '$RELEASE_COMMIT' '$nonce' '$remote_receipt' '$EXPECTED_PRODUCTION_STATE'"
+          scp -q "$SSH_USER@$SSH_HOST:$remote_receipt" deployment-receipt.json;scp -q "$SSH_USER@$SSH_HOST:$remote_receipt.sig" deployment-receipt.json.sig;printf '%s\n' "$HOST_RECEIPT_ALLOWED_SIGNERS" > host-allowed-signers;ssh-keygen -Y verify -q -f host-allowed-signers -I steam-top-production-host -n steam-top-production-deployment -s deployment-receipt.json.sig < deployment-receipt.json
+          node scripts/create-deployment-request.mjs release/release-manifest.json "$RELEASE_RUN" "$RELEASE_ARTIFACT" "$MANIFEST_SHA" "$RELEASE_COMMIT" "$nonce" deployment-request.json deployment-receipt.json "$SIGNER_KIND" "$signer"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: { subject-path: deployment-receipt.json }
       - name: Advance protected state only after deploy and smoke
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq 'if length==0 then "none" else (.[0].id|tostring)+"|"+.[0].payload.manifestSha256 end');[[ "$latest" == "$EXPECTED_PRODUCTION_STATE" ]]
           id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input deployment-request.json --jq .id)
           node scripts/create-deployment-status.mjs "$id" deployment-status.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input deployment-status.json
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq 'if length==0 then "none" else (.[0].id|tostring)+"|"+.[0].payload.manifestSha256 end');echo "EXPECTED_PRODUCTION_STATE=$latest" >> "$GITHUB_ENV"

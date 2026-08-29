@@ -10,14 +10,14 @@
 
 1. 從已驗證 artifact 讀取 `images.server`、`images.web` 及 `images.database`，分別寫入受限 env file 的 `SERVER_IMAGE`、`WEB_IMAGE`、`DATABASE_IMAGE`。`images.migration` 必須與 `images.server` 完全相同。
 2. Compose 的 `migration` 是唯一 migration owner：它執行 `migrate-and-start.sh --migrate-only`，由應用 migration runner 取得 PostgreSQL advisory lock，在同一 transaction 核對 SQL SHA-256 與 `app_schema_migrations` ledger。失敗時非零離開，server 因 `service_completed_successfully` 依賴而不會啟動。
-3. 唯一受支援的入口是 `sudo ./scripts/deploy-production.sh <artifact絕對目錄> <root擁有的0600 env> <CI外部manifest SHA256> <owner/repo> <40位commit>`。它驗證外部 digest、`gh attestation verify --repo`、repository/commit 綁定，只解析 env 一次並使用 private canonical snapshot，再依次執行 Compose config、pull 及 up。直接執行 `docker compose` 不受支援。
+3. 正式環境唯一受支援的入口是受 `production` environment 保護的 `Deploy and record protected production release` workflow。它下載及驗證 attested artifact，再透過 SSH 調用主機上的 `host-deploy-and-receipt.sh`；主機 lock 會跨越 protected-state recheck、`deploy-production.sh`、Compose pull/up、public smoke 及 receipt 產生。直接執行 `docker compose` 不受支援。
 4. 記錄實際應用映像 digest、release manifest digest 及 migration outcome。正式 `compose.yaml` 不含 build，因此不會把 local mutable tag 當成發佈物；`compose.build.yaml` 只供 CI 生產測試。
 
-私有 repository 的部署主機必須以專用、最小讀取權限的 GitHub token 事先完成 `gh auth login --with-token`。不得把 token 寫入 env file、shell history、log 或 sudo command line。使用 `sudo` 時由 root 的受限 GH config 或受控 secret provider 提供，不使用一般 `sudo -E`；無認證或無權時 `gh attestation verify` 必須 fail closed。
+私有 repository 的部署主機使用 root-owned 0600 `PRODUCTION_STATE_TOKEN_FILE`，token 只需 Actions/Deployments 讀取權，不得寫入 env file、shell history、log 或 sudo command line。主機另需 root-owned receipt 簽署鍵、PGSERVICE/PGPASSFILE、教師 smoke 密碼檔；workflow 只傳送這些受信路徑，不傳送 secret 內容。無 GitHub 認證、host receipt 驗簽或 protected state 不一致時必須 fail closed。
 
 ## Smoke test
 
-通過公開 HTTPS origin 檢查：HTTP 轉 HTTPS、`/health/ready` 為 200、首頁及 3D 預覽可載入、兩個測試身份可開房／入房／WebSocket 對戰、教師可登入及查看剛建立的記錄。再執行不可 skip 的 `pnpm test:security`。任一項失敗就停止發佈並保留證據。
+`production-smoke.sh` 從 strict canonical `PUBLIC_ORIGIN` 取 hostname，以 `curl --resolve host:443:127.0.0.1` 保留 SNI、Host 及 CA 驗證，檢查首頁、`/health/ready`、強制 WebSocket upgrade、教師登入/session 及記錄讀取。Host receipt 必須綁定此 origin/smoke、container ID/RepoDigests、DB system identifier 及 production marker。CI 亦執行不可 skip 的 `pnpm test:security`；任一項失敗就停止發佈。
 
 ## 回復判斷
 
@@ -34,4 +34,4 @@
 
 Rollback operator 只能輸入 previous release；current release 必須從 GitHub 最新成功 `production` Deployment payload 解析。`production-rollback-approval` 必須在 repository 設定 required reviewers 及 deployment branch policy，`verify-rollback-go-live.mjs` 以具 Environments 讀取權限的 token 查 API，未配置即 fail closed。
 
-Promotion 成功後只寫 private `promotion-ready`，PUBLIC 及 app role 仍無 CONNECT。完成外部 `DATABASE_URL` cutover 後，設定 `CUTOVER_CONFIRM=DATABASE_URL_CUTOVER_SUCCEEDED` 執行 `finalize-cutover.sh <promotion-ready>` 才 grant app role，PUBLIC 永不 grant。預留不依賴 app ACL 的 emergency maintenance role。若出現 root/private `RECOVERY-REQUIRED`，保留 incident 目錄，用 maintenance service 執行 `ALTER DATABASE <PROMOTE_CONFIRM_DATABASE> ALLOW_CONNECTIONS true;`，核對 ACL 後才解除事故狀態。
+Promotion 成功後只寫 root-owned 0400 `promotion-ready`，PUBLIC 及 app role 仍無 CONNECT。完成外部 `DATABASE_URL` routing 後，root 先執行完整 public smoke，再以 `record-cutover-receipt.sh <promotion-ready> <cutover-receipt>` 產生綁定 system identifier、restore target、canonical DATABASE_URL hash、deployment manifest、origin/smoke 及 nonce 的簽署 receipt。只可以 `finalize-cutover.sh <promotion-ready> <cutover-receipt> <signature>` grant app role；finalize 會在 transaction 內重驗 marker、ACL 及 ledgerRows，PUBLIC 永不 grant，receipt 一次性消耗並寫 audit。若出現 root/private `RECOVERY-REQUIRED`，保留 incident 目錄及 `.promotion-reserved`，用 maintenance service 執行 `ALTER DATABASE <PROMOTE_CONFIRM_DATABASE> ALLOW_CONNECTIONS true;`，核對 marker/ACL 後才人工 reconcile。
