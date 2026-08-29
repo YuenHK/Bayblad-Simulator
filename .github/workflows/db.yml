@@ -47,3 +47,4 @@ jobs:
       - run: sudo chown root:root "$GITHUB_WORKSPACE" && sudo chown -R root:root infra/backup apps/server/dist && sudo find infra/backup apps/server/dist -type d -exec chmod go-w {} + && sudo chmod 0555 apps/server/dist/admin/deletion-ledger-cli.js && sudo chmod 0444 infra/backup/trusted-ledger-cli.sha256
       - run: CI=true ./infra/backup/test-backup-restore.sh
       - run: ./infra/backup/test-promotion-isolation.sh
+      - run: ./infra/backup/test-promotion-full.sh
