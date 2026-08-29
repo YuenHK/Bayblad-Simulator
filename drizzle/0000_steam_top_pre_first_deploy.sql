@@ -642,6 +642,7 @@ ALTER TABLE "match_persistence_jobs" ADD COLUMN "generation" integer DEFAULT 0 N
 ALTER TABLE "match_persistence_jobs" ADD COLUMN "lease_until" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "match_persistence_jobs" ADD CONSTRAINT "match_persistence_jobs_claim" CHECK (("match_persistence_jobs"."status" = 'retrying' and "match_persistence_jobs"."claim_token" is not null and "match_persistence_jobs"."lease_until" is not null) or ("match_persistence_jobs"."status" <> 'retrying' and "match_persistence_jobs"."claim_token" is null and "match_persistence_jobs"."lease_until" is null));--> statement-breakpoint
 ALTER TABLE "rooms" ADD COLUMN "applied_projection_revision" bigint DEFAULT -1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "rooms" ADD COLUMN "last_transition_hash" varchar(64);--> statement-breakpoint
 ALTER TABLE "rooms" ADD CONSTRAINT "rooms_projection_revision" CHECK ("rooms"."applied_projection_revision" >= -1);--> statement-breakpoint
 CREATE TABLE "admin_audit_outbox" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,

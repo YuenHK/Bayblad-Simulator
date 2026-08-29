@@ -73,6 +73,8 @@ it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it 
   expect(await roomsRepository.applyProjection(roomId, 2, { phase: "launch", firstBattleAt: null, closedAt: null })).toBe(false);
   expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "result", appliedProjectionRevision: 3 });
   await roomsRepository.transitionPhaseWithProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null });
+  const appliedTransition = (await first.claimDue(1, new Date("2099-01-01")))[0]!;
+  expect(await first.complete(appliedTransition)).toBe(true);
   await roomsRepository.transitionPhaseWithProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null }); // unknown-commit retry
   expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "waiting", appliedProjectionRevision: 4 });
   await expect(roomsRepository.closeWithProjection(roomId, new Date("2026-08-29T02:30:00Z"), 3, { phase: "closed", firstBattleAt: null, closedAt: "2026-08-29T02:30:00.000Z" })).rejects.toThrow("ROOM_CLOSE_REVISION_CONFLICT");

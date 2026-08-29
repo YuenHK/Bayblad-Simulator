@@ -1561,11 +1561,21 @@ export class RealtimeGateway {
       if (lastError) throw lastError;
     } else await this.#projectRoomPhase(roomId, phase, expectedRevision);
     if (!this.#rooms.applyPersistedTransition(reservation)) {
-        if (this.#roomRecordRepository?.closeWithProjection) {
-          const closedAt = new Date(this.#now()); const closeRevision = expectedRevision + 1;
-          await this.#roomRecordRepository.closeWithProjection(roomId, closedAt, closeRevision, { phase: "closed", firstBattleAt: payload.firstBattleAt, closedAt: closedAt.toISOString() });
+      this.#rooms.discardPersistedRoom(roomId);
+      if (this.#roomRecordRepository?.closeWithProjection) {
+        const closedAt = new Date(this.#now()); const closeRevision = expectedRevision + 1;
+        let closeError: unknown;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try { await this.#roomRecordRepository.closeWithProjection(roomId, closedAt, closeRevision, { phase: "closed", firstBattleAt: payload.firstBattleAt, closedAt: closedAt.toISOString() }); closeError = undefined; break; }
+          catch (error) { closeError = error; }
         }
-        this.#rooms.discardPersistedRoom(roomId);
+        if (closeError) {
+          // Startup reconciliation remains the durable recovery authority if the
+          // database stays unavailable; local quarantine must never be undone.
+          void this.#roomRecordRepository.reconcileOrphanedActiveRooms?.(closedAt).catch(this.#logError);
+          throw closeError;
+        }
+      }
       throw new Error("ROOM_REVISION_COMMIT_MISMATCH");
     }
   }

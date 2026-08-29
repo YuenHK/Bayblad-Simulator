@@ -172,7 +172,10 @@ export class RoomService {
   applyPersistedTransition(reservation: PersistedRoomTransitionReservation): boolean {
     const current = this.#rooms.get(reservation.roomId);
     if (!current || current.revision + 1 !== reservation.expectedRevision || reservation.before.room?.revision !== current.revision) return false;
-    this.restore(reservation.after);
+    if (!reservation.after.room) return false;
+    const lobbyDelta = reservation.after.lobbyRevision - reservation.before.lobbyRevision;
+    this.#rooms.set(reservation.roomId, this.#copyRoom(reservation.after.room));
+    this.#lobbyRevision += lobbyDelta;
     return true;
   }
 
