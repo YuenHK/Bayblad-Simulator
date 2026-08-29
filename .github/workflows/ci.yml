@@ -164,11 +164,16 @@ jobs:
           docker buildx build --provenance=mode=max --sbom=true --push --metadata-file release/web.json --tag "$repository/web:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST --build-arg CADDY_IMAGE_REPOSITORY --build-arg CADDY_IMAGE_DIGEST -f Dockerfile.web .
           docker buildx build --provenance=mode=max --sbom=true --push --metadata-file release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
           node scripts/create-release-manifest.mjs "$GITHUB_SHA" "$repository" release/server.json release/web.json release/database.json release/release-manifest.json
-          ./scripts/portable-sha256.sh manifest release server.json web.json database.json release-manifest.json > release/SHA256SUMS
+          node scripts/create-runtime-files-manifest.mjs . release/runtime-files.sha256
+          ./scripts/portable-sha256.sh manifest release server.json web.json database.json release-manifest.json runtime-files.sha256 > release/SHA256SUMS
       - name: Attest the release authorization manifest
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: release/release-manifest.json
+      - name: Attest the exact root runtime file manifest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: release/runtime-files.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-manifest-${{ github.sha }}
@@ -212,6 +217,9 @@ jobs:
       - run: pnpm install --frozen-lockfile && pnpm build
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { name: "release-manifest-${{ github.sha }}", path: candidate }
+      - name: Verify externally attested root runtime manifest
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh attestation verify candidate/runtime-files.sha256 --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
       - name: Authenticate to GHCR for immutable candidate pulls
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
         env: { GH_TOKEN: "${{ github.token }}" }
@@ -228,6 +236,8 @@ jobs:
           sudo find /opt/steam-top/scripts /opt/steam-top/infra/backup -type f -name '*.sh' -exec chmod 0555 {} +
           sudo chmod 0555 /opt/steam-top/apps/server/dist/admin/deletion-ledger-cli.js
           sudo chmod 0444 /opt/steam-top/infra/backup/trusted-ledger-cli.sha256
+          runtime_manifest_sha=$(./scripts/portable-sha256.sh digest candidate/runtime-files.sha256)
+          sudo /opt/steam-top/scripts/seal-runtime-install.sh "$GITHUB_WORKSPACE/candidate/runtime-files.sha256" "$runtime_manifest_sha" "$GITHUB_SHA"
           sudo install -d -o root -g root -m 0700 /opt/steam-top/.release-integration/{authorization,outbox,tls,secrets}
           sudo install -o root -g root -m 0600 /dev/null /var/lock/steam-top-release-integration.lock
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=db -addext subjectAltName=DNS:db -keyout server.key -out server.crt

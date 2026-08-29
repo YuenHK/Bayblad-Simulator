@@ -60,6 +60,25 @@ describe("release CI contract", () => {
     expect(read("scripts/validate-deployment-env.mjs")).toContain("repository@sha256");
   });
 
+  it("attests and seals one deterministic root runtime file manifest", () => {
+    const preparer = read("scripts/prepare-deployment-authorization.sh");
+    const host = read("scripts/host-deploy-and-receipt.sh");
+    const finalize = read("infra/backup/finalize-cutover.sh");
+    const verifier = read("scripts/verify-runtime-install.sh");
+    expect(workflow).toContain("create-runtime-files-manifest.mjs");
+    expect(workflow).toContain("subject-path: release/runtime-files.sha256");
+    expect(workflow).toContain("seal-runtime-install.sh");
+    expect(read("scripts/seal-runtime-install.sh")).toContain("runtime-install-receipt.json");
+    expect(preparer).toContain('gh attestation verify "$snapshot/runtime-files.sha256"');
+    for (const script of [preparer, host, finalize]) {
+      expect(script).toContain("verify-runtime-install.sh");
+      expect(script).toContain("RUNTIME_INSTALL_MANIFEST_SHA256");
+    }
+    expect(verifier).toContain("runtime-files.sha256");
+    expect(verifier).toContain("runtime-install-receipt.json");
+    expect(verifier).toContain("root-owned exact mode");
+  });
+
   it("gates approved tag artifacts on the isolated complete host core", () => {
     expect(workflow).toContain("release-host-core-integration:");
     expect(workflow).toContain("needs: release-images");
@@ -157,6 +176,9 @@ describe("rollback deletion monotonicity", () => {
     expect(finalize).toContain("promotion_audit");
     expect(finalize).toContain("finalize_outbox");
     expect(finalize).toContain("reconcile-finalize-outbox.sh");
+    for (const binding of ["PRODUCTION_ENV_FILE", "PROTECTED_DEPLOYMENT_STATE_FILE", "HOST_DEPLOYMENT_RECEIPT_FILE", "HOST_DEPLOYMENT_RECEIPT_SIGNATURE"])
+      expect(finalize).toContain(binding);
+    expect(finalize).toContain("steam-top-production-deployment");
     expect(read("infra/backup/record-cutover-receipt.sh")).toContain("production-smoke.sh");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-isolation.sh");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-full.sh");

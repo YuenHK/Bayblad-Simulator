@@ -55,7 +55,20 @@ jobs:
       - run: pnpm --filter @steam-top/server test:postgres
       - run: pnpm build
       - run: sha256sum -c infra/backup/trusted-ledger-cli.sha256
+      - name: Install the exact sealed runtime used by real promotion tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/create-runtime-files-manifest.mjs . "$RUNNER_TEMP/runtime-files.sha256"
+          runtime_sha=$(./scripts/portable-sha256.sh digest "$RUNNER_TEMP/runtime-files.sha256")
+          sudo install -d -o root -g root -m 0755 /opt/steam-top
+          sudo cp -a . /opt/steam-top/
+          sudo chown -R root:root /opt/steam-top
+          sudo find /opt/steam-top -type d -exec chmod go-w {} +
+          sudo find /opt/steam-top/scripts /opt/steam-top/infra/backup -type f -name '*.sh' -exec chmod 0555 {} +
+          sudo /opt/steam-top/scripts/seal-runtime-install.sh "$RUNNER_TEMP/runtime-files.sha256" "$runtime_sha" "$GITHUB_SHA"
+          echo "RUNTIME_INSTALL_MANIFEST_SHA256=$runtime_sha" >> "$GITHUB_ENV"
       - run: sudo chown root:root "$GITHUB_WORKSPACE" && sudo chown -R root:root infra/backup apps/server/dist && sudo find infra/backup apps/server/dist -type d -exec chmod go-w {} + && sudo chmod 0555 apps/server/dist/admin/deletion-ledger-cli.js && sudo chmod 0444 infra/backup/trusted-ledger-cli.sha256
       - run: CI=true ./infra/backup/test-backup-restore.sh
       - run: ./infra/backup/test-promotion-isolation.sh
-      - run: ./infra/backup/test-promotion-full.sh
+      - run: /opt/steam-top/infra/backup/test-promotion-full.sh
