@@ -2,7 +2,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 import { buildDesignSnapshotRows } from "@steam-top/db/persistence";
-import { designLayers, designs } from "@steam-top/db/schema";
+import { designEventSnapshots, designLayers, designs, identities } from "@steam-top/db/schema";
 import {
   designSchema,
   predictDesignPerformance,
@@ -126,6 +126,12 @@ export class PostgresDesignRepository implements DesignRepository {
       if (!built.activateBattleEligible) throw new DesignPersistenceError("DESIGN_INVALID");
       await tx.insert(designs).values(built.design);
       await tx.insert(designLayers).values([...built.layers]);
+      const [owner] = await tx.select().from(identities).where(eq(identities.id, ownerIdentityId)).limit(1);
+      const canonicalRows = await tx.execute<{ id: string }>((await import("drizzle-orm")).sql`with recursive chain as (
+        select id,merged_into_identity_id,0 depth from identities where id=${ownerIdentityId}
+        union all select i.id,i.merged_into_identity_id,c.depth+1 from identities i join chain c on i.id=c.merged_into_identity_id where c.depth<16
+      ) select id from chain order by depth desc limit 1`);
+      await tx.insert(designEventSnapshots).values({ designId: snapshotId, ownerIdentityIdAtCreation: ownerIdentityId, canonicalIdentityIdAtCreation: canonicalRows[0]?.id ?? ownerIdentityId, identityStatusSnapshot: owner?.status ?? null, classNameSnapshot: owner?.className ?? null, capturedAt: built.design.createdAt ?? new Date() });
       const activated = await tx.update(designs).set({ battleEligible: true })
         .where(and(eq(designs.id, snapshotId), eq(designs.battleEligible, false))).returning({ id: designs.id });
       if (activated.length !== 1) throw new Error("DESIGN_ACTIVATION_FAILED");

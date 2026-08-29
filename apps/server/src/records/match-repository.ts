@@ -2,7 +2,7 @@ import { and, asc, eq, inArray, lt, lte, ne, or, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 import { buildCompletedMatchRow, buildRoundRow } from "@steam-top/db/persistence";
-import { matchPersistenceJobs, matches, rounds } from "@steam-top/db/schema";
+import { identities, matchParticipantSnapshots, matchPersistenceJobs, matches, rounds } from "@steam-top/db/schema";
 import { z } from "zod";
 import { battleResultSchema } from "./battle-result-repository";
 
@@ -217,14 +217,17 @@ export class PostgresMatchRepository implements MatchRepository {
   constructor(readonly db: Db) {}
   async beginMatch(input: PendingMatchRecord): Promise<"created" | "replayed"> {
     const pendingFingerprint = createHash("sha256").update(JSON.stringify(input, (_key, value) => value instanceof Date ? value.toISOString() : value)).digest("hex");
-    const inserted = await this.db.insert(matches).values({
-      id: input.id, roomId: input.roomId, idempotencyFingerprint: pendingFingerprint, status: "in_progress",
-      player1IdentityId: input.player1IdentityId, player2IdentityId: input.player2IdentityId,
-      player1DesignId: input.player1DesignId, player2DesignId: input.player2DesignId,
-      performanceModelVersion: input.performanceModelVersion, physicsModelVersion: input.physicsModelVersion,
-      protocolVersion: input.protocolVersion, spectatorCount: input.spectatorCount, startedAt: input.startedAt,
-    }).onConflictDoNothing().returning({ id: matches.id });
-    if (inserted.length === 1) return "created";
+    const inserted = await this.db.transaction(async (tx) => {
+      const created = await tx.insert(matches).values({ id: input.id, roomId: input.roomId, idempotencyFingerprint: pendingFingerprint, status: "in_progress", player1IdentityId: input.player1IdentityId, player2IdentityId: input.player2IdentityId, player1DesignId: input.player1DesignId, player2DesignId: input.player2DesignId, performanceModelVersion: input.performanceModelVersion, physicsModelVersion: input.physicsModelVersion, protocolVersion: input.protocolVersion, spectatorCount: input.spectatorCount, startedAt: input.startedAt }).onConflictDoNothing().returning({ id: matches.id });
+      if (created.length !== 1) return false;
+      for (const participant of [{ slot: "player1" as const, identityId: input.player1IdentityId, designId: input.player1DesignId }, { slot: "player2" as const, identityId: input.player2IdentityId, designId: input.player2DesignId }]) {
+        const [identity] = participant.identityId ? await tx.select().from(identities).where(eq(identities.id, participant.identityId)).limit(1) : [];
+        const canonical = participant.identityId ? await tx.execute<{ id: string }>(sql`with recursive chain as (select id,merged_into_identity_id,0 depth from identities where id=${participant.identityId} union all select i.id,i.merged_into_identity_id,c.depth+1 from identities i join chain c on i.id=c.merged_into_identity_id where c.depth<16) select id from chain order by depth desc limit 1`) : [];
+        await tx.insert(matchParticipantSnapshots).values({ matchId: input.id, slot: participant.slot, identityIdAtStart: participant.identityId, canonicalIdentityIdAtStart: canonical[0]?.id ?? participant.identityId, identityStatusSnapshot: identity?.status ?? null, classNameSnapshot: identity?.className ?? null, designId: participant.designId, capturedAt: input.startedAt });
+      }
+      return true;
+    });
+    if (inserted) return "created";
     const [existing] = await this.db.select().from(matches).where(eq(matches.id, input.id)).limit(1);
     if (existing?.idempotencyFingerprint === pendingFingerprint) return "replayed";
     throw new MatchPersistenceConflictError();

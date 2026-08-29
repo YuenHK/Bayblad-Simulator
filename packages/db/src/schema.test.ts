@@ -366,6 +366,9 @@ describe("persistent PostgreSQL schema", () => {
       'admin_login_limits_updated_idx', 'admin_reauth_grants_token_uidx',
       'admin_sessions_active_idx', 'admin_audit_append_only_guard',
       'CREATE TABLE "analytics_daily_summaries"', 'analytics_daily_summaries_refreshed_idx',
+      'CREATE TABLE "device_activity_days"', 'CREATE TABLE "design_event_snapshots"',
+      'CREATE TABLE "match_participant_snapshots"', 'CREATE TABLE "room_event_snapshots"',
+      'analytics_snapshot_append_only_guard',
       'admin_audit_append_only', 'admin_audit_no_truncate',
       'steam_top_assert_battle_eligible_design_layers', 'steam_top_check_round_authority_key',
       'steam_top_current_delete_is_audited', 'steam_top_protect_eligible_design',
@@ -406,5 +409,10 @@ describe("persistent PostgreSQL schema", () => {
     expect(snapshot.tables["public.identity_sessions"]?.columns).toHaveProperty("archived_at");
     expect(snapshot.tables).toHaveProperty("public.admin_login_limits");
     expect(snapshot.tables).toHaveProperty("public.admin_reauth_grants");
+    expect(snapshot.tables).toHaveProperty("public.analytics_daily_summaries");
+    expect(snapshot.tables).toHaveProperty("public.device_activity_days");
+    expect(snapshot.tables).toHaveProperty("public.design_event_snapshots");
+    expect(snapshot.tables).toHaveProperty("public.match_participant_snapshots");
+    expect(snapshot.tables).toHaveProperty("public.room_event_snapshots");
   });
 });

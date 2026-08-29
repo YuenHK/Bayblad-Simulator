@@ -5,11 +5,12 @@ CREATE TABLE "analytics_daily_summaries" (
 	"filters_json" jsonb NOT NULL,
 	"usage_json" jsonb NOT NULL,
 	"usage_periods_json" jsonb NOT NULL,
+	"parameter_usage_json" jsonb NOT NULL,
 	"parameters_json" jsonb NOT NULL,
 	"refreshed_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "analytics_daily_summaries_pk" PRIMARY KEY("summary_date","filter_hash"),
+	CONSTRAINT "analytics_daily_summaries_summary_date_filter_hash_pk" PRIMARY KEY("summary_date","filter_hash"),
 	CONSTRAINT "analytics_daily_summaries_hash_format" CHECK ("filter_hash" ~ '^[a-f0-9]{64}$'),
-	CONSTRAINT "analytics_daily_summaries_json_shape" CHECK (jsonb_typeof("filters_json") = 'object' and jsonb_typeof("usage_json") = 'array' and jsonb_typeof("usage_periods_json") = 'object' and jsonb_typeof("parameters_json") = 'array')
+	CONSTRAINT "analytics_daily_summaries_json_shape" CHECK (jsonb_typeof("filters_json") = 'object' and jsonb_typeof("usage_json") = 'array' and jsonb_typeof("usage_periods_json") = 'object' and jsonb_typeof("parameter_usage_json") = 'array' and jsonb_typeof("parameters_json") = 'array')
 );--> statement-breakpoint
 CREATE INDEX "analytics_daily_summaries_refreshed_idx" ON "analytics_daily_summaries" USING btree ("refreshed_at");--> statement-breakpoint
 CREATE TABLE "battle_results" (
@@ -669,3 +670,33 @@ CREATE TABLE "admin_audit_outbox" (
 ALTER TABLE "admin_audit" ADD COLUMN "source_outbox_id" uuid;--> statement-breakpoint
 CREATE INDEX "admin_audit_outbox_due_idx" ON "admin_audit_outbox" USING btree ("next_attempt_at","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "admin_audit_source_outbox_uidx" ON "admin_audit" USING btree ("source_outbox_id") WHERE "admin_audit"."source_outbox_id" is not null;--> statement-breakpoint
+CREATE TABLE "device_activity_days" (
+	"activity_date" date NOT NULL, "anonymous_device_id" uuid NOT NULL, "identity_id" uuid, "identity_status_snapshot" "identity_status" NOT NULL, "class_name_snapshot" varchar(30), "first_activity_at" timestamp with time zone NOT NULL, "last_activity_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "device_activity_days_activity_date_anonymous_device_id_pk" PRIMARY KEY("activity_date","anonymous_device_id"), CONSTRAINT "device_activity_days_time_order" CHECK ("last_activity_at" >= "first_activity_at")
+);--> statement-breakpoint
+CREATE TABLE "design_event_snapshots" (
+	"design_id" uuid PRIMARY KEY NOT NULL, "owner_identity_id_at_creation" uuid, "canonical_identity_id_at_creation" uuid, "identity_status_snapshot" "identity_status", "class_name_snapshot" varchar(30), "captured_at" timestamp with time zone NOT NULL
+);--> statement-breakpoint
+CREATE TABLE "match_participant_snapshots" (
+	"match_id" uuid NOT NULL, "slot" "player_slot" NOT NULL, "identity_id_at_start" uuid, "canonical_identity_id_at_start" uuid, "identity_status_snapshot" "identity_status", "class_name_snapshot" varchar(30), "design_id" uuid NOT NULL, "captured_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "match_participant_snapshots_match_id_slot_pk" PRIMARY KEY("match_id","slot")
+);--> statement-breakpoint
+CREATE TABLE "room_event_snapshots" (
+	"room_id" uuid PRIMARY KEY NOT NULL, "owner_identity_id_at_creation" uuid, "canonical_identity_id_at_creation" uuid, "identity_status_snapshot" "identity_status", "class_name_snapshot" varchar(30), "captured_at" timestamp with time zone NOT NULL
+);--> statement-breakpoint
+ALTER TABLE "device_activity_days" ADD CONSTRAINT "device_activity_days_identity_id_identities_id_fk" FOREIGN KEY ("identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "design_event_snapshots" ADD CONSTRAINT "design_event_snapshots_design_id_designs_id_fk" FOREIGN KEY ("design_id") REFERENCES "public"."designs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "match_participant_snapshots" ADD CONSTRAINT "match_participant_snapshots_match_id_matches_id_fk" FOREIGN KEY ("match_id") REFERENCES "public"."matches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "match_participant_snapshots" ADD CONSTRAINT "match_participant_snapshots_design_id_designs_id_fk" FOREIGN KEY ("design_id") REFERENCES "public"."designs"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_event_snapshots" ADD CONSTRAINT "room_event_snapshots_room_id_rooms_id_fk" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "device_activity_days_identity_date_idx" ON "device_activity_days" USING btree ("identity_id","activity_date");--> statement-breakpoint
+CREATE INDEX "device_activity_days_filters_idx" ON "device_activity_days" USING btree ("activity_date","class_name_snapshot","identity_status_snapshot");--> statement-breakpoint
+CREATE INDEX "design_event_snapshots_filters_idx" ON "design_event_snapshots" USING btree ("captured_at","class_name_snapshot","identity_status_snapshot");--> statement-breakpoint
+CREATE INDEX "match_participant_snapshots_filters_idx" ON "match_participant_snapshots" USING btree ("captured_at","class_name_snapshot","identity_status_snapshot");--> statement-breakpoint
+CREATE INDEX "match_participant_snapshots_canonical_idx" ON "match_participant_snapshots" USING btree ("canonical_identity_id_at_start","captured_at");--> statement-breakpoint
+CREATE INDEX "room_event_snapshots_filters_idx" ON "room_event_snapshots" USING btree ("captured_at","class_name_snapshot","identity_status_snapshot");--> statement-breakpoint
+CREATE FUNCTION analytics_snapshot_append_only_guard() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF TG_OP='DELETE' AND steam_top_current_delete_is_audited() THEN RETURN OLD; END IF; RAISE EXCEPTION 'analytics event snapshots are immutable' USING ERRCODE = '55000'; END $$;--> statement-breakpoint
+CREATE TRIGGER design_event_snapshots_append_only BEFORE UPDATE OR DELETE ON design_event_snapshots FOR EACH ROW EXECUTE FUNCTION analytics_snapshot_append_only_guard();--> statement-breakpoint
+CREATE TRIGGER match_participant_snapshots_append_only BEFORE UPDATE OR DELETE ON match_participant_snapshots FOR EACH ROW EXECUTE FUNCTION analytics_snapshot_append_only_guard();
+--> statement-breakpoint
+CREATE TRIGGER room_event_snapshots_append_only BEFORE UPDATE OR DELETE ON room_event_snapshots FOR EACH ROW EXECUTE FUNCTION analytics_snapshot_append_only_guard();

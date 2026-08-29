@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "@steam-top/db";
-import { identities, identityLinks, identitySessions } from "@steam-top/db/schema";
+import { deviceActivityDays, identities, identityLinks, identitySessions } from "@steam-top/db/schema";
 import { and, count, eq, gt, isNull } from "drizzle-orm";
 import { createValidatedLiveIdentityProvider, IdentityResolver } from "./resolver";
 import { hashIdentityToken } from "./cookie";
@@ -90,6 +90,15 @@ it.skipIf(!databaseUrl)("never revives a token during a logout and lookup race",
   expect(row?.revokedAt).toEqual(now);
   expect(row?.archivedAt).toEqual(now);
 });
+
+it.skipIf(!databaseUrl)("persists immutable Hong Kong device activity days instead of moving last-seen DAU", async()=>{
+  const store=new PostgresIdentityStore(client.db); const first=new Date("2026-08-31T15:59:59Z"); const token="9".repeat(64);
+  const session=await store.createGuestSession({tokenHash:token,displayName:"訪客-DAY",now:first,expiresAt:new Date("2027-01-01T00:00:00Z"),diagnostics:{}});
+  await store.touchSession(token,new Date("2026-08-31T16:00:01Z"),{},new Date("2027-01-02T00:00:00Z"));
+  const rows=await client.db.select().from(deviceActivityDays).where(eq(deviceActivityDays.identityId,session.identity.id));
+  expect(rows.map(row=>row.activityDate).sort()).toEqual(["2026-08-31","2026-09-01"]);
+  expect(rows.find(row=>row.activityDate==="2026-08-31")?.lastActivityAt).toEqual(first);
+},30_000);
 
 it.skipIf(!databaseUrl)("counts only active sessions and rotates one-for-one at capacity with rollback safety", async () => {
   const now = new Date("2026-08-29T00:00:00Z");

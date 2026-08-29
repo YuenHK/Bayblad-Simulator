@@ -1,7 +1,7 @@
 import { and, eq, isNull, lt, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
-import { roomParticipants, roomProjectionJobs, rooms } from "@steam-top/db/schema";
+import { identities, roomEventSnapshots, roomParticipants, roomProjectionJobs, rooms } from "@steam-top/db/schema";
 import type { RoomProjectionPayload, TransactionalRoomProjectionStore } from "./room-projection-store";
 import { RoomProjectionConflictError } from "./room-projection-store";
 
@@ -88,6 +88,9 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
   async create(input: Readonly<{ id: string; code: string; name: string; ownerIdentityId: string | null; participant: RoomParticipantRecord; at: Date }>): Promise<void> {
     await this.db.transaction(async (tx) => {
       await tx.insert(rooms).values({ id: input.id, code: input.code, name: input.name, ownerIdentityId: input.ownerIdentityId, createdAt: input.at });
+      const [owner] = input.ownerIdentityId ? await tx.select().from(identities).where(eq(identities.id, input.ownerIdentityId)).limit(1) : [];
+      const canonical = input.ownerIdentityId ? await tx.execute<{ id: string }>(sql`with recursive chain as (select id,merged_into_identity_id,0 depth from identities where id=${input.ownerIdentityId} union all select i.id,i.merged_into_identity_id,c.depth+1 from identities i join chain c on i.id=c.merged_into_identity_id where c.depth<16) select id from chain order by depth desc limit 1`) : [];
+      await tx.insert(roomEventSnapshots).values({ roomId: input.id, ownerIdentityIdAtCreation: input.ownerIdentityId, canonicalIdentityIdAtCreation: canonical[0]?.id ?? input.ownerIdentityId, identityStatusSnapshot: owner?.status ?? null, classNameSnapshot: owner?.className ?? null, capturedAt: input.at });
       await tx.insert(roomParticipants).values(participantValues(input.id, input.participant, input.at));
     });
   }
