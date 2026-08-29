@@ -793,3 +793,13 @@ CREATE TRIGGER room_event_snapshots_append_only BEFORE UPDATE OR DELETE ON room_
 --> statement-breakpoint
 ALTER TABLE "design_layers" ADD COLUMN "actual_area_mm2" numeric(12,4) NOT NULL;--> statement-breakpoint
 ALTER TABLE "design_layers" ADD CONSTRAINT "design_layers_actual_area_positive" CHECK ("design_layers"."actual_area_mm2" > 0);
+--> statement-breakpoint
+CREATE TABLE "platform_settings" ("singleton" boolean PRIMARY KEY DEFAULT true NOT NULL,"paused" boolean DEFAULT false NOT NULL,"updated_at" timestamp with time zone DEFAULT now() NOT NULL,CONSTRAINT "platform_settings_singleton" CHECK ("platform_settings"."singleton" = true));
+--> statement-breakpoint
+INSERT INTO "platform_settings"("singleton","paused") VALUES(true,false) ON CONFLICT("singleton") DO NOTHING;
+--> statement-breakpoint
+CREATE TABLE "admin_command_operations" ("operation_id" uuid PRIMARY KEY NOT NULL,"payload_hash" text NOT NULL,"action" varchar(32) NOT NULL,"target" varchar(128),"payload_json" jsonb NOT NULL,"admin_user_id" uuid NOT NULL,"admin_session_id" uuid NOT NULL,"status" varchar(20) NOT NULL,"attempt_count" integer DEFAULT 0 NOT NULL,"next_retry_at" timestamp with time zone DEFAULT now() NOT NULL,"lease_token" uuid,"lease_generation" integer DEFAULT 0 NOT NULL,"lease_expires_at" timestamp with time zone,"result_json" jsonb NOT NULL,"created_at" timestamp with time zone DEFAULT now() NOT NULL,"updated_at" timestamp with time zone DEFAULT now() NOT NULL,CONSTRAINT "admin_command_operations_hash" CHECK ("admin_command_operations"."payload_hash" ~ '^[a-f0-9]{64}$'),CONSTRAINT "admin_command_operations_status" CHECK ("admin_command_operations"."status" in ('accepted','claimed','applied','audit_pending','completed','terminal_failed')),CONSTRAINT "admin_command_operations_lease" CHECK (("admin_command_operations"."status"='claimed' and "admin_command_operations"."lease_token" is not null and "admin_command_operations"."lease_expires_at" is not null) or ("admin_command_operations"."status"<>'claimed' and "admin_command_operations"."lease_token" is null and "admin_command_operations"."lease_expires_at" is null)));
+--> statement-breakpoint
+CREATE INDEX "admin_command_operations_due_idx" ON "admin_command_operations" USING btree ("next_retry_at","created_at");
+--> statement-breakpoint
+ALTER TABLE "match_participant_snapshots" ADD COLUMN "display_name_snapshot" varchar(80);

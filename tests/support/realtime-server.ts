@@ -15,6 +15,7 @@ import type { AdminRecordsSource } from "../../apps/server/src/admin/records-rou
 import type { AnalyticsService } from "../../apps/server/src/analytics/service";
 import { inMemoryExportDataSource, type ExportDataset } from "../../apps/server/src/exports/workbook";
 import type { AdminAnalyticsSummary, AdminRecordRow } from "../../packages/protocol/src/events";
+import { InMemoryAdminCommandStore } from "../../apps/server/src/admin/command-operations";
 
 if (process.env.NODE_ENV !== "test") throw new Error("The realtime test server is test-only");
 
@@ -81,6 +82,7 @@ const performance = { dimension:"layerShape",value:{shape:"circle"},launchGrade:
 const analytics: AdminAnalyticsSummary = { filters:{from:"2026-08-01",to:"2026-08-29"},filterApplicability:{},usage:[],usagePeriods:{daily:[{date:"2026-08-29",activeDevices:5,designs:3,rooms:2,completedMatches:2,shapes:[]}],weekly:[],monthly:[]},parameterUsage:[{scope:"allEligibleDesigns",dimension:"layerShape",value:{position:"top",shape:"circle"},count:12,proportion:.6,performanceModelVersion:"1",totalGroups:1,truncated:false,population:20}],parameters:[],rankings:{top:[performance],bottom:[],total:1,hasMore:false,snapshotCursor:"cursor",overallLaunchDistribution:{Perfect:1,Great:2,Good:3,Miss:4,totalOccurrences:10}},refreshedAt:"2026-08-29T00:00:00.000Z" };
 const analyticsService = { query: async () => analytics, parameterPage: async () => ({ rows: [], total: 0, hasMore: false }) } as unknown as AnalyticsService;
 const exportDataset: ExportDataset = { matches:[],rounds:[],designs:[],identities:[],usage:[],parameters:[] };
+const adminCommandStore=new InMemoryAdminCommandStore();
 const app = buildApp({
   battleEngine: engine,
   rooms,
@@ -112,6 +114,7 @@ const app = buildApp({
   exportDataSource: inMemoryExportDataSource(exportDataset),
   deletionStore,
   adminRecordsSource: recordsSource,
+  adminCommandStore,
   sweepIntervalMs: 25,
 });
 
@@ -148,6 +151,7 @@ app.get("/__test/stats", async (request, reply) => {
     simulationCount: engine.simulationCount,
     observedRounds: engine.rounds,
     adminAudits: adminStore.auditEntries.map(entry => entry.action),
+    adminCommands:[...adminCommandStore.operations.values()].map(operation=>({operationId:operation.operationId,status:operation.status,attempts:operation.attempts})),
     rooms: rooms.lobbySnapshot().rooms.length,
     designs: designs.debugCounts(),
     repository: { records: resultStore.recordCount, fullResults: resultStore.fullResultCount },

@@ -1460,6 +1460,9 @@ describe("serverEventSchema", () => {
   });
 
   it("separates private player and spectator launch-result audiences", () => {
+    const platformStatus={type:"platform.status",paused:true,...serverEnvelope} as const;
+    expect(playerServerEventSchema.safeParse(platformStatus).success).toBe(true);
+    expect(spectatorServerEventSchema.safeParse(platformStatus).success).toBe(true);
     expect(playerServerEventSchema.safeParse(launchPrivate).success).toBe(true);
     expect(
       playerServerEventSchema.safeParse(serverCases[6].value).success,

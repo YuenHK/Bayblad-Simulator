@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { AdminAuthService, InMemoryAdminStore, type AuditInput } from "../auth/admin-auth";
+import { AdminCommandExecutor } from "./command-executor";
 import { InMemoryPlatformSettingsStore } from "./platform-settings";
 import { InMemoryAdminCommandStore, adminCommandPayloadHash } from "./command-operations";
 
@@ -10,10 +12,51 @@ describe("durable admin control state", () => {
   });
   it("replays the same command outcome and rejects operation id payload conflicts", async () => {
     const store = new InMemoryAdminCommandStore(), hash = adminCommandPayloadHash({ action: "platform.pause", paused: true });
-    expect((await store.accept("550e8400-e29b-41d4-a716-446655440000", hash)).created).toBe(true);
-    await store.update("550e8400-e29b-41d4-a716-446655440000", "completed", 204, {});
-    const replay = await store.accept("550e8400-e29b-41d4-a716-446655440000", hash);
+    const input={operationId:"550e8400-e29b-41d4-a716-446655440000",payloadHash:hash,action:"platform.pause" as const,target:"platform",payload:{paused:true},adminUserId:"650e8400-e29b-41d4-a716-446655440000",adminSessionId:"750e8400-e29b-41d4-a716-446655440000"};
+    expect((await store.accept(input)).created).toBe(true);
+    const claimed=await store.claimDue(new Date(),1000);await store.checkpoint(input.operationId,claimed!.leaseToken!,"completed",{});
+    const replay = await store.accept(input);
     expect("operation" in replay && replay.operation.status).toBe("completed");
-    expect(await store.accept("550e8400-e29b-41d4-a716-446655440000", adminCommandPayloadHash({ action: "platform.pause", paused: false }))).toEqual({ conflict: true });
+    expect(await store.accept({...input,payloadHash:adminCommandPayloadHash({ action: "platform.pause", paused: false }),payload:{paused:false}})).toEqual({ conflict: true });
+  });
+  it("retries a final audit without repeating an already applied side effect", async () => {
+    class FlakyAuditStore extends InMemoryAdminStore {
+      calls = 0;
+      override async audit(input: AuditInput) {
+        this.calls++;
+        if (this.calls === 2) throw new Error("temporary audit failure");
+        await super.audit(input);
+      }
+    }
+    const adminStore = new FlakyAuditStore();
+    const auth = new AdminAuthService(adminStore, { allowedOrigins: ["http://localhost"] });
+    const commands = new InMemoryAdminCommandStore();
+    const platform = new InMemoryPlatformSettingsStore();
+    let now = new Date("2026-08-29T00:00:00.000Z");
+    let closes = 0;
+    const executor = new AdminCommandExecutor(commands, auth, {
+      setPlatformPaused: () => undefined,
+      adminCloseRoom: async () => { closes++; },
+      adminRemoveParticipant: async () => undefined,
+    }, platform, () => now);
+    const operationId = "550e8400-e29b-41d4-a716-446655440001";
+    await commands.accept({
+      operationId,
+      payloadHash: adminCommandPayloadHash({ action: "room.close", roomId: "ABCD" }),
+      action: "room.close",
+      target: "ABCD",
+      payload: { action: "room.close", roomId: "ABCD" },
+      adminUserId: "650e8400-e29b-41d4-a716-446655440000",
+      adminSessionId: "750e8400-e29b-41d4-a716-446655440000",
+    }, now);
+
+    await executor.pump();
+    expect((await commands.get(operationId))?.status).toBe("audit_pending");
+    expect(closes).toBe(1);
+
+    now = new Date(now.getTime() + 1_000);
+    await executor.pump();
+    expect((await commands.get(operationId))?.status).toBe("completed");
+    expect(closes).toBe(1);
   });
 });

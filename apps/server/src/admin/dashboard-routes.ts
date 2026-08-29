@@ -3,14 +3,14 @@ import { z } from "zod";
 import {
   authenticateAdminMutation,
   authenticateAdminRead,
-  durableAudit,
   type AdminAuthService,
   type AdminClientResolver,
 } from "../auth/admin-auth";
 import { ADMIN_COOKIE_NAME } from "../auth/admin-session";
 import type { RoomService } from "../rooms/room-service";
-import type { PlatformSettingsStore } from "./platform-settings";
+import { InMemoryPlatformSettingsStore,type PlatformSettingsStore } from "./platform-settings";
 import { InMemoryAdminCommandStore, adminCommandPayloadHash, type AdminCommandStore } from "./command-operations";
+import { AdminCommandExecutor } from "./command-executor";
 const password = z.string().min(8).max(1024);
 const actionSchema = z.discriminatedUnion("action", [
   z
@@ -50,8 +50,9 @@ export function registerAdminDashboardRoutes(
   rooms: RoomService,
   realtime: AdminRealtimeCommands,
   resolver: AdminClientResolver,
-  platformSettings?: PlatformSettingsStore,
+  platformSettings: PlatformSettingsStore = new InMemoryPlatformSettingsStore(),
   commandStore: AdminCommandStore = new InMemoryAdminCommandStore(),
+  executor: AdminCommandExecutor = new AdminCommandExecutor(commandStore,auth,realtime,platformSettings),
 ) {
   app.get("/api/admin/rooms", async (request, reply) => {
     if (!(await authenticateAdminRead(request, reply, auth))) return;
@@ -107,42 +108,12 @@ export function registerAdminDashboardRoutes(
               roomId: command.roomId,
               participantId: command.participantId,
             };
-    const accepted = await commandStore.accept(command.operationId, adminCommandPayloadHash(details));
+    const accepted = await commandStore.accept({operationId:command.operationId,payloadHash:adminCommandPayloadHash(details),action:command.action,target:command.action==="platform.pause"?"platform":command.roomId,payload:details,adminUserId:current.user.id,adminSessionId:current.session.id});
     if ("conflict" in accepted) return reply.code(409).send({ error: "OPERATION_ID_CONFLICT" });
-    if (!accepted.created) return reply.code(accepted.operation.httpStatus).send(accepted.operation.response);
-    try {
-      await durableAudit(auth.store, {
-        adminUserId: current.user.id,
-        adminSessionId: current.session.id,
-        action: "admin.room.command.accepted",
-        outcome: "success",
-        details,
-      });
-    } catch (error) {
-      await commandStore.update(command.operationId, "failed", 503, { error: "ADMIN_COMMAND_ACCEPT_AUDIT_FAILED" });
-      auth.report("admin.room.command.accept", error, request.id);
-      return reply.code(503).send({ error: "ADMIN_COMMAND_ACCEPT_AUDIT_FAILED" });
-    }
-    try {
-      if (command.action === "platform.pause") { await platformSettings?.writePaused(command.paused); realtime.setPlatformPaused(command.paused); }
-      else if (command.action === "room.close") await realtime.adminCloseRoom(command.roomId);
-      else await realtime.adminRemoveParticipant(command.roomId, command.participantId);
-      await commandStore.update(command.operationId, "applied", 202, { status: "applied" });
-    } catch (error) {
-      await commandStore.update(command.operationId, "failed", 503, { error: "ADMIN_ROOM_COMMAND_FAILED" });
-      auth.report("admin.room.command", error, request.id);
-      return reply.code(503).send({ error: "ADMIN_ROOM_COMMAND_FAILED" });
-    }
-    const completionAudit = () => durableAudit(auth.store, { adminUserId: current.user.id, adminSessionId: current.session.id, action: `admin.${command.action}`, outcome: "success", details });
-    try {
-      await completionAudit();
-      await commandStore.update(command.operationId, "completed", 204, {});
-      return reply.code(204).send();
-    } catch (error) {
-      auth.report("admin.room.command.audit_pending", error, request.id);
-      await commandStore.update(command.operationId, "audit_pending", 202, { status: "applied", audit: "pending" });
-      setTimeout(() => void completionAudit().then(() => commandStore.update(command.operationId, "completed", 204, {})).catch(retryError => auth.report("admin.room.command.audit_retry", retryError)), 100);
-      return reply.code(202).send({ status: "applied", audit: "pending" });
-    }
+    await executor.pump();
+    const outcome=await commandStore.get(command.operationId);
+    if(!outcome)return reply.code(202).send({operationId:command.operationId,status:"accepted"});
+    return reply.code(outcome.status==="completed"||outcome.status==="terminal_failed"?200:202).send({operationId:outcome.operationId,status:outcome.status,...outcome.result});
   });
+  app.get("/api/admin/rooms/actions/:operationId",async(request,reply)=>{if(!(await authenticateAdminRead(request,reply,auth)))return;const id=(request.params as{operationId?:unknown}).operationId;if(typeof id!=="string"||!z.uuid().safeParse(id).success)return reply.code(400).send({error:"INVALID_OPERATION_ID"});await executor.pump();const operation=await commandStore.get(id);if(!operation)return reply.code(404).send({error:"OPERATION_NOT_FOUND"});return reply.code(operation.status==="completed"||operation.status==="terminal_failed"?200:202).send({operationId:id,status:operation.status,...operation.result});});
 }

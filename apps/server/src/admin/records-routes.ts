@@ -70,24 +70,27 @@ export class PostgresAdminRecordsSource implements AdminRecordsSource {
     });
   }
   async queryLeaderboard(filters: AdminRecordFilters) {
-    const query = `with participant_scores as materialized(
+    const query = `with design_projection as materialized(select d.id,jsonb_build_object('layers',jsonb_agg(jsonb_build_object('position',l.position::text,'shape',l.shape::text,'points',l.points,'diameterMm',l.diameter_mm::float8,'actualAreaMm2',l.actual_area_mm2::float8) order by l.layer_order),'totalMassG',d.total_mass_g::float8,'metalDiscDiameterMm',d.metal_disc_diameter_mm::float8) design from designs d join design_layers l on l.design_id=d.id group by d.id),participant_scores as materialized(
       select coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) identity_id,
         coalesce(p.display_name_snapshot,i.display_name,'已刪除身份') display_name,coalesce(p.class_name_snapshot,i.class_name) class_name,
         case when p.slot='player1' then m.player1_battle_points else m.player2_battle_points end::float8 battle_score,
         case when p.slot='player1' then m.player1_challenge_points else m.player2_challenge_points end::float8 challenge_score,
-        case when p.slot='player1' then m.player1_total else m.player2_total end::float8 total_score
+        case when p.slot='player1' then m.player1_total else m.player2_total end::float8 total_score,p.captured_at
       from matches m join match_participant_snapshots p on p.match_id=m.id
       left join identities i on i.id=coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)
+      join design_projection dp on dp.id=p.design_id
       where m.status='completed' and coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) is not null
         and ($1::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date >= $1::date)
         and ($2::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date <= $2::date)
         and ($3::text is null or coalesce(p.class_name_snapshot,i.class_name,'') ilike $3 escape '\\')
         and ($4::text is null or coalesce(p.display_name_snapshot,i.display_name,'') ilike $4 escape '\\')
-    ), aggregated as materialized(select identity_id,display_name,class_name,sum(battle_score)::float8 battle_score,sum(challenge_score)::float8 challenge_score,sum(total_score)::float8 total_score,count(*)::integer matches from participant_scores group by identity_id,display_name,class_name),
-    ranked as materialized(select *,dense_rank() over(order by total_score desc)::integer rank from aggregated),
-    totals as(select count(*)::integer total from ranked),paged as(select * from ranked order by rank,display_name,identity_id limit $5 offset $6)
+        and ($5::text is null or coalesce(case when p.slot='player1' then m.player1_device_name else m.player2_device_name end,'') ilike $5 escape '\\')
+        and ($6::text is null or dp.design::text ilike $6 escape '\\')
+    ), latest_label as materialized(select distinct on(identity_id) identity_id,display_name,class_name from participant_scores order by identity_id,captured_at desc,display_name desc),aggregated as materialized(select identity_id,sum(battle_score)::float8 battle_score,sum(challenge_score)::float8 challenge_score,sum(total_score)::float8 total_score,count(*)::integer matches from participant_scores group by identity_id),
+    ranked as materialized(select a.*,l.display_name,l.class_name,dense_rank() over(order by a.total_score desc)::integer rank from aggregated a join latest_label l using(identity_id)),
+    totals as(select count(*)::integer total from ranked),paged as(select * from ranked order by rank,display_name,identity_id limit $7 offset $8)
     select p.*,t.total from totals t left join paged p on true`;
-    const raw = await this.sql.unsafe(query,[filters.from??null,filters.to??null,pattern(filters.className),pattern(filters.identity),filters.pageSize,(filters.page-1)*filters.pageSize]) as readonly Record<string,unknown>[];
+    const raw = await this.sql.unsafe(query,[filters.from??null,filters.to??null,pattern(filters.className),pattern(filters.identity),pattern(filters.device),pattern(filters.parameter),filters.pageSize,(filters.page-1)*filters.pageSize]) as readonly Record<string,unknown>[];
     return adminLeaderboardPageSchema.parse({ rows: raw.filter(row=>row.identity_id!==null).map(row=>({ identityId:row.identity_id,displayName:row.display_name,className:row.class_name,battleScore:Number(row.battle_score),challengeScore:Number(row.challenge_score),totalScore:Number(row.total_score),matches:Number(row.matches),rank:Number(row.rank) })), total:Number(raw[0]?.total??0),page:filters.page,pageSize:filters.pageSize });
   }
 }

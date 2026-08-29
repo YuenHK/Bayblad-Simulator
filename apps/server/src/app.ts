@@ -30,6 +30,7 @@ import { registerDeleteRecordRoutes, type DeletionStore } from "./admin/delete-r
 import { registerAdminDashboardRoutes } from "./admin/dashboard-routes";
 import { InMemoryPlatformSettingsStore, type PlatformSettingsStore } from "./admin/platform-settings";
 import { InMemoryAdminCommandStore, type AdminCommandStore } from "./admin/command-operations";
+import { AdminCommandExecutor } from "./admin/command-executor";
 import { registerAdminRecordRoutes, type AdminRecordsSource } from "./admin/records-routes";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
@@ -138,6 +139,7 @@ function requireNonnegative(name: string, value: number): number {
 
 export function buildApp(options: BuildAppOptions): BuiltApp {
   if (options.requireAuthorityLease && (!options.roomRecordRepository?.acquireStartupLease || !options.roomRecordRepository.verifyStartupLease || !options.roomRecordRepository.releaseStartupLease)) throw new TypeError("Authority lease lifecycle is required");
+  if(options.requireAuthorityLease&&options.adminAuth&&(!options.platformSettingsStore||!options.adminCommandStore||options.platformSettingsStore instanceof InMemoryPlatformSettingsStore||options.adminCommandStore instanceof InMemoryAdminCommandStore))throw new TypeError("Durable admin control stores are required");
   if (process.env.NODE_ENV === "production" && options.testIdentityResolver) throw new TypeError("testIdentityResolver is forbidden in production");
   if (process.env.NODE_ENV === "production" && options.testRecordIdentityActivity) throw new TypeError("testRecordIdentityActivity is forbidden in production");
   if (process.env.NODE_ENV === "production" && !options.allowedOrigins?.length) {
@@ -360,8 +362,10 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   });
   app.decorate("realtimeGateway", gateway);
   const platformSettings = options.platformSettingsStore ?? new InMemoryPlatformSettingsStore();
-  app.addHook("onReady", async () => gateway.setPlatformPaused(await platformSettings.readPaused()));
-  if (options.adminAuth) registerAdminDashboardRoutes(app, options.adminAuth, rooms, gateway, adminResolver, platformSettings, options.adminCommandStore ?? new InMemoryAdminCommandStore());
+  const commandStore=options.adminCommandStore??new InMemoryAdminCommandStore();
+  const commandExecutor=options.adminAuth?new AdminCommandExecutor(commandStore,options.adminAuth,gateway,platformSettings):undefined;
+  app.addHook("onReady", async () => {gateway.setPlatformPaused(await platformSettings.readPaused());await commandExecutor?.pump();});
+  if (options.adminAuth) registerAdminDashboardRoutes(app, options.adminAuth, rooms, gateway, adminResolver, platformSettings, commandStore, commandExecutor!);
   app.decorate("battleEngine", battleEngine);
 
   let authorityHealthy = true;
@@ -505,7 +509,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   let adminMaintenance: Promise<void> | undefined;
   const runAdminMaintenance = () => {
     if (!options.adminAuth || adminMaintenance) return;
-    adminMaintenance = Promise.all([options.adminAuth.pruneExpiredSessions(), options.adminAuth.store.pumpAuditOutbox?.() ?? Promise.resolve(0)])
+    adminMaintenance = Promise.all([options.adminAuth.pruneExpiredSessions(), options.adminAuth.store.pumpAuditOutbox?.() ?? Promise.resolve(0),commandExecutor?.pump()??Promise.resolve()])
       .then(() => undefined)
       .catch((error) => options.adminAuth!.report("admin.maintenance", error))
       .finally(() => { adminMaintenance = undefined; });

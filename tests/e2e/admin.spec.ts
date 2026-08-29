@@ -44,7 +44,10 @@ test("教師登入、房間確認、篩選、統計及刪除流程不外洩密�
   await confirmAction(page);
   await expect(page.getByText("0 間房間")).toBeVisible();
   const stats = await page.request.get("/__test/stats", { headers: { "x-test-secret": "steam-top-e2e-only" } });
-  expect((await stats.json()).adminAudits).toEqual(expect.arrayContaining(["admin.platform.pause", "admin.room.remove", "admin.room.close"]));
+  const controlState=await stats.json();
+  expect(controlState.adminAudits).toEqual(expect.arrayContaining(["admin.platform.pause", "admin.room.remove", "admin.room.close"]));
+  expect(controlState.adminCommands).toHaveLength(4);
+  expect(controlState.adminCommands.every((operation:{status:string})=>operation.status==="completed")).toBe(true);
   await page.getByLabel("班別").fill("2B");
   await expect(page.getByText("此頁沒有紀錄。")).toBeVisible();
   await page.getByLabel("班別").fill("1A");

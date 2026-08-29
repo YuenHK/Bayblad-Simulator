@@ -103,10 +103,11 @@ export const platformSettings = pgTable("platform_settings", {
 
 export const adminCommandOperations = pgTable("admin_command_operations", {
   operationId: uuid("operation_id").primaryKey(), payloadHash: text("payload_hash").notNull(),
-  status: varchar("status", { length: 16 }).notNull(), httpStatus: smallint("http_status").notNull(),
-  responseJson: jsonb("response_json").$type<Readonly<Record<string, unknown>>>().notNull(),
+  action:varchar("action",{length:32}).notNull(),target:varchar("target",{length:128}),payloadJson:jsonb("payload_json").$type<Readonly<Record<string,unknown>>>().notNull(),adminUserId:uuid("admin_user_id").notNull(),adminSessionId:uuid("admin_session_id").notNull(),
+  status: varchar("status", { length: 20 }).notNull(), attemptCount:integer("attempt_count").notNull().default(0),nextRetryAt:timestamp("next_retry_at",{withTimezone:true}).notNull().defaultNow(),leaseToken:uuid("lease_token"),leaseGeneration:integer("lease_generation").notNull().default(0),leaseExpiresAt:timestamp("lease_expires_at",{withTimezone:true}),
+  resultJson: jsonb("result_json").$type<Readonly<Record<string, unknown>>>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [check("admin_command_operations_hash", sql`${table.payloadHash} ~ '^[a-f0-9]{64}$'`), check("admin_command_operations_status", sql`${table.status} in ('accepted','applied','audit_pending','completed','failed')`)]);
+}, (table) => [check("admin_command_operations_hash", sql`${table.payloadHash} ~ '^[a-f0-9]{64}$'`), check("admin_command_operations_status", sql`${table.status} in ('accepted','claimed','applied','audit_pending','completed','terminal_failed')`),check("admin_command_operations_lease",sql`(${table.status}='claimed' and ${table.leaseToken} is not null and ${table.leaseExpiresAt} is not null) or (${table.status}<>'claimed' and ${table.leaseToken} is null and ${table.leaseExpiresAt} is null)`),index("admin_command_operations_due_idx").on(table.nextRetryAt,table.createdAt)]);
 
 export type BattleResultSnapshot = Readonly<Record<string, unknown>>;
 

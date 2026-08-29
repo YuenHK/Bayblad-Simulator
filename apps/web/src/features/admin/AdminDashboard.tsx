@@ -68,12 +68,14 @@ export function AdminDashboard({
     [leaderboard, setLeaderboard] = useState<LeaderboardResponse>({ rows: [], total: 0, page: 1, pageSize: 25 }),
     [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null),
     [filters, setFilters] = useState(initialFilters),
+    [leaderboardPage,setLeaderboardPage]=useState(1),
     [selected, setSelected] = useState<Set<string>>(new Set()),
     [error, setError] = useState(""),
     [confirm, setConfirm] = useState<{
       action: string;
       payload: object;
       label: string;
+      operationId: string;
     } | null>(null),
     [password, setPassword] = useState(""),
     [mutationBusy, setMutationBusy] = useState(false),
@@ -107,6 +109,7 @@ export function AdminDashboard({
       queryController.current = controller;
       setError("");
       const params = filterParams(next),
+        leaderboardParams=filterParams({...next,page:leaderboardPage}),
         analyticsParams = new URLSearchParams({ from: next.from, to: next.to });
       if (next.className) analyticsParams.set("className", next.className);
       try {
@@ -123,7 +126,7 @@ export function AdminDashboard({
             ),
           ),
           guarded(() =>
-            requestJson(fetcher, `/api/admin/leaderboard?${params}`, { signal: controller.signal }, adminLeaderboardPageSchema),
+            requestJson(fetcher, `/api/admin/leaderboard?${leaderboardParams}`, { signal: controller.signal }, adminLeaderboardPageSchema),
           ),
           guarded(() =>
             requestJson(
@@ -149,7 +152,7 @@ export function AdminDashboard({
         );
       }
     },
-    [fetcher, guarded],
+    [fetcher, guarded,leaderboardPage],
   );
   useEffect(() => {
     setRecords({ ...emptyRecords, pageSize: filters.pageSize });
@@ -159,6 +162,7 @@ export function AdminDashboard({
     const timer = window.setTimeout(() => void query(filters), 250);
     return () => window.clearTimeout(timer);
   }, [filters, query]);
+  useEffect(()=>setLeaderboardPage(1),[filters.from,filters.to,filters.className,filters.identity,filters.device,filters.parameter]);
   useEffect(() => {
     const timer = window.setInterval(
       () =>
@@ -173,28 +177,32 @@ export function AdminDashboard({
   }, [fetcher, guarded]);
   useEffect(() => () => { exportController.current?.abort(); queryController.current?.abort(); }, []);
   const mutate = (action: string, payload: object, label: string) => {
-    if (!mutationBusy) setConfirm({ action, payload, label });
+    if (!mutationBusy) setConfirm({ action, payload, label, operationId: crypto.randomUUID() });
   };
   const runMutation = async () => {
     if (!confirm || mutationBusy) return;
     setMutationBusy(true);
     try {
-      await guarded(() =>
-        requestJson(fetcher, "/api/admin/rooms/actions", {
+      const outcome=await guarded(() =>
+        requestJson<{operationId:string;status:string}>(fetcher, "/api/admin/rooms/actions", {
           method: "POST",
           headers: jsonHeaders(session.csrfToken),
           body: JSON.stringify({
             action: confirm.action,
             ...confirm.payload,
             password,
-            operationId: crypto.randomUUID(),
+            operationId: confirm.operationId,
           }),
         }),
       );
+      let status=outcome.status;
+      for(let attempt=0;status!=="completed"&&status!=="terminal_failed"&&attempt<20;attempt+=1){await new Promise(resolve=>window.setTimeout(resolve,250));const polled=await guarded(()=>requestJson<{status:string}>(fetcher,`/api/admin/rooms/actions/${confirm.operationId}`));status=polled.status;}
+      if(status!=="completed")throw new Error(status==="terminal_failed"?"ADMIN_COMMAND_FAILED":"ADMIN_COMMAND_PENDING");
       await query(filters);
       setConfirm(null);
     } catch {
-      setError("管理操作失敗，房間狀態未更改。");
+      try{const recovered=await guarded(()=>requestJson<{status:string}>(fetcher,`/api/admin/rooms/actions/${confirm.operationId}`));if(recovered.status==="completed"){await query(filters);setConfirm(null);return;}}catch{/* operation may not have reached server */}
+      setError("管理操作仍在處理或暫時失敗；可使用同一確認視窗重試。");
     } finally {
       setPassword("");
       setMutationBusy(false);
@@ -335,7 +343,7 @@ export function AdminDashboard({
           })
         }
       />
-      <LeaderboardTable data={leaderboard} />
+      <LeaderboardTable data={leaderboard} onPage={setLeaderboardPage} />
       {analytics ? (
         <AnalyticsCharts data={analytics} />
       ) : (
