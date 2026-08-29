@@ -26,7 +26,7 @@ export BACKUP_SIGNER_ID='steam-top-backup-2026'
 ./infra/backup/backup.sh
 ```
 
-備份及還原腳本只會使用相對於腳本目錄的 `apps/server/dist/admin/deletion-ledger-cli.js`，並以版本庫內唯讀的 `trusted-ledger-cli.sha256` 核對；正式環境不能用環境變數改寫路徑或摘要。每次可信建置更新 CLI 後，部署程序必須同步更新此摘要檔並保持擁有者及不可由群組／其他使用者寫入。測試替身只可在 `APP_ENV=test`、`ALLOW_TEST_LEDGER_CLI_INJECTION=yes` 同時成立時注入。
+備份及還原腳本只會使用相對於腳本目錄的 `apps/server/dist/admin/deletion-ledger-cli.js`，並以版本庫內唯讀的 `trusted-ledger-cli.sha256` 核對；任何環境均不能用環境變數改寫可執行檔路徑或摘要。每次可信建置更新 CLI 後，部署程序必須同步更新此摘要檔並保持擁有者及不可由群組／其他使用者寫入。無效或重複的備份組會移至私有 `.quarantine`；隔離區最多保留 20 組、總容量 1 GiB、最長 7 日，清理結果會輸出為操作遙測。
 腳本先在只讀 repeatable-read transaction 以 `pg_export_snapshot()` 固定快照；刪除稽核列數與 `pg_dump --snapshot` 因而來自完全相同的資料狀態，再把 custom-format dump 串流到 age recipient 加密。每個唯一 staging 目錄內的密文、checksum、manifest、ledger snapshot 及 OpenSSH 簽署會逐一 `fsync`；`COMPLETE` 最後寫入，再原子改名及同步父目錄。只有完整目錄才可還原。manifest 不包含 URL、密碼、學生姓名或篩選內容。
 
 `DELETION_LEDGER_FILE` 是備份目錄以外、`0600` 的外部 append-only tombstone。`P` 同時保存資料庫 instance UUID 與 operation digest；提交後只可追加一次相符的 `C`，已知未執行只可追加一次 `A`。嚴格狀態機會拒絕孤立、重複、錯 digest 或互相衝突的紀錄。備份必須經正式 Node CLI 的 `snapshot` 子命令，在與寫入相同的 PID／OS process-start 鎖下取得一致副本；仍存活的程序即使暫停亦永不被搶鎖。任何未解決的 `P` 會令備份 fail closed；禁止手工追加或修改 ledger。運維人員只能使用用途為 `deletion_reconcile` 的一次性 reauth grant、完全確認字句及授權環境呼叫 CLI `reconcile`；CLI 會核對目前資料庫 instance UUID 及 `deletion_audit`。資料庫不可用、instance 不符或 grant 無效時不會改動 ledger。
