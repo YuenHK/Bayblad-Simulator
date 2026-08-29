@@ -1,0 +1,27 @@
+services:
+  db:
+    image: ${DATABASE_IMAGE:-steam-top-db:ci}
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+      args:
+        POSTGRES_IMAGE_REPOSITORY: ${POSTGRES_IMAGE_REPOSITORY:?POSTGRES_IMAGE_REPOSITORY is required}
+        POSTGRES_IMAGE_DIGEST: ${POSTGRES_IMAGE_DIGEST:?POSTGRES_IMAGE_DIGEST is required}
+  server:
+    image: ${SERVER_IMAGE:-steam-top-server:ci}
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      args:
+        NODE_IMAGE_REPOSITORY: ${NODE_IMAGE_REPOSITORY:?NODE_IMAGE_REPOSITORY is required}
+        NODE_IMAGE_DIGEST: ${NODE_IMAGE_DIGEST:?NODE_IMAGE_DIGEST is required}
+  web:
+    image: ${WEB_IMAGE:-steam-top-web:ci}
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        NODE_IMAGE_REPOSITORY: ${NODE_IMAGE_REPOSITORY:?NODE_IMAGE_REPOSITORY is required}
+        NODE_IMAGE_DIGEST: ${NODE_IMAGE_DIGEST:?NODE_IMAGE_DIGEST is required}
+        CADDY_IMAGE_REPOSITORY: ${CADDY_IMAGE_REPOSITORY:?CADDY_IMAGE_REPOSITORY is required}
+        CADDY_IMAGE_DIGEST: ${CADDY_IMAGE_DIGEST:?CADDY_IMAGE_DIGEST is required}

@@ -1,23 +1,23 @@
 name: CI quality and release gates
-
-on:
-  push:
-  pull_request:
-
+on: [push, pull_request]
+permissions:
+  contents: read
 env:
   NODE_VERSION: 24.13.0
   PNPM_VERSION: 11.19.0
-
+  NODE_IMAGE_REPOSITORY: node
+  NODE_IMAGE_DIGEST: sha256:4660b1ca8b28d6d1906fd644abe34b2ed81d15434d26d845ef0aced307cf4b6f
+  POSTGRES_IMAGE_REPOSITORY: postgres
+  POSTGRES_IMAGE_DIGEST: sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
+  CADDY_IMAGE_REPOSITORY: caddy
+  CADDY_IMAGE_DIGEST: sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 jobs:
   quality:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:16.13-bookworm
-        env:
-          POSTGRES_USER: steam_top_test
-          POSTGRES_PASSWORD: steam_top_test
-          POSTGRES_DB: steam_top_test
+        image: postgres@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
+        env: { POSTGRES_USER: steam_top_test, POSTGRES_PASSWORD: steam_top_test, POSTGRES_DB: steam_top_test }
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U steam_top_test -d steam_top_test"
@@ -25,14 +25,12 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql://steam_top_test:steam_top_test@127.0.0.1:5432/steam_top_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.19.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.0
-          cache: pnpm
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4
+        with: { version: 11.19.0 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24.13.0, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
@@ -41,7 +39,6 @@ jobs:
       - run: pnpm --filter @steam-top/server test:postgres
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
-
   production-security:
     runs-on: ubuntu-24.04
     needs: quality
@@ -49,8 +46,9 @@ jobs:
       PUBLIC_ORIGIN: https://localhost
       SECURITY_HTTP_ORIGIN: http://localhost
       SECURITY_HTTPS_ORIGIN: https://localhost
-      SECURITY_TLS_INSECURE: "true"
-      DEPLOYMENT_VERSION: ci
+      SERVER_IMAGE: steam-top-server:ci
+      WEB_IMAGE: steam-top-web:ci
+      DATABASE_IMAGE: steam-top-db:ci
       POSTGRES_DB: steam_top
       POSTGRES_USER: steam_top
       POSTGRES_PASSWORD: ci-postgres-password
@@ -66,39 +64,72 @@ jobs:
       ICLASS_MODE: guest-only-explicit
       POSTGRES_TLS_CERT_PATH: .ci/tls/server.crt
       POSTGRES_TLS_KEY_PATH: .ci/tls/server.key
-      NODE_IMAGE_REPOSITORY: node
-      POSTGRES_IMAGE_REPOSITORY: postgres
-      CADDY_IMAGE_REPOSITORY: caddy
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.19.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.0
-          cache: pnpm
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4
+        with: { version: 11.19.0 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24.13.0, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
-      - name: Resolve immutable base-image digests
-        shell: bash
-        run: |
-          set -euo pipefail
-          for item in NODE=node:24.13.0-bookworm-slim POSTGRES=postgres:16.13-bookworm CADDY=caddy:2.10.2-alpine; do
-            key="${item%%=*}"; image="${item#*=}"
-            docker pull "$image"
-            digest="$(docker image inspect "$image" --format '{{index .RepoDigests 0}}' | cut -d@ -f2)"
-            test -n "$digest"
-            printf '%s_IMAGE_DIGEST=%s\n' "$key" "$digest" >> "$GITHUB_ENV"
-          done
+      - name: Validate reviewed immutable base-image inputs
+        run: node scripts/validate-deployment-env.mjs --base-only
+        env: { PUBLIC_ORIGIN: "https://localhost" }
       - name: Create ephemeral PostgreSQL TLS material
         run: |
           mkdir -p .ci/tls
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=db -addext subjectAltName=DNS:db -keyout .ci/tls/server.key -out .ci/tls/server.crt
           chmod 600 .ci/tls/server.key
       - run: pnpm validate:caddy
-      - run: docker compose build
-      - run: docker compose up -d --wait
+      - run: docker compose -f compose.yaml -f compose.build.yaml build
+      - run: docker compose -f compose.yaml -f compose.build.yaml up -d --wait
+      - name: Prove untrusted TLS fails, then install the exact Caddy root
+        shell: bash
+        run: |
+          set -euo pipefail
+          if curl --noproxy '*' --fail --silent https://localhost/ >/dev/null 2>&1; then echo "TLS unexpectedly trusted before CA installation" >&2; exit 1; fi
+          docker compose -f compose.yaml -f compose.build.yaml cp caddy:/data/caddy/pki/authorities/local/root.crt "$GITHUB_WORKSPACE/.ci/caddy-root.crt"
+          test -s "$GITHUB_WORKSPACE/.ci/caddy-root.crt"
+          curl --noproxy '*' --fail --silent --show-error --cacert "$GITHUB_WORKSPACE/.ci/caddy-root.crt" https://localhost/ >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y libnss3-tools
+          sudo cp "$GITHUB_WORKSPACE/.ci/caddy-root.crt" /usr/local/share/ca-certificates/steam-top-ci.crt
+          sudo update-ca-certificates
+          mkdir -p "$HOME/.pki/nssdb"
+          certutil -N --empty-password -d "sql:$HOME/.pki/nssdb" 2>/dev/null || true
+          certutil -A -d "sql:$HOME/.pki/nssdb" -n steam-top-ci -t "C,," -i "$GITHUB_WORKSPACE/.ci/caddy-root.crt"
+          printf 'SECURITY_TLS_CA_FILE=%s\nNODE_EXTRA_CA_CERTS=%s\n' "$GITHUB_WORKSPACE/.ci/caddy-root.crt" "$GITHUB_WORKSPACE/.ci/caddy-root.crt" >> "$GITHUB_ENV"
+      - name: Verify strict Node TLS before browser security tests
+        run: node -e 'require("https").get(process.env.SECURITY_HTTPS_ORIGIN,res=>{if(res.statusCode!==200)process.exit(1);res.resume()}).on("error",error=>{console.error(error);process.exit(1)})'
       - run: pnpm test:security
       - if: always()
-        run: docker compose down -v
+        run: docker compose -f compose.yaml -f compose.build.yaml down -v
+  release-images:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    needs: [quality, production-security]
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - name: Authenticate only for immutable GHCR publication
+        shell: bash
+        run: printf '%s' '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+      - name: Build and publish application images with provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}/steam-top"
+          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file .release/server.json --tag "$repository/server:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST -f Dockerfile.server .
+          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file .release/web.json --tag "$repository/web:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST --build-arg CADDY_IMAGE_REPOSITORY --build-arg CADDY_IMAGE_DIGEST -f Dockerfile.web .
+          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file .release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
+          node scripts/create-release-manifest.mjs "$GITHUB_SHA" "$repository" .release/server.json .release/web.json .release/database.json .release/release-manifest.json
+          sha256sum .release/*.json > .release/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-manifest-${{ github.sha }}
+          path: .release/
+          if-no-files-found: error
+          retention-days: 90

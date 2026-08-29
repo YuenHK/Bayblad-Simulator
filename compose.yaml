@@ -10,12 +10,7 @@ x-service-hardening: &service-hardening
 
 services:
   db:
-    build:
-      context: .
-      dockerfile: Dockerfile.db
-      args:
-        POSTGRES_IMAGE_REPOSITORY: ${POSTGRES_IMAGE_REPOSITORY:?POSTGRES_IMAGE_REPOSITORY is required}
-        POSTGRES_IMAGE_DIGEST: ${POSTGRES_IMAGE_DIGEST:?POSTGRES_IMAGE_DIGEST is required}
+    image: ${DATABASE_IMAGE:?DATABASE_IMAGE must be an immutable repository@sha256 reference}
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-steam_top}
@@ -44,7 +39,7 @@ services:
 
   migration:
     <<: *service-hardening
-    image: steam-top-server:${DEPLOYMENT_VERSION:-local}
+    image: ${SERVER_IMAGE:?SERVER_IMAGE must be an immutable repository@sha256 reference}
     restart: "no"
     command: ["./scripts/migrate-and-start.sh", "--migrate-only"]
     environment:
@@ -64,13 +59,7 @@ services:
 
   server:
     <<: *service-hardening
-    image: steam-top-server:${DEPLOYMENT_VERSION:-local}
-    build:
-      context: .
-      dockerfile: Dockerfile.server
-      args:
-        NODE_IMAGE_REPOSITORY: ${NODE_IMAGE_REPOSITORY:?NODE_IMAGE_REPOSITORY is required}
-        NODE_IMAGE_DIGEST: ${NODE_IMAGE_DIGEST:?NODE_IMAGE_DIGEST is required}
+    image: ${SERVER_IMAGE:?SERVER_IMAGE must be an immutable repository@sha256 reference}
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
@@ -125,14 +114,7 @@ services:
 
   web:
     <<: *service-hardening
-    build:
-      context: .
-      dockerfile: Dockerfile.web
-      args:
-        NODE_IMAGE_REPOSITORY: ${NODE_IMAGE_REPOSITORY:?NODE_IMAGE_REPOSITORY is required}
-        NODE_IMAGE_DIGEST: ${NODE_IMAGE_DIGEST:?NODE_IMAGE_DIGEST is required}
-        CADDY_IMAGE_REPOSITORY: ${CADDY_IMAGE_REPOSITORY:?CADDY_IMAGE_REPOSITORY is required}
-        CADDY_IMAGE_DIGEST: ${CADDY_IMAGE_DIGEST:?CADDY_IMAGE_DIGEST is required}
+    image: ${WEB_IMAGE:?WEB_IMAGE must be an immutable repository@sha256 reference}
     tmpfs:
       - /tmp:size=16m,noexec,nosuid,nodev
       - /config:size=16m,nosuid,nodev

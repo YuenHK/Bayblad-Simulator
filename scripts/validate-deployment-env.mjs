@@ -1,10 +1,17 @@
 import { readFileSync } from "node:fs";
 
 const values = { ...process.env };
-if (process.argv[2]) {
-  for (const line of readFileSync(process.argv[2], "utf8").split(/\r?\n/u)) {
+const baseOnly = process.argv.includes("--base-only");
+const environmentFile = process.argv.slice(2).find((value) => value !== "--base-only");
+if (environmentFile) {
+  for (const line of readFileSync(environmentFile, "utf8").split(/\r?\n/u)) {
     const match = /^([A-Z][A-Z0-9_]*)=(.*)$/u.exec(line);
     if (match) values[match[1]] = match[2];
+  }
+}
+if (!baseOnly) {
+  for (const name of ["SERVER_IMAGE", "WEB_IMAGE", "DATABASE_IMAGE"]) {
+    if (!/^[a-z0-9][a-z0-9._\/-]*@sha256:[a-f0-9]{64}$/u.test(values[name] ?? "")) throw new Error(`${name} must be repository@sha256:<64 lowercase hex>`);
   }
 }
 for (const prefix of ["NODE", "POSTGRES", "CADDY"]) {

@@ -25,10 +25,12 @@ describe("static production deployment contract", () => {
   });
 
   it("requires immutable image references and validates them before deployment", () => {
+    const buildCompose = read("compose.build.yaml");
     for (const prefix of ["NODE", "POSTGRES", "CADDY"]) {
-      expect(compose).toContain(`\${${prefix}_IMAGE_REPOSITORY:?`);
-      expect(compose).toContain(`\${${prefix}_IMAGE_DIGEST:?`);
+      expect(buildCompose).toContain(`\${${prefix}_IMAGE_REPOSITORY:?`);
+      expect(buildCompose).toContain(`\${${prefix}_IMAGE_DIGEST:?`);
     }
+    for (const name of ["SERVER_IMAGE", "WEB_IMAGE", "DATABASE_IMAGE"]) expect(compose).toContain(`\${${name}:?`);
     expect(read("Dockerfile.server")).toContain("${NODE_IMAGE_REPOSITORY}@${NODE_IMAGE_DIGEST}");
     expect(read("scripts/validate-deployment-env.mjs")).toContain("^sha256:");
   });
