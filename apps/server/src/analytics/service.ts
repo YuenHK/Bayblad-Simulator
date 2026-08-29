@@ -50,7 +50,13 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
       (select summary_date,filter_hash from analytics_daily_summaries order by refreshed_at desc,summary_date desc,filter_hash offset 10000)`;
   }
   async exclusive<T>(hash: string, operation: () => Promise<T>): Promise<T> {
-    return this.sql.begin(async (transaction) => { await transaction`set transaction isolation level repeatable read`;const [clock]=await transaction<{cutoff:Date}[]>`select transaction_timestamp() cutoff`;await transaction`select pg_advisory_xact_lock(hashtextextended(${hash}, 1937002026))`; return this.#transaction.run({executor:transaction as unknown as DatabaseClient["sql"],cutoff:clock!.cutoff}, operation); }) as Promise<T>;
+    const reserved=await this.sql.reserve();let locked=false;
+    try {
+      await reserved`select pg_advisory_lock(hashtextextended(${hash}, 1937002026))`;locked=true;
+      return await reserved.begin(async (transaction) => { await transaction`set transaction isolation level repeatable read`;const [clock]=await transaction<{cutoff:Date}[]>`select transaction_timestamp() cutoff`;return this.#transaction.run({executor:transaction as unknown as DatabaseClient["sql"],cutoff:clock!.cutoff}, operation); }) as T;
+    } finally {
+      try {if(locked)await reserved`select pg_advisory_unlock(hashtextextended(${hash}, 1937002026))`;} finally {await reserved.release();}
+    }
   }
 }
 
