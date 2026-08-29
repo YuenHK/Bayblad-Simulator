@@ -26,10 +26,19 @@ export BACKUP_SIGNER_ID='steam-top-backup-2026'
 ./infra/backup/backup.sh
 ```
 
-備份及還原腳本只會使用相對於腳本目錄的 `apps/server/dist/admin/deletion-ledger-cli.js`，並以版本庫內唯讀的 `trusted-ledger-cli.sha256` 核對；任何環境均不能用環境變數改寫可執行檔路徑或摘要。每次可信建置更新 CLI 後，部署程序必須同步更新此摘要檔並保持擁有者及不可由群組／其他使用者寫入。無效或重複的備份組會移至私有 `.quarantine`；隔離區最多保留 20 組、總容量 1 GiB、最長 7 日，清理結果會輸出為操作遙測。
+備份及還原腳本只會使用相對於腳本目錄的 `apps/server/dist/admin/deletion-ledger-cli.js`，並以版本庫內唯讀的 `trusted-ledger-cli.sha256` 核對；任何環境均不能用環境變數改寫可執行檔路徑或摘要。可信建置完成及摘要核對後，部署管理員須把整個 release 目錄設為 `root:root` 並移除群組／其他使用者寫入權限，再把 CLI 設為 `0555`、摘要 manifest 設為 `0444`；正式 app／備份／還原帳戶必須是另一個非 root UID。腳本會同時核對 UID、mode 及不可替換的部署目錄，root 執行或 runtime 可改寫均 fail closed。無效或重複的備份組會移至私有 `.quarantine`；隔離區最多保留 20 組、總容量 1 GiB、最長 7 日，清理結果會輸出為操作遙測。
+
+```bash
+sudo chown -R root:root /opt/steam-top/releases/目前版本
+sudo find /opt/steam-top/releases/目前版本 -type d -exec chmod go-w {} +
+sudo chmod 0555 /opt/steam-top/releases/目前版本/apps/server/dist/admin/deletion-ledger-cli.js
+sudo chmod 0444 /opt/steam-top/releases/目前版本/infra/backup/trusted-ledger-cli.sha256
+```
 腳本先在只讀 repeatable-read transaction 以 `pg_export_snapshot()` 固定快照；刪除稽核列數與 `pg_dump --snapshot` 因而來自完全相同的資料狀態，再把 custom-format dump 串流到 age recipient 加密。每個唯一 staging 目錄內的密文、checksum、manifest、ledger snapshot 及 OpenSSH 簽署會逐一 `fsync`；`COMPLETE` 最後寫入，再原子改名及同步父目錄。只有完整目錄才可還原。manifest 不包含 URL、密碼、學生姓名或篩選內容。
 
 `DELETION_LEDGER_FILE` 是備份目錄以外、`0600` 的外部 append-only tombstone。`P` 同時保存資料庫 instance UUID 與 operation digest；提交後只可追加一次相符的 `C`，已知未執行只可追加一次 `A`。嚴格狀態機會拒絕孤立、重複、錯 digest 或互相衝突的紀錄。備份必須經正式 Node CLI 的 `snapshot` 子命令，在與寫入相同的 PID／OS process-start 鎖下取得一致副本；仍存活的程序即使暫停亦永不被搶鎖。任何未解決的 `P` 會令備份 fail closed；禁止手工追加或修改 ledger。運維人員只能使用用途為 `deletion_reconcile` 的一次性 reauth grant、完全確認字句及授權環境呼叫 CLI `reconcile`；CLI 會核對目前資料庫 instance UUID 及 `deletion_audit`。資料庫不可用、instance 不符或 grant 無效時不會改動 ledger。
+
+一般 app、備份及還原程序永遠不會移除既有 canonical lock；即使 owner PID 已不存在，也只會回報 `STALE_LOCK_REQUIRES_MAINTENANCE`。若主機崩潰遺下 lock，必須安排離線維護時段：先停止並確認所有 app、worker、備份及還原程序均已停止；由 root 建立 `0600`、root-owned 的 maintenance marker，人工輸入完全相符字句 `I_CONFIRM_ALL_STEAM_TOP_APP_BACKUP_RESTORE_PROCESSES_ARE_STOPPED`，再於 ledger 同一檔案系統把 canonical lock單次原子改名至 root-only 隔離目錄。不得直接刪除、不得循環重試，也不得在服務仍運作時執行；改名後先保存 lock owner、inode、時間及操作者紀錄，確認 ledger 狀態機完整，才重新啟動服務。這是獨立的離線事故程序，不是日常 caller 的自動回收功能。
 
 ## 私鑰及輪替
 
