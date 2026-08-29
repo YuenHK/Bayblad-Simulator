@@ -1,4 +1,4 @@
-import type { ClaimedRoomProjection, RoomProjectionInput, RoomProjectionStore } from "./room-projection-store";
+import type { ClaimedRoomProjection, PreparedRoomProjection, RoomProjectionInput, RoomProjectionStore } from "./room-projection-store";
 
 export type RoomProjectionOperation = () => Promise<void>;
 
@@ -63,6 +63,9 @@ export class RoomProjectionCoordinator {
     this.#pendingEnqueues.add(operation);
     return operation;
   }
+  async prepareProjection(input: RoomProjectionInput): Promise<PreparedRoomProjection> { if (this.#closed || !this.#store) throw new Error("ROOM_PROJECTION_COORDINATOR_CLOSED"); return this.#store.prepare(input); }
+  async commitProjection(prepared: PreparedRoomProjection): Promise<void> { if (!this.#store || !await this.#store.commitPrepared(prepared)) throw new Error("ROOM_PROJECTION_COMMIT_FENCE"); }
+  async abortProjection(prepared: PreparedRoomProjection): Promise<void> { if (!this.#store || !await this.#store.abortPrepared(prepared)) throw new Error("ROOM_PROJECTION_ABORT_FENCE"); }
   get usesDurableStore(): boolean { return this.#store !== null; }
   async #run(key: string, entry: Entry): Promise<void> {
     if (this.#closed || this.#entries.get(key) !== entry) return;

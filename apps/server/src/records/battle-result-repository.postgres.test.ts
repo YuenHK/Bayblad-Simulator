@@ -90,6 +90,12 @@ it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it 
   expect(await roomsRepository.applyProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null })).toBe(false);
   expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "closed", appliedProjectionRevision: 5 });
   expect((await client.db.select().from(roomParticipants).where(eq(roomParticipants.roomId, roomId))).every((participant) => participant.leftAt !== null)).toBe(true);
+  const [closedJob] = await first.claimDue(1, new Date("2099-01-04")); expect(closedJob).toBeDefined(); await first.complete(closedJob!);
+  const prepared = await first.prepare({ roomId, revision: 6, payload: { phase: "result", firstBattleAt: null, closedAt: null } });
+  expect(await second.claimDue(1, new Date("2099-01-05"))).toHaveLength(0);
+  expect(await first.abortPrepared(prepared)).toBe(true);
+  const replacement = await second.prepare({ roomId, revision: 6, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
+  expect(await first.commitPrepared(prepared)).toBe(false); expect(await second.commitPrepared(replacement)).toBe(true);
 }, 30_000);
 
 afterAll(async () => {

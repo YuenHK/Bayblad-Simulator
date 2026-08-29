@@ -542,6 +542,7 @@ export const roomProjectionJobs = pgTable(
     payloadHash: text("payload_hash").notNull(),
     payloadJson: jsonb("payload_json").$type<Readonly<Record<string, unknown>>>().notNull(),
     status: varchar("status", { length: 16 }).notNull().default("pending"),
+    reservationToken: uuid("reservation_token"),
     attemptCount: integer("attempt_count").notNull().default(0),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
     leaseToken: uuid("lease_token"),
@@ -555,9 +556,10 @@ export const roomProjectionJobs = pgTable(
     index("room_projection_jobs_due_idx").on(table.status, table.nextAttemptAt, table.createdAt),
     check("room_projection_jobs_revision", sql`${table.revision} >= 0`),
     check("room_projection_jobs_payload_hash", sql`${table.payloadHash} ~ '^[a-f0-9]{64}$'`),
-    check("room_projection_jobs_status", sql`${table.status} in ('pending','leased','dead')`),
+    check("room_projection_jobs_status", sql`${table.status} in ('prepared','pending','leased','dead','aborted')`),
     check("room_projection_jobs_attempts", sql`${table.attemptCount} >= 0 and ${table.generation} >= 0`),
     check("room_projection_jobs_lease", sql`(${table.status} = 'leased' and ${table.leaseToken} is not null and ${table.leaseUntil} is not null) or (${table.status} <> 'leased' and ${table.leaseToken} is null and ${table.leaseUntil} is null)`),
+    check("room_projection_jobs_reservation", sql`(${table.status} = 'prepared' and ${table.reservationToken} is not null) or (${table.status} <> 'prepared' and ${table.reservationToken} is null)`),
   ],
 );
 

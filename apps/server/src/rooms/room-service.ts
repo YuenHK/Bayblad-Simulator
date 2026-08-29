@@ -230,6 +230,7 @@ export class RoomService {
       this.#transaction(roomId, () => this.#sweepRoom(roomId));
     }
   }
+  sweepRoom(roomId: string): void { if (this.#rooms.has(roomId)) this.#transaction(roomId, () => this.#sweepRoom(roomId)); }
 
   roomsDueForClosure(): readonly Readonly<{ roomId: string; revision: number }>[] {
     const now = this.#dependencies.now();

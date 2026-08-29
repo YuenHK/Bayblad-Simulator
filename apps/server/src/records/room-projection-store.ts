@@ -21,9 +21,13 @@ export type ClaimedRoomProjection = RoomProjectionInput & Readonly<{
   generation: number;
   leaseToken: string;
 }>;
+export type PreparedRoomProjection = RoomProjectionInput & Readonly<{ reservationToken: string }>;
 
 export interface RoomProjectionStore {
   enqueue(input: RoomProjectionInput): Promise<"created" | "updated" | "stale">;
+  prepare(input: RoomProjectionInput): Promise<PreparedRoomProjection>;
+  commitPrepared(prepared: PreparedRoomProjection): Promise<boolean>;
+  abortPrepared(prepared: PreparedRoomProjection): Promise<boolean>;
   claimDue(limit: number, now?: Date): Promise<readonly ClaimedRoomProjection[]>;
   complete(claim: ClaimedRoomProjection): Promise<boolean>;
   fail(claim: ClaimedRoomProjection, errorCode: string, now?: Date): Promise<boolean>;
@@ -33,7 +37,8 @@ export interface RoomProjectionStore {
 export class RoomProjectionConflictError extends Error { constructor() { super("ROOM_PROJECTION_CONFLICT"); this.name = "RoomProjectionConflictError"; } }
 
 type MemoryEntry = RoomProjectionInput & {
-  status: "pending" | "leased" | "dead";
+  status: "prepared" | "pending" | "leased" | "dead" | "aborted";
+  reservationToken: string | null;
   attempt: number;
   generation: number;
   leaseToken: string | null;
@@ -70,18 +75,34 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
     if (!current && this.#entries.size >= this.#maxEntries) throw new Error("ROOM_PROJECTION_CAPACITY");
     const now = this.#now();
     this.#entries.set(input.roomId, {
-      ...structuredClone(input), status: "pending", attempt: 0,
+      ...structuredClone(input), status: "pending", reservationToken: null, attempt: 0,
       generation: (current?.generation ?? 0) + 1, leaseToken: null,
       leaseUntil: null, nextAttemptAt: now, createdAt: current?.createdAt ?? now, updatedAt: now,
       lastError: null,
     });
     return current ? "updated" : "created";
   }
+  async prepare(input: RoomProjectionInput): Promise<PreparedRoomProjection> {
+    if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new RangeError("invalid room projection revision");
+    const current = this.#entries.get(input.roomId);
+    if (current && current.revision > input.revision) throw new RoomProjectionConflictError();
+    if (current && current.revision === input.revision && current.status !== "aborted") {
+      if (JSON.stringify(current.payload) !== JSON.stringify(input.payload)) throw new RoomProjectionConflictError();
+      if (current.status === "prepared" && current.reservationToken) return { ...structuredClone(input), reservationToken: current.reservationToken };
+      throw new RoomProjectionConflictError();
+    }
+    if (!current && this.#entries.size >= this.#maxEntries) throw new Error("ROOM_PROJECTION_CAPACITY");
+    const now = this.#now(); const reservationToken = randomUUID();
+    this.#entries.set(input.roomId, { ...structuredClone(input), status: "prepared", reservationToken, attempt: 0, generation: (current?.generation ?? 0) + 1, leaseToken: null, leaseUntil: null, nextAttemptAt: now, createdAt: current?.createdAt ?? now, updatedAt: now, lastError: null });
+    return { ...structuredClone(input), reservationToken };
+  }
+  async commitPrepared(prepared: PreparedRoomProjection): Promise<boolean> { const entry = this.#entries.get(prepared.roomId); if (!entry || entry.status !== "prepared" || entry.revision !== prepared.revision || entry.reservationToken !== prepared.reservationToken || JSON.stringify(entry.payload) !== JSON.stringify(prepared.payload)) return false; entry.status = "pending"; entry.reservationToken = null; entry.updatedAt = this.#now(); return true; }
+  async abortPrepared(prepared: PreparedRoomProjection): Promise<boolean> { const entry = this.#entries.get(prepared.roomId); if (!entry || entry.status !== "prepared" || entry.revision !== prepared.revision || entry.reservationToken !== prepared.reservationToken || JSON.stringify(entry.payload) !== JSON.stringify(prepared.payload)) return false; entry.status = "aborted"; entry.reservationToken = null; entry.updatedAt = this.#now(); return true; }
 
   async claimDue(limit: number, now = this.#now()): Promise<readonly ClaimedRoomProjection[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid room projection claim limit");
     const due = [...this.#entries.values()]
-      .filter((entry) => entry.status !== "dead" && entry.nextAttemptAt <= now && (entry.status !== "leased" || !entry.leaseUntil || entry.leaseUntil <= now))
+      .filter((entry) => ["pending", "leased"].includes(entry.status) && entry.nextAttemptAt <= now && (entry.status !== "leased" || !entry.leaseUntil || entry.leaseUntil <= now))
       .sort((left, right) => left.nextAttemptAt.getTime() - right.nextAttemptAt.getTime() || left.createdAt.getTime() - right.createdAt.getTime() || left.roomId.localeCompare(right.roomId))
       .slice(0, limit);
     return due.map((entry) => {
@@ -157,7 +178,7 @@ export class PostgresRoomProjectionStore implements RoomProjectionStore {
       await tx.update(roomProjectionJobs).set({
         revision: input.revision, payloadHash, payloadJson: payload,
         status: "pending", attemptCount: 0, nextAttemptAt: now,
-        leaseToken: null, leaseUntil: null, lastError: null,
+        reservationToken: null, leaseToken: null, leaseUntil: null, lastError: null,
         generation: existing.generation + 1, updatedAt: now,
       }).where(and(eq(roomProjectionJobs.roomId, input.roomId), eq(roomProjectionJobs.revision, existing.revision)));
       return "updated" as const;
@@ -166,6 +187,25 @@ export class PostgresRoomProjectionStore implements RoomProjectionStore {
       throw error;
     }
   }
+
+  async prepare(input: RoomProjectionInput): Promise<PreparedRoomProjection> {
+    const payload = payloadSchema.parse(input.payload); const payloadHash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    return this.db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(roomProjectionJobs).where(eq(roomProjectionJobs.roomId, input.roomId)).for("update").limit(1);
+      if (existing && existing.revision > input.revision) throw new RoomProjectionConflictError();
+      if (existing?.revision === input.revision && existing.status !== "aborted") {
+        if (existing.payloadHash !== payloadHash) throw new RoomProjectionConflictError();
+        if (existing.status === "prepared" && existing.reservationToken) return { ...input, reservationToken: existing.reservationToken };
+        throw new RoomProjectionConflictError();
+      }
+      const reservationToken = randomUUID(); const now = new Date();
+      if (!existing) await tx.insert(roomProjectionJobs).values({ roomId: input.roomId, revision: input.revision, payloadHash, payloadJson: payload, status: "prepared", reservationToken, nextAttemptAt: now });
+      else await tx.update(roomProjectionJobs).set({ revision: input.revision, payloadHash, payloadJson: payload, status: "prepared", reservationToken, attemptCount: 0, leaseToken: null, leaseUntil: null, lastError: null, generation: existing.generation + 1, updatedAt: now }).where(and(eq(roomProjectionJobs.roomId, input.roomId), eq(roomProjectionJobs.generation, existing.generation)));
+      return { ...input, reservationToken };
+    });
+  }
+  async commitPrepared(prepared: PreparedRoomProjection): Promise<boolean> { const payloadHash = createHash("sha256").update(JSON.stringify(prepared.payload)).digest("hex"); const rows = await this.db.update(roomProjectionJobs).set({ status: "pending", reservationToken: null, nextAttemptAt: new Date(), updatedAt: new Date() }).where(and(eq(roomProjectionJobs.roomId, prepared.roomId), eq(roomProjectionJobs.revision, prepared.revision), eq(roomProjectionJobs.payloadHash, payloadHash), eq(roomProjectionJobs.status, "prepared"), eq(roomProjectionJobs.reservationToken, prepared.reservationToken))).returning({ id: roomProjectionJobs.roomId }); return rows.length === 1; }
+  async abortPrepared(prepared: PreparedRoomProjection): Promise<boolean> { const payloadHash = createHash("sha256").update(JSON.stringify(prepared.payload)).digest("hex"); const rows = await this.db.update(roomProjectionJobs).set({ status: "aborted", reservationToken: null, updatedAt: new Date() }).where(and(eq(roomProjectionJobs.roomId, prepared.roomId), eq(roomProjectionJobs.revision, prepared.revision), eq(roomProjectionJobs.payloadHash, payloadHash), eq(roomProjectionJobs.status, "prepared"), eq(roomProjectionJobs.reservationToken, prepared.reservationToken))).returning({ id: roomProjectionJobs.roomId }); return rows.length === 1; }
 
   async claimDue(limit: number, now = new Date()): Promise<readonly ClaimedRoomProjection[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid room projection claim limit");
