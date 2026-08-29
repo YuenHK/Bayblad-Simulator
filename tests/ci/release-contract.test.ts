@@ -167,6 +167,9 @@ describe("rollback deletion monotonicity", () => {
     expect(promotion).toContain(".promotion-reserved");
     expect(promotion).toContain("reconcile-promotion-ready.sh");
     expect(promotion).toContain("promotion_outbox");
+    const reconcilePromotion = read("infra/backup/reconcile-promotion-ready.sh");
+    expect(reconcilePromotion).toContain(".promotion-ready.$nonce.$$");
+    expect(reconcilePromotion).toContain('r.promotionNonce!==process.argv[8]');
     const finalize = read("infra/backup/finalize-cutover.sh");
     expect(finalize).not.toContain("DATABASE_URL_CUTOVER_SUCCEEDED");
     expect(finalize).not.toContain("readarray");
@@ -176,6 +179,7 @@ describe("rollback deletion monotonicity", () => {
     expect(finalize).toContain("promotion_audit");
     expect(finalize).toContain("finalize_outbox");
     expect(finalize).toContain("reconcile-finalize-outbox.sh");
+    expect(read("infra/backup/reconcile-finalize-outbox.sh")).toContain("if [[ ! -e $final ]]");
     for (const binding of ["PRODUCTION_ENV_FILE", "PROTECTED_DEPLOYMENT_STATE_FILE", "HOST_DEPLOYMENT_RECEIPT_FILE", "HOST_DEPLOYMENT_RECEIPT_SIGNATURE"])
       expect(finalize).toContain(binding);
     expect(finalize).toContain("steam-top-production-deployment");

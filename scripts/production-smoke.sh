@@ -17,6 +17,7 @@ NODE
 curl --fail --silent --show-error --resolve "$resolve_tls" -c "$tmp/cookies" -H "Origin: $origin" -H 'Sec-Fetch-Site: same-origin' -H 'Content-Type: application/json' --data-binary @"$tmp/login.json" "$origin/api/admin/login" >/dev/null
 curl --fail --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" "$origin/api/admin/session" >"$tmp/session";csrf=$(node -e 'const x=require(process.argv[1]);if(typeof x.csrfToken!=="string")process.exit(1);process.stdout.write(x.csrfToken)' "$tmp/session")
 curl --fail --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" "$origin/api/admin/deployment-probe/$nonce" >"$tmp/probe";grep -Fq "$nonce" "$tmp/probe"
+probe_code=$(curl --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" -o /dev/null -w '%{http_code}' "$origin/api/admin/deployment-probe/$nonce");[[ $probe_code == 404 ]]
 if [[ -n ${PRODUCTION_SMOKE_PROBE_OUTPUT:-} ]];then [[ $PRODUCTION_SMOKE_PROBE_OUTPUT == /* && ! -e $PRODUCTION_SMOKE_PROBE_OUTPUT ]]||exit 1;cp "$tmp/probe" "$PRODUCTION_SMOKE_PROBE_OUTPUT";chmod 400 "$PRODUCTION_SMOKE_PROBE_OUTPUT";fi
 curl --fail --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" -H 'Sec-Fetch-Site: same-origin' -H "X-CSRF-Token: $csrf" -X POST "$origin/api/admin/logout" >/dev/null
 code=$(curl --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" -o /dev/null -w '%{http_code}' "$origin/api/admin/session");[[ $code == 401 ]]
