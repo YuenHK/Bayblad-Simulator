@@ -4,3 +4,5 @@ export * from "./auth/composition";
 export * from "./records/composition";
 export * from "./production-bootstrap";
 export * from "./analytics/composition";
+export * from "./exports/workbook";
+export * from "./exports/postgres-source";
