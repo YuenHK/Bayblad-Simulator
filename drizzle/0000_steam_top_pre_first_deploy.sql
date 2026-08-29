@@ -597,6 +597,7 @@ CREATE TABLE "match_persistence_jobs" (
 	"input_fingerprint" text NOT NULL,
 	"completion_payload" jsonb NOT NULL,
 	"status" varchar(16) DEFAULT 'pending' NOT NULL,
+	"reservation_token" uuid,
 	"attempt_count" integer DEFAULT 0 NOT NULL,
 	"next_retry_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"last_sanitized_code" varchar(128),
@@ -628,9 +629,10 @@ CREATE TABLE "room_projection_jobs" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "room_projection_jobs_revision" CHECK ("room_projection_jobs"."revision" >= 0),
 	CONSTRAINT "room_projection_jobs_payload_hash" CHECK ("room_projection_jobs"."payload_hash" ~ '^[a-f0-9]{64}$'),
-	CONSTRAINT "room_projection_jobs_status" CHECK ("room_projection_jobs"."status" in ('pending','leased','dead')),
+	CONSTRAINT "room_projection_jobs_status" CHECK ("room_projection_jobs"."status" in ('prepared','pending','leased','dead','aborted')),
 	CONSTRAINT "room_projection_jobs_attempts" CHECK ("room_projection_jobs"."attempt_count" >= 0 and "room_projection_jobs"."generation" >= 0),
-	CONSTRAINT "room_projection_jobs_lease" CHECK (("room_projection_jobs"."status" = 'leased' and "room_projection_jobs"."lease_token" is not null and "room_projection_jobs"."lease_until" is not null) or ("room_projection_jobs"."status" <> 'leased' and "room_projection_jobs"."lease_token" is null and "room_projection_jobs"."lease_until" is null))
+	CONSTRAINT "room_projection_jobs_lease" CHECK (("room_projection_jobs"."status" = 'leased' and "room_projection_jobs"."lease_token" is not null and "room_projection_jobs"."lease_until" is not null) or ("room_projection_jobs"."status" <> 'leased' and "room_projection_jobs"."lease_token" is null and "room_projection_jobs"."lease_until" is null)),
+	CONSTRAINT "room_projection_jobs_reservation" CHECK (("room_projection_jobs"."status" = 'prepared' and "room_projection_jobs"."reservation_token" is not null) or ("room_projection_jobs"."status" <> 'prepared' and "room_projection_jobs"."reservation_token" is null))
 );
 --> statement-breakpoint
 ALTER TABLE "room_projection_jobs" ADD CONSTRAINT "room_projection_jobs_room_id_rooms_id_fk" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

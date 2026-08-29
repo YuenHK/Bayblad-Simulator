@@ -1,6 +1,6 @@
 {
-  "id": "e5d9f933-191f-4296-9a7f-1f0498c18f5f",
-  "prevId": "17efb6df-1382-4724-87c4-312426113022",
+  "id": "f78eddea-06a0-4df3-8e66-a76bfae03f99",
+  "prevId": "e5d9f933-191f-4296-9a7f-1f0498c18f5f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2865,6 +2865,12 @@
           "notNull": true,
           "default": "'pending'"
         },
+        "reservation_token": {
+          "name": "reservation_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "attempt_count": {
           "name": "attempt_count",
           "type": "integer",
@@ -2977,7 +2983,7 @@
         },
         "room_projection_jobs_status": {
           "name": "room_projection_jobs_status",
-          "value": "\"room_projection_jobs\".\"status\" in ('pending','leased','dead')"
+          "value": "\"room_projection_jobs\".\"status\" in ('prepared','pending','leased','dead','aborted')"
         },
         "room_projection_jobs_attempts": {
           "name": "room_projection_jobs_attempts",
@@ -2986,6 +2992,10 @@
         "room_projection_jobs_lease": {
           "name": "room_projection_jobs_lease",
           "value": "(\"room_projection_jobs\".\"status\" = 'leased' and \"room_projection_jobs\".\"lease_token\" is not null and \"room_projection_jobs\".\"lease_until\" is not null) or (\"room_projection_jobs\".\"status\" <> 'leased' and \"room_projection_jobs\".\"lease_token\" is null and \"room_projection_jobs\".\"lease_until\" is null)"
+        },
+        "room_projection_jobs_reservation": {
+          "name": "room_projection_jobs_reservation",
+          "value": "(\"room_projection_jobs\".\"status\" = 'prepared' and \"room_projection_jobs\".\"reservation_token\" is not null) or (\"room_projection_jobs\".\"status\" <> 'prepared' and \"room_projection_jobs\".\"reservation_token\" is null)"
         }
       },
       "isRLSEnabled": false

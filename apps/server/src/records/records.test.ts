@@ -57,6 +57,17 @@ describe("durable record contracts", () => {
     await expect(store.enqueue({ roomId: id(95), revision: 7, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } })).rejects.toThrow("ROOM_PROJECTION_CONFLICT");
   });
 
+  it("never claims prepared or aborted projections and fences commit tokens", async () => {
+    const store = new MemoryRoomProjectionStore(); const roomId = id(96);
+    const first = await store.prepare({ roomId, revision: 8, payload: { phase: "battle", firstBattleAt: null, closedAt: null } });
+    expect(await store.claimDue(1)).toHaveLength(0);
+    expect(await store.abortPrepared(first)).toBe(true);
+    const replacement = await store.prepare({ roomId, revision: 8, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
+    expect(await store.commitPrepared(first)).toBe(false);
+    expect(await store.commitPrepared(replacement)).toBe(true);
+    expect(await store.claimDue(1)).toHaveLength(1);
+  });
+
   it("fails admission at the durable boundary and close surfaces an in-flight enqueue failure", async () => {
     let reject!: (error: Error) => void;
     class FailingStore extends MemoryRoomProjectionStore {
