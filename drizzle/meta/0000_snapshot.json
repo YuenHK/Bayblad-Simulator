@@ -1,5 +1,5 @@
 {
-  "id": "a7babb7a-057a-4bcf-b13e-e200906f3d5f",
+  "id": "f6b0903b-7b8a-4468-93d4-47dc01edc5b6",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -160,6 +160,28 @@
           ],
           "isUnique": true,
           "where": "\"admin_audit\".\"source_outbox_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "admin_audit_command_correlation_uidx": {
+          "name": "admin_audit_command_correlation_uidx",
+          "columns": [
+            {
+              "expression": "action",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"details\"->>'operationId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"admin_audit\".\"details\" ? 'operationId' and \"admin_audit\".\"action\" in ('admin.room.command.accepted','admin.platform.pause','admin.room.close','admin.room.remove')",
           "concurrently": false,
           "method": "btree",
           "with": {}

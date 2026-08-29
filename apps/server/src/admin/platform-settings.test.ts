@@ -78,4 +78,19 @@ describe("durable admin control state", () => {
     expect((await commands.get(input.operationId))?.status).toBe("accepted");
     expect(closes).toBe(0);
   });
+  it("resumes terminal failure audit without executing the failed side effect again", async () => {
+    class OneFailureAuditStore extends InMemoryAdminStore { failed=false; override async audit(input:AuditInput){if(input.outcome==="failure"&&!this.failed){this.failed=true;throw new Error("audit crash");}await super.audit(input);} }
+    const auditStore=new OneFailureAuditStore(),commands=new InMemoryAdminCommandStore(),auth=new AdminAuthService(auditStore,{allowedOrigins:["http://localhost"]});
+    let now=new Date("2026-08-29T00:00:00.000Z"),calls=0;
+    const executor=new AdminCommandExecutor(commands,auth,{setPlatformPaused:()=>undefined,adminCloseRoom:async()=>{calls++;throw new Error("close failed");},adminRemoveParticipant:async()=>undefined},new InMemoryPlatformSettingsStore(),()=>now);
+    const input={operationId:"550e8400-e29b-41d4-a716-446655440005",payloadHash:adminCommandPayloadHash({action:"room.close",roomId:"ROOM"}),action:"room.close" as const,target:"ROOM",payload:{action:"room.close",roomId:"ROOM"},adminUserId:"650e8400-e29b-41d4-a716-446655440000",adminSessionId:"750e8400-e29b-41d4-a716-446655440000"};
+    await commands.accept(input,now);
+    for(let attempt=0;attempt<7;attempt++){await executor.pump();now=new Date(now.getTime()+61_000);}
+    await expect(executor.pump()).rejects.toThrow("audit crash");
+    expect((await commands.get(input.operationId))?.result.step).toBe("terminal_audit_pending");
+    expect(calls).toBe(8);
+    now=new Date(now.getTime()+16_000);await executor.pump();
+    expect((await commands.get(input.operationId))?.status).toBe("terminal_failed");
+    expect(calls).toBe(8);
+  });
 });

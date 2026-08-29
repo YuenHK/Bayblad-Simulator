@@ -132,8 +132,13 @@ describe("admin dashboard routes", () => {
   it("keeps a room open while a spectator remains after the last player is removed", async () => {
     const f = await fixture(); apps.push(f.app);
     f.rooms.join(f.room.roomId, { id: "spectator", displayName: "觀賽者" }, "spectator");
-    await f.app.realtimeGateway.adminRemoveParticipant(f.room.roomId, f.room.participantId);
+    const steps:string[]=[];
+    await f.app.realtimeGateway.adminRemoveParticipant(f.room.roomId, f.room.participantId, { signal:new AbortController().signal,currentStep:"accepted_audited",fence:async(step)=>{if(step)steps.push(step);} });
+    expect(steps).toEqual(["match_cancelled","phase_waiting","participant_left","session_kicked","broadcast_done","room_closed_if_empty"]);
     expect(f.rooms.hasRoom(f.room.roomId)).toBe(true);
     expect(f.rooms.adminRooms()[0]).toMatchObject({ players: [], spectators: [{ displayName: "觀賽者" }] });
+    const resumed:string[]=[];
+    await f.app.realtimeGateway.adminRemoveParticipant(f.room.roomId, f.room.participantId, { signal:new AbortController().signal,currentStep:"participant_left",fence:async(step)=>{if(step)resumed.push(step);} });
+    expect(resumed).toEqual(["session_kicked","broadcast_done","room_closed_if_empty"]);
   });
 });
