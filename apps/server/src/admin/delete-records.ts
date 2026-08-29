@@ -104,7 +104,7 @@ const matchPredicate = (alias: string) => `(
   or ($1 = 'class' and (exists (select 1 from match_participant_snapshots ps where ps.match_id = ${alias}.id and ps.class_name_snapshot = $3)
     or exists(select 1 from identities pi where (pi.id=${alias}.player1_identity_id or pi.id=${alias}.player2_identity_id) and pi.class_name=$3)
     or exists(select 1 from designs od join identities oi on oi.id=od.owner_identity_id where (od.id=${alias}.player1_design_id or od.id=${alias}.player2_design_id) and oi.class_name=$3)))
-  or ($1 = 'date_range' and (coalesce(${alias}.completed_at, ${alias}.started_at) at time zone 'Asia/Hong_Kong')::date between $4::date and $5::date)
+  or ($1 = 'date_range' and (${alias}.created_at at time zone 'Asia/Hong_Kong')::date between $4::date and $5::date)
 )`;
 const designPredicate = (alias: string) => `(
   $1 = 'all'
@@ -136,7 +136,7 @@ async function materializeCurrentTargets(transaction: Pick<TransactionSql, "unsa
   await transaction.unsafe("create unique index on deletion_design_candidates(id)");
   await transaction.unsafe(`create temporary table deletion_current_matches on commit drop as select m.id from matches m where ${matchPredicate("m")}
     or m.player1_identity_id in(select id from deletion_current_identities) or m.player2_identity_id in(select id from deletion_current_identities)
-    or m.player1_design_id in(select id from deletion_design_candidates) or m.player2_design_id in(select id from deletion_design_candidates)
+    or ($1<>'date_range' and (m.player1_design_id in(select id from deletion_design_candidates) or m.player2_design_id in(select id from deletion_design_candidates)))
     or exists(select 1 from match_participant_snapshots ps where ps.match_id=m.id and (ps.identity_id_at_start in(select id from deletion_current_identities) or ps.canonical_identity_id_at_start in(select id from deletion_current_identities)))`, args);
   await transaction.unsafe("create unique index on deletion_current_matches(id)");
   await transaction.unsafe(`create temporary table deletion_current_designs on commit drop as select d.id from designs d join deletion_design_candidates c on c.id=d.id

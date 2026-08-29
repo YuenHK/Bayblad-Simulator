@@ -1,0 +1,10 @@
+import { mkdtemp,readFile,rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach,expect,it } from "vitest";
+import { FileDeletionLedger } from "./deletion-ledger";
+import { reconcileLedger } from "./deletion-ledger-cli";
+const roots:string[]=[];afterEach(async()=>Promise.all(roots.splice(0).map(path=>rm(path,{recursive:true,force:true}))));
+async function fixture(){const root=await mkdtemp(join(tmpdir(),"ledger-cli-"));roots.push(root);return new FileDeletionLedger(join(root,"private","ledger.log"));}
+it("reconciles committed audits and explicitly confirmed rollbacks",async()=>{const ledger=await fixture(),input={auditId:"10000000-0000-4000-8000-000000000001",operationDigest:"a".repeat(64)};await ledger.recordPending(input);expect(await reconcileLedger({...input,ledger,confirmRolledBack:false,lookupAudit:async()=>true})).toBe("C");const second={auditId:"10000000-0000-4000-8000-000000000002",operationDigest:"b".repeat(64)};await ledger.recordPending(second);expect(await reconcileLedger({...second,ledger,confirmRolledBack:true,lookupAudit:async()=>false})).toBe("A");expect(await readFile(ledger.path,"utf8")).toContain(`C ${input.auditId}`);expect(await readFile(ledger.path,"utf8")).toContain(`A ${second.auditId}`);});
+it("does not mutate the ledger when DB is unavailable or rollback is unconfirmed",async()=>{const ledger=await fixture(),input={auditId:"10000000-0000-4000-8000-000000000001",operationDigest:"a".repeat(64)};await ledger.recordPending(input);const before=await readFile(ledger.path,"utf8");await expect(reconcileLedger({...input,ledger,confirmRolledBack:false,lookupAudit:async()=>{throw new Error("offline");}})).rejects.toThrow("offline");await expect(reconcileLedger({...input,ledger,confirmRolledBack:false,lookupAudit:async()=>false})).rejects.toThrow(/CONFIRMATION/u);expect(await readFile(ledger.path,"utf8")).toBe(before);});

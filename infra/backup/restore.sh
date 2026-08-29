@@ -2,17 +2,19 @@
 set -euo pipefail
 umask 077
 die(){ echo "restore refused: $1" >&2;exit 1;}
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
 [[ $# -eq 1 ]]||die "pass exactly one completed backup directory";backup_set=$1
-for name in RESTORE_PGSERVICE RESTORE_CONFIRM_DATABASE AGE_IDENTITY_FILE DELETION_LEDGER_FILE RESTORE_ALLOWED_TARGET_ID NONPROD_RESTORE_CONFIRM BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID;do [[ -n ${!name:-} ]]||die "$name is required";done
+for name in RESTORE_PGSERVICE PGSERVICEFILE PGPASSFILE RESTORE_CONFIRM_DATABASE AGE_IDENTITY_FILE DELETION_LEDGER_FILE RESTORE_ALLOWED_TARGET_ID NONPROD_RESTORE_CONFIRM BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID;do [[ -n ${!name:-} ]]||die "$name is required";done
 [[ -z ${RESTORE_DATABASE_URL:-} && -z ${DATABASE_URL:-} ]]||die "database URLs are forbidden; use libpq service/passfile"
+[[ $RESTORE_PGSERVICE =~ ^[A-Za-z0-9_.-]{1,64}$ ]]||die "RESTORE_PGSERVICE is invalid"
+while IFS='=' read -r name _;do case "$name" in PGSERVICEFILE|PGPASSFILE) :;; PG*)die "libpq override $name is forbidden";;esac;done < <(env)
 [[ $NONPROD_RESTORE_CONFIRM == RESTORE_NONPRODUCTION_DATA && ${APP_ENV:-} != production && ${NODE_ENV:-} != production ]]||die "production/confirmation guard"
 for command_name in age pg_restore psql ssh-keygen;do command -v "$command_name" >/dev/null 2>&1||die "$command_name is required";done
 base=${backup_set##*/};[[ $base =~ ^steam-top-[0-9]{8}T[0-9]{6}Z-[0-9]{6}\.backup$ && -d $backup_set && ! -L $backup_set && -f $backup_set/COMPLETE && $(<"$backup_set/COMPLETE") == complete ]]||die "backup set is incomplete or unsafe"
 for file in dump.age checksum.sha256 manifest SIGNED-METADATA signature deletion-ledger.log;do [[ -f $backup_set/$file && ! -L $backup_set/$file ]]||die "backup set missing $file";done
 private_file(){ local value=$1 mode uid;[[ -f $value && ! -L $value ]]||die "private file unsafe";if stat -c '%a %u' "$value" >/dev/null 2>&1;then read -r mode uid < <(stat -c '%a %u' "$value");else read -r mode uid < <(stat -f '%Lp %u' "$value");fi;[[ $uid == "$(id -u)" && $((8#$mode&077)) -eq 0 ]]||die "private file owner/mode unsafe";}
-private_file "$AGE_IDENTITY_FILE";private_file "$DELETION_LEDGER_FILE"
-[[ -z ${PGPASSFILE:-} ]]||private_file "$PGPASSFILE"
-private_file "$BACKUP_ALLOWED_SIGNERS_FILE"
+private_file "$AGE_IDENTITY_FILE";private_file "$DELETION_LEDGER_FILE";private_file "$PGSERVICEFILE";private_file "$PGPASSFILE";private_file "$BACKUP_ALLOWED_SIGNERS_FILE"
+"$script_dir/verify-backup-set.sh" "$backup_set" "$BACKUP_ALLOWED_SIGNERS_FILE" "$BACKUP_SIGNER_ID" >/dev/null||die "backup set verification failed"
 ssh-keygen -Y verify -q -f "$BACKUP_ALLOWED_SIGNERS_FILE" -I "$BACKUP_SIGNER_ID" -n steam-top-backup -s "$backup_set/signature" <"$backup_set/SIGNED-METADATA" >/dev/null||die "backup signature invalid"
 expected_signed=$(mktemp "${TMPDIR:-/tmp}/steam-top-signed.XXXXXX");trap 'rm -f "$expected_signed"' EXIT INT TERM;{ cat "$backup_set/manifest";cat "$backup_set/checksum.sha256";} >"$expected_signed";cmp -s "$expected_signed" "$backup_set/SIGNED-METADATA"||die "signed metadata mismatch"
 declare format= created_at= source_database= source_schema= verification_table= verification_rows= sha256= deletion_ledger_lines= deletion_ledger_sha256= signer_id=

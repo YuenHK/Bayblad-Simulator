@@ -3,12 +3,18 @@ set -euo pipefail
 umask 077
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$0"; do
+for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$0"; do
   bash -n "$script"
 done
+! grep -q 'mkfifo\|read ignored' "$script_dir/backup.sh"
+grep -q 'loop perform pg_sleep' "$script_dir/backup.sh"
+guard_output=$(env PGPASSWORD=exposed PGSERVICE=source PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass BACKUP_DIR=/tmp/backups AGE_RECIPIENT=age1test DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli BACKUP_SIGNING_KEY=/tmp/key BACKUP_SIGNER_ID=test BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers "$script_dir/backup.sh" 2>&1||true)
+[[ $guard_output == *"libpq override PGPASSWORD is forbidden"* ]]
+guard_output=$(env PGPASSWORD=exposed RESTORE_PGSERVICE=restore PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass RESTORE_CONFIRM_DATABASE=test AGE_IDENTITY_FILE=/tmp/key DELETION_LEDGER_FILE=/tmp/ledger RESTORE_ALLOWED_TARGET_ID=x NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers BACKUP_SIGNER_ID=test "$script_dir/restore.sh" /tmp/steam-top-20260101T000000Z-000001.backup 2>&1||true)
+[[ $guard_output == *"libpq override PGPASSWORD is forbidden"* ]]
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "$script_dir/backup.sh" "$script_dir/restore.sh" "$0"
+  shellcheck "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$0"
 elif [[ ${CI:-false} == true ]]; then
   echo "shellcheck is required in CI" >&2
   exit 1
@@ -65,7 +71,8 @@ age-keygen -o "$test_root/key.txt" 2>"$test_root/keygen.log"
 recipient=$(awk '/^# public key: /{print $4}' "$test_root/key.txt")
 ledger="$test_root/deletion-ledger.log"; : >"$ledger"; chmod 600 "$ledger"
 ssh-keygen -q -t ed25519 -N '' -f "$test_root/signing-key";chmod 600 "$test_root/signing-key";signer=backup@test;printf '%s %s\n' "$signer" "$(<"$test_root/signing-key.pub")" >"$test_root/allowed-signers"
-PGSERVICE=source BACKUP_DIR="$test_root/backups" AGE_RECIPIENT="$recipient" DELETION_LEDGER_FILE="$ledger" BACKUP_SIGNING_KEY="$test_root/signing-key" BACKUP_SIGNER_ID="$signer" "$script_dir/backup.sh"
+pnpm --filter @steam-top/server build >/dev/null;ledger_cli="$script_dir/../../apps/server/dist/admin/deletion-ledger-cli.js"
+PGSERVICE=source BACKUP_DIR="$test_root/backups" AGE_RECIPIENT="$recipient" DELETION_LEDGER_FILE="$ledger" DELETION_LEDGER_CLI="$ledger_cli" BACKUP_SIGNING_KEY="$test_root/signing-key" BACKUP_SIGNER_ID="$signer" BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" "$script_dir/backup.sh"
 backup_file=$(find "$test_root/backups" -maxdepth 1 -type d -name 'steam-top-*.backup' -print -quit)
 [[ -n $backup_file && -f $backup_file/COMPLETE && ! -L $backup_file ]]
 if stat -c '%a' "$backup_file/dump.age" >/dev/null 2>&1; then mode=$(stat -c '%a' "$backup_file/dump.age"); else mode=$(stat -f '%Lp' "$backup_file/dump.age"); fi

@@ -26,7 +26,7 @@ beforeAll(async () => {
   await client.sql.unsafe(`set search_path to ${schemaName},public`);
   const directory = fileURLToPath(new URL("../../../../drizzle", import.meta.url));
   for (const file of readdirSync(directory).filter((name) => name.endsWith(".sql")).sort()) {
-    for (const statement of readFileSync(`${directory}/${file}`, "utf8").split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) await client.sql.unsafe(statement);
+    for (const statement of readFileSync(`${directory}/${file}`, "utf8").split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement);
   }
 }, 30_000);
 

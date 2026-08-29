@@ -19,14 +19,16 @@ export PGPASSFILE='/受限制位置/pgpass'
 export BACKUP_DIR='/srv/steam-top/backups'
 export AGE_RECIPIENT='age1...'
 export DELETION_LEDGER_FILE='/srv/steam-top/deletion-ledger/ledger.log'
+export DELETION_LEDGER_CLI='/opt/steam-top/apps/server/dist/admin/deletion-ledger-cli.js'
 export BACKUP_SIGNING_KEY='/離線或秘密管理器掛載/signing-key'
+export BACKUP_ALLOWED_SIGNERS_FILE='/受限制位置/allowed_signers'
 export BACKUP_SIGNER_ID='steam-top-backup-2026'
 ./infra/backup/backup.sh
 ```
 
 腳本先在只讀 repeatable-read transaction 以 `pg_export_snapshot()` 固定快照；刪除稽核列數與 `pg_dump --snapshot` 因而來自完全相同的資料狀態，再把 custom-format dump 串流到 age recipient 加密。每個唯一 staging 目錄內的密文、checksum、manifest、ledger snapshot 及 OpenSSH 簽署會逐一 `fsync`；`COMPLETE` 最後寫入，再原子改名及同步父目錄。只有完整目錄才可還原。manifest 不包含 URL、密碼、學生姓名或篩選內容。
 
-`DELETION_LEDGER_FILE` 是備份目錄以外、`0600` 的外部 append-only tombstone。刪除流程先寫 `P`，資料庫提交後寫 `C`；已知未執行則寫 `A`。任何未解決的 `P` 會令備份 fail closed，須先由管理員核對資料庫 `deletion_audit` 後補記 `C` 或 `A`。絕不可改寫或縮短 ledger；其 digest 令任何早於最新刪除的備份無法還原敏感資料。
+`DELETION_LEDGER_FILE` 是備份目錄以外、`0600` 的外部 append-only tombstone。刪除流程先寫 `P`，資料庫提交後寫 `C`；已知未執行則寫 `A`。備份必須經正式 Node CLI 的 `snapshot` 子命令，在與寫入相同的 token／heartbeat lease 下取得一致副本。任何未解決的 `P` 會令備份 fail closed；禁止手工追加或修改 ledger。運維人員只能在已獲授權後使用 CLI `reconcile`：CLI 會查詢 `deletion_audit`，存在才寫 `C`；只有資料庫明確可用、查無 audit 並同時提供 `--confirm-rolled-back` 才可寫 `A`。資料庫不可用時不會改動 ledger。其 digest 令任何早於最新刪除的備份無法還原敏感資料。
 
 ## 私鑰及輪替
 
