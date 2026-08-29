@@ -29,4 +29,4 @@ output="$state_dir/$nonce.json";[[ ! -e $output && ! -e $output.consumed ]]||die
 node - "$snapshot/pending.json" "$repository" "$deployment_id" "$tmp" <<'NODE'
 const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[2])),p=r.payload;fs.writeFileSync(process.argv[5],JSON.stringify({schemaVersion:1,repository:process.argv[3],deploymentId:process.argv[4],nonce:p.nonce,manifestSha256:p.manifestSha256,commit:p.commit,expectedPreviousState:p.expectedPreviousState,signerKind:p.signerKind,sourceWorkflow:p.sourceWorkflow,authorizedAt:new Date().toISOString()})+"\n",{mode:0o400});
 NODE
-chmod 400 "$tmp";mv "$tmp" "$output";trap - EXIT
+chmod 400 "$tmp";mv "$tmp" "$output";rm -rf "$snapshot";trap - EXIT
