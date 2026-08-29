@@ -86,6 +86,8 @@ export type BuildAppOptions = Readonly<{
   iClassStatus?: "api" | "csv" | "api-csv-fallback" | "disabled";
   testIdentityResolver?: (request: IncomingMessage, testAuth?: Record<string, unknown>) => Promise<Readonly<{ identityId: string; displayName: string }> | null>;
   adminAuth?: AdminAuthService;
+  adminClientKeyResolver?: ClientKeyResolver;
+  adminClientAddressResolver?: ClientKeyResolver;
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -115,6 +117,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   }
   if (process.env.NODE_ENV === "production" && options.behindProxy && !options.identityIpResolver) throw new TypeError("Production behindProxy composition requires identityIpResolver");
   if (options.identityIpResolver && !options.behindProxy) throw new TypeError("identityIpResolver requires behindProxy trusted boundary");
+  if ((options.adminClientKeyResolver || options.adminClientAddressResolver) && !options.behindProxy) throw new TypeError("admin client resolvers require behindProxy trusted boundary");
+  if (process.env.NODE_ENV === "production" && options.behindProxy && (!options.adminClientKeyResolver || !options.adminClientAddressResolver)) throw new TypeError("Production behindProxy composition requires admin client resolvers");
   if (options.clientKeyResolver && !options.behindProxy) {
     throw new TypeError("clientKeyResolver requires behindProxy trusted boundary");
   }
@@ -177,7 +181,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     bodyLimit: config.bodyLimit,
   });
   void app.register(fastifyCookie);
-  if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth);
+  if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth, (request) => ({ clientKey: options.adminClientKeyResolver?.(request) ?? request.socket.remoteAddress ?? "unknown", ...(options.adminClientAddressResolver ? { ip: options.adminClientAddressResolver(request) } : (request.socket.remoteAddress ? { ip: request.socket.remoteAddress } : {})) }));
   const rooms = options.rooms ?? new RoomService(options.now ? { now: options.now } : {});
   const designs = options.designs ?? new DesignRegistry({
     ...(options.now ? { now: options.now } : {}),

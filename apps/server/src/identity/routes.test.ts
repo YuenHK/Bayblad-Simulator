@@ -156,7 +156,7 @@ describe("identity routes", () => {
     const previous = process.env.NODE_ENV; process.env.NODE_ENV = "production";
     try {
       const durable = new PostgresIdentityStore(null as never);
-      const adminAuth = new AdminAuthService(new PostgresAdminStore(null as never), { allowedOrigins: ["https://school.example"] });
+      const adminAuth = new AdminAuthService(new PostgresAdminStore(null as never), { allowedOrigins: ["https://school.example"], csrfSecret: Buffer.alloc(32, 1) });
       const app = buildApp({ battleEngine, allowedOrigins: ["https://school.example"], identityResolver: new IdentityResolver(durable), adminAuth, iClassStatus: "disabled", sweepIntervalMs: 0 });
       apps.push(app);
       expect(app).toBeDefined();
