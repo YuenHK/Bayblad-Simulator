@@ -146,6 +146,9 @@ describe("rollback deletion monotonicity", () => {
     expect(read("infra/backup/test-promotion-full.sh")).toContain("finalize-cutover.sh");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("promotion_audit");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("pg_signal_backend");
+    expect(read("infra/backup/test-promotion-full.sh")).toContain("state-inherited");
+    expect(read("infra/backup/test-promotion-full.sh")).toContain("grant %I to %I");
+    expect(read("infra/backup/test-promotion-full.sh")).toContain("t|test|t");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("PROMOTE_MAINTENANCE_PGSERVICE=wrong-cluster");
     expect(read(".github/workflows/db.yml")).toContain("postgres-wrong-cluster:");
     expect(read(".github/workflows/db.yml")).toContain("5433:5432");
