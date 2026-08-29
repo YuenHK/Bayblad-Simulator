@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source /opt/steam-top-bootstrap/key-custody-guard.sh
 [[ $(id -u) -eq 0 && $# -eq 3 && $1 =~ ^[a-f0-9]{64}$ ]]||exit 2
 nonce=$1;ready=$2;receipt=$3;tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT
 lock=/var/lock/steam-top-production.lock;[[ -f $lock && ! -L $lock ]]||exit 1;read -r owner mode < <(stat -c '%u %a' "$lock");[[ $owner == 0 && $mode == 600 ]]||exit 1;exec 9<>"$lock";flock -n 9||exit 75

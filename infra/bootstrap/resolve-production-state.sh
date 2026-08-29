@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source /opt/steam-top-bootstrap/key-custody-guard.sh
 [[ $(id -u) -eq 0 && $# -eq 1 && $1 =~ ^[a-f0-9]{64}$ ]]||exit 2
 /opt/steam-top-bootstrap/verify-bootstrap.sh;nonce=$1;config=/etc/steam-top-bootstrap/trust.json
 mapfile -t values < <(node - "$config" <<'NODE'

@@ -1,0 +1,4 @@
+services:
+  server:
+    environment:
+      DATABASE_URL: postgresql://steam_top_app:${APP_DATABASE_PASSWORD:?APP_DATABASE_PASSWORD required}@db:5432/${POSTGRES_DB}?sslmode=require

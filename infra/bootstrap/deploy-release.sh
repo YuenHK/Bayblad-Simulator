@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source /opt/steam-top-bootstrap/key-custody-guard.sh
 [[ $(id -u) -eq 0 ]]||{ echo "bootstrap deploy requires root" >&2;exit 1;};prepared_argument=;if [[ ${1:-} == --prepared-authorization ]];then [[ $# -eq 10 ]]||exit 2;prepared_argument=$2;shift 2;else [[ $# -eq 8 ]]||exit 2;fi
 /opt/steam-top-bootstrap/verify-bootstrap.sh;artifact=$1;bundle=$2;pending=$3;manifest=$4;repository=$5;commit=$6;nonce=$7;expected_and_id=$8;expected=${expected_and_id%|*};deployment_id=${expected_and_id##*|};config=/etc/steam-top-bootstrap/trust.json
 mapfile -t paths < <(node - "$config" <<'NODE'
