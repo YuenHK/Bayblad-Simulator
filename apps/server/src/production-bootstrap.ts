@@ -9,6 +9,7 @@ import { PostgresAdminRecordsSource } from "./admin/records-routes";
 import { PostgresPlatformSettingsStore } from "./admin/platform-settings";
 import { PostgresAdminCommandStore } from "./admin/command-operations";
 import { checkDatabaseReadiness, registerHealthRoutes, startFailStopReadinessMonitor, withReadinessDeadline } from "./readiness";
+import { safeLogErrorDetails } from "./safe-logging";
 
 export async function startProductionServer(
   client: DatabaseClient,
@@ -24,7 +25,7 @@ export async function startProductionServer(
   app.addHook("onRequest", async (request, reply) => { if (!readinessHealthy && !request.url.startsWith("/health/")) return reply.code(503).send({ error: "SERVICE_NOT_READY" }); });
   let cancelReadinessMonitor: (() => void) | undefined;
   app.addHook("onClose", async () => { cancelReadinessMonitor?.(); });
-  try { await app.ready(); await app.listen(listen); cancelReadinessMonitor = startFailStopReadinessMonitor({ check: (signal) => checkDatabaseReadiness(client.sql, signal), markUnhealthy: (error) => { readinessHealthy = false; process.exitCode = 1; app.log.error({ event: "readiness.lost", errorName: error instanceof Error ? error.name : "Error" }, "Readiness lost; fail-stop shutdown"); }, stop: async () => { await app.close(); await client.close(); }, reportStopFailure: (closeError) => app.log.error({ event: "readiness.shutdown_failed", errorName: closeError instanceof Error ? closeError.name : "Error" }, "Fail-stop shutdown failed") }); return app; }
+  try { await app.ready(); await app.listen(listen); cancelReadinessMonitor = startFailStopReadinessMonitor({ check: (signal) => checkDatabaseReadiness(client.sql, signal), markUnhealthy: (error) => { readinessHealthy = false; process.exitCode = 1; app.log.error({ event: "readiness.lost", ...safeLogErrorDetails(error) }, "Readiness lost; fail-stop shutdown"); }, stop: async () => { await app.close(); await client.close(); }, reportStopFailure: (closeError) => app.log.error({ event: "readiness.shutdown_failed", ...safeLogErrorDetails(closeError) }, "Fail-stop shutdown failed") }); return app; }
   catch (startupError) {
     try { await app.close(); } catch (closeError) { throw new AggregateError([startupError, closeError], "PRODUCTION_STARTUP_FAILED"); }
     throw startupError;

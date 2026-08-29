@@ -32,6 +32,7 @@ import { InMemoryPlatformSettingsStore, PostgresPlatformSettingsStore, type Plat
 import { InMemoryAdminCommandStore, PostgresAdminCommandStore, type AdminCommandStore } from "./admin/command-operations";
 import { AdminCommandExecutor } from "./admin/command-executor";
 import { registerAdminRecordRoutes, type AdminRecordsSource } from "./admin/records-routes";
+import { createSafeFastifyLoggerOptions, registerSafeRequestLogging, safeLogErrorDetails } from "./safe-logging";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -223,13 +224,13 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     return isIP(normalized) ? normalized : null;
   };
   const app = Fastify({
-    logger: process.env.NODE_ENV === "production",
+    ...(process.env.NODE_ENV === "production" ? createSafeFastifyLoggerOptions() : { logger: false }),
     forceCloseConnections: true,
     bodyLimit: config.bodyLimit,
   });
+  if (process.env.NODE_ENV === "production") registerSafeRequestLogging(app);
   const reportBackgroundError = options.logError ?? ((error: unknown) => {
-    const candidate = error as { name?: unknown; code?: unknown };
-    app.log.error({ event: "background.operation_failed", errorName: typeof candidate?.name === "string" ? candidate.name.slice(0, 80) : "Error", errorCode: typeof candidate?.code === "string" ? candidate.code.slice(0, 80) : "UNCLASSIFIED" }, "Background operation failed");
+    app.log.error({ event: "background.operation_failed", ...safeLogErrorDetails(error) }, "Background operation failed");
   });
   void app.register(fastifyCookie, options.cookieSigningKey ? { secret: options.cookieSigningKey } : {});
   const adminResolver = (request: IncomingMessage) => ({ clientKey: options.adminClientKeyResolver?.(request) ?? request.socket.remoteAddress ?? "unknown", ...(options.adminClientAddressResolver ? { ip: options.adminClientAddressResolver(request) } : (request.socket.remoteAddress ? { ip: request.socket.remoteAddress } : {})) });
