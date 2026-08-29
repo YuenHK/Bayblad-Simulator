@@ -485,6 +485,11 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   nonceTimer?.unref();
   adminMaintenanceTimer?.unref();
   if (options.webClipTokens) void options.webClipTokens.pruneExpired().catch(() => undefined);
+  app.addHook("onReady", async () => {
+    // We intentionally fail closed rather than attempting to resume battles whose
+    // in-memory timing/physics state cannot be reconstructed after a process exit.
+    await options.roomRecordRepository?.reconcileOrphanedActiveRooms?.(new Date());
+  });
   app.addHook("preClose", async () => {
     retryPumpClosing = true;
     if (timer) clearInterval(timer);

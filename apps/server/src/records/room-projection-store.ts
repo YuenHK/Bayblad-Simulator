@@ -149,7 +149,9 @@ const payloadSchema = z.object({
   phase: z.enum(["waiting", "launch", "battle", "result", "closed"]),
   firstBattleAt: z.iso.datetime().nullable(),
   closedAt: z.iso.datetime().nullable(),
-}).strict();
+}).strict().refine((value) => (value.phase === "closed") === (value.closedAt !== null), {
+  message: "closed phase and closedAt must agree",
+});
 type Db = DatabaseClient["db"];
 
 export class PostgresRoomProjectionStore implements RoomProjectionStore {

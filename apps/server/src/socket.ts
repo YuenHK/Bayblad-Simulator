@@ -359,8 +359,6 @@ export class RealtimeGateway {
 
   flushLobby(): void {
     if (this.#lobbyTimer) clearTimeout(this.#lobbyTimer);
-    for (const timer of this.#terminalRecoveryTimers.values()) clearTimeout(timer);
-    this.#terminalRecoveryTimers.clear();
     this.#lobbyTimer = null;
     if (!this.#lobbyPending) return;
     this.#lobbyPending = false;
