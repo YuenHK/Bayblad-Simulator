@@ -78,6 +78,11 @@ backup_file=$(find "$test_root/backups" -maxdepth 1 -type d -name 'steam-top-*.b
 if stat -c '%a' "$backup_file/dump.age" >/dev/null 2>&1; then mode=$(stat -c '%a' "$backup_file/dump.age"); else mode=$(stat -f '%Lp' "$backup_file/dump.age"); fi
 [[ $mode == 600 ]]
 
+for index in $(seq 0 29);do copy=$(printf '%s/backups/steam-top-202501%02dT000000Z-%06d.backup' "$test_root" "$((index+1))" "$index");cp -R "$backup_file" "$copy";done
+invalid_retention="$test_root/backups/steam-top-20250201T000000Z-999996.backup";cp -R "$backup_file" "$invalid_retention";printf 'invalid\n' >"$invalid_retention/VERIFIED"
+PGSERVICE=source BACKUP_DIR="$test_root/backups" AGE_RECIPIENT="$recipient" DELETION_LEDGER_FILE="$ledger" DELETION_LEDGER_CLI="$ledger_cli" BACKUP_SIGNING_KEY="$test_root/signing-key" BACKUP_SIGNER_ID="$signer" BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" "$script_dir/backup.sh"
+valid_sets=0;while IFS= read -r candidate;do if DELETION_LEDGER_CLI="$ledger_cli" "$script_dir/verify-retention-set.sh" "$candidate" "$test_root/allowed-signers" "$signer" >/dev/null 2>&1;then valid_sets=$((valid_sets+1));fi;done < <(find "$test_root/backups" -mindepth 1 -maxdepth 1 -type d -name 'steam-top-*.backup' -print);[[ $valid_sets -eq 30 && -d $invalid_retention ]]
+
 restore_env=(RESTORE_PGSERVICE=restore RESTORE_CONFIRM_DATABASE="$restore_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" DELETION_LEDGER_CLI="$ledger_cli" RESTORE_ALLOWED_TARGET_ID="$restore_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" BACKUP_SIGNER_ID="$signer")
 env "${restore_env[@]}" "$script_dir/restore.sh" "$backup_file"
 [[ $(psql "$restore_url" -Atqc "select label from backup_probe where id=1") == encrypted-round-trip ]]
