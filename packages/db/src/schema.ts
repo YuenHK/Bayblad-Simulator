@@ -1088,6 +1088,35 @@ export const deletionAudit = pgTable(
   ],
 );
 
+export const deletionOperations = pgTable("deletion_operations", {
+  auditId: uuid("audit_id").primaryKey(),
+  sourceInstanceId: uuid("source_instance_id").notNull(),
+  operationDigest: text("operation_digest").notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  terminalAt: timestamp("terminal_at", { withTimezone: true }),
+}, (table) => [
+  index("deletion_operations_status_created_idx").on(table.status, table.createdAt),
+  check("deletion_operations_digest_format", sql`${table.operationDigest} ~ '^[a-f0-9]{64}$'`),
+  check("deletion_operations_status_valid", sql`${table.status} in ('pending','committed','aborted')`),
+  check("deletion_operations_terminal_consistent", sql`(${table.status} = 'pending' and ${table.terminalAt} is null) or (${table.status} in ('committed','aborted') and ${table.terminalAt} is not null)`),
+]);
+
+export const deletionLedgerOutbox = pgTable("deletion_ledger_outbox", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  auditId: uuid("audit_id").notNull().references(() => deletionOperations.auditId, { onDelete: "restrict" }),
+  operationDigest: text("operation_digest").notNull(),
+  terminal: varchar("terminal", { length: 1 }).notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("deletion_ledger_outbox_audit_terminal_uidx").on(table.auditId, table.terminal),
+  index("deletion_ledger_outbox_pending_idx").on(table.completedAt, table.createdAt),
+  check("deletion_ledger_outbox_digest_format", sql`${table.operationDigest} ~ '^[a-f0-9]{64}$'`),
+  check("deletion_ledger_outbox_terminal_valid", sql`${table.terminal} in ('C','A')`),
+]);
+
 export const deletionPreviews = pgTable(
   "deletion_previews",
   {
