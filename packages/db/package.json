@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/client.ts",
+    "./audited-deletion": "./src/audited-deletion.ts",
     "./authority": "./src/authority.ts",
     "./persistence": "./src/persistence.ts",
     "./queries": "./src/queries.ts",

@@ -1,5 +1,4 @@
--- Pre-first-deploy baseline. This squashed migration is safe only before the
--- first production deployment; future changes must use forward migrations.
+-- Pre-first-deploy baseline. Future deployed changes require forward migrations.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";--> statement-breakpoint
 CREATE TYPE "public"."audit_outcome" AS ENUM('success', 'failure', 'denied');--> statement-breakpoint
 CREATE TYPE "public"."battle_outcome" AS ENUM('player1', 'player2', 'draw');--> statement-breakpoint
@@ -26,7 +25,6 @@ CREATE TABLE "admin_audit" (
 	"details" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"request_ip" "inet",
 	"user_agent" varchar(512),
-	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -41,7 +39,6 @@ CREATE TABLE "admin_sessions" (
 	"revoked_at" timestamp with time zone,
 	"last_ip" "inet",
 	"user_agent" varchar(512),
-	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	CONSTRAINT "admin_sessions_token_hash_format" CHECK ("admin_sessions"."token_hash" ~ '^[a-f0-9]{64}$' and "admin_sessions"."csrf_token_hash" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "admin_sessions_expiry_after_creation" CHECK ("admin_sessions"."expires_at" > "admin_sessions"."created_at")
 );
@@ -58,7 +55,7 @@ CREATE TABLE "admin_users" (
 );
 --> statement-breakpoint
 CREATE TABLE "deletion_audit" (
-	"id" bigserial PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"admin_user_id" uuid,
 	"scope" "deletion_scope" NOT NULL,
 	"filter_hash" text NOT NULL,
@@ -66,6 +63,7 @@ CREATE TABLE "deletion_audit" (
 	"deleted_identity_count" integer NOT NULL,
 	"deleted_design_count" integer NOT NULL,
 	"deleted_match_count" integer NOT NULL,
+	"transaction_id" bigint DEFAULT txid_current() NOT NULL,
 	"completed_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "deletion_audit_filter_hash_format" CHECK ("deletion_audit"."filter_hash" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "deletion_audit_counts_nonnegative" CHECK ("deletion_audit"."preview_count" >= 0 and "deletion_audit"."deleted_identity_count" >= 0 and "deletion_audit"."deleted_design_count" >= 0 and "deletion_audit"."deleted_match_count" >= 0)
@@ -168,7 +166,6 @@ CREATE TABLE "identity_sessions" (
 	"revoked_at" timestamp with time zone,
 	"last_ip" "inet",
 	"user_agent" varchar(512),
-	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	CONSTRAINT "identity_sessions_token_hash_format" CHECK ("identity_sessions"."token_hash" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "identity_sessions_expiry_after_creation" CHECK ("identity_sessions"."expires_at" > "identity_sessions"."created_at")
 );
@@ -201,7 +198,6 @@ CREATE TABLE "matches" (
 	"player1_device_name" varchar(128),
 	"player2_device_name" varchar(128),
 	"persist_failure_code" varchar(128),
-	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	"started_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"completed_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -211,7 +207,7 @@ CREATE TABLE "matches" (
 	CONSTRAINT "matches_challenge_points_range" CHECK (("matches"."player1_challenge_points" is null or "matches"."player1_challenge_points" between 0 and 0.5) and ("matches"."player2_challenge_points" is null or "matches"."player2_challenge_points" between 0 and 0.5)),
 	CONSTRAINT "matches_battle_points_range" CHECK (("matches"."player1_battle_points" is null or "matches"."player1_battle_points" between 0 and 2) and ("matches"."player2_battle_points" is null or "matches"."player2_battle_points" between 0 and 2)),
 	CONSTRAINT "matches_round_winners_shape" CHECK ("matches"."round_winners" is null or (jsonb_typeof("matches"."round_winners") = 'array' and jsonb_array_length("matches"."round_winners") between 2 and 3 and "matches"."round_winners" <@ '["player1","player2"]'::jsonb)),
-	CONSTRAINT "matches_completed_score_shape" CHECK ("matches"."status" <> 'completed' or ("matches"."completed_at" is not null and "matches"."winner" is not null and "matches"."player1_challenge_points" is not null and "matches"."player2_challenge_points" is not null and "matches"."player1_total" is not null and "matches"."player2_total" is not null and jsonb_typeof("matches"."round_winners") = 'array' and (("matches"."winner" = 'player1' and "matches"."player1_battle_points" = 2 and "matches"."player2_battle_points" = 0 and "matches"."round_winners" = '["player1","player1"]'::jsonb) or ("matches"."winner" = 'player1' and "matches"."player1_battle_points" = 2 and "matches"."player2_battle_points" = 1 and "matches"."round_winners" in ('["player1","player2","player1"]'::jsonb, '["player2","player1","player1"]'::jsonb)) or ("matches"."winner" = 'player2' and "matches"."player2_battle_points" = 2 and "matches"."player1_battle_points" = 0 and "matches"."round_winners" = '["player2","player2"]'::jsonb) or ("matches"."winner" = 'player2' and "matches"."player2_battle_points" = 2 and "matches"."player1_battle_points" = 1 and "matches"."round_winners" in ('["player1","player2","player2"]'::jsonb, '["player2","player1","player2"]'::jsonb))))),
+	CONSTRAINT "matches_completed_score_shape" CHECK ("matches"."status" <> 'completed' or ("matches"."completed_at" is not null and "matches"."winner" is not null and "matches"."player1_battle_points" is not null and "matches"."player2_battle_points" is not null and "matches"."player1_challenge_points" is not null and "matches"."player2_challenge_points" is not null and "matches"."player1_total" is not null and "matches"."player2_total" is not null and "matches"."round_winners" is not null and jsonb_typeof("matches"."round_winners") = 'array' and (("matches"."winner" = 'player1' and "matches"."player1_battle_points" = 2 and "matches"."player2_battle_points" = 0 and "matches"."round_winners" = '["player1","player1"]'::jsonb) or ("matches"."winner" = 'player1' and "matches"."player1_battle_points" = 2 and "matches"."player2_battle_points" = 1 and "matches"."round_winners" in ('["player1","player2","player1"]'::jsonb, '["player2","player1","player1"]'::jsonb)) or ("matches"."winner" = 'player2' and "matches"."player2_battle_points" = 2 and "matches"."player1_battle_points" = 0 and "matches"."round_winners" = '["player2","player2"]'::jsonb) or ("matches"."winner" = 'player2' and "matches"."player2_battle_points" = 2 and "matches"."player1_battle_points" = 1 and "matches"."round_winners" in ('["player1","player2","player2"]'::jsonb, '["player2","player1","player2"]'::jsonb))))),
 	CONSTRAINT "matches_totals_consistent" CHECK (("matches"."player1_total" is null and "matches"."player1_battle_points" is null and "matches"."player1_challenge_points" is null or "matches"."player1_total" = "matches"."player1_battle_points" + "matches"."player1_challenge_points") and ("matches"."player2_total" is null and "matches"."player2_battle_points" is null and "matches"."player2_challenge_points" is null or "matches"."player2_total" = "matches"."player2_battle_points" + "matches"."player2_challenge_points")),
 	CONSTRAINT "matches_completed_time_order" CHECK ("matches"."completed_at" is null or "matches"."completed_at" >= "matches"."started_at"),
 	CONSTRAINT "matches_model_versions_nonblank" CHECK (length(btrim("matches"."performance_model_version")) > 0 and length(btrim("matches"."physics_model_version")) > 0),
@@ -231,7 +227,6 @@ CREATE TABLE "room_participants" (
 	"last_ip" "inet",
 	"user_agent" varchar(512),
 	"device_name_snapshot" varchar(128),
-	"diagnostics_expires_at" timestamp with time zone DEFAULT now() + interval '90 days' NOT NULL,
 	CONSTRAINT "room_participants_time_order" CHECK ("room_participants"."left_at" is null or "room_participants"."left_at" >= "room_participants"."joined_at")
 );
 --> statement-breakpoint
@@ -282,7 +277,7 @@ CREATE TABLE "rounds" (
 	CONSTRAINT "rounds_frames_strategy" CHECK ("rounds"."frames_strategy" in ('full_json_v1', 'summary_v1')),
 	CONSTRAINT "rounds_time_order" CHECK ("rounds"."completed_at" >= "rounds"."started_at"),
 	CONSTRAINT "rounds_physics_model_version_nonblank" CHECK (length(btrim("rounds"."physics_model_version")) > 0),
-	CONSTRAINT "rounds_battle_result_shape" CHECK (jsonb_typeof("rounds"."battle_result_json") = 'object' and jsonb_typeof("rounds"."battle_result_json"->'modelVersion') = 'string' and length(btrim("rounds"."battle_result_json"->>'modelVersion')) > 0 and "rounds"."battle_result_json"->>'modelVersion' = "rounds"."physics_model_version" and jsonb_typeof("rounds"."battle_result_json"->'seed') = 'number' and jsonb_typeof("rounds"."battle_result_json"->'ticks') = 'number' and jsonb_typeof("rounds"."battle_result_json"->'frames') = 'array' and jsonb_typeof("rounds"."battle_result_json"->'finalStats') = 'object' and jsonb_typeof("rounds"."battle_result_json"->'outcome') = 'object' and "rounds"."battle_result_json"->'outcome'->>'winner' = "rounds"."outcome"::text and "rounds"."battle_result_json"->'outcome'->>'reason' = "rounds"."outcome_reason"::text)
+	CONSTRAINT "rounds_battle_result_shape" CHECK (jsonb_typeof("rounds"."battle_result_json") = 'object' and "rounds"."battle_result_json" ?& array['modelVersion','seed','ticks','frames','outcome','finalStats'] and jsonb_typeof("rounds"."battle_result_json"->'modelVersion') = 'string' and length(btrim("rounds"."battle_result_json"->>'modelVersion')) > 0 and "rounds"."battle_result_json"->>'modelVersion' = "rounds"."physics_model_version" and jsonb_typeof("rounds"."battle_result_json"->'seed') = 'number' and jsonb_typeof("rounds"."battle_result_json"->'ticks') = 'number' and jsonb_typeof("rounds"."battle_result_json"->'frames') = 'array' and jsonb_typeof("rounds"."battle_result_json"->'finalStats') = 'object' and jsonb_typeof("rounds"."battle_result_json"->'outcome') = 'object' and "rounds"."battle_result_json"->'outcome' ?& array['winner','reason'] and "rounds"."battle_result_json"->'outcome'->>'winner' = "rounds"."outcome"::text and "rounds"."battle_result_json"->'outcome'->>'reason' = "rounds"."outcome_reason"::text)
 );
 --> statement-breakpoint
 ALTER TABLE "admin_audit" ADD CONSTRAINT "admin_audit_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -307,11 +302,9 @@ ALTER TABLE "rounds" ADD CONSTRAINT "rounds_match_id_matches_id_fk" FOREIGN KEY 
 CREATE INDEX "admin_audit_created_at_idx" ON "admin_audit" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "admin_audit_admin_action_idx" ON "admin_audit" USING btree ("admin_user_id","action","created_at");--> statement-breakpoint
 CREATE INDEX "admin_audit_target_idx" ON "admin_audit" USING btree ("target_type","target_id");--> statement-breakpoint
-CREATE INDEX "admin_audit_diagnostics_expires_at_idx" ON "admin_audit" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "admin_sessions_token_hash_uidx" ON "admin_sessions" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "admin_sessions_admin_last_seen_idx" ON "admin_sessions" USING btree ("admin_user_id","last_seen_at");--> statement-breakpoint
 CREATE INDEX "admin_sessions_expires_at_idx" ON "admin_sessions" USING btree ("expires_at");--> statement-breakpoint
-CREATE INDEX "admin_sessions_diagnostics_expires_at_idx" ON "admin_sessions" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "admin_users_username_lower_uidx" ON "admin_users" USING btree (lower("username"));--> statement-breakpoint
 CREATE INDEX "deletion_audit_completed_at_idx" ON "deletion_audit" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "deletion_audit_admin_completed_idx" ON "deletion_audit" USING btree ("admin_user_id","completed_at");--> statement-breakpoint
@@ -332,7 +325,6 @@ CREATE INDEX "identity_links_target_idx" ON "identity_links" USING btree ("targe
 CREATE UNIQUE INDEX "identity_sessions_token_hash_uidx" ON "identity_sessions" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "identity_sessions_identity_last_seen_idx" ON "identity_sessions" USING btree ("identity_id","last_seen_at");--> statement-breakpoint
 CREATE INDEX "identity_sessions_expires_at_idx" ON "identity_sessions" USING btree ("expires_at");--> statement-breakpoint
-CREATE INDEX "identity_sessions_diagnostics_expires_at_idx" ON "identity_sessions" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "matches_idempotency_fingerprint_uidx" ON "matches" USING btree ("idempotency_fingerprint");--> statement-breakpoint
 CREATE INDEX "matches_completed_at_idx" ON "matches" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "matches_status_completed_at_idx" ON "matches" USING btree ("status","completed_at");--> statement-breakpoint
@@ -340,12 +332,10 @@ CREATE INDEX "matches_player1_identity_idx" ON "matches" USING btree ("player1_i
 CREATE INDEX "matches_player2_identity_idx" ON "matches" USING btree ("player2_identity_id","completed_at");--> statement-breakpoint
 CREATE INDEX "matches_model_versions_idx" ON "matches" USING btree ("performance_model_version","physics_model_version","completed_at");--> statement-breakpoint
 CREATE INDEX "matches_room_started_at_idx" ON "matches" USING btree ("room_id","started_at");--> statement-breakpoint
-CREATE INDEX "matches_diagnostics_expires_at_idx" ON "matches" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "room_participants_room_public_id_uidx" ON "room_participants" USING btree ("room_id","participant_public_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "room_participants_active_player_seat_uidx" ON "room_participants" USING btree ("room_id","role") WHERE "room_participants"."left_at" is null and "room_participants"."role" in ('player1', 'player2');--> statement-breakpoint
 CREATE INDEX "room_participants_identity_joined_idx" ON "room_participants" USING btree ("identity_id","joined_at");--> statement-breakpoint
 CREATE INDEX "room_participants_room_joined_idx" ON "room_participants" USING btree ("room_id","joined_at");--> statement-breakpoint
-CREATE INDEX "room_participants_diagnostics_expires_at_idx" ON "room_participants" USING btree ("diagnostics_expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "rooms_code_active_uidx" ON "rooms" USING btree ("code") WHERE "rooms"."closed_at" is null;--> statement-breakpoint
 CREATE INDEX "rooms_created_at_idx" ON "rooms" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "rooms_status_created_at_idx" ON "rooms" USING btree ("status","created_at");--> statement-breakpoint
@@ -358,54 +348,30 @@ CREATE INDEX "rounds_completed_at_idx" ON "rounds" USING btree ("completed_at");
 CREATE INDEX "rounds_launch_grades_idx" ON "rounds" USING btree ("launch_grade_a","launch_grade_b","completed_at");
 --> statement-breakpoint
 CREATE OR REPLACE FUNCTION "set_row_updated_at"()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   NEW.updated_at := now();
   RETURN NEW;
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER "identities_set_updated_at"
-BEFORE UPDATE ON "identities"
+CREATE TRIGGER "identities_set_updated_at" BEFORE UPDATE ON "identities"
 FOR EACH ROW EXECUTE FUNCTION "set_row_updated_at"();--> statement-breakpoint
-CREATE TRIGGER "admin_users_set_updated_at"
-BEFORE UPDATE ON "admin_users"
+CREATE TRIGGER "admin_users_set_updated_at" BEFORE UPDATE ON "admin_users"
 FOR EACH ROW EXECUTE FUNCTION "set_row_updated_at"();--> statement-breakpoint
 
-CREATE OR REPLACE FUNCTION "steam_top_assert_battle_eligible_design_layers"(
-  checked_design_id uuid
-)
-RETURNS void
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  eligible boolean;
-  layer_count integer;
-  position_count integer;
+CREATE OR REPLACE FUNCTION "steam_top_assert_battle_eligible_design_layers"(checked_design_id uuid)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE eligible boolean; layer_count integer; position_count integer;
 BEGIN
-  SELECT battle_eligible INTO eligible
-  FROM designs
-  WHERE id = checked_design_id;
-
-  IF eligible IS DISTINCT FROM true THEN
-    RETURN;
-  END IF;
-
-  SELECT count(*), count(DISTINCT position)
-    INTO layer_count, position_count
-  FROM design_layers
-  WHERE design_id = checked_design_id;
-
+  SELECT battle_eligible INTO eligible FROM designs WHERE id = checked_design_id;
+  IF eligible IS DISTINCT FROM true THEN RETURN; END IF;
+  SELECT count(*), count(DISTINCT position) INTO layer_count, position_count
+  FROM design_layers WHERE design_id = checked_design_id;
   IF layer_count <> 3 OR position_count <> 3 OR NOT EXISTS (
-    SELECT 1
-    FROM design_layers
-    WHERE design_id = checked_design_id
-    GROUP BY design_id
-    HAVING bool_and(position IN ('top', 'middle', 'bottom'))
-       AND count(*) FILTER (WHERE position = 'top') = 1
-       AND count(*) FILTER (WHERE position = 'middle') = 1
-       AND count(*) FILTER (WHERE position = 'bottom') = 1
+    SELECT 1 FROM design_layers WHERE design_id = checked_design_id
+    GROUP BY design_id HAVING count(*) FILTER (WHERE position = 'top') = 1
+      AND count(*) FILTER (WHERE position = 'middle') = 1
+      AND count(*) FILTER (WHERE position = 'bottom') = 1
   ) THEN
     RAISE EXCEPTION 'Battle-eligible design % must have exactly top, middle and bottom layers', checked_design_id
       USING ERRCODE = '23514', CONSTRAINT = 'designs_battle_eligible_three_layers';
@@ -413,9 +379,7 @@ BEGIN
 END;
 $$;--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "steam_top_check_design_layer_topology"()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_TABLE_NAME = 'designs' THEN
     PERFORM steam_top_assert_battle_eligible_design_layers(COALESCE(NEW.id, OLD.id));
@@ -431,29 +395,20 @@ BEGIN
 END;
 $$;--> statement-breakpoint
 CREATE CONSTRAINT TRIGGER "designs_battle_eligible_three_layers"
-AFTER INSERT OR UPDATE OF battle_eligible ON "designs"
-DEFERRABLE INITIALLY DEFERRED
+AFTER INSERT OR UPDATE OF battle_eligible ON "designs" DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION "steam_top_check_design_layer_topology"();--> statement-breakpoint
 CREATE CONSTRAINT TRIGGER "design_layers_battle_eligible_three_layers"
-AFTER INSERT OR UPDATE OR DELETE ON "design_layers"
-DEFERRABLE INITIALLY DEFERRED
+AFTER INSERT OR UPDATE OR DELETE ON "design_layers" DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION "steam_top_check_design_layer_topology"();--> statement-breakpoint
 
 CREATE OR REPLACE FUNCTION "steam_top_check_round_authority_key"()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  expected_hash text;
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE expected_hash text;
 BEGIN
-  expected_hash := encode(
-    digest(
-      length(NEW.match_id::text)::text || ':' || NEW.match_id::text ||
-      length(NEW.external_round_id)::text || ':' || NEW.external_round_id,
-      'sha256'
-    ),
-    'hex'
-  );
+  expected_hash := encode(digest(
+    length(NEW.match_id::text)::text || ':' || NEW.match_id::text ||
+    length(NEW.external_round_id)::text || ':' || NEW.external_round_id,
+    'sha256'), 'hex');
   IF NEW.authority_key_hash <> expected_hash THEN
     RAISE EXCEPTION 'authority_key_hash does not match the canonical BattleEngine correlation key'
       USING ERRCODE = '23514', CONSTRAINT = 'rounds_authority_key_matches_correlation';
@@ -465,21 +420,27 @@ CREATE TRIGGER "rounds_authority_key_matches_correlation"
 BEFORE INSERT OR UPDATE OF match_id, external_round_id, authority_key_hash ON "rounds"
 FOR EACH ROW EXECUTE FUNCTION "steam_top_check_round_authority_key"();--> statement-breakpoint
 
-CREATE OR REPLACE FUNCTION "steam_top_audited_delete_enabled"()
-RETURNS boolean
-LANGUAGE sql
-STABLE
-AS $$
-  SELECT COALESCE(current_setting('steam_top.allow_audited_delete', true), '') = 'on';
+CREATE OR REPLACE FUNCTION "steam_top_current_delete_is_audited"()
+RETURNS boolean LANGUAGE plpgsql STABLE AS $$
+DECLARE configured_id text;
+BEGIN
+  configured_id := current_setting('steam_top.deletion_audit_id', true);
+  IF configured_id IS NULL OR configured_id !~
+    '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
+    RETURN false;
+  END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM deletion_audit
+    WHERE id = configured_id::uuid
+      AND transaction_id = txid_current()
+      AND admin_user_id IS NOT NULL
+  );
+END;
 $$;--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "steam_top_protect_eligible_design"()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled() THEN
-    RETURN COALESCE(NEW, OLD);
-  END IF;
+  IF TG_OP = 'DELETE' AND steam_top_current_delete_is_audited() THEN RETURN OLD; END IF;
   IF OLD.battle_eligible THEN
     RAISE EXCEPTION 'Battle-eligible design snapshots are immutable'
       USING ERRCODE = '55000', CONSTRAINT = 'eligible_designs_are_immutable';
@@ -487,26 +448,15 @@ BEGIN
   RETURN COALESCE(NEW, OLD);
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER "eligible_designs_are_immutable"
-BEFORE UPDATE OR DELETE ON "designs"
+CREATE TRIGGER "eligible_designs_are_immutable" BEFORE UPDATE OR DELETE ON "designs"
 FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_eligible_design"();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "steam_top_protect_eligible_design_layer"()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  old_eligible boolean := false;
-  new_eligible boolean := false;
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE old_eligible boolean := false; new_eligible boolean := false;
 BEGIN
-  IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled() THEN
-    RETURN COALESCE(NEW, OLD);
-  END IF;
-  IF TG_OP <> 'INSERT' THEN
-    SELECT battle_eligible INTO old_eligible FROM designs WHERE id = OLD.design_id;
-  END IF;
-  IF TG_OP <> 'DELETE' THEN
-    SELECT battle_eligible INTO new_eligible FROM designs WHERE id = NEW.design_id;
-  END IF;
+  IF TG_OP = 'DELETE' AND steam_top_current_delete_is_audited() THEN RETURN OLD; END IF;
+  IF TG_OP <> 'INSERT' THEN SELECT battle_eligible INTO old_eligible FROM designs WHERE id = OLD.design_id; END IF;
+  IF TG_OP <> 'DELETE' THEN SELECT battle_eligible INTO new_eligible FROM designs WHERE id = NEW.design_id; END IF;
   IF COALESCE(old_eligible, false) OR COALESCE(new_eligible, false) THEN
     RAISE EXCEPTION 'Layers of a battle-eligible design are immutable'
       USING ERRCODE = '55000', CONSTRAINT = 'eligible_design_layers_are_immutable';
@@ -514,17 +464,12 @@ BEGIN
   RETURN COALESCE(NEW, OLD);
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER "eligible_design_layers_are_immutable"
-BEFORE INSERT OR UPDATE OR DELETE ON "design_layers"
+CREATE TRIGGER "eligible_design_layers_are_immutable" BEFORE INSERT OR UPDATE OR DELETE ON "design_layers"
 FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_eligible_design_layer"();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "steam_top_protect_completed_match"()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled() THEN
-    RETURN COALESCE(NEW, OLD);
-  END IF;
+  IF TG_OP = 'DELETE' AND steam_top_current_delete_is_audited() THEN RETURN OLD; END IF;
   IF OLD.status = 'completed' THEN
     RAISE EXCEPTION 'Completed matches are immutable'
       USING ERRCODE = '55000', CONSTRAINT = 'completed_matches_are_immutable';
@@ -532,34 +477,37 @@ BEGIN
   RETURN COALESCE(NEW, OLD);
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER "completed_matches_are_immutable"
-BEFORE UPDATE OR DELETE ON "matches"
+CREATE TRIGGER "completed_matches_are_immutable" BEFORE UPDATE OR DELETE ON "matches"
 FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_completed_match"();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "steam_top_protect_authoritative_round"()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled() THEN
-    RETURN COALESCE(NEW, OLD);
-  END IF;
+  IF TG_OP = 'DELETE' AND steam_top_current_delete_is_audited() THEN RETURN OLD; END IF;
   RAISE EXCEPTION 'Authoritative completed rounds are immutable'
     USING ERRCODE = '55000', CONSTRAINT = 'completed_rounds_are_immutable';
 END;
 $$;--> statement-breakpoint
-CREATE TRIGGER "completed_rounds_are_immutable"
-BEFORE UPDATE OR DELETE ON "rounds"
+CREATE TRIGGER "completed_rounds_are_immutable" BEFORE UPDATE OR DELETE ON "rounds"
 FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_authoritative_round"();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "steam_top_protect_deletion_audit"()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'Deletion audit records are immutable'
+    USING ERRCODE = '55000', CONSTRAINT = 'deletion_audit_is_immutable';
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "deletion_audit_is_immutable" BEFORE UPDATE OR DELETE ON "deletion_audit"
+FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_deletion_audit"();--> statement-breakpoint
 
 COMMENT ON COLUMN "identities"."device_name" IS
-  'Durable display/diagnostic context only; never an authentication or identity key.';--> statement-breakpoint
-COMMENT ON COLUMN "identity_sessions"."diagnostics_expires_at" IS
-  'Retention boundary for diagnostic IP and user-agent fields; these fields are never identity keys.';--> statement-breakpoint
-COMMENT ON COLUMN "room_participants"."diagnostics_expires_at" IS
-  'Retention boundary for diagnostic IP, user-agent and device fields; these fields are never identity keys.';--> statement-breakpoint
-COMMENT ON COLUMN "matches"."diagnostics_expires_at" IS
-  'Retention boundary for diagnostic IP, user-agent and device fields; these fields are never identity keys.';--> statement-breakpoint
-COMMENT ON COLUMN "admin_sessions"."diagnostics_expires_at" IS
-  'Retention boundary for diagnostic IP and user-agent fields.';--> statement-breakpoint
-COMMENT ON COLUMN "admin_audit"."diagnostics_expires_at" IS
-  'Retention boundary for diagnostic IP and user-agent fields.';
+  'Diagnostic context retained until explicit audited admin deletion or platform decommission; never an identity key.';--> statement-breakpoint
+COMMENT ON COLUMN "identity_sessions"."last_ip" IS
+  'Diagnostic context retained until explicit audited admin deletion or platform decommission; never an identity key.';--> statement-breakpoint
+COMMENT ON COLUMN "room_participants"."last_ip" IS
+  'Diagnostic context retained until explicit audited admin deletion or platform decommission; never an identity key.';--> statement-breakpoint
+COMMENT ON COLUMN "matches"."player1_ip" IS
+  'Diagnostic context retained until explicit audited admin deletion or platform decommission; never an identity key.';--> statement-breakpoint
+COMMENT ON COLUMN "admin_sessions"."last_ip" IS
+  'Diagnostic context retained until explicit audited admin deletion or platform decommission.';--> statement-breakpoint
+COMMENT ON COLUMN "admin_audit"."request_ip" IS
+  'Diagnostic context retained until explicit audited admin deletion or platform decommission.';

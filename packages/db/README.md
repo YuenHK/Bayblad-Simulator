@@ -15,15 +15,18 @@ The command intentionally fails when `TEST_DATABASE_URL` is absent. Ordinary
 unit tests may skip the PostgreSQL contract locally; CI always supplies a real
 PostgreSQL 16 service and runs it.
 
-IP addresses and user agents are diagnostic fields only. They must be cleared
-at `diagnostics_expires_at` and must never be used as identity keys. Device
-names are retained for the teacher-facing record requested by the product, but
-are likewise not authentication or identity keys.
+IP addresses, user agents and device names are diagnostic fields only. They are
+retained permanently until an explicit audited administrator deletion or
+platform decommission, matching the product retention decision. They must
+never be used as authentication or identity keys.
 
 Battle-eligible design snapshots, their layers, completed matches and saved
-rounds are immutable. A future audited deletion repository may delete them only
-inside the same transaction that records a deletion audit, using:
+rounds are immutable. Deletion is allowed only inside the same transaction that
+first inserts an immutable `deletion_audit` row and binds its UUID locally:
 
 ```sql
-SET LOCAL steam_top.allow_audited_delete = 'on';
+SELECT set_config('steam_top.deletion_audit_id', '<audit UUID>', true);
 ```
+
+Application code must use `withAuditedDeletion`; a missing, invented or
+previous-transaction audit UUID cannot unlock deletion.
