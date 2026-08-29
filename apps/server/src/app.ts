@@ -28,8 +28,8 @@ import { registerAnalyticsRoutes } from "./analytics/routes";
 import { registerExportRoutes, type ExportDataSource } from "./exports/workbook";
 import { registerDeleteRecordRoutes, type DeletionStore } from "./admin/delete-records";
 import { registerAdminDashboardRoutes } from "./admin/dashboard-routes";
-import { InMemoryPlatformSettingsStore, type PlatformSettingsStore } from "./admin/platform-settings";
-import { InMemoryAdminCommandStore, type AdminCommandStore } from "./admin/command-operations";
+import { InMemoryPlatformSettingsStore, PostgresPlatformSettingsStore, type PlatformSettingsStore } from "./admin/platform-settings";
+import { InMemoryAdminCommandStore, PostgresAdminCommandStore, type AdminCommandStore } from "./admin/command-operations";
 import { AdminCommandExecutor } from "./admin/command-executor";
 import { registerAdminRecordRoutes, type AdminRecordsSource } from "./admin/records-routes";
 
@@ -140,6 +140,7 @@ function requireNonnegative(name: string, value: number): number {
 export function buildApp(options: BuildAppOptions): BuiltApp {
   if (options.requireAuthorityLease && (!options.roomRecordRepository?.acquireStartupLease || !options.roomRecordRepository.verifyStartupLease || !options.roomRecordRepository.releaseStartupLease)) throw new TypeError("Authority lease lifecycle is required");
   if(options.requireAuthorityLease&&options.adminAuth&&(!options.platformSettingsStore||!options.adminCommandStore||options.platformSettingsStore instanceof InMemoryPlatformSettingsStore||options.adminCommandStore instanceof InMemoryAdminCommandStore))throw new TypeError("Durable admin control stores are required");
+  if(process.env.NODE_ENV==="production"&&options.adminAuth&&(!(options.platformSettingsStore instanceof PostgresPlatformSettingsStore)||!(options.adminCommandStore instanceof PostgresAdminCommandStore)))throw new TypeError("Production admin control requires PostgreSQL stores");
   if (process.env.NODE_ENV === "production" && options.testIdentityResolver) throw new TypeError("testIdentityResolver is forbidden in production");
   if (process.env.NODE_ENV === "production" && options.testRecordIdentityActivity) throw new TypeError("testRecordIdentityActivity is forbidden in production");
   if (process.env.NODE_ENV === "production" && !options.allowedOrigins?.length) {

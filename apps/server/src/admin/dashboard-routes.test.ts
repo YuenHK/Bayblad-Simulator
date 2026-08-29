@@ -88,6 +88,13 @@ describe("admin dashboard routes", () => {
     });
     expect(closed.statusCode).toBe(200);
     expect(f.rooms.hasRoom(f.room.roomId)).toBe(false);
+    const replayed = await f.app.inject({
+      method: "POST", url: "/api/admin/rooms/actions",
+      headers: { ...headers, cookie: f.cookie, "x-csrf-token": f.csrf },
+      payload: { action: "room.close", roomId: f.room.roomId, password: "test-password-2026", operationId: "550e8400-e29b-41d4-a716-446655440000" },
+    });
+    expect(replayed.statusCode).toBe(200);
+    expect(replayed.json()).toMatchObject({ status: "completed" });
     expect(
       f.store.auditEntries.some(
         (x) => x.action === "admin.room.close" && x.outcome === "success",
@@ -115,5 +122,18 @@ describe("admin dashboard routes", () => {
     expect(() =>
       f.rooms.create({ id: "u2", displayName: "學生" }, "另一房"),
     ).toThrow("PLATFORM_PAUSED");
+  });
+  it("rejects nonexistent close and remove targets before accepting an operation", async () => {
+    const f = await fixture(); apps.push(f.app);
+    const request = (payload: object) => f.app.inject({ method: "POST", url: "/api/admin/rooms/actions", headers: { ...headers, cookie: f.cookie, "x-csrf-token": f.csrf }, payload });
+    expect((await request({ action:"room.close",roomId:"missing",password:"test-password-2026",operationId:"550e8400-e29b-41d4-a716-446655440003" })).statusCode).toBe(404);
+    expect((await request({ action:"room.remove",roomId:f.room.roomId,participantId:"missing",password:"test-password-2026",operationId:"550e8400-e29b-41d4-a716-446655440004" })).statusCode).toBe(404);
+  });
+  it("keeps a room open while a spectator remains after the last player is removed", async () => {
+    const f = await fixture(); apps.push(f.app);
+    f.rooms.join(f.room.roomId, { id: "spectator", displayName: "觀賽者" }, "spectator");
+    await f.app.realtimeGateway.adminRemoveParticipant(f.room.roomId, f.room.participantId);
+    expect(f.rooms.hasRoom(f.room.roomId)).toBe(true);
+    expect(f.rooms.adminRooms()[0]).toMatchObject({ players: [], spectators: [{ displayName: "觀賽者" }] });
   });
 });

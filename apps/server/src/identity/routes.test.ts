@@ -9,6 +9,8 @@ import { PostgresRoomProjectionStore } from "../records/room-projection-store";
 import { PostgresBattleResultRepository } from "../records/battle-result-repository";
 import { AdminAuthService } from "../auth/admin-auth";
 import { PostgresAdminStore } from "../auth/postgres-admin-store";
+import { PostgresPlatformSettingsStore } from "../admin/platform-settings";
+import { PostgresAdminCommandStore } from "../admin/command-operations";
 import { hashIdentityToken } from "./cookie";
 import { ApiIClassAdapter, FallbackIClassAdapter, ImportedDeviceMapAdapter } from "./iclass-adapter";
 import { InMemoryTokenNonceStore, WebClipTokenService } from "./webclip-token";
@@ -163,7 +165,8 @@ describe("identity routes", () => {
       const durable = new PostgresIdentityStore(null as never);
       const adminAuth = new AdminAuthService(new PostgresAdminStore(null as never), { allowedOrigins: ["https://school.example"], csrfSecret: Buffer.alloc(32, 1), logError: () => undefined });
       const db = null as never;
-      const app = buildApp({ battleEngine, resultRepository: new PostgresBattleResultRepository(db), designRepository: new PostgresDesignRepository(db), matchRepository: new PostgresMatchRepository(db), roomRecordRepository: new PostgresRoomRecordRepository(db), roomProjectionStore: new PostgresRoomProjectionStore(db), allowedOrigins: ["https://school.example"], identityResolver: new IdentityResolver(durable), adminAuth, iClassStatus: "disabled", sweepIntervalMs: 0 });
+      expect(() => buildApp({ battleEngine, adminAuth, allowedOrigins: ["https://school.example"] })).toThrow(/PostgreSQL stores/u);
+      const app = buildApp({ battleEngine, resultRepository: new PostgresBattleResultRepository(db), designRepository: new PostgresDesignRepository(db), matchRepository: new PostgresMatchRepository(db), roomRecordRepository: new PostgresRoomRecordRepository(db), roomProjectionStore: new PostgresRoomProjectionStore(db), platformSettingsStore:new PostgresPlatformSettingsStore(db),adminCommandStore:new PostgresAdminCommandStore(db), allowedOrigins: ["https://school.example"], identityResolver: new IdentityResolver(durable), adminAuth, iClassStatus: "disabled", sweepIntervalMs: 0 });
       apps.push(app);
       expect(app).toBeDefined();
     } finally { process.env.NODE_ENV = previous; }

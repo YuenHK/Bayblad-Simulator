@@ -59,4 +59,23 @@ describe("durable admin control state", () => {
     expect((await commands.get(operationId))?.status).toBe("completed");
     expect(closes).toBe(1);
   });
+  it("fences stale lease generations and retains accepted commands while the accepted audit is unavailable", async () => {
+    const commands = new InMemoryAdminCommandStore();
+    let now = new Date("2026-08-29T00:00:00.000Z");
+    const input={operationId:"550e8400-e29b-41d4-a716-446655440002",payloadHash:adminCommandPayloadHash({action:"room.close",roomId:"ROOM"}),action:"room.close" as const,target:"ROOM",payload:{action:"room.close",roomId:"ROOM"},adminUserId:"650e8400-e29b-41d4-a716-446655440000",adminSessionId:"750e8400-e29b-41d4-a716-446655440000"};
+    await commands.accept(input, now);
+    const first = await commands.claimDue(now, 100);
+    expect(await commands.renewLease(input.operationId, first!.leaseToken!, first!.leaseGeneration + 1, now, 100)).toBe(false);
+    expect(await commands.renewLease(input.operationId, first!.leaseToken!, first!.leaseGeneration, now, 100)).toBe(true);
+
+    class UnavailableAuditStore extends InMemoryAdminStore { override async audit() { throw new Error("audit unavailable"); } }
+    const auditStore = new UnavailableAuditStore();
+    const auth = new AdminAuthService(auditStore, { allowedOrigins: ["http://localhost"] });
+    let closes = 0;
+    const executor = new AdminCommandExecutor(commands, auth, { setPlatformPaused:()=>undefined,adminCloseRoom:async()=>{closes++;},adminRemoveParticipant:async()=>undefined }, new InMemoryPlatformSettingsStore(), () => now);
+    now = new Date(now.getTime() + 101);
+    for (let attempt = 0; attempt < 10; attempt++) { await executor.pump(); now = new Date(now.getTime() + 61_000); }
+    expect((await commands.get(input.operationId))?.status).toBe("accepted");
+    expect(closes).toBe(0);
+  });
 });

@@ -343,11 +343,13 @@ export class RealtimeGateway {
     this.#broadcastLobby();
   }
 
-  adminCloseRoom(roomId: string): Promise<void> {
+  adminCloseRoom(roomId: string, signal?: AbortSignal): Promise<void> {
     return this.#adminRoomTail(roomId, async () => {
+      if (signal?.aborted) return;
       const view = this.#rooms.get(roomId); if (!view) return;
       const revision = view.revision + 1, checkpoint = this.#rooms.checkpoint(roomId), closedAt = new Date(this.#now());
       if (this.#roomRecordRepository?.closeWithProjection) await this.#roomRecordRepository.closeWithProjection(roomId, closedAt, revision, { phase: "closed", firstBattleAt: null, closedAt: closedAt.toISOString() });
+      if (signal?.aborted) return;
       this.#rooms.adminClose(roomId);
       try { if (this.#roomRecordRepository && !this.#roomRecordRepository.closeWithProjection) await this.#roomRecordRepository.close(roomId, closedAt, revision); }
       catch (error) { this.#rooms.restore(checkpoint); throw error; }
@@ -356,8 +358,9 @@ export class RealtimeGateway {
     });
   }
 
-  adminRemoveParticipant(roomId: string, participantId: string): Promise<void> {
+  adminRemoveParticipant(roomId: string, participantId: string, signal?: AbortSignal, progress?: (step: string) => Promise<void>): Promise<void> {
     return this.#adminRoomTail(roomId, async () => {
+      if (signal?.aborted) return;
       const sessionId = this.#sessionIdsByParticipant.get(roomId)?.get(participantId);
       const participantExists = this.#rooms.adminRooms().find(room => room.roomId === roomId)?.players.concat(this.#rooms.adminRooms().find(room => room.roomId === roomId)?.spectators ?? []).some(participant => participant.id === participantId);
       if (!participantExists) return;
@@ -365,15 +368,20 @@ export class RealtimeGateway {
       if (match) {
         this.#emitToRoom(roomId, { type: "match.cancelled", roomId, matchId: match.matchId, reason: "admin-removed", protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() });
         this.#cancelMatch(roomId, match);
+        await progress?.("match_cancelled");
         await this.#transitionRoomPhase(roomId, "waiting", "cancel");
+        await progress?.("phase_waiting");
       }
+      if (signal?.aborted) return;
       const checkpoint = this.#rooms.checkpoint(roomId); this.#rooms.adminRemove(roomId, participantId);
       try { if (this.#roomRecordRepository) { const view = this.#rooms.get(roomId); if (view) { const projection = this.#roomRoleProjection(roomId); await this.#roomRecordRepository.leaveAndSync(roomId, participantId, new Date(this.#now()), projection.roles, projection.ownerParticipantId, projection.ownerIdentityId); } else await this.#roomRecordRepository.leave(roomId, participantId, new Date(this.#now())); } }
       catch (error) { this.#rooms.restore(checkpoint); throw error; }
+      await progress?.("participant_left");
       const session = sessionId ? this.#sessionsById.get(sessionId) : undefined; if (session) { const event = { type: "room.departed", departureId: this.#createServerEventId(), roomId, reason: "removed", protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() } as const; this.#queueDeparture(session, event); for (const socketId of session.socketIds) { const socket = this.io.sockets.sockets.get(socketId); if (socket) this.#emit(socket, event); } session.roomIds.delete(roomId); session.ownedRoomIds.delete(roomId); }
       this.#sessionIdsByParticipant.get(roomId)?.delete(participantId); this.#syncTransportRoles(roomId); if (this.#rooms.hasRoom(roomId)) this.#broadcastRoom(roomId); this.#broadcastLobby();
+      await progress?.("kick_broadcast");
       const remaining = this.#rooms.adminRooms().find(room => room.roomId === roomId);
-      if (remaining && remaining.players.length === 0) {
+      if (remaining && remaining.players.length === 0 && remaining.spectators.length === 0) {
         const view = this.#rooms.get(roomId), closedAt = new Date(this.#now());
         if (view && this.#roomRecordRepository) await this.#roomRecordRepository.close(roomId, closedAt, view.revision + 1);
         this.#rooms.adminClose(roomId);

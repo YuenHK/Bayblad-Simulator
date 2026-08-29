@@ -107,7 +107,16 @@ export const adminCommandOperations = pgTable("admin_command_operations", {
   status: varchar("status", { length: 20 }).notNull(), attemptCount:integer("attempt_count").notNull().default(0),nextRetryAt:timestamp("next_retry_at",{withTimezone:true}).notNull().defaultNow(),leaseToken:uuid("lease_token"),leaseGeneration:integer("lease_generation").notNull().default(0),leaseExpiresAt:timestamp("lease_expires_at",{withTimezone:true}),
   resultJson: jsonb("result_json").$type<Readonly<Record<string, unknown>>>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [check("admin_command_operations_hash", sql`${table.payloadHash} ~ '^[a-f0-9]{64}$'`), check("admin_command_operations_status", sql`${table.status} in ('accepted','claimed','applied','audit_pending','completed','terminal_failed')`),check("admin_command_operations_lease",sql`(${table.status}='claimed' and ${table.leaseToken} is not null and ${table.leaseExpiresAt} is not null) or (${table.status}<>'claimed' and ${table.leaseToken} is null and ${table.leaseExpiresAt} is null)`),index("admin_command_operations_due_idx").on(table.nextRetryAt,table.createdAt)]);
+}, (table) => [
+  check("admin_command_operations_hash", sql`${table.payloadHash} ~ '^[a-f0-9]{64}$'`),
+  check("admin_command_operations_action", sql`${table.action} in ('platform.pause','room.close','room.remove')`),
+  check("admin_command_operations_counts", sql`${table.attemptCount} >= 0 and ${table.leaseGeneration} >= 0`),
+  check("admin_command_operations_json", sql`jsonb_typeof(${table.payloadJson}) = 'object' and jsonb_typeof(${table.resultJson}) = 'object'`),
+  check("admin_command_operations_status", sql`${table.status} in ('accepted','claimed','applied','audit_pending','completed','terminal_failed')`),
+  check("admin_command_operations_lease", sql`(${table.status}='claimed' and ${table.leaseToken} is not null and ${table.leaseExpiresAt} is not null) or (${table.status}<>'claimed' and ${table.leaseToken} is null and ${table.leaseExpiresAt} is null)`),
+  check("admin_command_operations_times", sql`${table.nextRetryAt} >= ${table.createdAt} and ${table.updatedAt} >= ${table.createdAt}`),
+  index("admin_command_operations_due_idx").on(table.nextRetryAt, table.createdAt),
+]);
 
 export type BattleResultSnapshot = Readonly<Record<string, unknown>>;
 
