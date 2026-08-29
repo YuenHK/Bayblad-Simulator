@@ -6,7 +6,8 @@ import { io } from "socket.io-client";
 const [origin, nonce] = process.argv.slice(2);
 if (!/^https:\/\//u.test(origin) || !/^[a-f0-9]{64}$/u.test(nonce)) process.exit(2);
 const publicUrl = new URL(origin);
-if (publicUrl.port || publicUrl.pathname !== "/") process.exit(2);
+const integration = process.env.SMOKE_INTEGRATION_MODE === "true";
+if (publicUrl.pathname !== "/" || (integration ? origin !== "https://steam-top.integration.test:18443" : Boolean(publicUrl.port))) process.exit(2);
 
 // Keep the public Host/SNI for certificate validation, but never use public DNS.
 const lookup = (_hostname, _options, callback) => callback(null, "127.0.0.1", 4);
@@ -46,7 +47,7 @@ function postJson(path, token, body) {
   const payload = Buffer.from(JSON.stringify(body));
   return new Promise((resolve, reject) => {
     const request = https.request({
-      agent, hostname: publicUrl.hostname, port: 443, servername: publicUrl.hostname,
+      agent, hostname: publicUrl.hostname, port: publicUrl.port || 443, servername: publicUrl.hostname,
       path, method: "POST", headers: {
         host: publicUrl.hostname, authorization: `Bearer ${token}`,
         "content-type": "application/json", "content-length": payload.length,
