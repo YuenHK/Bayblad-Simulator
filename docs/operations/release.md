@@ -37,6 +37,8 @@ Installer 來源必須同時受 `INSTALLER_ALLOWED_HOSTS`、無 redirect HTTPS/T
 
 `install-bootstrap.sh` 是主機 image provisioning 前置條件，不包在 bootstrap release artifact，也不允許從 candidate path 直接 sudo。主機管理員必須以校外已審核 `INSTALLER_SHA256` 及 `steam-top-bootstrap-installer` SSH signature 驗證 bytes，再安裝為 root-owned 0555 `/usr/local/sbin/install-steam-top-bootstrap`；sudoers 只可列出這個 canonical pinned path。更新 installer 時必須同時輪換外部 digest/signature，不可由 release artifact 自證。
 
+傳給 installer 的 allowed-signers 必須是 root-owned `0444`，trust config 必須是 root-owned `0400`，兩者的所有父目錄均由 root 擁有且不可 group/world 寫入；symlink 或 runner-owned 暫存輸入會 fail closed。CI 只可先把已驗證內容安裝到 root-private `/run` staging，再呼叫 pinned installer。
+
 Receipt 不可先複製成非 root 可讀檔案；非 root deploy user 只能透過上述 exact sudo command 取得 `RECEIPT-BEGIN`／base64 payload／`RECEIPT-SIGNATURE`／`RECEIPT-END` framed stdout。CI 會實際建立受限帳號及 sudoers、驗證 direct outbox read 被拒，並解析完整 frame。
 
 Authorization 在 Compose 前由 `pending` 轉為 `deploying`，不會在 command 中斷時假定未產生效果。同 nonce 重試時，host lock 內先 inspect 實際 containers 及 immutable RepoDigests：零容器才可安全重跑 deploy；全部 service/project/config image/running-health/migration exit 均精確相符才可補跑 smoke 及 receipt；任何部分或不符狀態會產生 root-private `RECOVERY-REQUIRED` 並把 authorization 設為 `failed`，禁止盲目 `up`。
@@ -61,6 +63,8 @@ Authorization 在 Compose 前由 `pending` 轉為 `deploying`，不會在 comman
 Production cutover 只可使用預先安裝的 `/opt/steam-top-bootstrap/record-cutover-current.sh` 及 `/opt/steam-top-bootstrap/finalize-current.sh`。兩個入口會自行解析並驗證目前 protected generation；直接向 runtime script 傳入自行組合的 state path 屬不支援操作，並會被拒絕。
 
 `hostReceiptSigningKey`、`ledgerSigningKey`、`evidenceSigningKey` 與 `productionStateSigningKey` 必須分開，全部由 root 擁有並設為 `0400`。輪換時先加入及驗證新 public identity，才更改相應 private-key path；舊 identity 要保留至其簽署 generation 完成審計保留期，並在變更紀錄保存新舊 key fingerprint。receipt key 不可重用作 ledger 或 authorization evidence key。
+
+每個 writer 在寫 generation/pointer 前必須由 private key 導出 public key，精確匹配 envelope 的 `signerKeyId` 及 allowed-signers，簽署後再即時驗簽。輪換測試須以 old→new 混合 chain 證明兩者同時可驗；保留期完結前移除 old identity 必須令舊 chain fail closed，而不是靜默略過。
 
 Bootstrap trust config 同時要設定 `ledgerAllowedSigners` 及 `ledgerSignerId`；activation 只以該 ledger identity 驗證完整 host ledger chain，不會接受 host receipt identity 代替。
 
