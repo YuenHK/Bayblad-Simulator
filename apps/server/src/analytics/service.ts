@@ -28,7 +28,7 @@ export function signAnalyticsCursor(secret:Buffer,payload:Readonly<{asOf:string;
 
 export class PostgresAnalyticsCache implements AnalyticsCache {
   readonly #transaction = new AsyncLocalStorage<Readonly<{executor:DatabaseClient["sql"];cutoff:Date}>>();
-  constructor(private readonly sql: DatabaseClient["sql"]) {}
+  constructor(private readonly sql: DatabaseClient["sql"],private readonly onReservedBackendForTest?:(pid:number)=>void) {}
   currentExecutor():DatabaseClient["sql"] { return this.#transaction.getStore()?.executor??this.sql; }
   transactionCutoff():Date|undefined{return this.#transaction.getStore()?.cutoff;}
   async read(hash: string, maxAge: Date): Promise<AnalyticsSummary | null> {
@@ -52,6 +52,7 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
   async exclusive<T>(hash: string, operation: () => Promise<T>): Promise<T> {
     const reserved=await this.sql.reserve();let locked=false;
     try {
+      if(this.onReservedBackendForTest){const [backend]=await reserved<{pid:number}[]>`select pg_backend_pid() pid`;this.onReservedBackendForTest(backend!.pid);}
       await reserved`select pg_advisory_lock(hashtextextended(${hash}, 1937002026))`;locked=true;
       return await reserved.begin(async (transaction) => { await transaction`set transaction isolation level repeatable read`;const [clock]=await transaction<{cutoff:Date}[]>`select transaction_timestamp() cutoff`;return this.#transaction.run({executor:transaction as unknown as DatabaseClient["sql"],cutoff:clock!.cutoff}, operation); }) as T;
     } finally {
