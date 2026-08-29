@@ -41,6 +41,9 @@ type Session = {
   ownedRoomIds: Set<string>;
   socketIds: Set<string>;
   events: Map<string, string>;
+  commandTail: Promise<void>;
+  inflightCommands: Map<string, Readonly<{ fingerprint: string; promise: Promise<void> }>>;
+  commandsStopped: boolean;
   disconnectedAt: number | null;
   lastActiveAt: number;
   clockChallenges: Map<string, Readonly<{ serverSentAtMs: number; expiresAtMs: number }>>;
@@ -352,6 +355,7 @@ export class RealtimeGateway {
     if (this.#lobbyTimer) clearTimeout(this.#lobbyTimer);
     this.#lobbyTimer = null;
     for (const [roomId, match] of this.#matches) this.#cancelMatch(roomId, match);
+    for (const session of this.#sessionsById.values()) session.commandsStopped = true;
     this.#terminalMatches.clear();
     this.#roomProjections.close();
     await new Promise<void>((resolve) => this.io.close(() => resolve()));
@@ -529,7 +533,7 @@ export class RealtimeGateway {
         this.#error(socket, "INVALID_EVENT", "Malformed protocol event");
         return;
       }
-      void this.#command(socket, session!, parsed.data, now).catch((error: unknown) => {
+      void this.#enqueueCommand(socket, session!, parsed.data, now).catch((error: unknown) => {
         this.#logError(error);
         const code = this.#safeErrorCode(error);
         this.#error(socket, code, code === "COMMAND_FAILED" ? "Command could not be completed" : code, parsed.data.eventId);
@@ -591,6 +595,9 @@ export class RealtimeGateway {
       ownedRoomIds: new Set(),
       socketIds: new Set(),
       events: new Map(),
+      commandTail: Promise.resolve(),
+      inflightCommands: new Map(),
+      commandsStopped: false,
       disconnectedAt: null,
       lastActiveAt: now,
       clockChallenges: new Map(),
@@ -656,7 +663,7 @@ export class RealtimeGateway {
     return allowed.has(candidate) ? candidate : "COMMAND_FAILED";
   }
 
-  async #command(socket: Socket, session: Session, event: V1CommandEvent, receivedAtMs: number): Promise<void> {
+  async #enqueueCommand(socket: Socket, session: Session, event: V1CommandEvent, receivedAtMs: number): Promise<void> {
     const fingerprint = JSON.stringify(event);
     const previous = session.events.get(event.eventId);
     if (previous !== undefined) {
@@ -664,6 +671,31 @@ export class RealtimeGateway {
       this.#ack(socket, event.eventId, event.type, "replayed");
       return;
     }
+    const inflight = session.inflightCommands.get(event.eventId);
+    if (inflight) {
+      if (inflight.fingerprint !== fingerprint) throw Object.assign(new Error("EVENT_ID_CONFLICT"), { code: "EVENT_ID_CONFLICT" });
+      await inflight.promise;
+      this.#ack(socket, event.eventId, event.type, "replayed");
+      return;
+    }
+    if (session.commandsStopped) throw Object.assign(new Error("COMMAND_FAILED"), { code: "COMMAND_FAILED" });
+    const execution = session.commandTail.then(async () => {
+      if (session.commandsStopped) throw Object.assign(new Error("COMMAND_FAILED"), { code: "COMMAND_FAILED" });
+      await this.#applyCommand(socket, session, event, receivedAtMs);
+      session.events.set(event.eventId, fingerprint);
+      if (session.events.size > 512) session.events.delete(session.events.keys().next().value!);
+    });
+    session.inflightCommands.set(event.eventId, { fingerprint, promise: execution });
+    session.commandTail = execution.then(() => undefined, () => undefined);
+    try {
+      await execution;
+      this.#ack(socket, event.eventId, event.type, "applied");
+    } finally {
+      if (session.inflightCommands.get(event.eventId)?.promise === execution) session.inflightCommands.delete(event.eventId);
+    }
+  }
+
+  async #applyCommand(socket: Socket, session: Session, event: V1CommandEvent, receivedAtMs: number): Promise<void> {
     if (event.type === "room.create") {
       if (session.roomIds.size > 0) throw Object.assign(new Error("ALREADY_IN_ROOM"), { code: "ALREADY_IN_ROOM" });
       if (session.ownedRoomIds.size >= this.#maxOwnedRoomsPerSession) {
@@ -820,9 +852,6 @@ export class RealtimeGateway {
       this.#launch.submit(participantId, event, receivedAtMs, median(session.observedRtts));
       this.#flushLaunch(event.roomId, match);
     }
-    session.events.set(event.eventId, fingerprint);
-    if (session.events.size > 512) session.events.delete(session.events.keys().next().value!);
-    this.#ack(socket, event.eventId, event.type, "applied");
   }
 
   #broadcastRoom(roomId: string): void {
@@ -1023,7 +1052,7 @@ export class RealtimeGateway {
           serverEventId: this.#createServerEventId(),
         };
         match.latestFrame = event;
-        this.#emitToRoom(roomId, event, sequence === result.frames.length - 1);
+        this.#emitToRoom(roomId, event, sequence === 0 || sequence === result.frames.length - 1);
       }
       const candidateWinners = [...match.roundWinners];
       if (result.outcome.winner !== "draw") candidateWinners.push(result.outcome.winner);
