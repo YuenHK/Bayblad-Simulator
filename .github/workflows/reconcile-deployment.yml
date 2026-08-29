@@ -1,0 +1,49 @@
+name: Reconcile protected production deployment
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_id: { required: true, type: string }
+      nonce: { required: true, type: string }
+permissions: { contents: read }
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: { contents: read, deployments: write, id-token: write, attestations: write }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false }
+      - name: Validate pending deployment and fetch exact host outbox receipt
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          DEPLOYMENT_ID: "${{ inputs.deployment_id }}"
+          NONCE: "${{ inputs.nonce }}"
+          SSH_HOST: "${{ secrets.SSH_HOST }}"
+          SSH_USER: "${{ secrets.SSH_USER }}"
+          SSH_HOST_KEY: "${{ secrets.SSH_HOST_KEY }}"
+          SSH_PRIVATE_KEY: "${{ secrets.SSH_PRIVATE_KEY }}"
+          REMOTE_HOST_RECEIPT_OUTBOX_DIR: "${{ secrets.REMOTE_HOST_RECEIPT_OUTBOX_DIR }}"
+          HOST_RECEIPT_ALLOWED_SIGNERS: "${{ secrets.HOST_RECEIPT_ALLOWED_SIGNERS }}"
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOYMENT_ID" =~ ^[1-9][0-9]*$ && "$NONCE" =~ ^[a-f0-9]{64}$ && "$SSH_HOST" =~ ^[A-Za-z0-9.-]+$ && "$SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ && "$REMOTE_HOST_RECEIPT_OUTBOX_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID" > deployment.json
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses?per_page=1" > statuses.json
+          node -e 'const d=require("./deployment.json"),s=require("./statuses.json");if(d.environment!=="production"||d.payload?.nonce!==process.env.NONCE||d.payload?.schemaVersion!==3||s[0]?.state!=="in_progress")process.exit(1)'
+          install -m 700 -d "$HOME/.ssh";printf '%s\n' "$SSH_HOST_KEY" > "$HOME/.ssh/known_hosts";printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519";chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh "$SSH_USER@$SSH_HOST" "sudo HOST_RECEIPT_OUTBOX_DIR='$REMOTE_HOST_RECEIPT_OUTBOX_DIR' /opt/steam-top/scripts/fetch-host-receipt.sh '$NONCE'" > receipt.frame
+          node scripts/parse-host-receipt-frame.mjs receipt.frame "$NONCE" deployment-receipt.json deployment-receipt.json.sig
+          printf '%s\n' "$HOST_RECEIPT_ALLOWED_SIGNERS" > host-allowed-signers;ssh-keygen -Y verify -q -f host-allowed-signers -I steam-top-production-host -n steam-top-production-deployment -s deployment-receipt.json.sig < deployment-receipt.json
+          node -e 'const d=require("./deployment.json"),r=require("./deployment-receipt.json");if(r.nonce!==d.payload.nonce||r.manifestDigest!==d.payload.manifestSha256||r.commit!==d.sha||r.schemaVersion!==3)process.exit(1)'
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with: { subject-path: deployment-receipt.json }
+      - name: Complete the existing deployment exactly once
+        env: { GH_TOKEN: "${{ github.token }}", DEPLOYMENT_ID: "${{ inputs.deployment_id }}" }
+        run: |
+          [[ "$DEPLOYMENT_ID" =~ ^[1-9][0-9]*$ ]]
+          node scripts/create-deployment-status.mjs "$DEPLOYMENT_ID" status.json
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" --input status.json

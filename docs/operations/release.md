@@ -15,9 +15,11 @@
 
 私有 repository 的部署主機使用 root-owned 0600 `PRODUCTION_STATE_TOKEN_FILE`，token 只需 Actions/Deployments 讀取權，不得寫入 env file、shell history、log 或 sudo command line。主機另需 root-owned receipt 簽署鍵、PGSERVICE/PGPASSFILE、教師 smoke 密碼檔；workflow 只傳送這些受信路徑，不傳送 secret 內容。無 GitHub 認證、host receipt 驗簽或 protected state 不一致時必須 fail closed。
 
+部署主機明確要求 Linux、GNU `flock`、Docker/Compose、Node、`gh`、`psql` 及 `ssh-keygen`。以 root 把已審核 commit 安裝至 `/opt/steam-top`，所有父目錄及 scripts 必須 root-owned 且 group/other 不可寫，host wrapper/fetch scripts 為 0555。預先建立 root-owned 0600 regular file `/var/lock/steam-top-production.lock`及 root-owned 0700 receipt outbox，不可是 symlink。`sudoers` 只允許部署 SSH 帳號執行精確的 `/opt/steam-top/scripts/host-deploy-and-receipt.sh` 及 `/opt/steam-top/scripts/fetch-host-receipt.sh`，禁止任意 shell/任意 script path。每次升級後要再核對 canonical path、owner、mode 及 sudoers。
+
 ## Smoke test
 
-`production-smoke.sh` 從 strict canonical `PUBLIC_ORIGIN` 取 hostname，以 `curl --resolve host:443:127.0.0.1` 保留 SNI、Host 及 CA 驗證，檢查首頁、`/health/ready`、強制 WebSocket upgrade、教師登入/session 及記錄讀取。Host receipt 必須綁定此 origin/smoke、container ID/RepoDigests、DB system identifier 及 production marker。CI 亦執行不可 skip 的 `pnpm test:security`；任一項失敗就停止發佈。
+`production-smoke.sh` 從 strict canonical `PUBLIC_ORIGIN` 取 hostname，以 `curl --resolve` 保留 SNI、Host 及 CA 驗證，檢查 HTTP redirect、首頁/實際 asset、`/health/ready`、Node `socket.io-client` strict-TLS WebSocket transport、教師登入、nonce-bound DB deployment probe、logout 及 session 已失效。密碼只從 root 0600 JSON file 讀入 request body，不出現於 argv/log。Host receipt 必須綁定此 origin/smoke、精確 Compose service/config hash/container state、separate image RepoDigests、DB system identifier 及 production marker。
 
 ## 回復判斷
 
@@ -35,3 +37,5 @@
 Rollback operator 只能輸入 previous release；current release 必須從 GitHub 最新成功 `production` Deployment payload 解析。`production-rollback-approval` 必須在 repository 設定 required reviewers 及 deployment branch policy，`verify-rollback-go-live.mjs` 以具 Environments 讀取權限的 token 查 API，未配置即 fail closed。
 
 Promotion 成功後只寫 root-owned 0400 `promotion-ready`，PUBLIC 及 app role 仍無 CONNECT。完成外部 `DATABASE_URL` routing 後，root 先執行完整 public smoke，再以 `record-cutover-receipt.sh <promotion-ready> <cutover-receipt>` 產生綁定 system identifier、restore target、canonical DATABASE_URL hash、deployment manifest、origin/smoke 及 nonce 的簽署 receipt。只可以 `finalize-cutover.sh <promotion-ready> <cutover-receipt> <signature>` grant app role；finalize 會在 transaction 內重驗 marker、ACL 及 ledgerRows，PUBLIC 永不 grant，receipt 一次性消耗並寫 audit。若出現 root/private `RECOVERY-REQUIRED`，保留 incident 目錄及 `.promotion-reserved`，用 maintenance service 執行 `ALTER DATABASE <PROMOTE_CONFIRM_DATABASE> ALLOW_CONNECTIONS true;`，核對 marker/ACL 後才人工 reconcile。
+
+Promotion/finalize 的 commit authority 分別是 DB `promotion_outbox` 及 `finalize_outbox`，不是 filesystem phase file。若 transaction 已 commit 但 ready/archive 寫入中斷，在 app 仍停流量時以同一 nonce 執行 `reconcile-promotion-ready.sh` 或 `reconcile-finalize-outbox.sh`；它們只從 DB authoritative row 重建/完成檔案，不重做 grant 或寫 audit。
