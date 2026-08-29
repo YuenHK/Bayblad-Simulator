@@ -34,6 +34,15 @@ describe("production environment contract", () => {
     expect(() => loadConfig({ ...validEnvironment(), PUBLIC_ORIGIN: "http://tops.school.example" })).toThrow("PUBLIC_ORIGIN");
     expect(() => loadConfig({ ...validEnvironment(), COOKIE_SIGNING_KEY: "too-short" })).toThrow("COOKIE_SIGNING_KEY");
     expect(() => loadConfig({ ...validEnvironment(), ADMIN_INITIAL_PASSWORD: "short" })).toThrow("ADMIN_INITIAL_PASSWORD");
+    expect(() => loadConfig({ ...validEnvironment(), COOKIE_SIGNING_KEY: "!".repeat(48) })).toThrow("base64url");
+    expect(() => loadConfig({ ...validEnvironment(), PUBLIC_ORIGIN: "https://tops.school.example:8443" })).toThrow("default HTTPS port");
+  });
+
+  it("requires only the inputs selected by the explicit iClass mode", () => {
+    expect(() => loadConfig({ ...validEnvironment(), ICLASS_MODE: "api" })).toThrow("ICLASS_API_BEARER_TOKEN");
+    expect(() => loadConfig({ ...validEnvironment(), ICLASS_MODE: "csv" })).toThrow("ICLASS_DEVICE_MAP_CSV_PATH");
+    const api = { ...validEnvironment(), ICLASS_MODE: "api", ICLASS_API_URL: "https://iclass.example/api", ICLASS_API_BEARER_TOKEN: "token" };
+    expect(loadConfig(api).iClassApiBearerToken).toBe("token");
   });
 
   it("accepts secret files and never exposes secret values in public diagnostics", () => {

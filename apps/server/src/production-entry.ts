@@ -1,7 +1,6 @@
 import { createDatabaseClient } from "@steam-top/db";
 import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
-import { readFileSync } from "node:fs";
 import { createAdminComposition } from "./auth/composition";
 import { loadConfig, publicConfig } from "./config";
 import { createIClassComposition } from "./identity/composition";
@@ -30,7 +29,9 @@ async function main(): Promise<void> {
   process.env.WEBCLIP_AUDIENCE ??= "steam-top";
   process.env.ANALYTICS_CURSOR_SECRET = config.analyticsCursorSecret;
   process.env.ICLASS_MODE = config.iClassMode;
-  if (process.env.ICLASS_API_BEARER_TOKEN_FILE) process.env.ICLASS_API_BEARER_TOKEN = readFileSync(process.env.ICLASS_API_BEARER_TOKEN_FILE, "utf8").trim();
+  if (config.iClassApiBearerToken) process.env.ICLASS_API_BEARER_TOKEN = config.iClassApiBearerToken;
+  if (config.iClassApiUrl) process.env.ICLASS_API_URL = config.iClassApiUrl;
+  if (config.iClassDeviceMapCsvPath) process.env.ICLASS_DEVICE_MAP_CSV_PATH = config.iClassDeviceMapCsvPath;
   process.env.DELETION_LEDGER_FILE = config.deletionLedgerFile;
   process.env.DELETION_SOURCE_INSTANCE_ID = config.deletionSourceInstanceId;
 

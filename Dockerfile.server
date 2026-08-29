@@ -1,4 +1,5 @@
-FROM node:24.18.0-alpine3.23 AS dependencies
+ARG NODE_IMAGE
+FROM ${NODE_IMAGE} AS dependencies
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
@@ -14,14 +15,17 @@ FROM dependencies AS build
 COPY . .
 RUN pnpm install --offline --frozen-lockfile
 RUN pnpm exec esbuild apps/server/src/production-entry.ts --bundle --platform=node --target=node24 --format=esm --external:@fastify/cookie --external:@node-rs/argon2 --external:drizzle-orm '--external:drizzle-orm/*' --external:exceljs --external:fastify --external:planck --external:postgres --external:socket.io --external:zod --outfile=apps/server/dist/production-entry.mjs
+RUN pnpm exec esbuild apps/server/src/migrate-entry.ts --bundle --platform=node --target=node24 --format=esm --external:drizzle-orm --external:postgres --outfile=apps/server/dist/migrate-entry.mjs
 RUN pnpm --filter @steam-top/server deploy --legacy --prod /production/server
 
-FROM node:24.18.0-alpine3.23 AS runtime
+FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build --chown=node:node /production/server/ ./
 COPY --from=build --chown=node:node /workspace/apps/server/dist/production-entry.mjs ./production-entry.mjs
-RUN install -d -m 0700 -o node -g node /var/lib/steam-top
+COPY --from=build --chown=node:node /workspace/apps/server/dist/migrate-entry.mjs ./migrate-entry.mjs
+COPY --from=build --chown=node:node /workspace/drizzle ./drizzle
+RUN install -d -m 0700 -o node -g node /var/lib/steam-top /var/lib/steam-top-state
 USER node
 EXPOSE 3000
 CMD ["node", "production-entry.mjs"]

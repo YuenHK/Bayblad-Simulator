@@ -18,8 +18,10 @@ const environmentSchema = z.object({
   ADMIN_USERNAME: z.string().trim().min(1).max(64).default("admin"),
   ADMIN_CSRF_KEY_ID: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/u),
   ICLASS_MODE: z.enum(["api", "csv", "api-csv-fallback", "guest-only-explicit"]),
+  ICLASS_API_URL: z.string().optional(),
+  ICLASS_DEVICE_MAP_CSV_PATH: z.string().optional(),
   DELETION_LEDGER_FILE: z.string().startsWith("/").min(2),
-  DELETION_SOURCE_INSTANCE_ID: z.uuid(),
+  DELETION_SOURCE_INSTANCE_ID: z.string().optional(),
   HOST: z.union([z.ipv4(), z.ipv6()]).default("0.0.0.0"),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3_000),
   DATABASE_TLS: z.enum(["require", "disable"]).default("require"),
@@ -39,13 +41,16 @@ export type ProductionConfig = Readonly<{
   webclipExchangeKey: string;
   analyticsCursorSecret: string;
   iClassMode: "api" | "csv" | "api-csv-fallback" | "guest-only-explicit";
+  iClassApiUrl?: string;
+  iClassApiBearerToken?: string;
+  iClassDeviceMapCsvPath?: string;
   deletionLedgerFile: string;
   deletionSourceInstanceId: string;
   host: string;
   port: number;
 }>;
 
-function secretValue(environment: NodeJS.ProcessEnv, name: SecretName, readSecret: (path: string) => string): string {
+function secretValue(environment: NodeJS.ProcessEnv, name: string, readSecret: (path: string) => string): string {
   const direct = environment[name]?.trim();
   const file = environment[`${name}_FILE`]?.trim();
   if (direct && file) throw new Error(`${name} and ${name}_FILE are mutually exclusive`);
@@ -54,22 +59,38 @@ function secretValue(environment: NodeJS.ProcessEnv, name: SecretName, readSecre
   return value;
 }
 
+function canonicalSecret(value: string, name: string): void {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error(`${name} must be canonical base64url`);
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.byteLength < 32 || decoded.toString("base64url") !== value) throw new Error(`${name} must be canonical base64url encoding of at least 32 bytes`);
+}
+
 export function loadConfig(
   environment: NodeJS.ProcessEnv,
   readSecret: (path: string) => string = (path) => readFileSync(path, "utf8"),
 ): ProductionConfig {
   const parsed = environmentSchema.parse(environment);
   const secrets = Object.fromEntries(secretNames.map((name) => [name, secretValue(environment, name, readSecret)])) as Record<SecretName, string>;
+  const deletionSourceInstanceId = secretValue(environment, "DELETION_SOURCE_INSTANCE_ID", readSecret);
+  z.uuid().parse(deletionSourceInstanceId);
   z.url().refine((value) => value.startsWith("postgresql://") || value.startsWith("postgres://"), "must be a PostgreSQL URL").parse(secrets.DATABASE_URL);
   for (const name of ["COOKIE_SIGNING_KEY", "ADMIN_CSRF_SECRET", "WEBCLIP_SIGNING_KEY", "WEBCLIP_EXCHANGE_KEY", "ANALYTICS_CURSOR_SECRET"] as const) {
-    z.string().min(32, `${name} must contain at least 32 characters`).parse(secrets[name]);
+    canonicalSecret(secrets[name], name);
   }
   z.string().min(8, "ADMIN_INITIAL_PASSWORD must contain at least 8 characters").parse(secrets.ADMIN_INITIAL_PASSWORD);
   const publicOrigin = new URL(parsed.PUBLIC_ORIGIN);
   if (publicOrigin.pathname !== "/" || publicOrigin.search || publicOrigin.hash || publicOrigin.username || publicOrigin.password) throw new Error("PUBLIC_ORIGIN must contain only scheme and authority");
   if (parsed.NODE_ENV === "production" && publicOrigin.protocol !== "https:") throw new Error("PUBLIC_ORIGIN must use HTTPS in production");
+  if (parsed.NODE_ENV === "production" && publicOrigin.port) throw new Error("PUBLIC_ORIGIN must use the default HTTPS port");
   if (parsed.NODE_ENV === "production" && parsed.DATABASE_TLS !== "require") throw new Error("DATABASE_TLS must be require in production");
   if (new Set([secrets.COOKIE_SIGNING_KEY, secrets.ADMIN_CSRF_SECRET, secrets.WEBCLIP_SIGNING_KEY, secrets.WEBCLIP_EXCHANGE_KEY, secrets.ANALYTICS_CURSOR_SECRET]).size !== 5) throw new Error("Production secrets must be distinct");
+  const apiEnabled = parsed.ICLASS_MODE === "api" || parsed.ICLASS_MODE === "api-csv-fallback";
+  const csvEnabled = parsed.ICLASS_MODE === "csv" || parsed.ICLASS_MODE === "api-csv-fallback";
+  const iClassApiUrl = parsed.ICLASS_API_URL?.trim();
+  const iClassApiBearerToken = apiEnabled ? secretValue(environment, "ICLASS_API_BEARER_TOKEN", readSecret) : undefined;
+  if (apiEnabled && (!iClassApiUrl || (parsed.NODE_ENV === "production" && new URL(iClassApiUrl).protocol !== "https:"))) throw new Error("ICLASS_API_URL must be HTTPS when API mode is enabled");
+  const iClassDeviceMapCsvPath = parsed.ICLASS_DEVICE_MAP_CSV_PATH?.trim();
+  if (csvEnabled && (!iClassDeviceMapCsvPath || (parsed.NODE_ENV === "production" && iClassDeviceMapCsvPath !== "/app/config/iclass-device-map.csv"))) throw new Error("ICLASS_DEVICE_MAP_CSV_PATH must use the fixed production mount");
   return Object.freeze({
     nodeEnv: parsed.NODE_ENV,
     databaseUrl: secrets.DATABASE_URL,
@@ -84,8 +105,11 @@ export function loadConfig(
     webclipExchangeKey: secrets.WEBCLIP_EXCHANGE_KEY,
     analyticsCursorSecret: secrets.ANALYTICS_CURSOR_SECRET,
     iClassMode: parsed.ICLASS_MODE,
+    ...(iClassApiUrl ? { iClassApiUrl } : {}),
+    ...(iClassApiBearerToken ? { iClassApiBearerToken } : {}),
+    ...(iClassDeviceMapCsvPath ? { iClassDeviceMapCsvPath } : {}),
     deletionLedgerFile: parsed.DELETION_LEDGER_FILE,
-    deletionSourceInstanceId: parsed.DELETION_SOURCE_INSTANCE_ID,
+    deletionSourceInstanceId,
     host: parsed.HOST,
     port: parsed.PORT,
   });
