@@ -138,11 +138,13 @@ jobs:
           [[ "$latest" == "$expected" ]]
           node scripts/create-deployment-status.mjs "$DEPLOYMENT_ID" deployment-status.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" --input deployment-status.json
-          after=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0] | (.id|tostring)+"|"+.payload.nonce+"|"+.payload.manifestSha256');[[ "$after" == "$expected" ]]
+          echo 'STATUS_PUBLISHED=true' >> "$GITHUB_ENV"
+          after=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0] | (.id|tostring)+"|"+.payload.nonce+"|"+.payload.manifestSha256');if [[ "$after" != "$expected" ]];then echo "warning: deployment was superseded after success publication" >&2;fi
       - name: Mark interrupted or failed deployment
         if: failure() && env.DEPLOYMENT_ID != ''
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
+          [[ ${STATUS_PUBLISHED:-} != true ]] || exit 0
           state=failure;description='protected host deployment failed before activation';if [[ ${ACTIVATION_COMPLETE:-} == true ]];then state=error;description='host activated; GitHub status requires protected reconciliation';fi
           printf '{"state":"%s","environment":"production","description":"%s"}\n' "$state" "$description" > failed.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" --input failed.json

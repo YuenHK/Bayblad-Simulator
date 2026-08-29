@@ -6,8 +6,8 @@ mapfile -t paths < <(node - "$config" <<'NODE'
 const x=require(process.argv[2]),paths=["githubTokenFile","authorizationDir","productionEnvFile","hostReceiptSigningKey","adminSmokeSecretFile","hostReceiptOutbox","pgServiceFile","pgPassFile"];for(const k of paths)if(typeof x[k]!=="string"||!x[k].startsWith("/"))process.exit(1);if(!/^[A-Za-z0-9._-]+$/.test(x.pgServiceName))process.exit(1);for(const k of paths)console.log(x[k]);console.log(x.pgServiceName);
 NODE
 )
-prepared="${paths[1]}/$nonce.json";if [[ -n $prepared_argument ]];then [[ $prepared_argument == "$prepared" && -f $prepared && ! -L $prepared ]]||exit 1;node - "$prepared" "$deployment_id" "$nonce" "$manifest" <<'NODE'
-const a=require(process.argv[2]);if(a.state!=="pending"||a.deploymentId!==process.argv[3]||a.nonce!==process.argv[4]||a.manifestSha256!==process.argv[5])process.exit(1);
+prepared="${paths[1]}/$nonce.json";if [[ -n $prepared_argument ]];then [[ $prepared_argument == "$prepared" && -f $prepared && ! -L $prepared ]]||exit 1;bundle_sha=$(sha256sum "$bundle"|awk '{print $1}');node - "$prepared" "$deployment_id" "$nonce" "$manifest" "$bundle_sha" "$repository" "$commit" "$expected" <<'NODE'
+const a=require(process.argv[2]);if(a.state!=="pending"||a.deploymentId!==process.argv[3]||a.nonce!==process.argv[4]||a.manifestSha256!==process.argv[5]||a.authorizationBundleSha256!==process.argv[6]||a.repository!==process.argv[7]||a.commit!==process.argv[8]||a.expectedPreviousState!==process.argv[9]||!/^[a-f0-9]{64}$/.test(a.runtimeManifestSha256))process.exit(1);
 NODE
 else /opt/steam-top-bootstrap/prepare-release.sh "$artifact" "$bundle" "$pending" "${paths[0]}" "${paths[1]}";fi
 read -r runtime_sha deployment_purpose < <(node -e 'const a=require(process.argv[1]);if(!/^[a-f0-9]{64}$/.test(a.runtimeManifestSha256)||!["production","release-integration"].includes(a.deploymentPurpose))process.exit(1);console.log(a.runtimeManifestSha256,a.deploymentPurpose)' "$bundle");core="/opt/steam-top/releases/$runtime_sha/scripts/host-deploy-and-receipt.sh"

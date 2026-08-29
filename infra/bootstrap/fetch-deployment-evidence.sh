@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $(id -u) -eq 0 && $# -eq 1 && $1 =~ ^[a-f0-9]{64}$ ]]||exit 2;/opt/steam-top-bootstrap/verify-bootstrap.sh;config=/etc/steam-top-bootstrap/trust.json;outbox=$(node -p 'require(process.argv[1]).hostReceiptOutbox' "$config");root="$outbox/authorization-evidence/$1";[[ -d $root && ! -L $root && -L $root/current ]]||exit 1;generation=$(realpath "$root/current");[[ $generation == "$root/"* && -d $generation && ! -L $generation ]]||exit 1;payload="$generation/payload.json";signature="$payload.sig";[[ -f $payload && ! -L $payload && -f $signature && ! -L $signature ]]||exit 1;printf 'RECEIPT-BEGIN %s\n' "$1";base64 <"$payload";printf 'RECEIPT-SIGNATURE\n';base64 <"$signature";printf 'RECEIPT-END %s\n' "$1"

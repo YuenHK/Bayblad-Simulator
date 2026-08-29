@@ -4,6 +4,7 @@ die(){ echo "deployment authorization refused: $1" >&2;exit 1;}
 [[ $(id -u) -eq 0 && $# -eq 6 ]]||die "root and artifact/pending/repository/deployment/token/state required"
 artifact=$1;pending=$2;repository=$3;deployment_id=$4;token_file=$5;state_dir=$6
 purpose=${DEPLOYMENT_AUTHORIZATION_PURPOSE:-};case $purpose in production) expected_environment=production;;release-integration) expected_environment=release-host-integration;;*) die "authorization purpose";;esac
+[[ ${DEPLOYMENT_AUTHORIZATION_BUNDLE_SHA256:-} =~ ^[a-f0-9]{64}$ ]]||die "bundle digest required"
 script_path=$(realpath "$0");script_dir=$(CDPATH= cd -- "$(dirname -- "$script_path")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/.."&&pwd -P);source "$root/infra/backup/host-trust-guard.sh"
 [[ $script_path == /opt/steam-top/scripts/prepare-deployment-authorization.sh || $script_path =~ ^/opt/steam-top/releases/[a-f0-9]{64}/scripts/prepare-deployment-authorization\.sh$ ]]||die "installed canonical path required"
 backup_trusted_root_deployment "$root" "$script_dir" "$root/infra/backup"||die "installed deployment trust"
@@ -35,6 +36,6 @@ NODE
 bound=$(gh api "repos/$repository/deployments/$deployment_id" --jq '[.payload.nonce,.payload.expectedPreviousState,.payload.manifestSha256,.sha,.environment]|join("|")');[[ $bound == "$nonce|$expected_state|$manifest_sha|$commit|$expected_environment" ]]||die "deployment state advanced"
 output="$state_dir/$nonce.json";[[ ! -e $output && ! -e $output.consumed ]]||die "nonce used";tmp=$(mktemp "$state_dir/.authorization.XXXXXX");trap 'rm -rf "$snapshot";rm -f "$tmp"' EXIT
 node - "$snapshot/pending.json" "$repository" "$deployment_id" "$purpose" "$runtime_manifest_sha" "$tmp" <<'NODE'
-const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[2])),p=r.payload;fs.writeFileSync(process.argv[7],JSON.stringify({schemaVersion:2,state:"pending",purpose:process.argv[5],repository:process.argv[3],deploymentId:process.argv[4],nonce:p.nonce,manifestSha256:p.manifestSha256,runtimeManifestSha256:process.argv[6],commit:p.commit,expectedPreviousState:p.expectedPreviousState,signerKind:p.signerKind,sourceWorkflow:p.sourceWorkflow,authorizedAt:new Date().toISOString()})+"\n",{mode:0o400});
+const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[2])),p=r.payload;fs.writeFileSync(process.argv[7],JSON.stringify({schemaVersion:2,state:"pending",purpose:process.argv[5],repository:process.argv[3],deploymentId:process.argv[4],nonce:p.nonce,manifestSha256:p.manifestSha256,runtimeManifestSha256:process.argv[6],authorizationBundleSha256:process.env.DEPLOYMENT_AUTHORIZATION_BUNDLE_SHA256,commit:p.commit,expectedPreviousState:p.expectedPreviousState,signerKind:p.signerKind,sourceWorkflow:p.sourceWorkflow,authorizedAt:new Date().toISOString()})+"\n",{mode:0o400});
 NODE
 chmod 400 "$tmp";mv "$tmp" "$output";rm -rf "$snapshot";trap - EXIT
