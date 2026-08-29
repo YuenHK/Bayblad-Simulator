@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyticsFiltersSchema, hongKongDateBounds, normalizeUsageRows } from "./usage";
-import { expectedWinProbability, normalizeParameterRows, opponentStrength, outcomeResidual, OPPONENT_STRENGTH_METRIC } from "./parameters";
-import { AnalyticsService, canonicalFilterHash, type AnalyticsCache } from "./service";
+import { expectedWinProbability, normalizeOverallLaunchDistribution, normalizeParameterRows, opponentStrength, outcomeResidual, OPPONENT_STRENGTH_METRIC } from "./parameters";
+import { AnalyticsService, canonicalFilterHash, signAnalyticsCursor, type AnalyticsCache } from "./service";
 import Fastify from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import { AdminAuthService, InMemoryAdminStore, registerAdminAuthRoutes } from "../auth/admin-auth";
@@ -52,6 +52,11 @@ it("defines opponent strength from the authoritative design prediction rather th
   expect(opponentStrength({stability:80,impactResistance:60,spinDuration:40,speed:20})).toBe(60);
   expect(OPPONENT_STRENGTH_METRIC).toMatchObject({unit:"performance-index-0-100",version:"1"});
 });
+it("rejects unsafe or internally inconsistent overall launch counts",()=>{
+  expect(normalizeOverallLaunchDistribution({perfect:2,great:0,good:1,miss:0,total:3})).toMatchObject({Perfect:2,Good:1,totalOccurrences:3});
+  expect(()=>normalizeOverallLaunchDistribution({perfect:2,great:0,good:1,miss:0,total:4})).toThrow("INVALID_LAUNCH_DISTRIBUTION");
+  expect(()=>normalizeOverallLaunchDistribution({perfect:-1,great:0,good:1,miss:0,total:0})).toThrow("INVALID_LAUNCH_DISTRIBUTION");
+});
 it("uses an interpretable expected-outcome residual that rewards equal results against stronger opponents",()=>{
   expect(expectedWinProbability(60,60)).toBe(.5);
   expect(outcomeResidual(.5,60,60)).toBe(0);
@@ -96,6 +101,11 @@ describe("analytics summary cache", () => {
   it("re-signs a 4:59-old cached summary cursor for a fresh five-minute response window",async()=>{
     let saved:Awaited<ReturnType<AnalyticsService["query"]>>|null=null,now=Date.parse("2026-08-01T00:00:00Z");const cache:AnalyticsCache={read:async(_hash,maxAge)=>saved&&new Date(saved.refreshedAt)>=maxAge?saved:null,write:async(_hash,value)=>{saved=value;}};const service=new AnalyticsService(cache,async()=>[],async()=>[{totalGroups:1}],async()=>[],()=>new Date(now),Buffer.alloc(32,6));const filters={from:"2026-08-01",to:"2026-08-02"} as const;
     await service.query(filters);now+=299_000;const cached=await service.query(filters);now+=299_000;await expect(service.parameterPage(filters,1,cached.rankings.snapshotCursor)).resolves.toMatchObject({total:1});
+  });
+  it("never queries or signs beyond the one-million-row accessibility cap",async()=>{
+    const secret=Buffer.alloc(32,5),filters={from:"2026-08-01",to:"2026-08-02"} as const,asOf="2026-08-01T00:00:00.000Z",expiresAt="2026-08-01T00:05:00.000Z";let seenLimit=0,calls=0;const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};const service=new AnalyticsService(cache,async()=>[],async(_filters,page)=>{calls++;seenLimit=page?.limit??0;return Array.from({length:seenLimit},()=>({totalGroups:1_000_100}));},async()=>[],()=>new Date(asOf),secret);
+    const near=signAnalyticsCursor(secret,{asOf,expiresAt,offset:999_950,filterHash:canonicalFilterHash(filters)});const page=await service.parameterPage(filters,100,near);expect({seenLimit,rows:page.rows.length,capReached:page.capReached,next:page.nextCursor}).toEqual({seenLimit:50,rows:50,capReached:true,next:null});
+    const atCap=signAnalyticsCursor(secret,{asOf,expiresAt,offset:1_000_000,filterHash:canonicalFilterHash(filters)});expect((await service.parameterPage(filters,100,atCap)).rows).toHaveLength(0);expect(calls).toBe(1);
   });
 
   it("coalesces refreshes and returns a fresh cached summary", async () => {
