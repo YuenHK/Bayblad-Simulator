@@ -53,7 +53,8 @@ describe("release CI contract", () => {
     expect(workflow).toContain("scripts/create-release-manifest.mjs");
     expect(workflow).toContain("release-manifest");
     expect(workflow).toContain("actions/attest-build-provenance@");
-    expect(workflow).toContain("portable-sha256.sh manifest .release");
+    expect(workflow).toContain("portable-sha256.sh manifest release");
+    expect(workflow).toContain("path: release/");
     expect(workflow).not.toContain("Resolve immutable base-image digests");
     expect(read("scripts/validate-deployment-env.mjs")).toContain("SERVER_IMAGE");
     expect(read("scripts/validate-deployment-env.mjs")).toContain("repository@sha256");
@@ -117,7 +118,12 @@ describe("rollback deletion monotonicity", () => {
     expect(read("infra/backup/host-trust-guard.sh")).toContain('backup_root_file_mode "$canonical_manifest" 444');
     expect(promotion).toContain("environment='production',restore_allowed=false");
     expect(promotion).toContain("pg_terminate_backend");
-    expect(promotion).toContain("revoke connect");
+    expect(promotion).toContain("allow_connections false");
+    expect(promotion).toContain("PROMOTE_MAINTENANCE_PGSERVICE");
+    expect(promotion).toContain("connections-disabled");
+    expect(promotion.indexOf("allow_connections false")).toBeLessThan(promotion.indexOf("pg_terminate_backend"));
+    expect(promotion.indexOf("pg_terminate_backend")).toBeLessThan(promotion.indexOf("pg_advisory_xact_lock"));
+    expect(promotion).toMatch(/cleanup\(\)[\s\S]*allow_connections true/u);
     expect(promotion.indexOf("pg_advisory_xact_lock")).toBeLessThan(promotion.indexOf("count(*) from deletion_audit"));
     expect(release).toContain("禁止資料庫回復");
   });
