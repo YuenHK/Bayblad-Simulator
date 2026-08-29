@@ -30,7 +30,8 @@ jobs:
           SIGNER_KIND: "${{ inputs.signer_kind }}"
         run: |
           set -euo pipefail
-          [[ "$RELEASE_RUN" =~ ^[1-9][0-9]{0,19}$ && "$RELEASE_ARTIFACT" =~ ^(release-manifest-[a-f0-9]{40}|authorized-rollback-[a-f0-9]{40}-[a-f0-9]{40}-[0-9]+)$ && "$MANIFEST_SHA" =~ ^[a-f0-9]{64}$ && "$RELEASE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SIGNER_KIND" =~ ^(normal|rollback)$ ]]
+          [[ "$RELEASE_RUN" =~ ^[1-9][0-9]{0,19}$ && "$RELEASE_ARTIFACT" =~ ^(approved-release-[a-f0-9]{40}|authorized-rollback-[a-f0-9]{40}-[a-f0-9]{40}-[0-9]+)$ && "$MANIFEST_SHA" =~ ^[a-f0-9]{64}$ && "$RELEASE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SIGNER_KIND" =~ ^(normal|rollback)$ ]]
+          [[ "$SIGNER_KIND" == normal && "$RELEASE_ARTIFACT" == approved-release-* || "$SIGNER_KIND" == rollback && "$RELEASE_ARTIFACT" == authorized-rollback-* ]]
           node scripts/verify-rollback-go-live.mjs "$GITHUB_REPOSITORY" production
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN" > release-run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN/artifacts" > release-artifacts.json
@@ -70,6 +71,7 @@ jobs:
           signer="$GITHUB_REPOSITORY/.github/workflows/ci.yml"; [[ "$SIGNER_KIND" == rollback ]] && signer="$GITHUB_REPOSITORY/.github/workflows/authorize-rollback.yml"
           test "$(./scripts/portable-sha256.sh digest release/release-manifest.json)" = "$MANIFEST_SHA"
           gh attestation verify release/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer"
+          if [[ "$SIGNER_KIND" == normal ]];then gh attestation verify release/APPROVED-RELEASE.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml";node -e 'const a=require("./release/APPROVED-RELEASE.json");if(a.schemaVersion!==1||a.purpose!=="approved-release"||a.commit!==process.env.RELEASE_COMMIT||a.manifestSha256!==process.env.MANIFEST_SHA||!/^\d+$/.test(a.integrationDeploymentId))process.exit(1)';fi
           install -m 700 -d "$HOME/.ssh"; printf '%s\n' "$SSH_HOST_KEY" > "$HOME/.ssh/known_hosts"; printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"; chmod 600 "$HOME/.ssh/id_ed25519"
           tar -C release -czf release.tgz .; scp -q release.tgz "$SSH_USER@$SSH_HOST:/tmp/steam-top-release-$GITHUB_RUN_ID.tgz"
           nonce=$(openssl rand -hex 32);node scripts/create-pending-deployment.mjs release/release-manifest.json "$RELEASE_RUN" "$RELEASE_ARTIFACT" "$MANIFEST_SHA" "$RELEASE_COMMIT" "$nonce" "$SIGNER_KIND" "$signer" "$SOURCE_HEAD_SHA" "$SOURCE_REF" "$SOURCE_EVENT" "$EXPECTED_PRODUCTION_STATE" pending-deployment.json

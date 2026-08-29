@@ -60,6 +60,20 @@ describe("release CI contract", () => {
     expect(read("scripts/validate-deployment-env.mjs")).toContain("repository@sha256");
   });
 
+  it("gates approved tag artifacts on the isolated complete host core", () => {
+    expect(workflow).toContain("release-host-core-integration:");
+    expect(workflow).toContain("needs: release-images");
+    expect(workflow).toContain("environment=release-host-integration");
+    expect(workflow).toContain("DEPLOYMENT_AUTHORIZATION_PURPOSE=release-integration");
+    expect(workflow).toContain("sudo -u steam-top-integration sudo");
+    expect(workflow).toContain("host-deploy-and-receipt.sh");
+    expect(workflow).toContain("approved-release-${{ github.sha }}");
+    expect(workflow).toContain("down -v --remove-orphans");
+    const record=read(".github/workflows/record-deployment.yml");
+    expect(record).toContain("approved-release-[a-f0-9]{40}");
+    expect(record).toContain("APPROVED-RELEASE.json");
+  });
+
   it("supports production deployment only through the fail-closed wrapper", () => {
     const deploy = read("scripts/deploy-production.sh");
     const preparer = read("scripts/prepare-deployment-authorization.sh");
