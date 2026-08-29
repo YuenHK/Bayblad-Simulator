@@ -3,18 +3,18 @@ set -euo pipefail
 umask 077
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$0"; do
+for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/scrub-backups.sh" "$0"; do
   bash -n "$script"
 done
 ! grep -q 'mkfifo\|read ignored' "$script_dir/backup.sh"
 grep -q 'loop perform pg_sleep' "$script_dir/backup.sh"
 guard_output=$(env PGPASSWORD=exposed PGSERVICE=source PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass BACKUP_DIR=/tmp/backups AGE_RECIPIENT=age1test DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli BACKUP_SIGNING_KEY=/tmp/key BACKUP_SIGNER_ID=test BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers "$script_dir/backup.sh" 2>&1||true)
 [[ $guard_output == *"libpq override PGPASSWORD is forbidden"* ]]
-guard_output=$(env PGPASSWORD=exposed RESTORE_PGSERVICE=restore PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass RESTORE_CONFIRM_DATABASE=test AGE_IDENTITY_FILE=/tmp/key DELETION_LEDGER_FILE=/tmp/ledger RESTORE_ALLOWED_TARGET_ID=x NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers BACKUP_SIGNER_ID=test "$script_dir/restore.sh" /tmp/steam-top-20260101T000000Z-000001.backup 2>&1||true)
+guard_output=$(env PGPASSWORD=exposed RESTORE_PGSERVICE=restore PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass RESTORE_CONFIRM_DATABASE=test AGE_IDENTITY_FILE=/tmp/key DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli RESTORE_ALLOWED_TARGET_ID=x NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers BACKUP_SIGNER_ID=test "$script_dir/restore.sh" /tmp/steam-top-20260101T000000Z-000001.backup 2>&1||true)
 [[ $guard_output == *"libpq override PGPASSWORD is forbidden"* ]]
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$0"
+  shellcheck "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/scrub-backups.sh" "$0"
 elif [[ ${CI:-false} == true ]]; then
   echo "shellcheck is required in CI" >&2
   exit 1
@@ -38,7 +38,7 @@ if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1
   echo "SKIP: SHA-256 tool is missing" >&2; exit 0
 fi
 
-test_root=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-backup-test.XXXXXX")
+test_root=$(mktemp -d "${TMPDIR:-/tmp}/steam top "'`path`.XXXXXX')
 chmod 700 "$test_root"
 source_db="steam_top_backup_source_${RANDOM}_$$"
 restore_db="steam_top_backup_restore_${RANDOM}_$$"
@@ -78,7 +78,7 @@ backup_file=$(find "$test_root/backups" -maxdepth 1 -type d -name 'steam-top-*.b
 if stat -c '%a' "$backup_file/dump.age" >/dev/null 2>&1; then mode=$(stat -c '%a' "$backup_file/dump.age"); else mode=$(stat -f '%Lp' "$backup_file/dump.age"); fi
 [[ $mode == 600 ]]
 
-restore_env=(RESTORE_PGSERVICE=restore RESTORE_CONFIRM_DATABASE="$restore_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" RESTORE_ALLOWED_TARGET_ID="$restore_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" BACKUP_SIGNER_ID="$signer")
+restore_env=(RESTORE_PGSERVICE=restore RESTORE_CONFIRM_DATABASE="$restore_db" AGE_IDENTITY_FILE="$test_root/key.txt" DELETION_LEDGER_FILE="$ledger" DELETION_LEDGER_CLI="$ledger_cli" RESTORE_ALLOWED_TARGET_ID="$restore_target_id" NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE="$test_root/allowed-signers" BACKUP_SIGNER_ID="$signer")
 env "${restore_env[@]}" "$script_dir/restore.sh" "$backup_file"
 [[ $(psql "$restore_url" -Atqc "select label from backup_probe where id=1") == encrypted-round-trip ]]
 psql "$restore_url" -v ON_ERROR_STOP=1 -c "update backup_probe set label='before-failed-restore' where id=1" >/dev/null
@@ -88,6 +88,7 @@ plain_size=$(wc -c <"$plain_dump" | tr -d ' '); (( plain_size > 256 )); dd if="$
 age --encrypt --recipient "$recipient" --output "$broken_backup/dump.age" "$broken_dump"
 if command -v sha256sum >/dev/null 2>&1; then broken_sha=$(sha256sum "$broken_backup/dump.age" | awk '{print $1}'); else broken_sha=$(shasum -a 256 "$broken_backup/dump.age" | awk '{print $1}'); fi
 printf '%s  dump.age\n' "$broken_sha" >"$broken_backup/checksum.sha256";awk -v hash="$broken_sha" '$0~/^sha256=/{print "sha256=" hash;next}{print}' "$backup_file/manifest" >"$broken_backup/manifest";{ cat "$broken_backup/manifest";cat "$broken_backup/checksum.sha256";} >"$broken_backup/SIGNED-METADATA";ssh-keygen -Y sign -q -f "$test_root/signing-key" -n steam-top-backup "$broken_backup/SIGNED-METADATA";mv "$broken_backup/SIGNED-METADATA.sig" "$broken_backup/signature"
+if command -v sha256sum >/dev/null 2>&1;then broken_manifest_sha=$(sha256sum "$broken_backup/manifest"|awk '{print $1}');else broken_manifest_sha=$(shasum -a 256 "$broken_backup/manifest"|awk '{print $1}');fi;printf 'manifest_sha256=%s\n' "$broken_manifest_sha" >"$broken_backup/VERIFIED";ssh-keygen -Y sign -q -f "$test_root/signing-key" -n steam-top-backup-verified "$broken_backup/VERIFIED"
 if env "${restore_env[@]}" "$script_dir/restore.sh" "$broken_backup" 2>/dev/null; then echo "corrupt restore unexpectedly succeeded" >&2; exit 1; fi
 [[ $(psql "$restore_url" -Atqc "select label from backup_probe where id=1") == before-failed-restore ]]
 
@@ -99,7 +100,7 @@ if env RESTORE_PGSERVICE=source RESTORE_CONFIRM_DATABASE="$source_db" AGE_IDENTI
 fi
 incomplete="$test_root/backups/steam-top-20990101T000001Z-999998.backup";mkdir -m 700 "$incomplete";cp "$backup_file/dump.age" "$incomplete/dump.age";if env "${restore_env[@]}" "$script_dir/restore.sh" "$incomplete" 2>/dev/null;then echo "incomplete set accepted" >&2;exit 1;fi
 tampered="$test_root/backups/steam-top-20990101T000002Z-999997.backup";cp -R "$backup_file" "$tampered";printf 'tamper\n' >>"$tampered/manifest";if env "${restore_env[@]}" "$script_dir/restore.sh" "$tampered" 2>/dev/null;then echo "tampered signature accepted" >&2;exit 1;fi
-printf 'P 10000000-0000-4000-8000-000000000001 %064d\nC 10000000-0000-4000-8000-000000000001 %064d\n' 0 0 >>"$ledger"
+printf 'P 10000000-0000-4000-8000-000000000001 00000000-0000-4000-8000-000000000001 %064d\nC 10000000-0000-4000-8000-000000000001 %064d\n' 0 0 >>"$ledger"
 if env "${restore_env[@]}" "$script_dir/restore.sh" "$backup_file" 2>/dev/null; then echo "restore unexpectedly accepted a backup older than the deletion ledger" >&2; exit 1; fi
 
 echo "backup/restore integration passed"

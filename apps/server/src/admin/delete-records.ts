@@ -91,6 +91,7 @@ type DbRow = Readonly<Record<string, unknown>>;
 const tokenDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 const rows = (value: unknown) => value as readonly DbRow[];
 const count = (value: unknown) => { const parsed = Number(value); if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error("INVALID_DELETION_COUNT"); return parsed; };
+const matchOccurredAt=(alias:string)=>`case when ${alias}.status='completed' then ${alias}.completed_at else coalesce(${alias}.started_at,${alias}.created_at) end`;
 
 function filterArguments(filter: DeletionFilter): (string | null)[] {
   return [filter.scope, filter.scope === "identity" ? filter.identityId : null, filter.scope === "class" ? filter.className : null, filter.scope === "date_range" ? filter.from : null, filter.scope === "date_range" ? filter.to : null];
@@ -104,7 +105,7 @@ const matchPredicate = (alias: string) => `(
   or ($1 = 'class' and (exists (select 1 from match_participant_snapshots ps where ps.match_id = ${alias}.id and ps.class_name_snapshot = $3)
     or exists(select 1 from identities pi where (pi.id=${alias}.player1_identity_id or pi.id=${alias}.player2_identity_id) and pi.class_name=$3)
     or exists(select 1 from designs od join identities oi on oi.id=od.owner_identity_id where (od.id=${alias}.player1_design_id or od.id=${alias}.player2_design_id) and oi.class_name=$3)))
-  or ($1 = 'date_range' and (${alias}.created_at at time zone 'Asia/Hong_Kong')::date between $4::date and $5::date)
+  or ($1 = 'date_range' and (${matchOccurredAt(alias)} at time zone 'Asia/Hong_Kong')::date between $4::date and $5::date)
 )`;
 const designPredicate = (alias: string) => `(
   $1 = 'all'
@@ -176,7 +177,7 @@ export class PostgresDeletionStore implements DeletionStore {
     const result = rows(await this.client.sql.unsafe(`select filter_hash "filterHash",scope,expires_at "expiresAt",consumed_at "consumedAt",result_audit_id "resultAuditId",result_identity_count "resultIdentities",result_design_count "resultDesigns",result_match_count "resultMatches" from deletion_previews where token_hash=$1 and admin_user_id=$2 and admin_session_id=$3`, [tokenDigest(input.previewToken), input.adminUserId, input.adminSessionId]));
     const row = result[0]; if (!row) return { status: "invalid" as const };
     if (row.filterHash !== input.filterHash) return { status: "changed" as const };
-    if (row.consumedAt instanceof Date && typeof row.resultAuditId === "string") { if(this.ledger)await this.ledger.recordCommitted({auditId:row.resultAuditId,operationDigest:input.filterHash}); return { status: "recovered" as const, auditId: row.resultAuditId, counts: recoverCounts(row) }; }
+    if (row.consumedAt instanceof Date && typeof row.resultAuditId === "string") { if(this.ledger)await (this.ledger.recoverCommitted?.({auditId:row.resultAuditId,operationDigest:input.filterHash})??this.ledger.recordCommitted({auditId:row.resultAuditId,operationDigest:input.filterHash})); return { status: "recovered" as const, auditId: row.resultAuditId, counts: recoverCounts(row) }; }
     if (!(row.expiresAt instanceof Date) || input.now >= row.expiresAt) return { status: "expired" as const };
     return { status: "ok" as const, scope: row.scope as DeletionFilter["scope"] };
   }

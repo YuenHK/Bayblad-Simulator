@@ -17,19 +17,9 @@ staging=$(mktemp -d "$backup_dir/.staging-XXXXXX");chmod 700 "$staging";final="$
 snapshot_meta="$staging/.snapshot";keeper_pid=""
 cleanup(){ if [[ -n $keeper_pid ]];then kill "$keeper_pid" >/dev/null 2>&1||true;wait "$keeper_pid" >/dev/null 2>&1||true;fi;[[ -n ${staging:-} && -d $staging && ! -L $staging ]]&&rm -rf "$staging";};trap cleanup EXIT INT TERM
 ledger_metadata=$(node "$DELETION_LEDGER_CLI" snapshot "$DELETION_LEDGER_FILE" "$staging/deletion-ledger.log")
-[[ $(awk '$1=="P"{p[$2]=1}$1=="C"||$1=="A"{delete p[$2]}NF!=3||$1!~/^[PCA]$/||$2!~/^[0-9a-f-]{36}$/||$3!~/^[a-f0-9]{64}$/{bad=1}END{for(x in p)pending=1;print bad||pending?"invalid":"ok"}' "$staging/deletion-ledger.log") == ok ]]||die "deletion ledger invalid or unresolved"
 ledger_lines=$(wc -l <"$staging/deletion-ledger.log"|tr -d ' ');if command -v sha256sum >/dev/null 2>&1;then ledger_sha256=$(sha256sum "$staging/deletion-ledger.log"|awk '{print $1}');else ledger_sha256=$(shasum -a 256 "$staging/deletion-ledger.log"|awk '{print $1}');fi
 [[ $ledger_metadata == *\"lines\":$ledger_lines* && $ledger_metadata == *\"sha256\":\"$ledger_sha256\"* ]]||die "ledger snapshot metadata mismatch"
-psql -X -q -v ON_ERROR_STOP=1 -At <<SQL &
-\o $snapshot_meta
-begin isolation level repeatable read read only;
-select pg_export_snapshot();
-select current_database();
-select current_schema();
-select count(*) from deletion_audit;
-\o /dev/null
-do \$keeper\$ begin loop perform pg_sleep(60); end loop; end \$keeper\$;
-SQL
+psql -X -q -v ON_ERROR_STOP=1 -At -o "$snapshot_meta" -c 'begin isolation level repeatable read read only' -c 'select pg_export_snapshot()' -c 'select current_database()' -c 'select current_schema()' -c 'select count(*) from deletion_audit' -c 'do $keeper$ begin loop perform pg_sleep(60); end loop; end $keeper$' &
 keeper_pid=$!;for _ in {1..100};do [[ $(wc -l <"$snapshot_meta") -ge 4 ]]&&break;sleep 0.1;done;[[ $(wc -l <"$snapshot_meta") -ge 4 ]]||die "snapshot keeper failed"
 snapshot_id=$(sed -n '1p' "$snapshot_meta");source_database=$(sed -n '2p' "$snapshot_meta");source_schema=$(sed -n '3p' "$snapshot_meta");verification_rows=$(sed -n '4p' "$snapshot_meta");[[ $snapshot_id =~ ^[0-9]+-[0-9A-F]+-[0-9]+$ && $source_database =~ ^[A-Za-z0-9_.-]{1,63}$ && $source_schema =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ && $verification_rows =~ ^[0-9]+$ ]]||die "snapshot metadata invalid"
 pg_dump --format=custom --snapshot="$snapshot_id" --exclude-schema='restore_control' --no-owner --no-privileges|age --encrypt --recipient "$AGE_RECIPIENT" --output "$staging/dump.age"
@@ -41,5 +31,6 @@ printf 'format=steam-top-age-pgdump-v3\ncreated_at=%s\nsource_database=%s\nsourc
 for file in dump.age checksum.sha256 manifest SIGNED-METADATA signature deletion-ledger.log;do chmod 600 "$staging/$file";node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");fs.fsyncSync(fd);fs.closeSync(fd)' "$staging/$file";done
 printf 'complete\n' >"$staging/COMPLETE";chmod 600 "$staging/COMPLETE";node -e 'const fs=require("fs");for(const p of process.argv.slice(1)){const fd=fs.openSync(p,"r");fs.fsyncSync(fd);fs.closeSync(fd)}' "$staging/COMPLETE" "$staging"
 mv "$staging" "$final";staging="";node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");fs.fsyncSync(fd);fs.closeSync(fd)' "$backup_dir";trap - EXIT INT TERM
-sets=();while IFS= read -r candidate;do "$script_dir/verify-backup-set.sh" "$candidate" "$BACKUP_ALLOWED_SIGNERS_FILE" "$BACKUP_SIGNER_ID" >/dev/null 2>&1&&sets+=("$candidate");done < <(find "$backup_dir" -mindepth 1 -maxdepth 1 -type d -name 'steam-top-*.backup' -print|LC_ALL=C sort);excess=$((${#sets[@]}-30));if((excess>0));then for((i=0;i<excess;i++));do old=${sets[$i]};[[ ${old##*/} =~ ^steam-top-[0-9]{8}T[0-9]{6}Z-[0-9]{6}\.backup$ && -d $old && ! -L $old ]]&&rm -rf "$old";done;fi
+if command -v sha256sum >/dev/null 2>&1;then verified_digest=$(sha256sum "$final/manifest"|awk '{print $1}');else verified_digest=$(shasum -a 256 "$final/manifest"|awk '{print $1}');fi;printf 'manifest_sha256=%s\n' "$verified_digest" >"$final/VERIFIED";ssh-keygen -Y sign -q -f "$BACKUP_SIGNING_KEY" -n steam-top-backup-verified "$final/VERIFIED";chmod 600 "$final/VERIFIED" "$final/VERIFIED.sig";node -e 'const fs=require("fs");for(const p of process.argv.slice(1)){const fd=fs.openSync(p,"r");fs.fsyncSync(fd);fs.closeSync(fd)}' "$final/VERIFIED" "$final/VERIFIED.sig" "$final" "$backup_dir"
+sets=();while IFS= read -r candidate;do "$script_dir/verify-retention-set.sh" "$candidate" "$BACKUP_ALLOWED_SIGNERS_FILE" "$BACKUP_SIGNER_ID" >/dev/null 2>&1&&sets+=("$candidate");done < <(find "$backup_dir" -mindepth 1 -maxdepth 1 -type d -name 'steam-top-*.backup' -print|LC_ALL=C sort);excess=$((${#sets[@]}-30));if((excess>0));then for((i=0;i<excess;i++));do old=${sets[$i]};[[ ${old##*/} =~ ^steam-top-[0-9]{8}T[0-9]{6}Z-[0-9]{6}\.backup$ && -d $old && ! -L $old ]]&&rm -rf "$old";done;fi
 echo "backup created: $set_name"

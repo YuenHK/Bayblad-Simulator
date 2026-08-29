@@ -4,7 +4,7 @@ umask 077
 die(){ echo "restore refused: $1" >&2;exit 1;}
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
 [[ $# -eq 1 ]]||die "pass exactly one completed backup directory";backup_set=$1
-for name in RESTORE_PGSERVICE PGSERVICEFILE PGPASSFILE RESTORE_CONFIRM_DATABASE AGE_IDENTITY_FILE DELETION_LEDGER_FILE RESTORE_ALLOWED_TARGET_ID NONPROD_RESTORE_CONFIRM BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID;do [[ -n ${!name:-} ]]||die "$name is required";done
+for name in RESTORE_PGSERVICE PGSERVICEFILE PGPASSFILE RESTORE_CONFIRM_DATABASE AGE_IDENTITY_FILE DELETION_LEDGER_FILE DELETION_LEDGER_CLI RESTORE_ALLOWED_TARGET_ID NONPROD_RESTORE_CONFIRM BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID;do [[ -n ${!name:-} ]]||die "$name is required";done
 [[ -z ${RESTORE_DATABASE_URL:-} && -z ${DATABASE_URL:-} ]]||die "database URLs are forbidden; use libpq service/passfile"
 [[ $RESTORE_PGSERVICE =~ ^[A-Za-z0-9_.-]{1,64}$ ]]||die "RESTORE_PGSERVICE is invalid"
 while IFS='=' read -r name _;do case "$name" in PGSERVICEFILE|PGPASSFILE) :;; PG*)die "libpq override $name is forbidden";;esac;done < <(env)
