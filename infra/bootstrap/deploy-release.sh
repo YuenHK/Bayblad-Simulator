@@ -7,5 +7,5 @@ const x=require(process.argv[2]),paths=["githubTokenFile","authorizationDir","pr
 NODE
 )
 /opt/steam-top-bootstrap/prepare-release.sh "$artifact" "$bundle" "$pending" "${paths[0]}" "${paths[1]}"
-runtime_sha=$(node -p 'require(process.argv[1]).runtimeManifestSha256' "$bundle");core="/opt/steam-top/releases/$runtime_sha/scripts/host-deploy-and-receipt.sh"
-exec env HOST_RECEIPT_SIGNING_KEY="${paths[3]}" PRODUCTION_AUTHORIZATION_DIR="${paths[1]}" DEPLOYMENT_AUTHORIZATION_PURPOSE=production ADMIN_SMOKE_SECRET_FILE="${paths[4]}" HOST_RECEIPT_OUTBOX_DIR="${paths[5]}" PGSERVICEFILE="${paths[6]}" PGPASSFILE="${paths[7]}" HOST_RECEIPT_PGSERVICE="${paths[8]}" "$core" "$artifact" "${paths[2]}" "$manifest" "$repository" "$commit" "$nonce" "$expected" "$deployment_id"
+read -r runtime_sha deployment_purpose < <(node -e 'const a=require(process.argv[1]);if(!/^[a-f0-9]{64}$/.test(a.runtimeManifestSha256)||!["production","release-integration"].includes(a.deploymentPurpose))process.exit(1);console.log(a.runtimeManifestSha256,a.deploymentPurpose)' "$bundle");core="/opt/steam-top/releases/$runtime_sha/scripts/host-deploy-and-receipt.sh"
+exec env HOST_RECEIPT_SIGNING_KEY="${paths[3]}" PRODUCTION_AUTHORIZATION_DIR="${paths[1]}" DEPLOYMENT_AUTHORIZATION_PURPOSE="$deployment_purpose" ADMIN_SMOKE_SECRET_FILE="${paths[4]}" HOST_RECEIPT_OUTBOX_DIR="${paths[5]}" PGSERVICEFILE="${paths[6]}" PGPASSFILE="${paths[7]}" HOST_RECEIPT_PGSERVICE="${paths[8]}" "$core" "$artifact" "${paths[2]}" "$manifest" "$repository" "$commit" "$nonce" "$expected" "$deployment_id"
