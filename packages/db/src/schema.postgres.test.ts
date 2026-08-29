@@ -611,6 +611,57 @@ it.skipIf(testDatabaseUrl === undefined)(
     await expect(
       inEmptyMigratedDatabase(async (transaction) => {
         await insertCompletedFixture(transaction);
+        await transaction.unsafe("delete from matches where id = $1", [matchId]);
+      }),
+    ).rejects.toMatchObject({
+      code: "55000",
+      constraint_name: "completed_matches_are_immutable",
+    });
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        await insertCompletedFixture(transaction);
+        await transaction.unsafe(
+          "select set_config('steam_top.deletion_audit_id', '00000000-0000-4000-8000-000000000099', true)",
+        );
+        await transaction.unsafe("delete from matches where id = $1", [matchId]);
+      }),
+    ).rejects.toMatchObject({
+      code: "55000",
+      constraint_name: "completed_matches_are_immutable",
+    });
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        await insertCompletedFixture(transaction);
+        const adminId = "7c100000-0000-4000-8000-000000000000";
+        const auditId = "7d100000-0000-4000-8000-000000000000";
+        await transaction.unsafe(
+          "insert into admin_users (id, username, password_hash) values ($1, 'old-admin', 'hash')",
+          [adminId],
+        );
+        await transaction.unsafe(
+          `insert into deletion_audit (
+            id, admin_user_id, scope, filter_hash, preview_count,
+            deleted_identity_count, deleted_design_count, deleted_match_count,
+            transaction_id
+          ) values ($1, $2, 'all', $3, 1, 0, 0, 1, txid_current() - 1)`,
+          [auditId, adminId, "9".repeat(64)],
+        );
+        await transaction.unsafe(
+          "select set_config('steam_top.deletion_audit_id', $1, true)",
+          [auditId],
+        );
+        await transaction.unsafe("delete from matches where id = $1", [matchId]);
+      }),
+    ).rejects.toMatchObject({
+      code: "55000",
+      constraint_name: "completed_matches_are_immutable",
+    });
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        await insertCompletedFixture(transaction);
         await transaction.unsafe(
           "update matches set spectator_count = 1 where id = $1",
           [matchId],
@@ -638,7 +689,7 @@ it.skipIf(testDatabaseUrl === undefined)(
       inEmptyMigratedDatabase(async (transaction) => {
         await insertCompletedFixture(transaction);
         await transaction.unsafe(
-          "set local steam_top.allow_audited_delete = 'on'",
+          "select set_config('steam_top.deletion_audit_id', '00000000-0000-4000-8000-000000000099', true)",
         );
         await transaction.unsafe(
           "update matches set spectator_count = 1 where id = $1",
@@ -653,14 +704,126 @@ it.skipIf(testDatabaseUrl === undefined)(
     await expect(
       inEmptyMigratedDatabase(async (transaction) => {
         await insertCompletedFixture(transaction);
+        const adminId = "7c000000-0000-4000-8000-000000000000";
+        const auditId = "7d000000-0000-4000-8000-000000000000";
         await transaction.unsafe(
-          "set local steam_top.allow_audited_delete = 'on'",
+          "insert into admin_users (id, username, password_hash) values ($1, 'admin', 'hash')",
+          [adminId],
+        );
+        await transaction.unsafe(
+          `insert into deletion_audit (
+            id, admin_user_id, scope, filter_hash, preview_count,
+            deleted_identity_count, deleted_design_count, deleted_match_count
+          ) values ($1, $2, 'all', $3, 2, 0, 1, 1)`,
+          [auditId, adminId, "8".repeat(64)],
+        );
+        await transaction.unsafe(
+          "select set_config('steam_top.deletion_audit_id', $1, true)",
+          [auditId],
         );
         await transaction.unsafe("delete from matches where id = $1", [matchId]);
         await transaction.unsafe("delete from designs where id = $1", [designId]);
+        const retainedAudit = await transaction.unsafe(
+          "select id from deletion_audit where id = $1",
+          [auditId],
+        );
+        expect(retainedAudit).toHaveLength(1);
         throw rollbackSentinel;
       }),
     ).rejects.toBe(rollbackSentinel);
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        const adminId = "7c200000-0000-4000-8000-000000000000";
+        const auditId = "7d200000-0000-4000-8000-000000000000";
+        await transaction.unsafe(
+          "insert into admin_users (id, username, password_hash) values ($1, 'audit-admin', 'hash')",
+          [adminId],
+        );
+        await transaction.unsafe(
+          `insert into deletion_audit (
+            id, admin_user_id, scope, filter_hash, preview_count,
+            deleted_identity_count, deleted_design_count, deleted_match_count
+          ) values ($1, $2, 'all', $3, 0, 0, 0, 0)`,
+          [auditId, adminId, "d".repeat(64)],
+        );
+        await transaction.unsafe(
+          "update deletion_audit set preview_count = 1 where id = $1",
+          [auditId],
+        );
+      }),
+    ).rejects.toMatchObject({
+      code: "55000",
+      constraint_name: "deletion_audit_is_immutable",
+    });
+  },
+  30_000,
+);
+
+it.skipIf(testDatabaseUrl === undefined)(
+  "rejects completed matches with null required score fields",
+  async () => {
+    for (const nullColumn of ["player1_battle_points", "round_winners"] as const) {
+      await expect(inEmptyMigratedDatabase(async (transaction) => {
+        const designId = "7e000000-0000-4000-8000-000000000000";
+        await insertDesign(transaction, designId, false);
+        await transaction.unsafe(
+          `insert into matches (
+            id, idempotency_fingerprint, status, player1_design_id, player2_design_id,
+            player1_battle_points, player2_battle_points,
+            player1_challenge_points, player2_challenge_points,
+            player1_total, player2_total, winner, round_winners,
+            performance_model_version, physics_model_version, protocol_version,
+            completed_at
+          ) values (
+            '7f000000-0000-4000-8000-000000000000', $1, 'completed', $2, $2,
+            ${nullColumn === "player1_battle_points" ? "null" : "2"}, 0,
+            0, 0, 2, 0, 'player1',
+            ${nullColumn === "round_winners" ? "null" : "'[\"player1\",\"player1\"]'"},
+            '1.0.0', '2.0.0', 1, now()
+          )`,
+          ["a".repeat(64), designId],
+        );
+      })).rejects.toMatchObject({ code: "23514" });
+    }
+  },
+  30_000,
+);
+
+it.skipIf(testDatabaseUrl === undefined)(
+  "rejects empty or incomplete battle result JSON",
+  async () => {
+    for (const resultJson of [
+      "{}",
+      '{"modelVersion":"2.0.0","seed":1,"ticks":60,"frames":[],"outcome":{"winner":"player1"},"finalStats":{}}',
+    ]) {
+      await expect(inEmptyMigratedDatabase(async (transaction) => {
+        const designId = "80000000-0000-4000-8000-000000000000";
+        const matchId = "81000000-0000-4000-8000-000000000000";
+        await insertDesign(transaction, designId, false);
+        await transaction.unsafe(
+          `insert into matches (
+            id, idempotency_fingerprint, player1_design_id, player2_design_id,
+            performance_model_version, physics_model_version, protocol_version
+          ) values ($1, $2, $3, $3, '1.0.0', '2.0.0', 1)`,
+          [matchId, "b".repeat(64), designId],
+        );
+        await transaction.unsafe(
+          `insert into rounds (
+            id, match_id, external_round_id, authority_key_hash, round_number,
+            attempt, seed, outcome, outcome_reason, ticks, launch_grade_a,
+            launch_grade_b, launch_angular_multiplier_a, launch_angular_multiplier_b,
+            launch_linear_multiplier_a, launch_linear_multiplier_b,
+            physics_model_version, input_fingerprint, battle_result_json, completed_at
+          ) values (
+            '82000000-0000-4000-8000-000000000000', $1, 'round-1', $2, 1,
+            1, 1, 'player1', 'stopped', 60, 'Perfect', 'Great', 1.2, 1.1,
+            1.2, 1.1, '2.0.0', $3, $4::jsonb, now()
+          )`,
+          [matchId, battleAuthorityKeyHash(matchId, "round-1"), "c".repeat(64), resultJson],
+        );
+      })).rejects.toMatchObject({ code: "23514" });
+    }
   },
   30_000,
 );

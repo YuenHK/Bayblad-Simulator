@@ -38,6 +38,12 @@ function requirePositiveInteger(value: number, name: string): number {
   return value;
 }
 
+function requiresTls(ssl: DatabaseSsl | undefined): boolean {
+  if (ssl === true || ssl === "require" || ssl === "verify-full") return true;
+  if (typeof ssl !== "object" || ssl === null) return false;
+  return !("rejectUnauthorized" in ssl) || ssl.rejectUnauthorized !== false;
+}
+
 /** Creates a lazy postgres.js pool. Importing this module never opens a DB. */
 export function createDatabaseClient(
   config: DatabaseClientConfig,
@@ -49,7 +55,7 @@ export function createDatabaseClient(
   if (config.url.trim().length === 0) {
     throw new TypeError("Database URL must not be blank");
   }
-  const secureTransport = config.ssl !== undefined && config.ssl !== false;
+  const secureTransport = requiresTls(config.ssl);
   if (!secureTransport && config.allowInsecure !== true) {
     throw new Error("TLS is required unless allowInsecure is explicitly enabled");
   }
@@ -93,6 +99,7 @@ export function createDatabaseClient(
 }
 
 export { matchWithDetails } from "./queries";
+export * from "./audited-deletion";
 export * from "./authority";
 export * from "./persistence";
 export * from "./schema";

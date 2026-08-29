@@ -80,7 +80,7 @@ describe("persistent PostgreSQL schema", () => {
     );
     expect(allColumnNames.some((name) => name.includes("mac"))).toBe(false);
     for (const table of diagnosticTables) {
-      expect(tableConfig(table).columns.map(({ name }) => name)).toContain(
+      expect(tableConfig(table).columns.map(({ name }) => name)).not.toContain(
         "diagnostics_expires_at",
       );
     }
@@ -291,6 +291,32 @@ describe("persistent PostgreSQL schema", () => {
     )).toThrow("TLS is required");
     expect(createSqlClient).not.toHaveBeenCalled();
 
+    for (const ssl of [false, "allow", "prefer", undefined, { rejectUnauthorized: false }] as const) {
+      expect(() => createDatabaseClient(
+        { url: "postgresql://db.example/simulator", ssl },
+        {
+          createSqlClient: createSqlClient as unknown as SqlClientFactory,
+          runtimeEnvironment: "production",
+        },
+      )).toThrow("TLS is required");
+    }
+
+    for (const ssl of [true, "require", "verify-full", {}] as const) {
+      const end = vi.fn(async () => undefined);
+      const fakeSql = Object.assign(vi.fn(), {
+        end,
+        options: { parsers: {}, serializers: {} },
+      });
+      const secureFactory = vi.fn(() => fakeSql);
+      expect(() => createDatabaseClient(
+        { url: "postgresql://db.example/simulator", ssl },
+        {
+          createSqlClient: secureFactory as unknown as SqlClientFactory,
+          runtimeEnvironment: "production",
+        },
+      )).not.toThrow();
+    }
+
     expect(() => createDatabaseClient(
       { url: "postgresql://localhost/simulator", allowInsecure: true },
       {
@@ -319,9 +345,11 @@ describe("persistent PostgreSQL schema", () => {
     expect(sql).toContain("DEFERRABLE INITIALLY DEFERRED");
     expect(sql).toContain('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');
     expect(sql).toContain("rounds_authority_key_matches_correlation");
-    expect(sql).toContain("steam_top.allow_audited_delete");
-    expect(sql.match(/IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled\(\) THEN/g))
-      .toHaveLength(4);
+    expect(sql).toContain("steam_top.deletion_audit_id");
+    expect(sql).toContain("txid_current()");
+    expect(sql).toContain("deletion_audit_is_immutable");
+    expect(sql).not.toContain("steam_top.allow_audited_delete");
+    expect(sql).not.toContain("diagnostics_expires_at");
     expect(sql).toContain("completed_matches_are_immutable");
     expect(sql).toContain("completed_rounds_are_immutable");
     expect(sql).toContain("eligible_designs_are_immutable");

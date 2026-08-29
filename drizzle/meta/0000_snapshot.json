@@ -1,5 +1,5 @@
 {
-  "id": "0243a4df-22a7-46bb-8380-a367f4757e9b",
+  "id": "71eea392-2884-496a-bd3f-2a49ef1d0005",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -70,13 +70,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "diagnostics_expires_at": {
-          "name": "diagnostics_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now() + interval '90 days'"
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -139,21 +132,6 @@
             },
             {
               "expression": "target_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "admin_audit_diagnostics_expires_at_idx": {
-          "name": "admin_audit_diagnostics_expires_at_idx",
-          "columns": [
-            {
-              "expression": "diagnostics_expires_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -265,13 +243,6 @@
           "type": "varchar(512)",
           "primaryKey": false,
           "notNull": false
-        },
-        "diagnostics_expires_at": {
-          "name": "diagnostics_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now() + interval '90 days'"
         }
       },
       "indexes": {
@@ -316,21 +287,6 @@
           "columns": [
             {
               "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "admin_sessions_diagnostics_expires_at_idx": {
-          "name": "admin_sessions_diagnostics_expires_at_idx",
-          "columns": [
-            {
-              "expression": "diagnostics_expires_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -458,7 +414,7 @@
       "columns": {
         "id": {
           "name": "id",
-          "type": "bigserial",
+          "type": "uuid",
           "primaryKey": true,
           "notNull": true
         },
@@ -504,6 +460,13 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true
+        },
+        "transaction_id": {
+          "name": "transaction_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "txid_current()"
         },
         "completed_at": {
           "name": "completed_at",
@@ -1476,13 +1439,6 @@
           "type": "varchar(512)",
           "primaryKey": false,
           "notNull": false
-        },
-        "diagnostics_expires_at": {
-          "name": "diagnostics_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now() + interval '90 days'"
         }
       },
       "indexes": {
@@ -1527,21 +1483,6 @@
           "columns": [
             {
               "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "identity_sessions_diagnostics_expires_at_idx": {
-          "name": "identity_sessions_diagnostics_expires_at_idx",
-          "columns": [
-            {
-              "expression": "diagnostics_expires_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1753,13 +1694,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "diagnostics_expires_at": {
-          "name": "diagnostics_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now() + interval '90 days'"
-        },
         "started_at": {
           "name": "started_at",
           "type": "timestamp with time zone",
@@ -1922,21 +1856,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "matches_diagnostics_expires_at_idx": {
-          "name": "matches_diagnostics_expires_at_idx",
-          "columns": [
-            {
-              "expression": "diagnostics_expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -2036,7 +1955,7 @@
         },
         "matches_completed_score_shape": {
           "name": "matches_completed_score_shape",
-          "value": "\"matches\".\"status\" <> 'completed' or (\"matches\".\"completed_at\" is not null and \"matches\".\"winner\" is not null and \"matches\".\"player1_challenge_points\" is not null and \"matches\".\"player2_challenge_points\" is not null and \"matches\".\"player1_total\" is not null and \"matches\".\"player2_total\" is not null and jsonb_typeof(\"matches\".\"round_winners\") = 'array' and ((\"matches\".\"winner\" = 'player1' and \"matches\".\"player1_battle_points\" = 2 and \"matches\".\"player2_battle_points\" = 0 and \"matches\".\"round_winners\" = '[\"player1\",\"player1\"]'::jsonb) or (\"matches\".\"winner\" = 'player1' and \"matches\".\"player1_battle_points\" = 2 and \"matches\".\"player2_battle_points\" = 1 and \"matches\".\"round_winners\" in ('[\"player1\",\"player2\",\"player1\"]'::jsonb, '[\"player2\",\"player1\",\"player1\"]'::jsonb)) or (\"matches\".\"winner\" = 'player2' and \"matches\".\"player2_battle_points\" = 2 and \"matches\".\"player1_battle_points\" = 0 and \"matches\".\"round_winners\" = '[\"player2\",\"player2\"]'::jsonb) or (\"matches\".\"winner\" = 'player2' and \"matches\".\"player2_battle_points\" = 2 and \"matches\".\"player1_battle_points\" = 1 and \"matches\".\"round_winners\" in ('[\"player1\",\"player2\",\"player2\"]'::jsonb, '[\"player2\",\"player1\",\"player2\"]'::jsonb))))"
+          "value": "\"matches\".\"status\" <> 'completed' or (\"matches\".\"completed_at\" is not null and \"matches\".\"winner\" is not null and \"matches\".\"player1_battle_points\" is not null and \"matches\".\"player2_battle_points\" is not null and \"matches\".\"player1_challenge_points\" is not null and \"matches\".\"player2_challenge_points\" is not null and \"matches\".\"player1_total\" is not null and \"matches\".\"player2_total\" is not null and \"matches\".\"round_winners\" is not null and jsonb_typeof(\"matches\".\"round_winners\") = 'array' and ((\"matches\".\"winner\" = 'player1' and \"matches\".\"player1_battle_points\" = 2 and \"matches\".\"player2_battle_points\" = 0 and \"matches\".\"round_winners\" = '[\"player1\",\"player1\"]'::jsonb) or (\"matches\".\"winner\" = 'player1' and \"matches\".\"player1_battle_points\" = 2 and \"matches\".\"player2_battle_points\" = 1 and \"matches\".\"round_winners\" in ('[\"player1\",\"player2\",\"player1\"]'::jsonb, '[\"player2\",\"player1\",\"player1\"]'::jsonb)) or (\"matches\".\"winner\" = 'player2' and \"matches\".\"player2_battle_points\" = 2 and \"matches\".\"player1_battle_points\" = 0 and \"matches\".\"round_winners\" = '[\"player2\",\"player2\"]'::jsonb) or (\"matches\".\"winner\" = 'player2' and \"matches\".\"player2_battle_points\" = 2 and \"matches\".\"player1_battle_points\" = 1 and \"matches\".\"round_winners\" in ('[\"player1\",\"player2\",\"player2\"]'::jsonb, '[\"player2\",\"player1\",\"player2\"]'::jsonb))))"
         },
         "matches_totals_consistent": {
           "name": "matches_totals_consistent",
@@ -2136,13 +2055,6 @@
           "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
-        },
-        "diagnostics_expires_at": {
-          "name": "diagnostics_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now() + interval '90 days'"
         }
       },
       "indexes": {
@@ -2221,21 +2133,6 @@
             },
             {
               "expression": "joined_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "room_participants_diagnostics_expires_at_idx": {
-          "name": "room_participants_diagnostics_expires_at_idx",
-          "columns": [
-            {
-              "expression": "diagnostics_expires_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2781,7 +2678,7 @@
         },
         "rounds_battle_result_shape": {
           "name": "rounds_battle_result_shape",
-          "value": "jsonb_typeof(\"rounds\".\"battle_result_json\") = 'object' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'modelVersion') = 'string' and length(btrim(\"rounds\".\"battle_result_json\"->>'modelVersion')) > 0 and \"rounds\".\"battle_result_json\"->>'modelVersion' = \"rounds\".\"physics_model_version\" and jsonb_typeof(\"rounds\".\"battle_result_json\"->'seed') = 'number' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'ticks') = 'number' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'frames') = 'array' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'finalStats') = 'object' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'outcome') = 'object' and \"rounds\".\"battle_result_json\"->'outcome'->>'winner' = \"rounds\".\"outcome\"::text and \"rounds\".\"battle_result_json\"->'outcome'->>'reason' = \"rounds\".\"outcome_reason\"::text"
+          "value": "jsonb_typeof(\"rounds\".\"battle_result_json\") = 'object' and \"rounds\".\"battle_result_json\" ?& array['modelVersion','seed','ticks','frames','outcome','finalStats'] and jsonb_typeof(\"rounds\".\"battle_result_json\"->'modelVersion') = 'string' and length(btrim(\"rounds\".\"battle_result_json\"->>'modelVersion')) > 0 and \"rounds\".\"battle_result_json\"->>'modelVersion' = \"rounds\".\"physics_model_version\" and jsonb_typeof(\"rounds\".\"battle_result_json\"->'seed') = 'number' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'ticks') = 'number' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'frames') = 'array' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'finalStats') = 'object' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'outcome') = 'object' and \"rounds\".\"battle_result_json\"->'outcome' ?& array['winner','reason'] and \"rounds\".\"battle_result_json\"->'outcome'->>'winner' = \"rounds\".\"outcome\"::text and \"rounds\".\"battle_result_json\"->'outcome'->>'reason' = \"rounds\".\"outcome_reason\"::text"
         }
       },
       "isRLSEnabled": false
