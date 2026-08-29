@@ -558,7 +558,7 @@ describe("realtime app", () => {
   it("serves health and rejects unsupported or malformed protocol events without crashing", async () => {
     const app = buildApp({ battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 });
     closers.push(() => app.close());
-    expect((await app.inject({ method: "GET", url: "/health" })).json()).toEqual({ status: "ok" });
+    expect((await app.inject({ method: "GET", url: "/health" })).json()).toEqual({ status: "ok", identity: { iclass: "disabled" } });
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("No address");

@@ -13,7 +13,7 @@ class UnusedBattleEngine implements BattleEnginePort {
 
 describe("design upload shared contract", () => {
   it("buildApp/inject完整201回應可由RealtimeClient parse並正常ready", async () => {
-    const app = buildApp({ battleEngine: new UnusedBattleEngine(), sweepIntervalMs: 0 });
+    const app = buildApp({ battleEngine: new UnusedBattleEngine(), sweepIntervalMs: 0, testIdentityResolver: async (_request, auth) => ({ identityId: "test-contract", displayName: typeof auth?.displayName === "string" ? auth.displayName : "Contract student" }) });
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address(); if (!address || typeof address === "string") throw new Error("No address");
     const socket = io(`http://127.0.0.1:${address.port}`, { autoConnect: false, auth: { displayName: "Contract student" } });

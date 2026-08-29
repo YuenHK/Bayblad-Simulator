@@ -10,6 +10,7 @@ const claimsSchema = z.strictObject({ v: z.literal(1), iat: z.number().int().non
 export interface TokenNonceStore {
   readonly durable?: boolean;
   issue(input: Readonly<{ jtiHash: string; deviceId: string; issuedAt: Date; expiresAt: Date }>): Promise<void>;
+  lookup(jtiHash: string, now: Date): Promise<string | null>;
   consume(jtiHash: string, now: Date): Promise<string | null>;
 }
 
@@ -27,6 +28,10 @@ export class InMemoryTokenNonceStore implements TokenNonceStore {
     this.#records.set(jtiHash, Object.freeze({ ...record, usedAt: now }));
     return record.deviceId;
   }
+  async lookup(jtiHash: string, now: Date): Promise<string | null> {
+    const record = this.#records.get(jtiHash);
+    return !record || record.usedAt || record.expiresAt <= now ? null : record.deviceId;
+  }
 }
 
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
@@ -37,6 +42,7 @@ function decodeCanonical(value: string): unknown {
   try { return JSON.parse(bytes.toString("utf8")); } catch { throw new Error("INVALID_DEVICE_TOKEN"); }
 }
 const jtiHash = (jti: string) => createHash("sha256").update(jti, "ascii").digest("hex");
+export type VerifiedWebClipToken = Readonly<{ deviceId: string; expiresAt: Date }>;
 
 export class WebClipTokenService {
   readonly #keys: Readonly<Record<string, Uint8Array>>;
@@ -44,6 +50,7 @@ export class WebClipTokenService {
   readonly #audience: string;
   readonly #store: TokenNonceStore;
   readonly #now: () => number;
+  readonly #verified = new WeakMap<object, string>();
   constructor(input: Readonly<{ keys: Readonly<Record<string, Uint8Array>>; activeKeyId: string; audience: string; nonceStore: TokenNonceStore; now?: () => number; production?: boolean }>) {
     if (!input.keys[input.activeKeyId]) throw new TypeError("WEBCLIP_ACTIVE_KEY_MISSING");
     for (const secret of Object.values(input.keys)) if (secret.byteLength < 32) throw new TypeError("WEBCLIP_SECRET_TOO_SHORT");
@@ -61,7 +68,7 @@ export class WebClipTokenService {
     const signature = createHmac("sha256", this.#keys[this.#activeKeyId]!).update(`${head}.${body}`, "ascii").digest("base64url");
     return `${head}.${body}.${signature}`;
   }
-  async consume(token: unknown): Promise<string> {
+  async inspect(token: unknown): Promise<VerifiedWebClipToken> {
     if (typeof token !== "string" || Buffer.byteLength(token, "utf8") > MAX_TOKEN_BYTES) throw new Error("INVALID_DEVICE_TOKEN");
     const parts = token.split("."); if (parts.length !== 3) throw new Error("INVALID_DEVICE_TOKEN");
     const [head, body, signature] = parts as [string, string, string];
@@ -74,8 +81,21 @@ export class WebClipTokenService {
     const now = this.#now();
     if (claims.data.aud !== this.#audience || claims.data.exp - claims.data.iat > MAX_LIFETIME_MS || claims.data.iat > now + 30_000) throw new Error("INVALID_DEVICE_TOKEN");
     if (claims.data.exp <= now) throw new Error("DEVICE_TOKEN_EXPIRED");
-    const deviceId = await this.#store.consume(jtiHash(claims.data.jti), new Date(now));
+    const hash = jtiHash(claims.data.jti);
+    const deviceId = await this.#store.lookup(hash, new Date(now));
     if (!deviceId) throw new Error("DEVICE_TOKEN_REPLAYED");
-    return deviceId;
+    const verified = Object.freeze({ deviceId, expiresAt: new Date(claims.data.exp) });
+    this.#verified.set(verified, hash);
+    return verified;
+  }
+  async consumeVerified(verified: VerifiedWebClipToken): Promise<string> {
+    const hash = this.#verified.get(verified as object); if (!hash) throw new Error("INVALID_DEVICE_TOKEN_HANDLE");
+    if (verified.expiresAt.getTime() <= this.#now()) throw new Error("DEVICE_TOKEN_EXPIRED");
+    const deviceId = await this.#store.consume(hash, new Date(this.#now()));
+    if (!deviceId || deviceId !== verified.deviceId) throw new Error("DEVICE_TOKEN_REPLAYED");
+    this.#verified.delete(verified as object); return deviceId;
+  }
+  async consume(token: unknown): Promise<string> {
+    return this.consumeVerified(await this.inspect(token));
   }
 }

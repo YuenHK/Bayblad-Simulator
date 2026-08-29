@@ -4,6 +4,16 @@ const clean = (max: number) => z.string().trim().min(1).max(max).refine((value) 
 export const iClassDeviceSchema = z.strictObject({ externalDeviceId: clean(128), deviceName: clean(128), studentName: clean(80), className: clean(30), studentNumber: clean(30) });
 export type IClassDevice = z.infer<typeof iClassDeviceSchema>;
 export interface IClassAdapter { resolveDevice(externalDeviceId: string): Promise<IClassDevice | null>; }
+export const isTransientIClassError = (error: unknown): boolean => error instanceof Error && error.message === "ICLASS_UNAVAILABLE";
+
+/** Falls back for API 404 and transient availability failures only; invalid/auth responses remain fatal. */
+export class FallbackIClassAdapter implements IClassAdapter {
+  constructor(readonly primary: IClassAdapter, readonly fallback: IClassAdapter) {}
+  async resolveDevice(externalDeviceId: string): Promise<IClassDevice | null> {
+    try { return await this.primary.resolveDevice(externalDeviceId) ?? await this.fallback.resolveDevice(externalDeviceId); }
+    catch (error) { if (!isTransientIClassError(error)) throw error; return this.fallback.resolveDevice(externalDeviceId); }
+  }
+}
 
 export class ImportedDeviceMapAdapter implements IClassAdapter {
   #snapshot: ReadonlyMap<string, IClassDevice> = new Map();
@@ -49,6 +59,8 @@ export class ApiIClassAdapter implements IClassAdapter {
   constructor(input: Readonly<{ baseUrl: string; bearerToken: string; fetcher?: typeof fetch; timeoutMs?: number; maxAttempts?: number; production?: boolean }>) {
     this.#baseUrl = new URL(input.baseUrl); if ((input.production ?? process.env.NODE_ENV === "production") && this.#baseUrl.protocol !== "https:") throw new TypeError("ICLASS_HTTPS_REQUIRED");
     this.#bearerToken = z.string().min(1).max(1_024).parse(input.bearerToken); this.#fetch = input.fetcher ?? fetch; this.#timeoutMs = input.timeoutMs ?? 3_000; this.#maxAttempts = input.maxAttempts ?? 2;
+    if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 100 || this.#timeoutMs > 30_000) throw new TypeError("ICLASS_TIMEOUT_INVALID");
+    if (!Number.isSafeInteger(this.#maxAttempts) || this.#maxAttempts < 1 || this.#maxAttempts > 5) throw new TypeError("ICLASS_ATTEMPTS_INVALID");
   }
   async resolveDevice(externalDeviceId: string): Promise<IClassDevice | null> {
     const id = clean(128).parse(externalDeviceId); if (Date.now() < this.#openUntil) throw new Error("ICLASS_UNAVAILABLE");

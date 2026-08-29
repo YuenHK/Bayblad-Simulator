@@ -14,4 +14,8 @@ export class PostgresTokenNonceStore implements TokenNonceStore {
     const [consumed] = await this.#db.update(webClipTokenNonces).set({ usedAt: now }).where(and(eq(webClipTokenNonces.jtiHash, jtiHash), isNull(webClipTokenNonces.usedAt), gt(webClipTokenNonces.expiresAt, now))).returning({ deviceId: webClipTokenNonces.deviceId });
     return consumed?.deviceId ?? null;
   }
+  async lookup(jtiHash: string, now: Date): Promise<string | null> {
+    const [record] = await this.#db.select({ deviceId: webClipTokenNonces.deviceId }).from(webClipTokenNonces).where(and(eq(webClipTokenNonces.jtiHash, jtiHash), isNull(webClipTokenNonces.usedAt), gt(webClipTokenNonces.expiresAt, now))).limit(1);
+    return record?.deviceId ?? null;
+  }
 }
