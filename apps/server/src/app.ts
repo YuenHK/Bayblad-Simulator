@@ -248,7 +248,6 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     }
   });
   const rooms = options.rooms ?? new RoomService(options.now ? { now: options.now } : {});
-  if (options.adminAuth) registerAdminDashboardRoutes(app, options.adminAuth, rooms, adminResolver);
   const designs = options.designs ?? new DesignRegistry({
     ...(options.now ? { now: options.now } : {}),
     maxGlobal: config.maxDesigns,
@@ -356,6 +355,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     logError: reportBackgroundError,
   });
   app.decorate("realtimeGateway", gateway);
+  if (options.adminAuth) registerAdminDashboardRoutes(app, options.adminAuth, rooms, gateway, adminResolver);
   app.decorate("battleEngine", battleEngine);
 
   let authorityHealthy = true;

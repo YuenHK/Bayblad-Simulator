@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { adminAnalyticsSummarySchema } from "@steam-top/protocol";
 import type { AdminAuthService } from "../auth/admin-auth";
 import { authenticateAdminRead } from "../auth/admin-auth";
 import { analyticsFiltersSchema } from "./usage";
@@ -11,7 +12,7 @@ export function registerAnalyticsRoutes(app: FastifyInstance, auth: AdminAuthSer
     const parsed = analyticsFiltersSchema.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_ANALYTICS_FILTERS" });
     reply.header("Cache-Control", "private, no-store");
-    try { return await analytics.query(parsed.data); }
+    try { return adminAnalyticsSummarySchema.parse(await analytics.query(parsed.data)); }
     catch (error) { auth.report("admin.analytics", error, request.id); return reply.code(503).send({ error: "ANALYTICS_UNAVAILABLE" }); }
   });
   app.get("/api/admin/analytics/parameters", async (request,reply)=>{
