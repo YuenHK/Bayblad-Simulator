@@ -128,7 +128,8 @@ describe("rollback deletion monotonicity", () => {
     expect(promotion).not.toContain("restore_acl");
     expect(promotion).toContain("configured APP_UID-owned 0600");
     expect(promotion).toContain(".promotion-reserved");
-    expect(promotion).toContain("create-promotion-ready.mjs");
+    expect(promotion).toContain("reconcile-promotion-ready.sh");
+    expect(promotion).toContain("promotion_outbox");
     const finalize = read("infra/backup/finalize-cutover.sh");
     expect(finalize).not.toContain("DATABASE_URL_CUTOVER_SUCCEEDED");
     expect(finalize).not.toContain("readarray");
@@ -136,6 +137,8 @@ describe("rollback deletion monotonicity", () => {
     expect(finalize).toContain("CUTOVER_ALLOWED_SIGNERS_FILE");
     expect(finalize).toContain("ledgerRows");
     expect(finalize).toContain("promotion_audit");
+    expect(finalize).toContain("finalize_outbox");
+    expect(finalize).toContain("reconcile-finalize-outbox.sh");
     expect(read("infra/backup/record-cutover-receipt.sh")).toContain("production-smoke.sh");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-isolation.sh");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-full.sh");

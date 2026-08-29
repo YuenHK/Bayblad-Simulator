@@ -1,0 +1,2 @@
+#!/usr/bin/env node
+import{readFileSync,writeFileSync}from"node:fs";const[input,nonce,receipt,signature]=process.argv.slice(2),lines=readFileSync(input,"utf8").trimEnd().split("\n"),split=lines.indexOf("RECEIPT-SIGNATURE");if(lines[0]!==`RECEIPT-BEGIN ${nonce}`||lines.at(-1)!==`RECEIPT-END ${nonce}`||split<2)throw new Error("host receipt frame invalid");writeFileSync(receipt,Buffer.from(lines.slice(1,split).join(""),"base64"),{flag:"wx",mode:0o600});writeFileSync(signature,Buffer.from(lines.slice(split+1,-1).join(""),"base64"),{flag:"wx",mode:0o600});
