@@ -17,6 +17,8 @@
 
 部署主機明確要求 Linux、GNU `flock`、Docker/Compose、Node、`gh`、`psql` 及 `ssh-keygen`。以 root 把已審核 commit 安裝至 `/opt/steam-top`，所有父目錄及 scripts 必須 root-owned 且 group/other 不可寫，host wrapper/fetch scripts 為 0555。預先建立 root-owned 0600 regular file `/var/lock/steam-top-production.lock`及 root-owned 0700 receipt outbox，不可是 symlink。`sudoers` 只允許部署 SSH 帳號執行精確的 `/opt/steam-top/scripts/host-deploy-and-receipt.sh` 及 `/opt/steam-top/scripts/fetch-host-receipt.sh`，禁止任意 shell/任意 script path。每次升級後要再核對 canonical path、owner、mode 及 sudoers。
 
+Receipt 不可先複製成非 root 可讀檔案；非 root deploy user 只能透過上述 exact sudo command 取得 `RECEIPT-BEGIN`／base64 payload／`RECEIPT-SIGNATURE`／`RECEIPT-END` framed stdout。CI 會實際建立受限帳號及 sudoers、驗證 direct outbox read 被拒，並解析完整 frame。
+
 ## Smoke test
 
 `production-smoke.sh` 從 strict canonical `PUBLIC_ORIGIN` 取 hostname，以 `curl --resolve` 保留 SNI、Host 及 CA 驗證，檢查 HTTP redirect、首頁/實際 asset、`/health/ready`、Node `socket.io-client` strict-TLS WebSocket transport、教師登入、nonce-bound DB deployment probe、logout 及 session 已失效。密碼只從 root 0600 JSON file 讀入 request body，不出現於 argv/log。Host receipt 必須綁定此 origin/smoke、精確 Compose service/config hash/container state、separate image RepoDigests、DB system identifier 及 production marker。
