@@ -58,6 +58,8 @@ Production cutover 只可使用預先安裝的 `/opt/steam-top-bootstrap/record-
 
 `hostReceiptSigningKey`、`ledgerSigningKey`、`evidenceSigningKey` 與 `productionStateSigningKey` 必須分開，全部由 root 擁有並設為 `0400`。輪換時先加入及驗證新 public identity，才更改相應 private-key path；舊 identity 要保留至其簽署 generation 完成審計保留期，並在變更紀錄保存新舊 key fingerprint。receipt key 不可重用作 ledger 或 authorization evidence key。
 
+Bootstrap trust config 同時要設定 `ledgerAllowedSigners` 及 `ledgerSignerId`；activation 只以該 ledger identity 驗證完整 host ledger chain，不會接受 host receipt identity 代替。
+
 Rollback operator 只能輸入 previous release；current release 必須從 GitHub 最新成功 `production` Deployment payload 解析。`production-rollback-approval` 必須在 repository 設定 required reviewers 及 deployment branch policy，`verify-rollback-go-live.mjs` 以具 Environments 讀取權限的 token 查 API，未配置即 fail closed。
 
 Promotion 成功後只寫 root-owned 0400 `promotion-ready`，PUBLIC 及 app role 仍無 CONNECT。完成外部 `DATABASE_URL` routing 後，root 先執行完整 public smoke，再以 `record-cutover-receipt.sh <promotion-ready> <cutover-receipt>` 產生綁定 system identifier、restore target、canonical DATABASE_URL hash、deployment manifest、origin/smoke 及 promotion nonce 的簽署 receipt。只可以 `finalize-cutover.sh <promotion-ready> <cutover-receipt> <signature>` grant app role；執行時必須同時提供 `RUNTIME_INSTALL_MANIFEST_SHA256`、root-private `PRODUCTION_ENV_FILE`、`PROTECTED_DEPLOYMENT_STATE_FILE`、`HOST_DEPLOYMENT_RECEIPT_FILE` 及其簽署/allowed-signers。Finalize 不只信 cutover receipt，會再驗 host receipt 簽署、current protected deployment、canonical origin/DB identity、marker、ACL 及 ledgerRows；PUBLIC 永不 grant，receipt 一次性消耗並寫 audit。若出現 root/private `RECOVERY-REQUIRED`，保留 incident 目錄及 `.promotion-reserved`，用 maintenance service 執行 `ALTER DATABASE <PROMOTE_CONFIRM_DATABASE> ALLOW_CONNECTIONS true;`，核對 marker/ACL 後才人工 reconcile。
