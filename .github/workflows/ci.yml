@@ -395,7 +395,7 @@ jobs:
           sudo cp /tmp/integration-root.crt /usr/local/share/ca-certificates/steam-top-integration.crt
           sudo update-ca-certificates
           sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml exec -T db psql -U steam_top -d steam_top -c "set steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA';update restore_control.deployment_environment set environment='production',restore_allowed=false,restore_target_id='00000000-0000-4000-8000-000000000099' where singleton"
-          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml exec -T db psql -U steam_top -d steam_top -v ON_ERROR_STOP=1 -c "create role steam_top_app login password 'integration-app-password';grant connect on database steam_top to steam_top_app;grant usage on schema public to steam_top_app;grant select,insert,update,delete on all tables in schema public to steam_top_app;grant usage,select,update on all sequences in schema public to steam_top_app"
+          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml exec -T db psql -U steam_top -d steam_top -v ON_ERROR_STOP=1 -c "create table if not exists restore_control.deployment_probe(nonce text primary key check(nonce~'^[a-f0-9]{64}$'),restore_target_id uuid not null,system_identifier text not null,created_at timestamptz not null default clock_timestamp(),consumed_at timestamptz,state text not null default 'pending',observed_at timestamptz,receipt_signed_at timestamptz);create role steam_top_app login password 'integration-app-password';grant connect on database steam_top to steam_top_app;grant usage on schema public,restore_control to steam_top_app;grant select,insert,update,delete on all tables in schema public to steam_top_app;grant usage,select,update on all sequences in schema public to steam_top_app;grant select,update on restore_control.deployment_probe to steam_top_app"
           sudo sed -i 's|^DATABASE_URL=.*|DATABASE_URL=postgresql://steam_top_app:integration-app-password@db:5432/steam_top?sslmode=require|' /opt/steam-top/.release-integration/production.env
           sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml down
       - name: Authorize and invoke the complete host core as non-root
@@ -430,10 +430,9 @@ jobs:
           runtime=/opt/steam-top/releases/$runtime_sha
           CANONICAL_CUTOVER_HOOK="$runtime/infra/backup/test-host-core-cutover-hook.sh" CANONICAL_STATE_NONCE="$INTEGRATION_NONCE" CANONICAL_HOST_RECEIPT_FILE="$receipt_generation/payload.json" CANONICAL_RESTORE_TARGET_ID="$target" CANONICAL_DEPLOYMENT_MANIFEST_SHA="$INTEGRATION_MANIFEST_SHA" RUNTIME_INSTALL_MANIFEST_SHA256="$runtime_sha" "$runtime/infra/backup/test-promotion-full.sh"
           test "$(node -p 'require(process.argv[1]).purpose' "$receipt_generation/payload.json")" = release-integration
-          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" up -d --force-recreate --wait server
-          probe=$(openssl rand -hex 32)
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -v nonce="$probe" -v target="$target" -c "insert into restore_control.deployment_probe(nonce,restore_target_id,system_identifier) values (:'nonce',:'target',(select system_identifier from pg_control_system()))"
-          SMOKE_INTEGRATION_MODE=true ADMIN_SMOKE_SECRET_FILE=/opt/steam-top/.release-integration/secrets/admin-smoke.json "$runtime/scripts/production-smoke.sh" "$CANONICAL_PUBLIC_ORIGIN" "$probe"
+          test "$(psql "$TEST_DATABASE_URL" -Atqc "select state from restore_control.finalize_outbox where nonce='$(printf 3%.0s {1..64})'")" = verified
+          test "$(psql "$TEST_DATABASE_URL" -Atqc "select has_table_privilege('steam_top_app','restore_control.deployment_probe','select,update')")" = t
+          test "$(psql "$TEST_DATABASE_URL" -Atqc "select has_table_privilege('steam_top_app','restore_control.promotion_audit','select')")" = f
       - name: Mark the release approved only after canonical cutover
         shell: bash
         env: { GH_TOKEN: "${{ github.token }}" }
@@ -442,6 +441,16 @@ jobs:
           printf '{"state":"success","environment":"release-host-integration","description":"isolated host core and full smoke passed"}\n' > integration-success.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$INTEGRATION_DEPLOYMENT_ID/statuses" --input integration-success.json
           printf '{"schemaVersion":1,"purpose":"approved-release","commit":"%s","manifestSha256":"%s","integrationDeploymentId":"%s"}\n' "$RELEASE_COMMIT" "$INTEGRATION_MANIFEST_SHA" "$INTEGRATION_DEPLOYMENT_ID" > candidate/APPROVED-RELEASE.json
+      - name: Abort any provisional cutover after a failed public smoke
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          pending=$(find /opt/steam-top/.release-integration/cutover -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null)
+          if [[ -n $pending ]];then
+            sudo env PROMOTE_PGSERVICE=target PGSERVICEFILE=/opt/steam-top/.release-integration/secrets/pg-service PGPASSFILE=/opt/steam-top/.release-integration/secrets/pg-pass CUTOVER_ALLOWED_SIGNERS_FILE="$pending/cutover-signers" CUTOVER_SIGNER_ID=cutover@test PROMOTE_STATE_DIR="$pending" /opt/steam-top-bootstrap/abort-cutover-current.sh "$INTEGRATION_NONCE" "$pending/promotion-ready" "$pending/preflight.json" "$pending/preflight.json.sig"
+          fi
+          exit 1
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: candidate/APPROVED-RELEASE.json }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

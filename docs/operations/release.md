@@ -27,7 +27,7 @@ Protected current 並非可覆寫的單一 JSON：主機以 root0400 payload/sig
 
 `db.yml` 的 root-owned `/opt/steam-top` 只是一次性 PostgreSQL 功能 integration fixture，不是 production bootstrap 證據、不會產生可供正式部署信任的 state。正式 acceptance 必須取得校方主機上 `/opt/steam-top-bootstrap/verify-bootstrap.sh` 的 digest 證據，並與受保護 `bootstrap.yml` artifact 及主機 root0400 config 相符。
 
-`production-security` 另會在全新 runner 以簽署 bootstrap archive 安裝一次性功能 fixture，對同一個 production-like HTTPS/WSS Compose PostgreSQL 實際執行 activate → promotion → public probe/record → finalize，並驗 finalize 持有 production lock 時另一個 activation 被拒。這是不可 skip 的行為關卡，但仍不是校方正式主機的 bootstrap 或部署證據。
+`production-security` 另會在全新 runner 以簽署 bootstrap archive 安裝一次性 component fixture，驗證 promotion／outbox／canonical wrapper 的功能與 lock 行為。測試用 backup/operator 只屬 production-like fixture，不代表真實備份或校方主機部署證據；只有受保護 tag `release-host-core-integration` 會走 actual host receipt/ledger、preflight、provisional app reconnect、完整 public smoke及 confirm 的整條路徑。
 
 此資料庫關卡的受限 `gh` fixture 只核對 activation 所用 API 的完整 argv、endpoint、token 及回傳 binding，並保存 calls；它不構成 GitHub attestation 或正式 Deployment state 證據。正式 host receipt/ledger 只由受保護 tag hard gate 的 `host-deploy-and-receipt.sh` 產生及驗證。Cutover 後 CI 會以非 owner `steam_top_app` 強制重建 server 連線，再跑完整 smoke，避免 owner 身分令 CONNECT freeze 測試失真。
 
@@ -60,7 +60,7 @@ Authorization 在 Compose 前由 `pending` 轉為 `deploying`，不會在 comman
 
 ## Rollback 及 cutover 硬關卡
 
-Production cutover 只可使用預先安裝的 `/opt/steam-top-bootstrap/record-cutover-current.sh` 及 `/opt/steam-top-bootstrap/finalize-current.sh`。兩個入口會自行解析並驗證目前 protected generation；直接向 runtime script 傳入自行組合的 state path 屬不支援操作，並會被拒絕。
+Production cutover 只可使用預先安裝的 `/opt/steam-top-bootstrap/record-cutover-current.sh`、`finalize-current.sh`、`confirm-cutover-current.sh` 及 `abort-cutover-current.sh`。入口會自行解析並驗證目前 protected generation；直接向 runtime script 傳入自行組合的 state path 屬不支援操作，並會被拒絕。
 
 `hostReceiptSigningKey`、`ledgerSigningKey`、`evidenceSigningKey` 與 `productionStateSigningKey` 必須分開，全部由 root 擁有並設為 `0400`。輪換時先加入及驗證新 public identity，才更改相應 private-key path；舊 identity 要保留至其簽署 generation 完成審計保留期，並在變更紀錄保存新舊 key fingerprint。receipt key 不可重用作 ledger 或 authorization evidence key。
 
@@ -74,10 +74,12 @@ Host provisioning 必須預建 `/var/lock/steam-top-generation-publish.lock`、`
 
 Rollback operator 只能輸入 previous release；current release 必須從 GitHub 最新成功 `production` Deployment payload 解析。`production-rollback-approval` 必須在 repository 設定 required reviewers 及 deployment branch policy，`verify-rollback-go-live.mjs` 以具 Environments 讀取權限的 token 查 API，未配置即 fail closed。
 
-Promotion 成功後只寫 root-owned 0400 `promotion-ready`，PUBLIC 及 app role 仍無 CONNECT。完成外部 `DATABASE_URL` routing 後，只可用 `/opt/steam-top-bootstrap/record-cutover-current.sh <promotion-nonce> <promotion-ready> <cutover-receipt>` 執行完整 public smoke及產生簽署 receipt；其後只可用 `/opt/steam-top-bootstrap/finalize-current.sh <promotion-nonce> <promotion-ready> <cutover-receipt> <signature>` grant app role。Bootstrap 會在同一 production lock 內解析 current protected generation、固定 exact activated runtime，並在 raw operation 後再驗 head 未變；不可直接執行 runtime 內的 raw scripts。Finalize 會再驗 host receipt、canonical origin/DB identity、marker、ACL 及 ledgerRows；PUBLIC 永不 grant。若出現 root/private `RECOVERY-REQUIRED`，保留 incident 目錄及 `.promotion-reserved`，用 maintenance service 執行 `ALTER DATABASE <PROMOTE_CONFIRM_DATABASE> ALLOW_CONNECTIONS true;`，核對 marker/ACL 後才人工 reconcile。
+Promotion 成功後只寫 root-owned 0400 `promotion-ready`，PUBLIC 及 app role 仍無 CONNECT，server 必須停止。`record-cutover-current.sh` 只經 maintenance PGSERVICE 核對 target system ID、restore target、marker、ledger、probe nonce、canonical DATABASE_URL identity 與 routing config digest，簽 preflight receipt並把 outbox 設為 `preflight-recorded`；此階段明確不執行、亦不聲稱 public smoke。`finalize-current.sh` 只 provisional grant app CONNECT，把 outbox 設為 `connect-granted-pending-smoke`，不代表 cutover 完成。其後立即以 `steam_top_app` 強制重建 server，跑完整 HTTPS/WSS/admin/probe smoke，再由 `confirm-cutover-current.sh` 驗證同一 nonce／DB identity並把狀態推進至 `verified`，只有 verified 才可批准 release。PUBLIC 永不 grant。
 
-Promotion/finalize 的 commit authority 分別是 DB `promotion_outbox` 及 `finalize_outbox`，不是 filesystem phase file。若 transaction 已 commit 但 ready/archive 寫入中斷，狀態必須視為「DB 已完成、filesystem 待 reconcile」，不可當作失敗並回復舊 ACL。在 app 仍停流量時以同一 nonce 執行 `reconcile-promotion-ready.sh` 或 `reconcile-finalize-outbox.sh`；它們只從 DB authoritative row 幂等地重建/完成檔案，已完成檔必須與 authoritative fields/digest 相符，不重做 grant 或寫 audit。
+如 provisional grant 後 smoke 失敗或 runner 中斷，必須執行 `abort-cutover-current.sh`：它只接受同一 pending nonce，撤銷 app CONNECT、終止該角色 session、寫 `aborted` 及 root0600 incident，workflow 必須失敗。若主機顯示 `connect-granted-pending-smoke` 而沒有 final signed receipt，不可建立 APPROVED；人工只能在重新取得完整 smoke 證據後 confirm，或選擇 abort。`steam_top_app` 只獲 app schema 所需權限、`restore_control` USAGE 及 `deployment_probe` SELECT/UPDATE；host operator 負責 INSERT，app 不可讀其他 restore-control tables。
+
+Promotion/cutover 的 commit authority 分別是 DB `promotion_outbox` 及 `finalize_outbox`，不是 filesystem phase file。Cutover outbox 的合法順序是 `preflight-recorded → connect-granted-pending-smoke → verified`，失敗 recovery 則由 pending 進入 `aborted`；任何其他跳轉均須 fail closed。Promotion ready 仍由 `reconcile-promotion-ready.sh` 從 DB authoritative row 幂等重建；cutover pending 不得被 filesystem receipt 假裝成 verified。
 
 Promotion 的受限 operator 必須是目標 database owner（供 `ALTER DATABASE`），並只額外取得 `pg_signal_backend` 及 restore schema/table/sequence 所需權限；不要求 superuser。Maintenance service 必須連同一 cluster 的另一 database，preflight 會比較 `system_identifier`，不同 cluster 一律拒絕。若 app role 經 parent role 繼承 `CONNECT`，direct revoke 後的 effective privilege 仍為 true，promotion 會在 transaction 內 fail closed；正式設定應使用不含任何 inherited `CONNECT` 的專用 app role。
 
-Canonical record-cutover wrapper 在任何 public probe/smoke 前必須驗簽 protected generation、對應 activation receipt 及 host deployment receipt，並核對 activation 的 state digest/nonce/deployment/time。Cutover `createdAt` 來自 DB deployment-probe outbox 的固定 `created_at`，retry 不得用 wall clock 重寫或產生第二種 receipt。
+Canonical record-cutover wrapper 在 provisional grant 前必須驗簽 protected generation、對應 activation receipt及 host deployment receipt，並核對 activation 的 state digest/nonce/deployment/time。Preflight `createdAt` 來自 DB deployment-probe 的固定 `created_at`，retry 不得用 wall clock 重寫或產生第二種 receipt；public smoke 只可在 provisional grant及 server 以 app role 重連後執行。
