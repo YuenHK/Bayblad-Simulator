@@ -87,6 +87,14 @@ describe("release CI contract", () => {
     expect(workflow).toContain("/opt/steam-top-bootstrap/deploy-release.sh");
     expect(workflow).toContain("sudo -u steam-top-integration sudo");
     expect(workflow).not.toContain("sudo cp -a candidate/runtime");
+    const canonical=workflow.indexOf("Activate the actual host receipt and complete canonical integration cutover");
+    const approved=workflow.indexOf("Mark the release approved only after canonical cutover");
+    expect(canonical).toBeGreaterThan(0);
+    expect(approved).toBeGreaterThan(canonical);
+    expect(workflow).toContain("test-host-core-cutover-hook.sh");
+    expect(workflow).toContain("DATABASE_URL=postgresql://steam_top_app:");
+    expect(workflow).toContain("production-smoke.sh");
+    expect(workflow).toContain("receipt_generation/payload.json");
     expect(workflow).toContain("approved-release-${{ inputs.candidate_commit }}");
     expect(workflow).toContain("down -v --remove-orphans");
     const record=read(".github/workflows/record-deployment.yml");
