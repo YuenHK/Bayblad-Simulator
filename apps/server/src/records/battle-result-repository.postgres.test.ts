@@ -72,13 +72,16 @@ it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it 
   expect(await roomsRepository.applyProjection(roomId, 3, { phase: "result", firstBattleAt: null, closedAt: null })).toBe(true);
   expect(await roomsRepository.applyProjection(roomId, 2, { phase: "launch", firstBattleAt: null, closedAt: null })).toBe(false);
   expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "result", appliedProjectionRevision: 3 });
+  await expect(roomsRepository.closeWithProjection(roomId, new Date("2026-08-29T02:30:00Z"), 3, { phase: "closed", firstBattleAt: null, closedAt: "2026-08-29T02:30:00.000Z" })).rejects.toThrow("ROOM_CLOSE_REVISION_CONFLICT");
+  expect((await client.db.select().from(roomParticipants).where(eq(roomParticipants.roomId, roomId)))[0]?.leftAt).toBeNull();
   await first.enqueue({ roomId, revision: 4, payload: { phase: "waiting", firstBattleAt: null, closedAt: null } });
+  await expect(first.enqueue({ roomId, revision: 4, payload: { phase: "battle", firstBattleAt: null, closedAt: null } })).rejects.toThrow("ROOM_PROJECTION_CONFLICT");
   const staleLease = (await first.claimDue(1, new Date("2099-01-02")))[0]!;
   const takeover = (await second.claimDue(1, new Date("2099-01-03")))[0]!;
   expect(await first.complete(staleLease)).toBe(false);
   expect(await first.fail(staleLease, "STALE", new Date("2099-01-03"))).toBe(false);
   expect(await second.complete(takeover)).toBe(true);
-  await roomsRepository.close(roomId, new Date("2026-08-29T03:00:00Z"), 5);
+  await roomsRepository.closeWithProjection(roomId, new Date("2026-08-29T03:00:00Z"), 5, { phase: "closed", firstBattleAt: null, closedAt: "2026-08-29T03:00:00.000Z" });
   expect(await roomsRepository.applyProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null })).toBe(false);
   expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "closed", appliedProjectionRevision: 5 });
 }, 30_000);

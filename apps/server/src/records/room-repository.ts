@@ -1,7 +1,9 @@
 import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
-import { roomParticipants, rooms } from "@steam-top/db/schema";
+import { roomParticipants, roomProjectionJobs, rooms } from "@steam-top/db/schema";
 import type { RoomProjectionPayload } from "./room-projection-store";
+import { RoomProjectionConflictError } from "./room-projection-store";
 
 export type RoomParticipantRecord = Readonly<{
   participantPublicId: string; identityId: string | null; displayName: string;
@@ -18,6 +20,7 @@ export interface RoomRecordRepository {
   leave(roomId: string, participantPublicId: string, at: Date): Promise<void>;
   leaveAndSync(roomId: string, participantPublicId: string, at: Date, roles: ReadonlyMap<string, "player1" | "player2" | "spectator">, ownerParticipantId: string | null, ownerIdentityId: string | null): Promise<void>;
   close(roomId: string, at: Date, revision?: number): Promise<void>;
+  closeWithProjection?(roomId: string, at: Date, revision: number, payload: RoomProjectionPayload, leavingParticipantPublicId?: string): Promise<void>;
   applyProjection?(roomId: string, revision: number, payload: RoomProjectionPayload): Promise<boolean>;
 }
 
@@ -69,8 +72,31 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
   }
   async close(roomId: string, at: Date, revision?: number): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const [locked] = await tx.select().from(rooms).where(eq(rooms.id, roomId)).for("update").limit(1);
+      if (!locked) throw new Error("ROOM_NOT_FOUND");
+      if (locked.closedAt) return;
+      if (revision !== undefined && locked.appliedProjectionRevision >= revision) throw new Error("ROOM_CLOSE_REVISION_CONFLICT");
+      const updated = await tx.update(rooms).set({ status: "closed", closedAt: at, ...(revision === undefined ? {} : { appliedProjectionRevision: revision }) }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt), ...(revision === undefined ? [] : [lt(rooms.appliedProjectionRevision, revision)]))).returning({ id: rooms.id });
+      if (updated.length !== 1) throw new Error("ROOM_CLOSE_CAS_MISS");
       await tx.update(roomParticipants).set({ leftAt: at }).where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)));
-      await tx.update(rooms).set({ status: "closed", closedAt: at, ...(revision === undefined ? {} : { appliedProjectionRevision: revision }) }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt), ...(revision === undefined ? [] : [lt(rooms.appliedProjectionRevision, revision)])));
+    });
+  }
+  async closeWithProjection(roomId: string, at: Date, revision: number, payload: RoomProjectionPayload, leavingParticipantPublicId?: string): Promise<void> {
+    const payloadHash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    await this.db.transaction(async (tx) => {
+      const [locked] = await tx.select().from(rooms).where(eq(rooms.id, roomId)).for("update").limit(1);
+      if (!locked) throw new Error("ROOM_NOT_FOUND");
+      if (locked.closedAt) return;
+      if (locked.appliedProjectionRevision >= revision) throw new Error("ROOM_CLOSE_REVISION_CONFLICT");
+      const [job] = await tx.select().from(roomProjectionJobs).where(eq(roomProjectionJobs.roomId, roomId)).for("update").limit(1);
+      if (job?.revision === revision && job.payloadHash !== payloadHash) throw new RoomProjectionConflictError();
+      if (job && job.revision > revision) throw new Error("ROOM_CLOSE_REVISION_CONFLICT");
+      if (!job) await tx.insert(roomProjectionJobs).values({ roomId, revision, payloadHash, payloadJson: payload, nextAttemptAt: at });
+      else if (job.revision < revision) await tx.update(roomProjectionJobs).set({ revision, payloadHash, payloadJson: payload, status: "pending", attemptCount: 0, nextAttemptAt: at, leaseToken: null, leaseUntil: null, lastError: null, generation: job.generation + 1, updatedAt: at }).where(and(eq(roomProjectionJobs.roomId, roomId), eq(roomProjectionJobs.revision, job.revision)));
+      const updated = await tx.update(rooms).set({ status: "closed", closedAt: at, appliedProjectionRevision: revision }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt), lt(rooms.appliedProjectionRevision, revision))).returning({ id: rooms.id });
+      if (updated.length !== 1) throw new Error("ROOM_CLOSE_CAS_MISS");
+      if (leavingParticipantPublicId) await tx.update(roomParticipants).set({ leftAt: at }).where(and(eq(roomParticipants.roomId, roomId), eq(roomParticipants.participantPublicId, leavingParticipantPublicId), isNull(roomParticipants.leftAt)));
+      else await tx.update(roomParticipants).set({ leftAt: at }).where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)));
     });
   }
   async applyProjection(roomId: string, revision: number, payload: RoomProjectionPayload): Promise<boolean> {
