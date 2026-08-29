@@ -99,6 +99,17 @@ it.skipIf(!databaseUrl)("coordinates the same cache hash across service instance
   expect(executions).toBe(3);
 },30_000);
 
+it.skipIf(!databaseUrl)("serializes two service instances on a single pooled connection without a stale pre-lock snapshot",async()=>{
+  const single=createDatabaseClient({url:databaseUrl!,ssl:false,allowInsecure:true,maxConnections:1});await single.sql.unsafe(`set search_path to ${schemaName},public`);let executions=0,firstStarted!:()=>void,releaseFirst!:()=>void;const started=new Promise<void>(resolve=>{firstStarted=resolve;});const release=new Promise<void>(resolve=>{releaseFirst=resolve;});
+  const make=(block:boolean)=>new AnalyticsService(new PostgresAnalyticsCache(single.sql),async()=>{executions++;if(block&&executions===1){firstStarted();await release;}return[];},async()=>[],async()=>[],()=>new Date("2026-10-03T16:00:00Z"));
+  const first=make(true).query({from:"2026-06-01",to:"2026-06-02"});await started;const second=make(false).query({from:"2026-06-01",to:"2026-06-02"});releaseFirst();await Promise.all([first,second]);expect(executions).toBe(3);await single.close();
+},30_000);
+
+it.skipIf(!databaseUrl)("releases the session advisory lock after an analytics failure",async()=>{
+  const cache=new PostgresAnalyticsCache(client.sql);await expect(cache.exclusive!("f".repeat(64),async()=>{throw new Error("fixture");})).rejects.toThrow("fixture");
+  const [lock]=await client.sql<{available:boolean}[]>`select pg_try_advisory_lock(hashtextextended(${'f'.repeat(64)},1937002026)) available`;expect(lock?.available).toBe(true);if(lock?.available)await client.sql`select pg_advisory_unlock(hashtextextended(${'f'.repeat(64)},1937002026))`;
+},30_000);
+
 it.skipIf(!databaseUrl)("fences a stale cache writer",async()=>{
   const cache=new PostgresAnalyticsCache(client.sql),filters={from:"2026-07-01",to:"2026-07-02"} as const,hash=canonicalFilterHash(filters);
   const common={filters,filterApplicability:FILTER_APPLICABILITY,usage:[],usagePeriods:{daily:[],weekly:[],monthly:[]},parameterUsage:[],parameters:[],rankings:{top:[],bottom:[],total:0,hasMore:false,snapshotCursor:"test",overallLaunchDistribution:{Perfect:0,Great:0,Good:0,Miss:0,totalOccurrences:0}}};
