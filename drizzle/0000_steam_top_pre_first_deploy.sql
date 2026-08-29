@@ -1,5 +1,5 @@
--- Pre-first-deploy baseline. Future deployed changes require forward migrations.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";--> statement-breakpoint
+CREATE TYPE "public"."admin_login_scope" AS ENUM('account', 'client', 'global');--> statement-breakpoint
 CREATE TYPE "public"."audit_outcome" AS ENUM('success', 'failure', 'denied');--> statement-breakpoint
 CREATE TYPE "public"."battle_outcome" AS ENUM('player1', 'player2', 'draw');--> statement-breakpoint
 CREATE TYPE "public"."battle_reason" AS ENUM('stopped', 'out-of-bounds', 'timeout', 'simultaneous');--> statement-breakpoint
@@ -28,6 +28,33 @@ CREATE TABLE "admin_audit" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "admin_login_limits" (
+	"scope" "admin_login_scope" NOT NULL,
+	"key_hash" text NOT NULL,
+	"failure_count" integer DEFAULT 0 NOT NULL,
+	"window_start" timestamp with time zone NOT NULL,
+	"locked_until" timestamp with time zone,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "admin_login_limits_scope_key_hash_pk" PRIMARY KEY("scope","key_hash"),
+	CONSTRAINT "admin_login_limits_hash_format" CHECK ("admin_login_limits"."key_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "admin_login_limits_count_nonnegative" CHECK ("admin_login_limits"."failure_count" >= 0),
+	CONSTRAINT "admin_login_limits_lock_order" CHECK ("admin_login_limits"."locked_until" is null or "admin_login_limits"."locked_until" >= "admin_login_limits"."window_start")
+);
+--> statement-breakpoint
+CREATE TABLE "admin_reauth_grants" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"admin_user_id" uuid NOT NULL,
+	"admin_session_id" uuid NOT NULL,
+	"token_hash" text NOT NULL,
+	"purpose" varchar(64) NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"consumed_at" timestamp with time zone,
+	CONSTRAINT "admin_reauth_grants_hash_format" CHECK ("admin_reauth_grants"."token_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "admin_reauth_grants_purpose_nonblank" CHECK (length(btrim("admin_reauth_grants"."purpose")) between 1 and 64),
+	CONSTRAINT "admin_reauth_grants_time_order" CHECK ("admin_reauth_grants"."expires_at" > "admin_reauth_grants"."created_at" and ("admin_reauth_grants"."consumed_at" is null or ("admin_reauth_grants"."consumed_at" >= "admin_reauth_grants"."created_at" and "admin_reauth_grants"."consumed_at" <= "admin_reauth_grants"."expires_at")))
+);
+--> statement-breakpoint
 CREATE TABLE "admin_sessions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"admin_user_id" uuid NOT NULL,
@@ -38,10 +65,12 @@ CREATE TABLE "admin_sessions" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"revoked_at" timestamp with time zone,
+	"archived_at" timestamp with time zone,
 	"last_ip" "inet",
 	"user_agent" varchar(512),
 	CONSTRAINT "admin_sessions_token_hash_format" CHECK ("admin_sessions"."token_hash" ~ '^[a-f0-9]{64}$' and "admin_sessions"."csrf_token_hash" ~ '^[a-f0-9]{64}$'),
-	CONSTRAINT "admin_sessions_expiry_after_creation" CHECK ("admin_sessions"."expires_at" > "admin_sessions"."created_at")
+	CONSTRAINT "admin_sessions_expiry_after_creation" CHECK ("admin_sessions"."expires_at" > "admin_sessions"."created_at"),
+	CONSTRAINT "admin_sessions_archive_requires_revoke" CHECK ("admin_sessions"."archived_at" is null or "admin_sessions"."revoked_at" is not null)
 );
 --> statement-breakpoint
 CREATE TABLE "admin_users" (
@@ -173,22 +202,6 @@ CREATE TABLE "identity_sessions" (
 	CONSTRAINT "identity_sessions_expiry_after_creation" CHECK ("identity_sessions"."expires_at" > "identity_sessions"."created_at")
 );
 --> statement-breakpoint
-CREATE TABLE "webclip_token_nonces" (
-	"jti_hash" text PRIMARY KEY NOT NULL,
-	"device_id" varchar(128) NOT NULL,
-	"issued_at" timestamp with time zone NOT NULL,
-	"expires_at" timestamp with time zone NOT NULL,
-	"used_at" timestamp with time zone,
-	"attempt_hash" text,
-	"result_identity_id" uuid,
-	"result_session_id" uuid,
-	"result_token_hash" text,
-	"committed_at" timestamp with time zone,
-	CONSTRAINT "webclip_token_nonces_jti_hash_format" CHECK ("webclip_token_nonces"."jti_hash" ~ '^[a-f0-9]{64}$'),
-	CONSTRAINT "webclip_token_nonces_expiry_after_issue" CHECK ("webclip_token_nonces"."expires_at" > "webclip_token_nonces"."issued_at"),
-	CONSTRAINT "webclip_token_nonces_result_consistent" CHECK (("webclip_token_nonces"."used_at" is null and "webclip_token_nonces"."attempt_hash" is null and "webclip_token_nonces"."result_identity_id" is null and "webclip_token_nonces"."result_session_id" is null and "webclip_token_nonces"."result_token_hash" is null and "webclip_token_nonces"."committed_at" is null) or ("webclip_token_nonces"."used_at" is not null and "webclip_token_nonces"."attempt_hash" ~ '^[a-f0-9]{64}$' and "webclip_token_nonces"."result_identity_id" is not null and "webclip_token_nonces"."result_session_id" is not null and "webclip_token_nonces"."result_token_hash" ~ '^[a-f0-9]{64}$' and "webclip_token_nonces"."committed_at" is not null))
-);
---> statement-breakpoint
 CREATE TABLE "matches" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"room_id" uuid,
@@ -299,8 +312,25 @@ CREATE TABLE "rounds" (
 	CONSTRAINT "rounds_battle_result_shape" CHECK (jsonb_typeof("rounds"."battle_result_json") = 'object' and "rounds"."battle_result_json" ?& array['modelVersion','seed','ticks','frames','outcome','finalStats'] and jsonb_typeof("rounds"."battle_result_json"->'modelVersion') = 'string' and length(btrim("rounds"."battle_result_json"->>'modelVersion')) > 0 and "rounds"."battle_result_json"->>'modelVersion' = "rounds"."physics_model_version" and jsonb_typeof("rounds"."battle_result_json"->'seed') = 'number' and ("rounds"."battle_result_json"->>'seed')::numeric = trunc(("rounds"."battle_result_json"->>'seed')::numeric) and ("rounds"."battle_result_json"->>'seed')::numeric between -9007199254740991 and 9007199254740991 and ("rounds"."battle_result_json"->>'seed')::numeric = "rounds"."seed"::numeric and jsonb_typeof("rounds"."battle_result_json"->'ticks') = 'number' and ("rounds"."battle_result_json"->>'ticks')::numeric = trunc(("rounds"."battle_result_json"->>'ticks')::numeric) and ("rounds"."battle_result_json"->>'ticks')::numeric between 0 and 5400 and ("rounds"."battle_result_json"->>'ticks')::numeric = "rounds"."ticks"::numeric and jsonb_typeof("rounds"."battle_result_json"->'frames') = 'array' and jsonb_typeof("rounds"."battle_result_json"->'finalStats') = 'object' and jsonb_typeof("rounds"."battle_result_json"->'outcome') = 'object' and "rounds"."battle_result_json"->'outcome' ?& array['winner','reason'] and "rounds"."battle_result_json"->'outcome'->>'winner' = "rounds"."outcome"::text and "rounds"."battle_result_json"->'outcome'->>'reason' = "rounds"."outcome_reason"::text)
 );
 --> statement-breakpoint
-ALTER TABLE "admin_audit" ADD CONSTRAINT "admin_audit_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "admin_audit" ADD CONSTRAINT "admin_audit_admin_session_id_admin_sessions_id_fk" FOREIGN KEY ("admin_session_id") REFERENCES "public"."admin_sessions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE TABLE "webclip_token_nonces" (
+	"jti_hash" text PRIMARY KEY NOT NULL,
+	"device_id" varchar(128) NOT NULL,
+	"issued_at" timestamp with time zone NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"used_at" timestamp with time zone,
+	"attempt_hash" text,
+	"result_identity_id" uuid,
+	"result_session_id" uuid,
+	"result_token_hash" text,
+	"committed_at" timestamp with time zone,
+	CONSTRAINT "webclip_token_nonces_jti_hash_format" CHECK ("webclip_token_nonces"."jti_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "webclip_token_nonces_expiry_after_issue" CHECK ("webclip_token_nonces"."expires_at" > "webclip_token_nonces"."issued_at"),
+	CONSTRAINT "webclip_token_nonces_result_consistent" CHECK (("webclip_token_nonces"."used_at" is null and "webclip_token_nonces"."attempt_hash" is null and "webclip_token_nonces"."result_identity_id" is null and "webclip_token_nonces"."result_session_id" is null and "webclip_token_nonces"."result_token_hash" is null and "webclip_token_nonces"."committed_at" is null) or ("webclip_token_nonces"."used_at" is not null and "webclip_token_nonces"."attempt_hash" ~ '^[a-f0-9]{64}$' and "webclip_token_nonces"."result_identity_id" is not null and "webclip_token_nonces"."result_session_id" is not null and "webclip_token_nonces"."result_token_hash" ~ '^[a-f0-9]{64}$' and "webclip_token_nonces"."committed_at" is not null))
+);
+--> statement-breakpoint
+ALTER TABLE "admin_audit" ADD CONSTRAINT "admin_audit_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "admin_reauth_grants" ADD CONSTRAINT "admin_reauth_grants_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "admin_reauth_grants" ADD CONSTRAINT "admin_reauth_grants_admin_session_id_admin_sessions_id_fk" FOREIGN KEY ("admin_session_id") REFERENCES "public"."admin_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "admin_sessions" ADD CONSTRAINT "admin_sessions_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_audit" ADD CONSTRAINT "deletion_audit_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "design_layers" ADD CONSTRAINT "design_layers_design_id_designs_id_fk" FOREIGN KEY ("design_id") REFERENCES "public"."designs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -309,8 +339,6 @@ ALTER TABLE "identities" ADD CONSTRAINT "identities_merged_into_identity_id_iden
 ALTER TABLE "identity_links" ADD CONSTRAINT "identity_links_source_identity_id_identities_id_fk" FOREIGN KEY ("source_identity_id") REFERENCES "public"."identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "identity_links" ADD CONSTRAINT "identity_links_target_identity_id_identities_id_fk" FOREIGN KEY ("target_identity_id") REFERENCES "public"."identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "identity_sessions" ADD CONSTRAINT "identity_sessions_identity_id_identities_id_fk" FOREIGN KEY ("identity_id") REFERENCES "public"."identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "webclip_token_nonces" ADD CONSTRAINT "webclip_token_nonces_result_identity_id_identities_id_fk" FOREIGN KEY ("result_identity_id") REFERENCES "public"."identities"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "webclip_token_nonces" ADD CONSTRAINT "webclip_token_nonces_result_session_id_identity_sessions_id_fk" FOREIGN KEY ("result_session_id") REFERENCES "public"."identity_sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "matches" ADD CONSTRAINT "matches_room_id_rooms_id_fk" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "matches" ADD CONSTRAINT "matches_player1_identity_id_identities_id_fk" FOREIGN KEY ("player1_identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "matches" ADD CONSTRAINT "matches_player2_identity_id_identities_id_fk" FOREIGN KEY ("player2_identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -320,12 +348,18 @@ ALTER TABLE "room_participants" ADD CONSTRAINT "room_participants_room_id_rooms_
 ALTER TABLE "room_participants" ADD CONSTRAINT "room_participants_identity_id_identities_id_fk" FOREIGN KEY ("identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rooms" ADD CONSTRAINT "rooms_owner_identity_id_identities_id_fk" FOREIGN KEY ("owner_identity_id") REFERENCES "public"."identities"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rounds" ADD CONSTRAINT "rounds_match_id_matches_id_fk" FOREIGN KEY ("match_id") REFERENCES "public"."matches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "webclip_token_nonces" ADD CONSTRAINT "webclip_token_nonces_result_identity_id_identities_id_fk" FOREIGN KEY ("result_identity_id") REFERENCES "public"."identities"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "webclip_token_nonces" ADD CONSTRAINT "webclip_token_nonces_result_session_id_identity_sessions_id_fk" FOREIGN KEY ("result_session_id") REFERENCES "public"."identity_sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "admin_audit_created_at_idx" ON "admin_audit" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "admin_audit_admin_action_idx" ON "admin_audit" USING btree ("admin_user_id","action","created_at");--> statement-breakpoint
 CREATE INDEX "admin_audit_target_idx" ON "admin_audit" USING btree ("target_type","target_id");--> statement-breakpoint
+CREATE INDEX "admin_login_limits_updated_idx" ON "admin_login_limits" USING btree ("updated_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "admin_reauth_grants_token_uidx" ON "admin_reauth_grants" USING btree ("token_hash");--> statement-breakpoint
+CREATE INDEX "admin_reauth_grants_expiry_idx" ON "admin_reauth_grants" USING btree ("expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "admin_sessions_token_hash_uidx" ON "admin_sessions" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "admin_sessions_admin_last_seen_idx" ON "admin_sessions" USING btree ("admin_user_id","last_seen_at");--> statement-breakpoint
 CREATE INDEX "admin_sessions_expires_at_idx" ON "admin_sessions" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "admin_sessions_active_idx" ON "admin_sessions" USING btree ("admin_user_id","expires_at","archived_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "admin_users_username_lower_uidx" ON "admin_users" USING btree (lower("username"));--> statement-breakpoint
 CREATE INDEX "deletion_audit_completed_at_idx" ON "deletion_audit" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "deletion_audit_admin_completed_idx" ON "deletion_audit" USING btree ("admin_user_id","completed_at");--> statement-breakpoint
@@ -346,7 +380,6 @@ CREATE INDEX "identity_links_target_idx" ON "identity_links" USING btree ("targe
 CREATE UNIQUE INDEX "identity_sessions_token_hash_uidx" ON "identity_sessions" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "identity_sessions_identity_last_seen_idx" ON "identity_sessions" USING btree ("identity_id","last_seen_at");--> statement-breakpoint
 CREATE INDEX "identity_sessions_active_expires_at_idx" ON "identity_sessions" USING btree ("expires_at") WHERE "identity_sessions"."revoked_at" is null;--> statement-breakpoint
-CREATE INDEX "webclip_token_nonces_expiry_idx" ON "webclip_token_nonces" USING btree ("expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "matches_idempotency_fingerprint_uidx" ON "matches" USING btree ("idempotency_fingerprint");--> statement-breakpoint
 CREATE INDEX "matches_completed_at_idx" ON "matches" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "matches_status_completed_at_idx" ON "matches" USING btree ("status","completed_at");--> statement-breakpoint
@@ -367,7 +400,8 @@ CREATE UNIQUE INDEX "rounds_match_external_round_id_uidx" ON "rounds" USING btre
 CREATE UNIQUE INDEX "rounds_authority_key_hash_uidx" ON "rounds" USING btree ("authority_key_hash");--> statement-breakpoint
 CREATE INDEX "rounds_input_fingerprint_idx" ON "rounds" USING btree ("input_fingerprint");--> statement-breakpoint
 CREATE INDEX "rounds_completed_at_idx" ON "rounds" USING btree ("completed_at");--> statement-breakpoint
-CREATE INDEX "rounds_launch_grades_idx" ON "rounds" USING btree ("launch_grade_a","launch_grade_b","completed_at");
+CREATE INDEX "rounds_launch_grades_idx" ON "rounds" USING btree ("launch_grade_a","launch_grade_b","completed_at");--> statement-breakpoint
+CREATE INDEX "webclip_token_nonces_expiry_idx" ON "webclip_token_nonces" USING btree ("expires_at");
 --> statement-breakpoint
 CREATE OR REPLACE FUNCTION "set_row_updated_at"()
 RETURNS trigger LANGUAGE plpgsql AS $$
@@ -533,3 +567,10 @@ COMMENT ON COLUMN "admin_sessions"."last_ip" IS
   'Diagnostic context retained until explicit audited admin deletion or platform decommission.';--> statement-breakpoint
 COMMENT ON COLUMN "admin_audit"."request_ip" IS
   'Diagnostic context retained until explicit audited admin deletion or platform decommission.';
+
+--> statement-breakpoint
+CREATE FUNCTION admin_audit_append_only_guard() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'admin_audit is append-only' USING ERRCODE = '55000'; END $$;
+--> statement-breakpoint
+CREATE TRIGGER admin_audit_append_only BEFORE UPDATE OR DELETE ON admin_audit FOR EACH ROW EXECUTE FUNCTION admin_audit_append_only_guard();
+--> statement-breakpoint
+CREATE TRIGGER admin_audit_no_truncate BEFORE TRUNCATE ON admin_audit FOR EACH STATEMENT EXECUTE FUNCTION admin_audit_append_only_guard();

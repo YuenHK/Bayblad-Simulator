@@ -334,7 +334,7 @@ describe("persistent PostgreSQL schema", () => {
     const migrationFiles = readdirSync(migrationDirectory)
       .filter((name) => name.endsWith(".sql"))
       .sort();
-    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql", "0001_daffy_mojo.sql", "0002_talented_kate_bishop.sql"]);
+    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql"]);
     const sql = migrationFiles
       .map((name) => readFileSync(`${migrationDirectory}/${name}`, "utf8"))
       .join("\n");
@@ -359,9 +359,19 @@ describe("persistent PostgreSQL schema", () => {
     expect(sql).toContain("designs_battle_eligible_three_layers");
     expect(sql).toContain("room_participants_active_player_seat_uidx");
     expect(sql).toContain("identity_sessions_active_expires_at_idx");
+    for (const requiredObject of [
+      'CREATE TABLE "admin_login_limits"', 'CREATE TABLE "admin_reauth_grants"',
+      'admin_login_limits_updated_idx', 'admin_reauth_grants_token_uidx',
+      'admin_sessions_active_idx', 'admin_audit_append_only_guard',
+      'admin_audit_append_only', 'admin_audit_no_truncate',
+      'steam_top_assert_battle_eligible_design_layers', 'steam_top_check_round_authority_key',
+      'steam_top_current_delete_is_audited', 'steam_top_protect_eligible_design',
+      'steam_top_protect_eligible_design_layer', 'steam_top_protect_completed_match',
+      'steam_top_protect_authoritative_round', 'steam_top_protect_deletion_audit',
+    ]) expect(sql).toContain(requiredObject);
     const adminSessionSql = sql.match(/CREATE TABLE "admin_sessions" \([\s\S]*?\n\);/)?.[0];
     const identitySessionSql = sql.match(/CREATE TABLE "identity_sessions" \([\s\S]*?\n\);/)?.[0];
-    expect(adminSessionSql).not.toContain('"archived_at"');
+    expect(adminSessionSql).toContain('"archived_at" timestamp with time zone');
     expect(identitySessionSql).toContain('"archived_at" timestamp with time zone');
     expect(sql).not.toContain("identities_guest_display_name_uidx");
     expect(sql).toContain("ON DELETE set null");
@@ -379,23 +389,19 @@ describe("persistent PostgreSQL schema", () => {
     expect(config).toContain("postgresql://localhost/steam_top_schema_generation");
 
     const metadataFiles = readdirSync(`${migrationDirectory}/meta`).sort();
-    expect(metadataFiles).toEqual(["0000_snapshot.json", "0001_snapshot.json", "0002_snapshot.json", "_journal.json"]);
+    expect(metadataFiles).toEqual(["0000_snapshot.json", "_journal.json"]);
     const journal = JSON.parse(
       readFileSync(`${migrationDirectory}/meta/_journal.json`, "utf8"),
     ) as { entries: Array<{ tag: string }> };
     expect(journal.entries).toEqual([
       expect.objectContaining({ tag: "0000_steam_top_pre_first_deploy" }),
-      expect.objectContaining({ tag: "0001_daffy_mojo" }),
-      expect.objectContaining({ tag: "0002_talented_kate_bishop" }),
     ]);
     const snapshot = JSON.parse(
       readFileSync(`${migrationDirectory}/meta/0000_snapshot.json`, "utf8"),
     ) as { tables: Record<string, { columns: Record<string, unknown> }> };
-    expect(snapshot.tables["public.admin_sessions"]?.columns).not.toHaveProperty("archived_at");
+    expect(snapshot.tables["public.admin_sessions"]?.columns).toHaveProperty("archived_at");
     expect(snapshot.tables["public.identity_sessions"]?.columns).toHaveProperty("archived_at");
-    const latestSnapshot = JSON.parse(readFileSync(`${migrationDirectory}/meta/0002_snapshot.json`, "utf8")) as { tables: Record<string, { columns: Record<string, unknown> }> };
-    expect(latestSnapshot.tables["public.admin_sessions"]?.columns).toHaveProperty("archived_at");
-    expect(latestSnapshot.tables).toHaveProperty("public.admin_login_limits");
-    expect(latestSnapshot.tables).toHaveProperty("public.admin_reauth_grants");
+    expect(snapshot.tables).toHaveProperty("public.admin_login_limits");
+    expect(snapshot.tables).toHaveProperty("public.admin_reauth_grants");
   });
 });
