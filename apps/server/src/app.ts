@@ -16,6 +16,8 @@ import { createValidatedLiveIdentityProvider, IdentityAdmissionError, IdentityCa
 import { PostgresIdentityStore } from "./identity/postgres-store";
 import type { IClassAdapter } from "./identity/iclass-adapter";
 import type { WebClipTokenService } from "./identity/webclip-token";
+import { type AdminAuthService, registerAdminAuthRoutes } from "./auth/admin-auth";
+import { PostgresAdminStore } from "./auth/postgres-admin-store";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -83,6 +85,7 @@ export type BuildAppOptions = Readonly<{
   webClipTokens?: WebClipTokenService;
   iClassStatus?: "api" | "csv" | "api-csv-fallback" | "disabled";
   testIdentityResolver?: (request: IncomingMessage, testAuth?: Record<string, unknown>) => Promise<Readonly<{ identityId: string; displayName: string }> | null>;
+  adminAuth?: AdminAuthService;
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -121,6 +124,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (process.env.NODE_ENV === "production" && !options.iClassStatus) throw new TypeError("Production composition requires explicit iClassStatus");
   if (options.iClassStatus === "disabled" && (options.iClassAdapter || options.webClipTokens)) throw new TypeError("Disabled iClass composition cannot include adapters");
   if (options.iClassStatus && options.iClassStatus !== "disabled" && (!options.iClassAdapter || !options.webClipTokens)) throw new TypeError("Enabled iClass composition requires adapter and tokens");
+  if (process.env.NODE_ENV === "production" && (!options.adminAuth || !(options.adminAuth.store instanceof PostgresAdminStore))) throw new TypeError("Production composition requires persistent admin authentication");
   const config = {
     bodyLimit: requirePositive("bodyLimit", options.bodyLimit ?? 64 * 1_024),
     maxHttpBufferSize: requirePositive("maxHttpBufferSize", options.maxHttpBufferSize ?? 64 * 1_024),
@@ -173,6 +177,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     bodyLimit: config.bodyLimit,
   });
   void app.register(fastifyCookie);
+  if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth);
   const rooms = options.rooms ?? new RoomService(options.now ? { now: options.now } : {});
   const designs = options.designs ?? new DesignRegistry({
     ...(options.now ? { now: options.now } : {}),
