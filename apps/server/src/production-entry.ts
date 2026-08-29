@@ -7,6 +7,7 @@ import { createIClassComposition } from "./identity/composition";
 import { PostgresIdentityStore } from "./identity/postgres-store";
 import { IdentityResolver } from "./identity/resolver";
 import { startProductionServer } from "./production-bootstrap";
+import { safeLogErrorDetails } from "./safe-logging";
 
 function forwardedAddress(request: IncomingMessage): string {
   const raw = request.headers["x-forwarded-for"];
@@ -74,7 +75,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  const candidate = error as { name?: unknown; code?: unknown };
-  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", errorName: typeof candidate?.name === "string" ? candidate.name : "Error", errorCode: typeof candidate?.code === "string" ? candidate.code : "START_FAILED" })}\n`);
+  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", ...safeLogErrorDetails(error) })}\n`);
   process.exitCode = 1;
 });

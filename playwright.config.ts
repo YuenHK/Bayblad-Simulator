@@ -10,8 +10,7 @@ const webUrl = `http://127.0.0.1:${webPort}`;
 const realtimeUrl = `http://127.0.0.1:${realtimePort}`;
 
 export default defineConfig({
-  testDir: "./tests",
-  testMatch: ["e2e/**/*.spec.ts", "security/**/*.spec.ts"],
+  testDir: "./tests/e2e",
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
