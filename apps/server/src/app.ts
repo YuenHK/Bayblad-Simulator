@@ -176,7 +176,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     return key;
   };
   const app = Fastify({
-    logger: false,
+    logger: process.env.NODE_ENV === "production",
     forceCloseConnections: true,
     bodyLimit: config.bodyLimit,
   });
@@ -398,7 +398,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   });
 
   const intervalMs = config.sweepIntervalMs;
-  const timer = intervalMs > 0 ? setInterval(() => gateway.pump(), intervalMs) : undefined;
+  const timer = intervalMs > 0 ? setInterval(() => { gateway.pump(); if (options.adminAuth) void options.adminAuth.pruneExpiredSessions().catch((error) => options.adminAuth!.report("admin.prune", error)); }, intervalMs) : undefined;
   const nonceTimer = intervalMs > 0 && options.webClipTokens ? setInterval(() => { void options.webClipTokens!.pruneExpired().catch(() => undefined); }, Math.max(60_000, intervalMs)) : undefined;
   timer?.unref();
   nonceTimer?.unref();

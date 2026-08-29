@@ -91,6 +91,7 @@ export const deletionScopeEnum = pgEnum("deletion_scope", [
   "date_range",
   "all",
 ]);
+export const adminLoginScopeEnum = pgEnum("admin_login_scope", ["account", "client", "global"]);
 
 export type BattleResultSnapshot = Readonly<Record<string, unknown>>;
 
@@ -817,6 +818,7 @@ export const adminSessions = pgTable(
       .defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     lastIp: inet("last_ip"),
     userAgent: varchar("user_agent", { length: 512 }),
   },
@@ -827,6 +829,7 @@ export const adminSessions = pgTable(
       table.lastSeenAt,
     ),
     index("admin_sessions_expires_at_idx").on(table.expiresAt),
+    index("admin_sessions_active_idx").on(table.adminUserId, table.expiresAt, table.archivedAt),
     check(
       "admin_sessions_token_hash_format",
       sql`${table.tokenHash} ~ '^[a-f0-9]{64}$' and ${table.csrfTokenHash} ~ '^[a-f0-9]{64}$'`,
@@ -837,6 +840,14 @@ export const adminSessions = pgTable(
     ),
   ],
 );
+
+export const adminLoginLimits = pgTable("admin_login_limits", {
+  scope: adminLoginScopeEnum("scope").notNull(), keyHash: text("key_hash").notNull(), failureCount: integer("failure_count").notNull().default(0), windowStart: timestamp("window_start", { withTimezone: true }).notNull(), lockedUntil: timestamp("locked_until", { withTimezone: true }), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [primaryKey({ columns: [table.scope, table.keyHash] }), index("admin_login_limits_updated_idx").on(table.updatedAt), check("admin_login_limits_hash_format", sql`${table.keyHash} ~ '^[a-f0-9]{64}$'`), check("admin_login_limits_count_nonnegative", sql`${table.failureCount} >= 0`), check("admin_login_limits_lock_order", sql`${table.lockedUntil} is null or ${table.lockedUntil} >= ${table.windowStart}`)]);
+
+export const adminReauthGrants = pgTable("admin_reauth_grants", {
+  id: uuid("id").primaryKey().defaultRandom(), adminUserId: uuid("admin_user_id").notNull().references(() => adminUsers.id, { onDelete: "cascade" }), adminSessionId: uuid("admin_session_id").notNull().references(() => adminSessions.id, { onDelete: "cascade" }), tokenHash: text("token_hash").notNull(), purpose: varchar("purpose", { length: 64 }).notNull(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(), consumedAt: timestamp("consumed_at", { withTimezone: true }),
+}, (table) => [uniqueIndex("admin_reauth_grants_token_uidx").on(table.tokenHash), index("admin_reauth_grants_expiry_idx").on(table.expiresAt), check("admin_reauth_grants_hash_format", sql`${table.tokenHash} ~ '^[a-f0-9]{64}$'`), check("admin_reauth_grants_purpose_nonblank", sql`length(btrim(${table.purpose})) between 1 and 64`), check("admin_reauth_grants_time_order", sql`${table.expiresAt} > ${table.createdAt} and (${table.consumedAt} is null or ${table.consumedAt} >= ${table.createdAt})`)]);
 
 export const adminAudit = pgTable(
   "admin_audit",

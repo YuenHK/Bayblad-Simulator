@@ -29,9 +29,6 @@ importers:
       '@fastify/cookie':
         specifier: 11.1.2
         version: 11.1.2
-      '@fastify/csrf-protection':
-        specifier: 8.0.1
-        version: 8.0.1
       '@node-rs/argon2':
         specifier: 2.1.0
         version: 2.1.0
@@ -728,12 +725,6 @@ packages:
 
   '@fastify/cookie@11.1.2':
     resolution: {integrity: sha512-Dtrpk/YOGUsbRMvP/8ZqPpwnMRv0qSqodFdoQ2B589Obc7jw4s4Qla+cV72Bsm7WsZJnqlYFX/i7uSBq0xzg6g==}
-
-  '@fastify/csrf-protection@8.0.1':
-    resolution: {integrity: sha512-NMK+TKyuWCmRJPwSiAVTQwKoeDspWRhoBgYtumJJy0PBZxjgcUAn1eCO8r5N/z0pgDMcMfy5HjxowXpOxwTWyw==}
-
-  '@fastify/csrf@8.1.0':
-    resolution: {integrity: sha512-vUNZy11syr4mYI+5AqWZOLyYZXPMCYNGHw0Ww8tlmPnwSNWyTYKadKX6XveD5vaiENclcGkvaSnUZZQDRzpOhw==}
 
   '@fastify/error@4.2.0':
     resolution: {integrity: sha512-RSo3sVDXfHskiBZKBPRgnQTtIqpi/7zhJOEmAxCiBcM7d0uwdGdxLlsCaLzGs8v8NnxIRlfG0N51p5yFaOentQ==}
@@ -2434,14 +2425,6 @@ snapshots:
     dependencies:
       cookie: 2.0.1
       fastify-plugin: 6.0.0
-
-  '@fastify/csrf-protection@8.0.1':
-    dependencies:
-      '@fastify/csrf': 8.1.0
-      '@fastify/error': 4.2.0
-      fastify-plugin: 6.0.0
-
-  '@fastify/csrf@8.1.0': {}
 
   '@fastify/error@4.2.0': {}
 
