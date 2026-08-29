@@ -3,6 +3,7 @@ set -euo pipefail
 [[ $# -eq 2 ]]||exit 2
 staging=$1;final=$2;parent=$(dirname "$final")
 [[ -d $staging && ! -L $staging && -d $parent && ! -L $parent ]]||exit 1
+lock="$parent/.publish.lock";if [[ ! -e $lock ]];then install -o root -g root -m 0600 /dev/null "$lock";fi;[[ -f $lock && ! -L $lock ]]||exit 1;read -r owner mode < <(stat -c '%u %a' "$lock");[[ $owner == 0 && $mode == 600 ]]||exit 1;exec 8<>"$lock";flock 8
 for file in payload.json payload.json.sig;do [[ -f $staging/$file && ! -L $staging/$file ]]||exit 1;chmod 0400 "$staging/$file";done
 chmod 0500 "$staging"
 sync -f "$staging/payload.json" "$staging/payload.json.sig" "$staging"
