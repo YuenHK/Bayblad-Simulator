@@ -90,14 +90,14 @@ git add packages/db drizzle.config.ts drizzle pnpm-lock.yaml
 git commit -m "feat: add persistent simulator data model"
 ```
 
-### 任務 2：訪客身份及安全 Cookie 快取
+### 任務 2：訪客身份及安全 Cookie 快取（已完成）
 
 **文件：**
 - 建立：`apps/server/src/identity/guest.ts`
 - 建立：`apps/server/src/identity/cookie.ts`
 - 測試：`apps/server/src/identity/cookie.test.ts`
 
-- [ ] **步驟 1：編寫身份優先次序測試**
+- [x] **步驟 1：編寫身份優先次序測試**
 
 ```ts
 it("prefers live iClass over cached cookie and guest", async () => {
@@ -111,21 +111,21 @@ it("creates 訪客-四位碼 without a trusted token", async () => {
 });
 ```
 
-- [ ] **步驟 2：執行確認失敗**
+- [x] **步驟 2：執行確認失敗**
 
 執行：`pnpm --filter @steam-top/server test -- identity/cookie.test.ts`
 
 預期：FAIL，resolver 未建立。
 
-- [ ] **步驟 3：實作 opaque session cookie**
+- [x] **步驟 3：實作 opaque session cookie**
 
 Cookie 只保存 256-bit 隨機 token；資料庫保存 token 的 SHA-256 hash、identity id、建立及最後使用時間。設定 `Secure`、`HttpOnly`、`SameSite=Strict`、根路徑及固定過期策略；不保存姓名、班別或學號。
 
-- [ ] **步驟 4：實作訪客重用及 IP 診斷欄位**
+- [x] **步驟 4：實作訪客重用及 IP 診斷欄位**
 
 相同有效匿名 Cookie 重用訪客代碼；IP 和 user-agent 只加入事件紀錄，不作身份主鍵。
 
-- [ ] **步驟 5：測試並 Commit**
+- [x] **步驟 5：測試並 Commit**
 
 執行：`pnpm --filter @steam-top/server test -- identity`
 
@@ -135,6 +135,8 @@ Cookie 只保存 256-bit 隨機 token；資料庫保存 token 的 SHA-256 hash�
 git add apps/server/src/identity
 git commit -m "feat: resolve cached and guest identities safely"
 ```
+
+實作決策：身份 Cookie 採 256-bit opaque token、資料庫只存 SHA-256 hash；每次有效使用把期限滾動至 180 日後，`Max-Age` 與 `Expires` 一致。IP／user-agent 僅是診斷欄位，直接連線只取 socket 位址且不信任未配置的 forwarded header。訪客代碼由資料庫 partial unique index 保證唯一；正式環境組裝必須注入持久 IdentityResolver，記憶體 adapter 只供明確測試使用。Socket.IO 將於 iClass adapter／即時整合任務改為由 HttpOnly Cookie resolver 供應 displayName，現階段不接受 client JSON 作 live 身份。
 
 ### 任務 3：iClass Web Clip 整合接口
 

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "identities_guest_display_name_uidx" ON "identities" USING btree ("display_name") WHERE "identities"."status" = 'guest' and "identities"."merged_into_identity_id" is null;

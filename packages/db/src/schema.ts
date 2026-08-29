@@ -130,6 +130,9 @@ export const identities = pgTable(
     uniqueIndex("identities_iclass_external_id_uidx")
       .on(table.iclassExternalId)
       .where(sql`${table.iclassExternalId} is not null`),
+    uniqueIndex("identities_guest_display_name_uidx")
+      .on(table.displayName)
+      .where(sql`${table.status} = 'guest' and ${table.mergedIntoIdentityId} is null`),
     index("identities_class_student_idx").on(
       table.className,
       table.studentNumber,

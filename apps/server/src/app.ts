@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import fastifyCookie from "@fastify/cookie";
 import { designUploadResponseSchema } from "@steam-top/domain";
 import type { IncomingMessage } from "node:http";
 import type { BattleInputs, BattleResult, ResultRepository } from "./battle/engine";
@@ -8,6 +9,8 @@ import { DesignRegistry, DesignRegistryError } from "./design-registry";
 import { RoomService } from "./rooms/room-service";
 import { RealtimeGateway, type FrameScheduler, type MatchScorer } from "./socket";
 import { TokenBucketLimiter } from "./rate-limit";
+import { COOKIE_NAME, IDENTITY_COOKIE_LIFETIME_MS } from "./identity/cookie";
+import { IdentityResolver } from "./identity/resolver";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -65,6 +68,7 @@ export type BuildAppOptions = Readonly<{
   clientKeyResolver?: ClientKeyResolver;
   logError?: (error: unknown) => void;
   sweepIntervalMs?: number;
+  identityResolver?: IdentityResolver;
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -93,6 +97,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   }
   if (options.clientKeyResolver && !options.behindProxy) {
     throw new TypeError("clientKeyResolver requires behindProxy trusted boundary");
+  }
+  if (process.env.NODE_ENV === "production" && options.identityResolver?.persistent !== true) {
+    throw new TypeError("Production composition requires a persistent identityResolver");
   }
   const config = {
     bodyLimit: requirePositive("bodyLimit", options.bodyLimit ?? 64 * 1_024),
@@ -141,6 +148,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     forceCloseConnections: true,
     bodyLimit: config.bodyLimit,
   });
+  void app.register(fastifyCookie);
   const rooms = options.rooms ?? new RoomService(options.now ? { now: options.now } : {});
   const designs = options.designs ?? new DesignRegistry({
     ...(options.now ? { now: options.now } : {}),
@@ -205,6 +213,26 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   app.decorate("battleEngine", battleEngine);
 
   app.get("/health", async () => ({ status: "ok" }));
+  if (options.identityResolver) {
+    const identityResolver = options.identityResolver;
+    app.get("/api/identity", async (request, reply) => {
+      const resolved = await identityResolver.resolve({
+        ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}),
+        ...(request.raw.socket.remoteAddress ? { ip: request.raw.socket.remoteAddress } : {}),
+        ...(request.headers["user-agent"] ? { userAgent: request.headers["user-agent"] } : {}),
+      });
+      reply.setCookie(COOKIE_NAME, resolved.cookieToken, {
+        path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
+        maxAge: Math.floor(IDENTITY_COOKIE_LIFETIME_MS / 1_000), expires: resolved.expiresAt,
+      });
+      return resolved.identity;
+    });
+    app.post("/api/identity/logout", async (request, reply) => {
+      await identityResolver.revoke(request.cookies[COOKIE_NAME]);
+      reply.clearCookie(COOKIE_NAME, { path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict" });
+      return reply.code(204).send();
+    });
+  }
   app.post("/api/designs", { onRequest: async (request, reply) => {
     const authorization = request.headers.authorization;
     const session = gateway.sessionForBearer(authorization);
