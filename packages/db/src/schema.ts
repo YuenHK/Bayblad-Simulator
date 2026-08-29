@@ -532,6 +532,33 @@ export const roomParticipants = pgTable(
   ],
 );
 
+export const roomProjectionJobs = pgTable(
+  "room_projection_jobs",
+  {
+    roomId: uuid("room_id").primaryKey().references(() => rooms.id, { onDelete: "cascade" }),
+    revision: bigint("revision", { mode: "number" }).notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    payloadJson: jsonb("payload_json").$type<Readonly<Record<string, unknown>>>().notNull(),
+    status: varchar("status", { length: 16 }).notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    leaseToken: uuid("lease_token"),
+    generation: integer("generation").notNull().default(0),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    lastError: varchar("last_error", { length: 128 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("room_projection_jobs_due_idx").on(table.status, table.nextAttemptAt, table.createdAt),
+    check("room_projection_jobs_revision", sql`${table.revision} >= 0`),
+    check("room_projection_jobs_payload_hash", sql`${table.payloadHash} ~ '^[a-f0-9]{64}$'`),
+    check("room_projection_jobs_status", sql`${table.status} in ('pending','leased','dead')`),
+    check("room_projection_jobs_attempts", sql`${table.attemptCount} >= 0 and ${table.generation} >= 0`),
+    check("room_projection_jobs_lease", sql`(${table.status} = 'leased' and ${table.leaseToken} is not null and ${table.leaseUntil} is not null) or (${table.status} <> 'leased' and ${table.leaseToken} is null and ${table.leaseUntil} is null)`),
+  ],
+);
+
 export const matches = pgTable(
   "matches",
   {
@@ -807,6 +834,9 @@ export const matchPersistenceJobs = pgTable(
     status: varchar("status", { length: 16 }).notNull().default("pending"),
     attemptCount: integer("attempt_count").notNull().default(0),
     nextRetryAt: timestamp("next_retry_at", { withTimezone: true }).notNull().defaultNow(),
+    claimToken: uuid("claim_token"),
+    generation: integer("generation").notNull().default(0),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
     lastSanitizedCode: varchar("last_sanitized_code", { length: 128 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -817,6 +847,7 @@ export const matchPersistenceJobs = pgTable(
     check("match_persistence_jobs_fingerprint_format", sql`${table.inputFingerprint} ~ '^[a-f0-9]{64}$'`),
     check("match_persistence_jobs_status", sql`${table.status} in ('pending','retrying','failed','completed')`),
     check("match_persistence_jobs_attempts", sql`${table.attemptCount} >= 0`),
+    check("match_persistence_jobs_claim", sql`(${table.status} = 'retrying' and ${table.claimToken} is not null and ${table.leaseUntil} is not null) or (${table.status} <> 'retrying' and ${table.claimToken} is null and ${table.leaseUntil} is null)`),
     check("match_persistence_jobs_completion", sql`(${table.status} = 'completed' and ${table.completedAt} is not null and ${table.lastSanitizedCode} is null) or (${table.status} <> 'completed' and ${table.completedAt} is null)`),
   ],
 );

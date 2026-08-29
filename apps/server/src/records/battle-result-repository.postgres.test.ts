@@ -12,6 +12,7 @@ import { identities } from "@steam-top/db/schema";
 import { matches, roomParticipants, rooms, rounds } from "@steam-top/db/schema";
 import { eq } from "drizzle-orm";
 import { PostgresRoomRecordRepository } from "./room-repository";
+import { PostgresRoomProjectionStore } from "./room-projection-store";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const schemaName = `battle_result_${randomUUID().replaceAll("-", "")}`;
@@ -51,6 +52,23 @@ it.skipIf(!databaseUrl)("projects room owner, phases, first battle metadata and 
   expect(closed).toMatchObject({ status: "closed", firstBattleAt, closedAt: new Date("2026-08-29T01:05:00Z") });
   const participants = await client.db.select().from(roomParticipants).where(eq(roomParticipants.roomId, roomId));
   expect(participants).toHaveLength(3); expect(participants.every((row) => row.leftAt !== null)).toBe(true);
+}, 30_000);
+
+it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it once across workers", async () => {
+  const ownerIdentityId = randomUUID(); const roomId = randomUUID();
+  await client.db.insert(identities).values({ id: ownerIdentityId, status: "guest", displayName: "Projection owner" });
+  const roomsRepository = new PostgresRoomRecordRepository(client.db);
+  await roomsRepository.create({ id: roomId, code: `PJ${randomUUID().slice(0, 6)}`, name: "Projection room", ownerIdentityId, participant: { participantPublicId: "projection-owner", identityId: ownerIdentityId, displayName: "Projection owner", role: "player1", isOwner: true, ip: null, userAgent: null, deviceName: null }, at: new Date() });
+  const first = new PostgresRoomProjectionStore(client.db); const second = new PostgresRoomProjectionStore(client.db);
+  await first.enqueue({ roomId, revision: 2, payload: { phase: "battle", firstBattleAt: "2026-08-29T02:00:00.000Z" } });
+  await second.enqueue({ roomId, revision: 1, payload: { phase: "launch", firstBattleAt: null } });
+  const [left, right] = await Promise.all([first.claimDue(1, new Date("2099-01-01")), second.claimDue(1, new Date("2099-01-01"))]);
+  expect(left.length + right.length).toBe(1);
+  const claim = [...left, ...right][0]!;
+  expect(claim).toMatchObject({ revision: 2, payload: { phase: "battle" } });
+  await roomsRepository.applyProjection(roomId, claim.payload);
+  expect(await first.complete(claim)).toBe(true);
+  expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "battle", firstBattleAt: new Date("2026-08-29T02:00:00Z") });
 }, 30_000);
 
 afterAll(async () => {
@@ -113,9 +131,11 @@ it.skipIf(!databaseUrl)("persists an exact authoritative round set and rejects a
     launchA: { grade: "Great" as const, angularMultiplier: 1, impulseMultiplier: 1, tapReceivedAtMs: null, tapOffsetMs: null },
     launchB: { grade: "Good" as const, angularMultiplier: .9, impulseMultiplier: .9, tapReceivedAtMs: null, tapOffsetMs: null },
     startedAt, completedAt: new Date(startedAt.getTime() + roundNumber * 1_000),
-    battleResult: { modelVersion: "2.0.0", seed: roundNumber, ticks: 60, frames: [], outcome: { winner: "player1" as const, reason: "stopped" as const }, finalStats: { player1: { angularSpeed: 1, speedMps: 0, energyJ: 1, stoppedTicks: 0, impactRetentionProduct: 1 }, player2: { angularSpeed: 1, speedMps: 0, energyJ: 1, stoppedTicks: 0, impactRetentionProduct: 1 }, topTopContactCount: 0, topTopBeginContactEpisodes: 0, topTopImpactApplications: 0 } },
+    battleResult: { modelVersion: "2.0.0", seed: roundNumber, ticks: 60, frames: roundNumber === 1 ? Array.from({ length: 9_000 }, (_, tick) => ({ tick, player1: { x: tick / 100, y: 0, angle: tick / 10, angularSpeed: 10 }, player2: { x: -tick / 100, y: 0, angle: -tick / 10, angularSpeed: 9 } })) : [], outcome: { winner: "player1" as const, reason: "stopped" as const }, finalStats: { player1: { angularSpeed: 1, speedMps: 0, energyJ: 1, stoppedTicks: 0, impactRetentionProduct: 1 }, player2: { angularSpeed: 1, speedMps: 0, energyJ: 1, stoppedTicks: 0, impactRetentionProduct: 1 }, topTopContactCount: 0, topTopBeginContactEpisodes: 0, topTopImpactApplications: 0 } },
   });
   const authoritativeRounds = [makeRound(1), makeRound(2)];
+  expect(Buffer.byteLength(JSON.stringify(authoritativeRounds[0]!.battleResult), "utf8")).toBeGreaterThan(1_000_000);
+  expect(Buffer.byteLength(JSON.stringify(authoritativeRounds[0]!.battleResult), "utf8")).toBeLessThan(2_097_152);
   for (const round of authoritativeRounds) await repository.saveRoundAttempt(matchId, round);
   await expect(repository.saveRoundAttempt(matchId, { ...authoritativeRounds[0]!, battleResult: { ...authoritativeRounds[0]!.battleResult, ticks: 61 } })).rejects.toBeInstanceOf(MatchPersistenceConflictError);
   const base = {
@@ -135,7 +155,11 @@ it.skipIf(!databaseUrl)("persists an exact authoritative round set and rejects a
   expect(await client.db.select().from(rounds).where(eq(rounds.matchId, matchId))).toHaveLength(3);
   await client.db.delete(rounds).where(eq(rounds.id, extra.id));
   await expect(repository.queueCompletion(completed)).resolves.toBe("created");
-  await expect(repository.retryFailedMatch(matchId)).resolves.toBe("created");
+  const restarted = new PostgresMatchRepository(client.db);
+  const [leftClaims, rightClaims] = await Promise.all([repository.claimDueJobs(new Date("2099-01-01"), 1), restarted.claimDueJobs(new Date("2099-01-01"), 1)]);
+  expect(leftClaims.length + rightClaims.length).toBe(1);
+  const claim = [...leftClaims, ...rightClaims][0]!;
+  await expect(repository.retryFailedMatch(matchId, { claimToken: claim.claimToken, generation: claim.generation })).resolves.toBe("created");
   await expect(new PostgresMatchRepository(client.db).retryFailedMatch(matchId)).resolves.toBe("replayed");
   await expect(repository.saveCompletedMatch(completed)).resolves.toBe("replayed");
 }, 30_000);

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MemoryDesignRepository } from "./design-repository";
 import { completedMatchFingerprint, completedMatchRecordSchema, MatchPersistenceConflictError, MemoryMatchRepository, type CompletedMatchRecord } from "./match-repository";
 import { RoomProjectionCoordinator } from "./room-projection-coordinator";
+import { MemoryRoomProjectionStore } from "./room-projection-store";
 
 const id = (suffix: number) => `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
 const round = (index: number, roundNumber: number, attempt: number, winner: "player1" | "player2" | "draw"): CompletedMatchRecord["rounds"][number] => ({
@@ -26,6 +27,29 @@ const fixture = (): CompletedMatchRecord => {
 };
 
 describe("durable record contracts", () => {
+  it("durably keeps only the newest room projection across coordinator restarts", async () => {
+    const store = new MemoryRoomProjectionStore({ maxEntries: 2, leaseMs: 1_000, now: () => new Date("2026-08-29T00:00:00Z") });
+    const applied: number[] = [];
+    await store.enqueue({ roomId: id(90), revision: 2, payload: { phase: "battle", firstBattleAt: null } });
+    await store.enqueue({ roomId: id(90), revision: 1, payload: { phase: "launch", firstBattleAt: null } });
+    const first = new RoomProjectionCoordinator({ store, apply: async (job) => { applied.push(job.revision); throw new Error("offline"); }, report: () => undefined });
+    await first.pump(new Date("2026-08-29T00:00:00Z"));
+    await first.close();
+    const second = new RoomProjectionCoordinator({ store, apply: async (job) => { applied.push(job.revision); } });
+    await second.pump(new Date("2026-08-29T00:00:02Z"));
+    expect(applied).toEqual([2, 2]);
+    expect(store.size).toBe(0);
+    await second.close();
+  });
+
+  it("claims each due room projection once across workers and refuses capacity loss", async () => {
+    const store = new MemoryRoomProjectionStore({ maxEntries: 1, now: () => new Date("2026-08-29T00:00:00Z") });
+    await store.enqueue({ roomId: id(91), revision: 1, payload: { phase: "waiting", firstBattleAt: null } });
+    await expect(store.enqueue({ roomId: id(92), revision: 1, payload: { phase: "waiting", firstBattleAt: null } })).rejects.toThrow("ROOM_PROJECTION_CAPACITY");
+    const now = new Date("2026-08-29T00:00:00Z");
+    const [left, right] = await Promise.all([store.claimDue(1, now), store.claimDue(1, now)]);
+    expect(left.length + right.length).toBe(1);
+  });
   it("reuses an identical canonical design for one identity and enforces ownership", async () => {
     const repository = new MemoryDesignRepository();
     const design = makeDefaultDesign();
@@ -74,6 +98,34 @@ describe("durable record contracts", () => {
     await expect(repository.retryFailedMatch(match.id)).resolves.toBe("created");
     expect((await repository.getRetryJob(match.id))?.status).toBe("completed");
     expect(await repository.listRetryable(new Date("2099-01-01"))).toHaveLength(0);
+  });
+
+  it("atomically claims due match completions once across workers", async () => {
+    const repository = new MemoryMatchRepository();
+    const match = fixture();
+    await repository.queueCompletion(match);
+    const now = new Date("2099-01-01T00:00:00Z");
+    const [left, right] = await Promise.all([
+      repository.claimDueJobs(now, 1),
+      repository.claimDueJobs(now, 1),
+    ]);
+    expect(left.length + right.length).toBe(1);
+    const claim = [...left, ...right][0]!;
+    await expect(repository.retryFailedMatch(claim.matchId, { claimToken: claim.claimToken, generation: claim.generation })).resolves.toBe("created");
+    expect((await repository.getRetryJob(match.id))?.status).toBe("completed");
+  });
+
+  it("never evicts pending match jobs at capacity and reclaims completed TTL entries", async () => {
+    let now = new Date("2026-08-29T00:00:00Z");
+    const repository = new MemoryMatchRepository({ maxJobs: 1, completedJobTtlMs: 1_000, now: () => now });
+    const first = fixture();
+    const { idempotencyFingerprint: _old, ...secondPayload } = { ...fixture(), id: id(50) };
+    const second = { ...secondPayload, idempotencyFingerprint: completedMatchFingerprint(secondPayload) };
+    await repository.queueCompletion(first);
+    await expect(repository.queueCompletion(second)).rejects.toThrow("MATCH_JOB_CAPACITY");
+    await repository.retryFailedMatch(first.id);
+    now = new Date(now.getTime() + 1_001);
+    await expect(repository.queueCompletion(second)).resolves.toBe("created");
   });
 
   it("rejects round authority collisions even when the input hash is reused", async () => {

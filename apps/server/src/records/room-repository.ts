@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient } from "@steam-top/db";
 import { roomParticipants, rooms } from "@steam-top/db/schema";
+import type { RoomProjectionPayload } from "./room-projection-store";
 
 export type RoomParticipantRecord = Readonly<{
   participantPublicId: string; identityId: string | null; displayName: string;
@@ -17,6 +18,7 @@ export interface RoomRecordRepository {
   leave(roomId: string, participantPublicId: string, at: Date): Promise<void>;
   leaveAndSync(roomId: string, participantPublicId: string, at: Date, roles: ReadonlyMap<string, "player1" | "player2" | "spectator">, ownerParticipantId: string | null, ownerIdentityId: string | null): Promise<void>;
   close(roomId: string, at: Date): Promise<void>;
+  applyProjection?(roomId: string, payload: RoomProjectionPayload): Promise<void>;
 }
 
 type Db = DatabaseClient["db"];
@@ -70,5 +72,11 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
       await tx.update(roomParticipants).set({ leftAt: at }).where(and(eq(roomParticipants.roomId, roomId), isNull(roomParticipants.leftAt)));
       await tx.update(rooms).set({ status: "closed", closedAt: at }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
     });
+  }
+  async applyProjection(roomId: string, payload: RoomProjectionPayload): Promise<void> {
+    await this.db.update(rooms).set({
+      status: payload.phase,
+      ...(payload.firstBattleAt ? { firstBattleAt: sql`coalesce(${rooms.firstBattleAt}, ${new Date(payload.firstBattleAt)})` } : {}),
+    }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
   }
 }

@@ -1958,6 +1958,25 @@
           "notNull": true,
           "default": "now()"
         },
+        "claim_token": {
+          "name": "claim_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "last_sanitized_code": {
           "name": "last_sanitized_code",
           "type": "varchar(128)",
@@ -2038,6 +2057,10 @@
         "match_persistence_jobs_attempts": {
           "name": "match_persistence_jobs_attempts",
           "value": "\"match_persistence_jobs\".\"attempt_count\" >= 0"
+        },
+        "match_persistence_jobs_claim": {
+          "name": "match_persistence_jobs_claim",
+          "value": "(\"match_persistence_jobs\".\"status\" = 'retrying' and \"match_persistence_jobs\".\"claim_token\" is not null and \"match_persistence_jobs\".\"lease_until\" is not null) or (\"match_persistence_jobs\".\"status\" <> 'retrying' and \"match_persistence_jobs\".\"claim_token\" is null and \"match_persistence_jobs\".\"lease_until\" is null)"
         },
         "match_persistence_jobs_completion": {
           "name": "match_persistence_jobs_completion",
@@ -2701,6 +2724,166 @@
         "room_participants_time_order": {
           "name": "room_participants_time_order",
           "value": "\"room_participants\".\"left_at\" is null or \"room_participants\".\"left_at\" >= \"room_participants\".\"joined_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.room_projection_jobs": {
+      "name": "room_projection_jobs",
+      "schema": "",
+      "columns": {
+        "room_id": {
+          "name": "room_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload_hash": {
+          "name": "payload_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload_json": {
+          "name": "payload_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "room_projection_jobs_due_idx": {
+          "name": "room_projection_jobs_due_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_projection_jobs_room_id_rooms_id_fk": {
+          "name": "room_projection_jobs_room_id_rooms_id_fk",
+          "tableFrom": "room_projection_jobs",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "room_projection_jobs_revision": {
+          "name": "room_projection_jobs_revision",
+          "value": "\"room_projection_jobs\".\"revision\" >= 0"
+        },
+        "room_projection_jobs_payload_hash": {
+          "name": "room_projection_jobs_payload_hash",
+          "value": "\"room_projection_jobs\".\"payload_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "room_projection_jobs_status": {
+          "name": "room_projection_jobs_status",
+          "value": "\"room_projection_jobs\".\"status\" in ('pending','leased','dead')"
+        },
+        "room_projection_jobs_attempts": {
+          "name": "room_projection_jobs_attempts",
+          "value": "\"room_projection_jobs\".\"attempt_count\" >= 0 and \"room_projection_jobs\".\"generation\" >= 0"
+        },
+        "room_projection_jobs_lease": {
+          "name": "room_projection_jobs_lease",
+          "value": "(\"room_projection_jobs\".\"status\" = 'leased' and \"room_projection_jobs\".\"lease_token\" is not null and \"room_projection_jobs\".\"lease_until\" is not null) or (\"room_projection_jobs\".\"status\" <> 'leased' and \"room_projection_jobs\".\"lease_token\" is null and \"room_projection_jobs\".\"lease_until\" is null)"
         }
       },
       "isRLSEnabled": false

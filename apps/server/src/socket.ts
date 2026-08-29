@@ -20,6 +20,7 @@ import type { DesignRepository } from "./records/design-repository";
 import { completedMatchFingerprint, type CompletedMatchRecord, type MatchRepository } from "./records/match-repository";
 import type { RoomParticipantRecord, RoomRecordRepository } from "./records/room-repository";
 import { RoomProjectionCoordinator } from "./records/room-projection-coordinator";
+import type { RoomProjectionStore } from "./records/room-projection-store";
 import { PHYSICS_MODEL_VERSION, sha256Hex, type BattleResult } from "./battle/engine";
 import type { BattleEnginePort, ClientKeyResolver } from "./app";
 import { TokenBucketLimiter } from "./rate-limit";
@@ -64,6 +65,7 @@ export type RealtimeDependencies = Readonly<{
   designRepository?: DesignRepository;
   matchRepository?: MatchRepository;
   roomRecordRepository?: RoomRecordRepository;
+  roomProjectionStore?: RoomProjectionStore;
   battleEngine: BattleEnginePort;
   launch: LaunchCoordinator;
   now?: () => number;
@@ -279,7 +281,19 @@ export class RealtimeGateway {
     this.#maxTerminalResults = dependencies.maxTerminalResults;
     this.#lobbyDebounceMs = dependencies.lobbyDebounceMs;
     this.#logError = dependencies.logError ?? (() => undefined);
-    this.#roomProjections = new RoomProjectionCoordinator({ report: this.#logError });
+    this.#roomProjections = dependencies.roomProjectionStore && dependencies.roomRecordRepository
+      ? new RoomProjectionCoordinator({
+          report: this.#logError,
+          store: dependencies.roomProjectionStore,
+          apply: async (job) => {
+            if (dependencies.roomRecordRepository!.applyProjection) await dependencies.roomRecordRepository!.applyProjection(job.roomId, job.payload);
+            else {
+              if (job.payload.firstBattleAt) await dependencies.roomRecordRepository!.recordBattleStart(job.roomId, new Date(job.payload.firstBattleAt));
+              await dependencies.roomRecordRepository!.updatePhase(job.roomId, job.payload.phase);
+            }
+          },
+        })
+      : new RoomProjectionCoordinator({ report: this.#logError });
     this.#maintenance = dependencies.maintenance ?? (() => undefined);
     this.#persistenceRetryDelaysMs = dependencies.persistenceRetryDelaysMs ?? [0, 100, 500];
     const origins = new Set(dependencies.allowedOrigins);
@@ -357,7 +371,7 @@ export class RealtimeGateway {
     for (const [roomId, match] of this.#matches) this.#cancelMatch(roomId, match);
     for (const session of this.#sessionsById.values()) session.commandsStopped = true;
     this.#terminalMatches.clear();
-    this.#roomProjections.close();
+    await this.#roomProjections.close();
     await new Promise<void>((resolve) => this.io.close(() => resolve()));
     this.#pendingLimiter.clear();
     this.#sessionCommandLimiter.clear();
@@ -373,6 +387,7 @@ export class RealtimeGateway {
     this.#newSessionByClientLimiter.pruneExpired();
     this.#newSessionGlobalLimiter.pruneExpired();
     this.#maintenance();
+    void this.#roomProjections.pump(new Date(nowMs)).catch(this.#logError);
     for (const [roomId, match] of [...this.#matches]) {
       if (!this.#rooms.hasRoom(roomId)) {
         this.#cancelMatch(roomId, match);
@@ -937,7 +952,6 @@ export class RealtimeGateway {
       }
       this.#matches.set(roomId, match);
       this.#rooms.setPhase(roomId, "launch");
-      if (this.#roomRecordRepository) this.#roomProjections.enqueue(`${roomId}:battle-start`, this.#rooms.get(roomId)?.revision ?? 0, () => this.#roomRecordRepository!.recordBattleStart(roomId, match!.startedAt));
       this.#projectRoomPhase(roomId, "launch");
       const initialSchedule = this.#scheduleRound(roomId, match, false);
       this.#broadcastRoom(roomId);
@@ -1475,7 +1489,12 @@ export class RealtimeGateway {
   #projectRoomPhase(roomId: string, phase: "waiting" | "launch" | "battle" | "result"): void {
     if (!this.#roomRecordRepository) return;
     const revision = this.#rooms.get(roomId)?.revision ?? Number.MAX_SAFE_INTEGER;
-    this.#roomProjections.enqueue(`${roomId}:phase`, revision, () => this.#roomRecordRepository!.updatePhase(roomId, phase));
+    if (this.#roomProjections.usesDurableStore) {
+      void this.#roomProjections.enqueueProjection({
+        roomId, revision,
+        payload: { phase, firstBattleAt: this.#matches.get(roomId)?.startedAt.toISOString() ?? null },
+      }).catch(this.#logError);
+    } else this.#roomProjections.enqueue(`${roomId}:phase`, revision, () => this.#roomRecordRepository!.updatePhase(roomId, phase));
   }
 
   #user(session: Session) { return { id: session.id, displayName: session.displayName }; }

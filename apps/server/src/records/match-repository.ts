@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, lte, ne, or } from "drizzle-orm";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 import { buildCompletedMatchRow, buildRoundRow } from "@steam-top/db/persistence";
 import { matchPersistenceJobs, matches, rounds } from "@steam-top/db/schema";
@@ -66,10 +66,12 @@ export interface MatchRepository {
   queueCompletion(input: CompletedMatchRecord): Promise<"created" | "replayed">;
   getRetryJob(matchId: string): Promise<MatchRetryJob | undefined>;
   listRetryable(now?: Date, limit?: number): Promise<readonly MatchRetryJob[]>;
-  retryFailedMatch(matchId: string, options?: Readonly<{ manual?: boolean }>): Promise<"created" | "replayed">;
+  claimDueJobs(now?: Date, limit?: number, leaseMs?: number): Promise<readonly ClaimedMatchRetryJob[]>;
+  retryFailedMatch(matchId: string, options?: Readonly<{ manual?: boolean; claimToken?: string; generation?: number }>): Promise<"created" | "replayed">;
   markPersistenceFailure?(matchId: string, sanitizedCode: string): Promise<void>;
 }
 export type MatchRetryJob = Readonly<{ matchId: string; status: "pending" | "retrying" | "failed" | "completed"; attemptCount: number; nextRetryAt: Date; lastSanitizedCode: string | null; payload: CompletedMatchRecord }>;
+export type ClaimedMatchRetryJob = MatchRetryJob & Readonly<{ claimToken: string; generation: number }>;
 
 export type PendingMatchRecord = Readonly<{
   id: string; roomId: string | null; player1IdentityId: string | null; player2IdentityId: string | null;
@@ -94,7 +96,14 @@ const canonicalEqual = (left: unknown, right: unknown): boolean =>
 export class MemoryMatchRepository implements MatchRepository {
   readonly records = new Map<string, CompletedMatchRecord>();
   readonly pending = new Map<string, PendingMatchRecord>();
-  readonly jobs = new Map<string, MatchRetryJob>();
+  readonly jobs = new Map<string, MatchRetryJob & { claimToken?: string; generation?: number; completedAt?: Date }>();
+  readonly #maxJobs: number;
+  readonly #completedJobTtlMs: number;
+  readonly #now: () => Date;
+  constructor(options: Readonly<{ maxJobs?: number; completedJobTtlMs?: number; now?: () => Date }> = {}) {
+    this.#maxJobs = options.maxJobs ?? 2_000; this.#completedJobTtlMs = options.completedJobTtlMs ?? 300_000; this.#now = options.now ?? (() => new Date());
+  }
+  #pruneJobs(now = this.#now()): void { for (const [id, job] of this.jobs) if (job.status === "completed" && job.completedAt && job.completedAt.getTime() + this.#completedJobTtlMs <= now.getTime()) this.jobs.delete(id); }
   async beginMatch(input: PendingMatchRecord): Promise<"created" | "replayed"> {
     const existing = this.pending.get(input.id);
     if (existing) {
@@ -134,20 +143,35 @@ export class MemoryMatchRepository implements MatchRepository {
   async queueCompletion(input: CompletedMatchRecord): Promise<"created" | "replayed"> {
     const parsed = completedMatchRecordSchema.parse(input); assertAuthorityFingerprint(parsed);
     if (Buffer.byteLength(JSON.stringify(parsed), "utf8") > 8_388_608) throw new RangeError("MATCH_COMPLETION_PAYLOAD_TOO_LARGE");
+    this.#pruneJobs();
     const existing = this.jobs.get(parsed.id);
     if (existing) { if (existing.payload.idempotencyFingerprint !== parsed.idempotencyFingerprint) throw new MatchPersistenceConflictError(); return "replayed"; }
-    this.jobs.set(parsed.id, { matchId: parsed.id, status: "pending", attemptCount: 0, nextRetryAt: new Date(), lastSanitizedCode: null, payload: structuredClone(parsed) });
+    if (this.jobs.size >= this.#maxJobs) throw new Error("MATCH_JOB_CAPACITY");
+    this.jobs.set(parsed.id, { matchId: parsed.id, status: "pending", attemptCount: 0, nextRetryAt: this.#now(), lastSanitizedCode: null, payload: structuredClone(parsed) });
     return "created";
   }
-  async getRetryJob(matchId: string): Promise<MatchRetryJob | undefined> { const job = this.jobs.get(matchId); return job ? structuredClone(job) : undefined; }
-  async listRetryable(now = new Date(), limit = 100): Promise<readonly MatchRetryJob[]> { if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid retry limit"); return [...this.jobs.values()].filter((job) => job.status !== "completed" && job.nextRetryAt <= now).sort((a, b) => a.nextRetryAt.getTime() - b.nextRetryAt.getTime() || a.matchId.localeCompare(b.matchId)).slice(0, limit).map((job) => structuredClone(job)); }
-  async retryFailedMatch(matchId: string, options: Readonly<{ manual?: boolean }> = {}): Promise<"created" | "replayed"> {
+  async getRetryJob(matchId: string): Promise<MatchRetryJob | undefined> { this.#pruneJobs(); const job = this.jobs.get(matchId); return job ? structuredClone(job) : undefined; }
+  async listRetryable(now = new Date(), limit = 100): Promise<readonly MatchRetryJob[]> { if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid retry limit"); this.#pruneJobs(now); return [...this.jobs.values()].filter((job) => job.status !== "completed" && job.nextRetryAt <= now).sort((a, b) => a.nextRetryAt.getTime() - b.nextRetryAt.getTime() || a.matchId.localeCompare(b.matchId)).slice(0, limit).map((job) => structuredClone(job)); }
+  async claimDueJobs(now = new Date(), limit = 100, leaseMs = 30_000): Promise<readonly ClaimedMatchRetryJob[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid retry limit");
+    this.#pruneJobs(now);
+    const due = [...this.jobs.values()].filter((job) => job.status !== "completed" && job.nextRetryAt <= now).sort((a, b) => a.nextRetryAt.getTime() - b.nextRetryAt.getTime() || a.matchId.localeCompare(b.matchId)).slice(0, limit);
+    return due.map((job) => {
+      const claimToken = randomUUID(); const generation = (job.generation ?? 0) + 1;
+      const claimed = { ...job, status: "retrying" as const, attemptCount: job.attemptCount + 1, nextRetryAt: new Date(now.getTime() + leaseMs), claimToken, generation };
+      this.jobs.set(job.matchId, claimed);
+      return structuredClone({ ...claimed, claimToken, generation });
+    });
+  }
+  async retryFailedMatch(matchId: string, options: Readonly<{ manual?: boolean; claimToken?: string; generation?: number }> = {}): Promise<"created" | "replayed"> {
     const job = this.jobs.get(matchId); if (!job) throw new MatchPersistenceConflictError();
     if (job.status === "completed") return "replayed";
     if (!options.manual && job.attemptCount >= 10) throw new MatchPersistenceConflictError();
-    const attemptCount = job.attemptCount + 1;
-    this.jobs.set(matchId, { ...job, status: "retrying", attemptCount, nextRetryAt: new Date(Date.now() + 30_000), lastSanitizedCode: null });
-    try { const result = await this.saveCompletedMatch(job.payload); this.jobs.set(matchId, { ...this.jobs.get(matchId)!, status: "completed", completedAt: new Date(), lastSanitizedCode: null } as MatchRetryJob); return result; }
+    const claimed = options.claimToken !== undefined;
+    if (claimed && (job.claimToken !== options.claimToken || job.generation !== options.generation || job.status !== "retrying")) throw new MatchPersistenceConflictError();
+    const attemptCount = claimed ? job.attemptCount : job.attemptCount + 1;
+    this.jobs.set(matchId, { ...job, status: "retrying", attemptCount, nextRetryAt: claimed ? job.nextRetryAt : new Date(Date.now() + 30_000), lastSanitizedCode: null });
+    try { const result = await this.saveCompletedMatch(job.payload); this.jobs.set(matchId, { ...this.jobs.get(matchId)!, status: "completed", completedAt: this.#now(), lastSanitizedCode: null }); return result; }
     catch (error) {
       const manualOnly = error instanceof MatchPersistenceConflictError || error instanceof z.ZodError || error instanceof RangeError;
       const exhausted = attemptCount >= 10;
@@ -300,7 +324,7 @@ export class PostgresMatchRepository implements MatchRepository {
       const [job] = await tx.select().from(matchPersistenceJobs).where(eq(matchPersistenceJobs.matchId, matchId)).for("update").limit(1);
       if (job?.status === "completed" || (job?.status === "retrying" && job.nextRetryAt > new Date())) return;
       await tx.update(matches).set({ status: "persist_failed", persistFailureCode: code }).where(and(eq(matches.id, matchId), ne(matches.status, "completed")));
-      await tx.update(matchPersistenceJobs).set({ status: "failed", lastSanitizedCode: code, updatedAt: new Date() }).where(and(eq(matchPersistenceJobs.matchId, matchId), ne(matchPersistenceJobs.status, "completed")));
+      await tx.update(matchPersistenceJobs).set({ status: "failed", claimToken: null, leaseUntil: null, lastSanitizedCode: code, updatedAt: new Date() }).where(and(eq(matchPersistenceJobs.matchId, matchId), ne(matchPersistenceJobs.status, "completed")));
     });
   }
 
@@ -335,29 +359,54 @@ export class PostgresMatchRepository implements MatchRepository {
     const stored = rows.length ? await this.db.select().from(rounds).where(inArray(rounds.matchId, rows.map((row) => row.matchId))) : [];
     return rows.map((row) => this.#decodeJob(row, stored.filter((round) => round.matchId === row.matchId)));
   }
-  async retryFailedMatch(matchId: string, options: Readonly<{ manual?: boolean }> = {}): Promise<"created" | "replayed"> {
+  async claimDueJobs(now = new Date(), limit = 100, leaseMs = 30_000): Promise<readonly ClaimedMatchRetryJob[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid retry limit");
+    return this.db.transaction(async (tx) => {
+      const rows = await tx.select().from(matchPersistenceJobs).where(and(
+        inArray(matchPersistenceJobs.status, ["pending", "failed", "retrying"]),
+        lte(matchPersistenceJobs.nextRetryAt, now),
+      )).orderBy(asc(matchPersistenceJobs.nextRetryAt), asc(matchPersistenceJobs.createdAt)).limit(limit).for("update", { skipLocked: true });
+      if (!rows.length) return [];
+      const stored = await tx.select().from(rounds).where(inArray(rounds.matchId, rows.map((row) => row.matchId)));
+      const claims: ClaimedMatchRetryJob[] = [];
+      for (const row of rows) {
+        const claimToken = randomUUID(); const generation = row.generation + 1;
+        const nextRetryAt = new Date(now.getTime() + leaseMs); const attemptCount = row.attemptCount + 1;
+        await tx.update(matchPersistenceJobs).set({ status: "retrying", attemptCount, claimToken, generation, leaseUntil: nextRetryAt, nextRetryAt, lastSanitizedCode: null, updatedAt: now }).where(and(eq(matchPersistenceJobs.matchId, row.matchId), eq(matchPersistenceJobs.generation, row.generation)));
+        claims.push({ ...this.#decodeJob({ ...row, status: "retrying", attemptCount, claimToken, generation, leaseUntil: nextRetryAt, nextRetryAt }, stored.filter((round) => round.matchId === row.matchId)), claimToken, generation });
+      }
+      return claims;
+    });
+  }
+  async retryFailedMatch(matchId: string, options: Readonly<{ manual?: boolean; claimToken?: string; generation?: number }> = {}): Promise<"created" | "replayed"> {
     const job = await this.db.transaction(async (tx) => {
       const [row] = await tx.select().from(matchPersistenceJobs).where(eq(matchPersistenceJobs.matchId, matchId)).for("update").limit(1);
       if (!row) throw new MatchPersistenceConflictError();
       if (row.status === "completed") return null;
       if (!options.manual && row.attemptCount >= 10) throw new MatchPersistenceConflictError();
-      if (row.status === "retrying" && row.nextRetryAt > new Date()) throw new MatchPersistenceConflictError();
-      const attemptCount = row.attemptCount + 1;
-      await tx.update(matchPersistenceJobs).set({ status: "retrying", attemptCount, nextRetryAt: new Date(Date.now() + 30_000), lastSanitizedCode: null, updatedAt: new Date() }).where(eq(matchPersistenceJobs.matchId, matchId));
+      const claimed = options.claimToken !== undefined;
+      if (claimed && (row.claimToken !== options.claimToken || row.generation !== options.generation || row.status !== "retrying")) throw new MatchPersistenceConflictError();
+      if (!claimed && row.status === "retrying" && row.nextRetryAt > new Date()) throw new MatchPersistenceConflictError();
+      const attemptCount = claimed ? row.attemptCount : row.attemptCount + 1;
+      const claimToken = claimed ? row.claimToken! : randomUUID();
+      const generation = claimed ? row.generation : row.generation + 1;
+      const leaseUntil = claimed ? row.leaseUntil! : new Date(Date.now() + 30_000);
+      if (!claimed) await tx.update(matchPersistenceJobs).set({ status: "retrying", attemptCount, claimToken, generation, leaseUntil, nextRetryAt: leaseUntil, lastSanitizedCode: null, updatedAt: new Date() }).where(eq(matchPersistenceJobs.matchId, matchId));
       const stored = await tx.select().from(rounds).where(eq(rounds.matchId, matchId));
-      return { job: this.#decodeJob(row, stored), attemptCount };
+      return { job: this.#decodeJob({ ...row, status: "retrying", attemptCount, claimToken, generation, leaseUntil, nextRetryAt: leaseUntil }, stored), attemptCount, claimToken, generation };
     });
     if (!job) return "replayed";
     try {
       const result = await this.saveCompletedMatch(job.job.payload);
-      await this.db.update(matchPersistenceJobs).set({ status: "completed", completedAt: new Date(), lastSanitizedCode: null, updatedAt: new Date() }).where(eq(matchPersistenceJobs.matchId, matchId));
+      const completed = await this.db.update(matchPersistenceJobs).set({ status: "completed", completedAt: new Date(), claimToken: null, leaseUntil: null, lastSanitizedCode: null, updatedAt: new Date() }).where(and(eq(matchPersistenceJobs.matchId, matchId), eq(matchPersistenceJobs.claimToken, job.claimToken), eq(matchPersistenceJobs.generation, job.generation))).returning({ matchId: matchPersistenceJobs.matchId });
+      if (completed.length !== 1) throw new MatchPersistenceConflictError();
       return result;
     } catch (error) {
       const manualOnly = error instanceof MatchPersistenceConflictError || error instanceof z.ZodError || error instanceof RangeError;
       const exhausted = job.attemptCount >= 10;
       const jitter = Number.parseInt(createHash("sha256").update(`${matchId}:${job.attemptCount}`).digest("hex").slice(0, 2), 16) / 255 * .2;
       const delay = Math.min(300_000, Math.round(1_000 * (2 ** Math.max(0, job.attemptCount - 1)) * (1 + jitter)));
-      await this.db.update(matchPersistenceJobs).set({ status: "failed", nextRetryAt: new Date(manualOnly || exhausted ? 8_640_000_000_000_000 : Date.now() + delay), lastSanitizedCode: manualOnly ? "MATCH_PERSISTENCE_CONFLICT" : exhausted ? "MATCH_RETRY_EXHAUSTED" : "MATCH_SAVE_FAILED", updatedAt: new Date() }).where(eq(matchPersistenceJobs.matchId, matchId));
+      await this.db.update(matchPersistenceJobs).set({ status: "failed", claimToken: null, leaseUntil: null, nextRetryAt: new Date(manualOnly || exhausted ? 8_640_000_000_000_000 : Date.now() + delay), lastSanitizedCode: manualOnly ? "MATCH_PERSISTENCE_CONFLICT" : exhausted ? "MATCH_RETRY_EXHAUSTED" : "MATCH_SAVE_FAILED", updatedAt: new Date() }).where(and(eq(matchPersistenceJobs.matchId, matchId), eq(matchPersistenceJobs.claimToken, job.claimToken), eq(matchPersistenceJobs.generation, job.generation)));
       throw error;
     }
   }
