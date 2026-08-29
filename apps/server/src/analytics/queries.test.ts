@@ -33,11 +33,12 @@ describe("analytics query contracts", () => {
 
   it("drops parameter groups below ten completed matches and maps launch distribution", () => {
     const result = normalizeParameterRows([
-      { dimension:"totalMassGBucket",value:{fromG:40,toG:45},launchGrade:"Perfect",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"10",participantObservations:"12",averageScore:"1.75",winRate:"0.6",opponentAverageStrength:"64",expectedWinRate:"0.45",outcomeResidual:"0.15",totalGroups:"20" },
-      { dimension:"holes",value:{count:4},launchGrade:"Good",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"9",participantObservations:"9",averageScore:"2",winRate:"1",opponentAverageStrength:"60",expectedWinRate:"0.5",outcomeResidual:"0.5",totalGroups:"20" },
+      { dimension:"totalMassGBucket",value:{fromG:40,toG:45},launchGrade:"Perfect",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"10",participantObservations:"12",averageScore:"1.75",winRate:"0.6",opponentAverageStrength:"64",expectedWinRate:"0.45",outcomeResidual:"0.15",perfectCount:"2",greatCount:"0",goodCount:"1",missCount:"0",totalGroups:"20" },
+      { dimension:"holes",value:{count:4},launchGrade:"Good",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"9",participantObservations:"9",averageScore:"2",winRate:"1",opponentAverageStrength:"60",expectedWinRate:"0.5",outcomeResidual:"0.5",perfectCount:"0",greatCount:"0",goodCount:"1",missCount:"0",totalGroups:"20" },
     ]);
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ dimension:"totalMassGBucket",sampleSize: 10, averageScore: 1.75, winRate: 0.6, launchGrade:"Perfect",opponentStrengthBand:"medium" });
+    expect(result[0]?.launchOccurrences).toEqual({Perfect:2,Great:0,Good:1,Miss:0});
     expect(Object.keys(result[0] ?? {})).not.toContain("studentName");
   });
 });
@@ -65,9 +66,9 @@ describe("analytics summary cache", () => {
   });
   it("pages an immutable signed snapshot without skips when source rows mutate",async()=>{
     const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};
-    let source=[0,1,2,3,4];const service=new AnalyticsService(cache,async()=>[],async()=>source,async()=>[],()=>new Date("2026-08-01T00:00:00Z"),Buffer.alloc(32,7));
-    const first=await service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2);expect(first).toMatchObject({rows:[0,1],total:5,hasMore:true});
-    source=[-1,...source,5];const second=await service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2,first.nextCursor!);expect(second.rows).toEqual([2,3]);
+    let source=[0,1,2,3,4];const service=new AnalyticsService(cache,async()=>[],async(_filters,page)=>source.filter(value=>value>=0).slice(page?.offset??0,(page?.offset??0)+(page?.limit??source.length)).map(value=>typeof value==="number"?value:value),async()=>[],()=>new Date("2026-08-01T00:00:00Z"),Buffer.alloc(32,7));
+    const first=await service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2);expect(first).toMatchObject({rows:[0,1],hasMore:true});
+    source=[...source,5];const second=await service.parameterPage({from:"2026-08-01",to:"2026-08-02"},2,first.nextCursor!);expect(second.rows).toEqual([2,3]);
     await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-03"},2,first.nextCursor!)).rejects.toThrow("INVALID_ANALYTICS_CURSOR");
     await expect(service.parameterPage({from:"2026-08-01",to:"2026-08-02"},101)).rejects.toThrow("INVALID_ANALYTICS_PAGE");
   });
@@ -80,6 +81,11 @@ describe("analytics summary cache", () => {
     const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};let boundaries=0;
     const service=new AnalyticsService(cache,async()=>[],async()=>[],async()=>[],()=>new Date("2026-08-01T00:00:00Z"),Buffer.alloc(32,8),async(operation)=>{boundaries++;return operation();});
     await service.query({from:"2026-08-01",to:"2026-08-02"});expect(boundaries).toBe(1);
+  });
+  it("defines high and low rankings primarily by average score",async()=>{
+    const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};const high={averageScore:2,winRate:.5,sampleSize:10,outcomeResidual:-.4,totalGroups:2};const low={averageScore:1,winRate:1,sampleSize:20,outcomeResidual:.9,totalGroups:2};
+    const service=new AnalyticsService(cache,async()=>[],async(_filters,page)=>page?.order==="high"?[high,low]:page?.order==="low"?[low,high]:[high,low]);
+    const summary=await service.query({from:"2026-08-01",to:"2026-08-02"});expect(summary.rankings.top[0]).toBe(high);expect(summary.rankings.bottom[0]).toBe(low);
   });
 
   it("coalesces refreshes and returns a fresh cached summary", async () => {

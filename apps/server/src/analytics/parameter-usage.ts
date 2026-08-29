@@ -37,16 +37,16 @@ export async function parameterUsage(db: PostgresJsDatabase<typeof schema>, inpu
     ), observations as (
       select 'layerShape'::text dimension,jsonb_build_object('position',l.position::text,'shape',l.shape::text) value,d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id
       union all select 'layerSides',jsonb_build_object('position',l.position::text,'label',case l.shape when 'circle' then 'NA' when 'polygon' then 'sides' when 'star' then 'points' else 'lobes' end,'value',case when l.shape='circle' then null else l.points end),d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id
-      union all select 'layerActualArea',jsonb_build_object('position',l.position::text,'diameterMm',l.diameter_mm,'actualAreaMm2',l.actual_area_mm2),d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id
+      union all select 'layerActualArea',jsonb_build_object('position',l.position::text,'fromMm2',floor(l.actual_area_mm2/250)*250,'toMm2',floor(l.actual_area_mm2/250)*250+250),d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id
       union all select 'holes',jsonb_build_object('count',d.screw_count),d.performance_model_version from filtered_designs d
-      union all select 'weight',jsonb_build_object('totalMassG',round(d.total_mass_g,1)),d.performance_model_version from filtered_designs d
+      union all select 'weight',jsonb_build_object('fromG',floor(d.total_mass_g/5)*5,'toG',floor(d.total_mass_g/5)*5+5),d.performance_model_version from filtered_designs d
       union all select 'layerOrder',jsonb_build_object('order',o.value),o.performance_model_version from layer_orders o
       union all select 'metalDiscDiameter',jsonb_build_object('diameterMm',d.metal_disc_diameter_mm,'placement','under_bottom','none',(d.metal_disc_diameter_mm=0)),d.performance_model_version from filtered_designs d
     ), grouped as (
       select dimension,value,performance_model_version,count(*)::bigint count from observations group by dimension,value,performance_model_version
     )
     select ${scope}::text scope,dimension,value,count::text,sum(count) over(partition by dimension,performance_model_version)::text total,performance_model_version "performanceModelVersion"
-    from grouped order by performance_model_version,dimension,value::text
+    from grouped order by performance_model_version,dimension,count desc,value::text limit 2000
   `);
   return normalizeParameterUsage(rows as unknown as SqlRow[]);
 }

@@ -98,6 +98,7 @@ export type BuildAppOptions = Readonly<{
   webClipTokens?: WebClipTokenService;
   iClassStatus?: "api" | "csv" | "api-csv-fallback" | "disabled";
   testIdentityResolver?: (request: IncomingMessage, testAuth?: Record<string, unknown>) => Promise<Readonly<{ identityId: string; displayName: string }> | null>;
+  testRecordIdentityActivity?: (request:IncomingMessage)=>Promise<void>;
   adminAuth?: AdminAuthService;
   adminClientKeyResolver?: ClientKeyResolver;
   adminClientAddressResolver?: ClientKeyResolver;
@@ -127,6 +128,7 @@ function requireNonnegative(name: string, value: number): number {
 export function buildApp(options: BuildAppOptions): BuiltApp {
   if (options.requireAuthorityLease && (!options.roomRecordRepository?.acquireStartupLease || !options.roomRecordRepository.verifyStartupLease || !options.roomRecordRepository.releaseStartupLease)) throw new TypeError("Authority lease lifecycle is required");
   if (process.env.NODE_ENV === "production" && options.testIdentityResolver) throw new TypeError("testIdentityResolver is forbidden in production");
+  if (process.env.NODE_ENV === "production" && options.testRecordIdentityActivity) throw new TypeError("testRecordIdentityActivity is forbidden in production");
   if (process.env.NODE_ENV === "production" && !options.allowedOrigins?.length) {
     throw new TypeError("Production composition requires allowedOrigins");
   }
@@ -331,7 +333,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     clientKeyResolver: safeClientKey,
     diagnosticIpResolver: diagnosticIp,
     authenticateIdentity: options.testIdentityResolver ?? authenticateIdentity,
-    ...(options.identityResolver?{recordIdentityActivity:async(request:IncomingMessage)=>{await options.identityResolver!.recordActivity(cookieFromRequest(request));}}:{}),
+    ...(options.testRecordIdentityActivity?{recordIdentityActivity:options.testRecordIdentityActivity}:options.identityResolver?{recordIdentityActivity:async(request:IncomingMessage)=>{await options.identityResolver!.recordActivity(cookieFromRequest(request));}}:{}),
     maxRooms: config.maxRooms,
     maxOwnedRoomsPerSession: config.maxOwnedRoomsPerSession,
     maxMatchAttempts: config.maxMatchAttempts,
