@@ -34,6 +34,8 @@ const durableTables = [
   schema.adminSessions,
   schema.adminAudit,
   schema.deletionAudit,
+  schema.deletionOperations,
+  schema.deletionLedgerOutbox,
 ] as const;
 
 describe("persistent PostgreSQL schema", () => {
@@ -52,6 +54,8 @@ describe("persistent PostgreSQL schema", () => {
       "admin_sessions",
       "admin_audit",
       "deletion_audit",
+      "deletion_operations",
+      "deletion_ledger_outbox",
     ]);
   });
 

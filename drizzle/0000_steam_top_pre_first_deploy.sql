@@ -157,6 +157,30 @@ CREATE TABLE "deletion_audit" (
 	CONSTRAINT "deletion_audit_counts_nonnegative" CHECK ("deletion_audit"."preview_count" >= 0 and "deletion_audit"."deleted_identity_count" >= 0 and "deletion_audit"."deleted_design_count" >= 0 and "deletion_audit"."deleted_match_count" >= 0)
 );
 --> statement-breakpoint
+CREATE TABLE "deletion_operations" (
+	"audit_id" uuid PRIMARY KEY NOT NULL,
+	"source_instance_id" uuid NOT NULL,
+	"operation_digest" text NOT NULL,
+	"status" varchar(16) DEFAULT 'pending' NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"terminal_at" timestamp with time zone,
+	CONSTRAINT "deletion_operations_digest_format" CHECK ("deletion_operations"."operation_digest" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "deletion_operations_status_valid" CHECK ("deletion_operations"."status" in ('pending','committed','aborted')),
+	CONSTRAINT "deletion_operations_terminal_consistent" CHECK (("deletion_operations"."status" = 'pending' and "deletion_operations"."terminal_at" is null) or ("deletion_operations"."status" in ('committed','aborted') and "deletion_operations"."terminal_at" is not null))
+);
+--> statement-breakpoint
+CREATE TABLE "deletion_ledger_outbox" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"audit_id" uuid NOT NULL,
+	"operation_digest" text NOT NULL,
+	"terminal" varchar(1) NOT NULL,
+	"completed_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "deletion_ledger_outbox_digest_format" CHECK ("deletion_ledger_outbox"."operation_digest" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "deletion_ledger_outbox_terminal_valid" CHECK ("deletion_ledger_outbox"."terminal" in ('C','A'))
+);
+--> statement-breakpoint
 CREATE TABLE "deletion_previews" (
 	"token_hash" text PRIMARY KEY NOT NULL,
 	"admin_user_id" uuid NOT NULL,
@@ -417,6 +441,7 @@ ALTER TABLE "admin_reauth_grants" ADD CONSTRAINT "admin_reauth_grants_admin_user
 ALTER TABLE "admin_reauth_grants" ADD CONSTRAINT "admin_reauth_grants_admin_session_id_admin_sessions_id_fk" FOREIGN KEY ("admin_session_id") REFERENCES "public"."admin_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "admin_sessions" ADD CONSTRAINT "admin_sessions_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_audit" ADD CONSTRAINT "deletion_audit_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deletion_ledger_outbox" ADD CONSTRAINT "deletion_ledger_outbox_audit_id_deletion_operations_audit_id_fk" FOREIGN KEY ("audit_id") REFERENCES "public"."deletion_operations"("audit_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_previews" ADD CONSTRAINT "deletion_previews_admin_user_id_admin_users_id_fk" FOREIGN KEY ("admin_user_id") REFERENCES "public"."admin_users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_previews" ADD CONSTRAINT "deletion_previews_admin_session_id_admin_sessions_id_fk" FOREIGN KEY ("admin_session_id") REFERENCES "public"."admin_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_preview_identities" ADD CONSTRAINT "deletion_preview_identities_token_hash_deletion_previews_token_hash_fk" FOREIGN KEY ("token_hash") REFERENCES "public"."deletion_previews"("token_hash") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -452,6 +477,9 @@ CREATE INDEX "admin_sessions_active_idx" ON "admin_sessions" USING btree ("admin
 CREATE UNIQUE INDEX "admin_users_username_lower_uidx" ON "admin_users" USING btree (lower("username"));--> statement-breakpoint
 CREATE INDEX "deletion_audit_completed_at_idx" ON "deletion_audit" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "deletion_audit_admin_completed_idx" ON "deletion_audit" USING btree ("admin_user_id","completed_at");--> statement-breakpoint
+CREATE INDEX "deletion_operations_status_created_idx" ON "deletion_operations" USING btree ("status","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "deletion_ledger_outbox_audit_terminal_uidx" ON "deletion_ledger_outbox" USING btree ("audit_id","terminal");--> statement-breakpoint
+CREATE INDEX "deletion_ledger_outbox_pending_idx" ON "deletion_ledger_outbox" USING btree ("completed_at","created_at");--> statement-breakpoint
 CREATE INDEX "deletion_previews_expiry_idx" ON "deletion_previews" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "deletion_previews_admin_session_idx" ON "deletion_previews" USING btree ("admin_session_id","expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "design_layers_design_order_uidx" ON "design_layers" USING btree ("design_id","layer_order");--> statement-breakpoint
