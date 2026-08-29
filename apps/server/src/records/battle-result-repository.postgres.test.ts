@@ -39,6 +39,16 @@ it.skipIf(!databaseUrl)("holds a dedicated single-instance advisory lock until r
   await second.releaseStartupLease();
 });
 
+it.skipIf(!databaseUrl)("detects a terminated lease backend and permits takeover", async () => {
+  const first = new PostgresRoomRecordRepository(client.db, client.sql); const second = new PostgresRoomRecordRepository(client.db, client.sql);
+  await first.acquireStartupLease(); const pid = first.startupLeaseBackendPidForTesting!;
+  await client.sql`select pg_terminate_backend(${pid})`;
+  await expect(first.verifyStartupLease()).rejects.toThrow();
+  await expect(second.acquireStartupLease()).resolves.toBeUndefined();
+  await second.releaseStartupLease();
+  await first.releaseStartupLease().catch(() => undefined);
+});
+
 it.skipIf(!databaseUrl)("projects room owner, phases, first battle metadata and closure idempotently", async () => {
   const ownerIdentityId = randomUUID(); const challengerIdentityId = randomUUID(); const roomId = randomUUID();
   await client.db.insert(identities).values([{ id: ownerIdentityId, status: "guest", displayName: "Owner" }, { id: challengerIdentityId, status: "guest", displayName: "Challenger" }]);
