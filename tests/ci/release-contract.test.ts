@@ -121,6 +121,11 @@ describe("rollback deletion monotonicity", () => {
     expect(promotion).toContain("allow_connections false");
     expect(promotion).toContain("PROMOTE_MAINTENANCE_PGSERVICE");
     expect(promotion).toContain("connections-disabled");
+    expect(promotion).toContain("revoke connect on database %I from public");
+    expect(promotion).toContain("promotion-ready");
+    expect(promotion).toContain("RECOVERY-REQUIRED");
+    expect(read("infra/backup/finalize-cutover.sh")).toContain("DATABASE_URL_CUTOVER_SUCCEEDED");
+    expect(read(".github/workflows/db.yml")).toContain("test-promotion-isolation.sh");
     expect(promotion.indexOf("allow_connections false")).toBeLessThan(promotion.indexOf("pg_terminate_backend"));
     expect(promotion.indexOf("pg_terminate_backend")).toBeLessThan(promotion.indexOf("pg_advisory_xact_lock"));
     expect(promotion).toMatch(/cleanup\(\)[\s\S]*allow_connections true/u);

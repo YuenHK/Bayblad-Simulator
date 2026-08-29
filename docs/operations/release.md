@@ -29,3 +29,9 @@
 只有 preflight 證明外部 tombstone ledger 未前進，才可在全新隔離 PostgreSQL/volume 還原。先停止 app/migration 及網路入口，再設定 `PROMOTE_PGSERVICE`、連至 maintenance DB 的 `PROMOTE_MAINTENANCE_PGSERVICE`、`PROMOTE_APP_ROLE`、`PROMOTE_CONFIRM_DATABASE`及其他驗證變數。執行帳號必須是 DB owner/superuser，並有 `pg_signal_backend`。腳本會在現有控制 session 內先 `ALLOW_CONNECTIONS false`、終止其他 session、證明隔離，才進入 advisory-lock validation/marker transaction；trap 在成功或失敗都透過 maintenance service 恢復 `ALLOW_CONNECTIONS true`。
 
 回復後重跑全部 smoke test，核對 migration ledger、restore target ID、刪除 ledger 及對戰記錄。保留時間、執行人、原因、前後 digest、備份 manifest 與驗證結果。
+
+## Rollback 及 cutover 硬關卡
+
+Rollback operator 只能輸入 previous release；current release 必須從 GitHub 最新成功 `production` Deployment payload 解析。`production-rollback-approval` 必須在 repository 設定 required reviewers 及 deployment branch policy，`verify-rollback-go-live.mjs` 以具 Environments 讀取權限的 token 查 API，未配置即 fail closed。
+
+Promotion 成功後只寫 private `promotion-ready`，PUBLIC 及 app role 仍無 CONNECT。完成外部 `DATABASE_URL` cutover 後，設定 `CUTOVER_CONFIRM=DATABASE_URL_CUTOVER_SUCCEEDED` 執行 `finalize-cutover.sh <promotion-ready>` 才 grant app role，PUBLIC 永不 grant。預留不依賴 app ACL 的 emergency maintenance role。若出現 root/private `RECOVERY-REQUIRED`，保留 incident 目錄，用 maintenance service 執行 `ALTER DATABASE <PROMOTE_CONFIRM_DATABASE> ALLOW_CONNECTIONS true;`，核對 ACL 後才解除事故狀態。

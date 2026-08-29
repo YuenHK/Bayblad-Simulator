@@ -2,54 +2,60 @@ name: Authorize application rollback
 on:
   workflow_dispatch:
     inputs:
-      previous_run_id: { description: "Trusted release workflow run id", required: true, type: string }
-      previous_artifact: { description: "Previous release artifact name", required: true, type: string }
-      previous_manifest_sha256: { description: "Previous manifest SHA-256", required: true, type: string }
-      previous_commit: { description: "Previous 40-character commit", required: true, type: string }
-      current_run_id: { description: "Trusted release workflow run id", required: true, type: string }
-      current_artifact: { description: "Current release artifact name", required: true, type: string }
-      current_manifest_sha256: { description: "Current manifest SHA-256", required: true, type: string }
-      current_commit: { description: "Current 40-character commit", required: true, type: string }
-permissions:
-  contents: read
+      previous_run_id: { required: true, type: string }
+      previous_artifact: { required: true, type: string }
+      previous_manifest_sha256: { required: true, type: string }
+      previous_commit: { required: true, type: string }
+permissions: { contents: read }
 jobs:
   authorize:
     environment: production-rollback-approval
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    permissions: { contents: read, actions: read, id-token: write, attestations: write }
+    permissions: { contents: read, actions: read, deployments: read, id-token: write, attestations: write }
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with: { persist-credentials: false }
-      - name: Validate immutable operator inputs
-        env:
-          PREVIOUS_RUN: ${{ inputs.previous_run_id }}
-          CURRENT_RUN: ${{ inputs.current_run_id }}
-          PREVIOUS_ARTIFACT: ${{ inputs.previous_artifact }}
-          CURRENT_ARTIFACT: ${{ inputs.current_artifact }}
-          PREVIOUS_SHA: ${{ inputs.previous_manifest_sha256 }}
-          CURRENT_SHA: ${{ inputs.current_manifest_sha256 }}
-          PREVIOUS_COMMIT: ${{ inputs.previous_commit }}
-          CURRENT_COMMIT: ${{ inputs.current_commit }}
-        run: node scripts/validate-rollback-inputs.mjs
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with: { name: "${{ inputs.previous_artifact }}", run-id: "${{ inputs.previous_run_id }}", github-token: "${{ github.token }}", path: sources/previous }
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with: { name: "${{ inputs.current_artifact }}", run-id: "${{ inputs.current_run_id }}", github-token: "${{ github.token }}", path: sources/current }
-      - name: Verify both source subjects and rebuild the mixed manifest
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Resolve trusted sources
+        env: { GH_TOKEN: "${{ github.token }}", PREVIOUS_RUN: "${{ inputs.previous_run_id }}", PREVIOUS_ARTIFACT: "${{ inputs.previous_artifact }}", PREVIOUS_SHA: "${{ inputs.previous_manifest_sha256 }}", PREVIOUS_COMMIT: "${{ inputs.previous_commit }}" }
         run: |
           set -euo pipefail
-          test "$(./scripts/portable-sha256.sh digest sources/previous/release-manifest.json)" = '${{ inputs.previous_manifest_sha256 }}'
-          test "$(./scripts/portable-sha256.sh digest sources/current/release-manifest.json)" = '${{ inputs.current_manifest_sha256 }}'
-          gh attestation verify sources/previous/release-manifest.json --repo "$GITHUB_REPOSITORY"
-          gh attestation verify sources/current/release-manifest.json --repo "$GITHUB_REPOSITORY"
-          mkdir -p release
-          node scripts/create-authorized-rollback.mjs sources/previous/release-manifest.json sources/current/release-manifest.json '${{ inputs.previous_commit }}' '${{ inputs.current_commit }}' release/release-manifest.json
+          node scripts/validate-rollback-inputs.mjs
+          node scripts/verify-rollback-go-live.mjs "$GITHUB_REPOSITORY" production-rollback-approval
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN" > previous-run.json
+          tag=$(node scripts/verify-release-run.mjs previous-run.json "$PREVIOUS_COMMIT")
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.ref + " " + .object.sha' | grep -Fx "refs/tags/$tag $PREVIOUS_COMMIT"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN/artifacts" > previous-artifacts.json
+          node scripts/verify-run-artifact.mjs previous-artifacts.json "$PREVIOUS_ARTIFACT"
+          gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" > deployment.json
+          deployment_id=$(node -p 'require("./deployment.json")[0].id')
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses?per_page=1" > deployment-status.json
+          node scripts/resolve-current-deployment.mjs deployment.json deployment-status.json current-state.json
+          for pair in CURRENT_RUN:runId CURRENT_ARTIFACT:artifact CURRENT_SHA:manifestSha256 CURRENT_COMMIT:commit; do key=${pair%%:*}; field=${pair#*:}; value=$(node -p "require('./current-state.json').$field"); echo "$key=$value" >> "$GITHUB_ENV"; done
+          current_run=$(node -p 'require("./current-state.json").runId'); current_commit=$(node -p 'require("./current-state.json").commit'); current_artifact=$(node -p 'require("./current-state.json").artifact')
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$current_run" > current-run.json
+          current_tag=$(node scripts/verify-release-run.mjs current-run.json "$current_commit")
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$current_tag" --jq '.ref + " " + .object.sha' | grep -Fx "refs/tags/$current_tag $current_commit"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$current_run/artifacts" > current-artifacts.json
+          node scripts/verify-run-artifact.mjs current-artifacts.json "$current_artifact"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: "${{ inputs.previous_artifact }}", run-id: "${{ inputs.previous_run_id }}", github-token: "${{ github.token }}", path: sources/previous }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: "${{ env.CURRENT_ARTIFACT }}", run-id: "${{ env.CURRENT_RUN }}", github-token: "${{ github.token }}", path: sources/current }
+      - name: Verify and rebuild
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -euo pipefail
+          test "$(./scripts/portable-sha256.sh digest sources/previous/release-manifest.json)" = "$PREVIOUS_SHA"
+          test "$(./scripts/portable-sha256.sh digest sources/current/release-manifest.json)" = "$CURRENT_SHA"
+          gh attestation verify sources/previous/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          gh attestation verify sources/current/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          mkdir release
+          node scripts/create-authorized-rollback.mjs sources/previous/release-manifest.json sources/current/release-manifest.json "$PREVIOUS_COMMIT" "$CURRENT_COMMIT" "$GITHUB_REPOSITORY" release/release-manifest.json
           ./scripts/portable-sha256.sh manifest release release-manifest.json > release/SHA256SUMS
-          ./scripts/portable-sha256.sh digest release/release-manifest.json | tee release/EXTERNAL-MANIFEST-SHA256
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+          ./scripts/portable-sha256.sh digest release/release-manifest.json > release/EXTERNAL-MANIFEST-SHA256
+          printf '{"previousRun":"%s","previousCommit":"%s","currentRun":"%s","currentCommit":"%s"}\n' "$PREVIOUS_RUN" "$PREVIOUS_COMMIT" "$CURRENT_RUN" "$CURRENT_COMMIT" > release/ROLLBACK-SOURCES.json
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: { subject-path: release/release-manifest.json }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with: { name: "authorized-rollback-${{ inputs.previous_commit }}", path: release/, if-no-files-found: error, retention-days: 90 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: { name: "authorized-rollback-${{ inputs.previous_commit }}-${{ env.CURRENT_COMMIT }}-${{ github.run_id }}", path: release/, if-no-files-found: error, retention-days: 90 }
