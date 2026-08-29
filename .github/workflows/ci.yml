@@ -14,6 +14,7 @@ env:
 jobs:
   quality:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
@@ -41,6 +42,7 @@ jobs:
       - run: pnpm test:e2e
   production-security:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     needs: quality
     env:
       PUBLIC_ORIGIN: https://localhost
@@ -108,6 +110,7 @@ jobs:
   release-images:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     needs: [quality, production-security]
     permissions: { contents: read, packages: write }
     steps:

@@ -3,21 +3,22 @@ set -euo pipefail
 umask 077
 die(){ echo "restore refused: $1" >&2;exit 1;}
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
+# shellcheck source=host-trust-guard.sh
+source "$script_dir/host-trust-guard.sh"
 guard_pid="";ready_dir="";expected_signed="";cleanup(){ if [[ -n $guard_pid ]];then kill "$guard_pid" >/dev/null 2>&1||true;wait "$guard_pid" >/dev/null 2>&1||true;fi;[[ -n $expected_signed ]]&&rm -f "$expected_signed";[[ -n $ready_dir && -d $ready_dir && ! -L $ready_dir ]]&&rm -rf "$ready_dir";};trap cleanup EXIT;trap 'cleanup;exit 130' INT TERM
 [[ $# -eq 1 ]]||die "pass exactly one completed backup directory";backup_set=$1
 for name in RESTORE_PGSERVICE PGSERVICEFILE PGPASSFILE RESTORE_CONFIRM_DATABASE AGE_IDENTITY_FILE DELETION_LEDGER_FILE RESTORE_ALLOWED_TARGET_ID NONPROD_RESTORE_CONFIRM BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID;do [[ -n ${!name:-} ]]||die "$name is required";done
 [[ -z ${RESTORE_DATABASE_URL:-} && -z ${DATABASE_URL:-} ]]||die "database URLs are forbidden; use libpq service/passfile"
+backup_reject_libpq_overrides RESTORE_PGSERVICE||die "libpq trust boundary"
 [[ $RESTORE_PGSERVICE =~ ^[A-Za-z0-9_.-]{1,64}$ ]]||die "RESTORE_PGSERVICE is invalid"
-while IFS='=' read -r name _;do case "$name" in PGSERVICEFILE|PGPASSFILE) :;; PG*)die "libpq override $name is forbidden";;esac;done < <(env)
 [[ $NONPROD_RESTORE_CONFIRM == RESTORE_NONPRODUCTION_DATA && ${APP_ENV:-} != production && ${NODE_ENV:-} != production ]]||die "production/confirmation guard"
 for command_name in age pg_restore psql ssh-keygen;do command -v "$command_name" >/dev/null 2>&1||die "$command_name is required";done
 base=${backup_set##*/};[[ $base =~ ^steam-top-[0-9]{8}T[0-9]{6}Z-[0-9]{6}\.backup$ && -d $backup_set && ! -L $backup_set && -f $backup_set/COMPLETE && $(<"$backup_set/COMPLETE") == complete ]]||die "backup set is incomplete or unsafe"
 for file in dump.age checksum.sha256 manifest SIGNED-METADATA signature deletion-ledger.log;do [[ -f $backup_set/$file && ! -L $backup_set/$file ]]||die "backup set missing $file";done
-private_file(){ local value=$1 mode uid;[[ -f $value && ! -L $value ]]||die "private file unsafe";if stat -c '%a %u' "$value" >/dev/null 2>&1;then read -r mode uid < <(stat -c '%a %u' "$value");else read -r mode uid < <(stat -f '%Lp %u' "$value");fi;[[ $uid == "$(id -u)" && $((8#$mode&077)) -eq 0 ]]||die "private file owner/mode unsafe";}
-private_file "$AGE_IDENTITY_FILE";private_file "$DELETION_LEDGER_FILE";private_file "$PGSERVICEFILE";private_file "$PGPASSFILE";private_file "$BACKUP_ALLOWED_SIGNERS_FILE"
+for private in "$AGE_IDENTITY_FILE" "$DELETION_LEDGER_FILE" "$PGSERVICEFILE" "$PGPASSFILE" "$BACKUP_ALLOWED_SIGNERS_FILE";do backup_private_file "$private"||die "private file trust boundary";done
 DELETION_LEDGER_CLI="$script_dir/../../apps/server/dist/admin/deletion-ledger-cli.js";cli_manifest="$script_dir/trusted-ledger-cli.sha256"
-deployment_root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);[[ $(id -u) -ne 0 ]]||die "restore runtime must be non-root";stat_owner_mode(){ if stat -c '%u %a' "$1" >/dev/null 2>&1;then stat -c '%u %a' "$1";else stat -f '%u %Lp' "$1";fi;}
-for directory in "$deployment_root" "$script_dir" "${DELETION_LEDGER_CLI%/*}";do [[ -d $directory && ! -L $directory ]]||die "deployment directory is unsafe";read -r owner mode < <(stat_owner_mode "$directory");[[ $owner == 0 && $((8#$mode&022)) -eq 0 ]]||die "deployment directory must be root-owned and non-writable";done
+deployment_root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);stat_owner_mode(){ if stat -c '%u %a' "$1" >/dev/null 2>&1;then stat -c '%u %a' "$1";else stat -f '%u %Lp' "$1";fi;}
+backup_trusted_deployment "$deployment_root" "$script_dir" "${DELETION_LEDGER_CLI%/*}"||die "deployment trust boundary"
 [[ -f $DELETION_LEDGER_CLI && ! -L $DELETION_LEDGER_CLI && -f $cli_manifest && ! -L $cli_manifest ]]||die "ledger CLI trust files are unsafe";read -r cli_owner cli_mode < <(stat_owner_mode "$DELETION_LEDGER_CLI");read -r manifest_owner manifest_mode < <(stat_owner_mode "$cli_manifest");[[ $cli_owner == 0 && $manifest_owner == 0 && $cli_mode == 555 && $manifest_mode == 444 ]]||die "ledger CLI must be root:0555 and manifest root:0444";read -r trusted_cli_sha trusted_cli_name extra <"$cli_manifest";[[ -z ${extra:-} && $trusted_cli_name == apps/server/dist/admin/deletion-ledger-cli.js && $trusted_cli_sha =~ ^[a-f0-9]{64}$ ]]||die "ledger CLI trust manifest invalid";if command -v sha256sum >/dev/null 2>&1;then cli_sha=$(sha256sum "$DELETION_LEDGER_CLI"|awk '{print $1}');else cli_sha=$(shasum -a 256 "$DELETION_LEDGER_CLI"|awk '{print $1}');fi;[[ $cli_sha == "$trusted_cli_sha" ]]||die "ledger CLI digest mismatch"
 ready_dir=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-ledger-guard.XXXXXX");chmod 700 "$ready_dir";ready_file="$ready_dir/ready";node "$DELETION_LEDGER_CLI" hold-lock "$DELETION_LEDGER_FILE" "$ready_file" & guard_pid=$!
 for _ in {1..100};do [[ -f $ready_file && ! -L $ready_file && $(<"$ready_file") == ready ]]&&break;kill -0 "$guard_pid" >/dev/null 2>&1||die "ledger guard exited";sleep 0.1;done;[[ -f $ready_file && ! -L $ready_file && $(<"$ready_file") == ready ]]||die "ledger guard readiness timeout"
