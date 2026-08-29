@@ -358,6 +358,11 @@ describe("persistent PostgreSQL schema", () => {
     expect(sql).toContain("set_row_updated_at");
     expect(sql).toContain("designs_battle_eligible_three_layers");
     expect(sql).toContain("room_participants_active_player_seat_uidx");
+    expect(sql).toContain("identity_sessions_active_expires_at_idx");
+    const adminSessionSql = sql.match(/CREATE TABLE "admin_sessions" \([\s\S]*?\n\);/)?.[0];
+    const identitySessionSql = sql.match(/CREATE TABLE "identity_sessions" \([\s\S]*?\n\);/)?.[0];
+    expect(adminSessionSql).not.toContain('"archived_at"');
+    expect(identitySessionSql).toContain('"archived_at" timestamp with time zone');
     expect(sql).not.toContain("identities_guest_display_name_uidx");
     expect(sql).toContain("ON DELETE set null");
     expect(sql).toContain("ON DELETE cascade");
@@ -381,5 +386,10 @@ describe("persistent PostgreSQL schema", () => {
     expect(journal.entries).toEqual([
       expect.objectContaining({ tag: "0000_steam_top_pre_first_deploy" }),
     ]);
+    const snapshot = JSON.parse(
+      readFileSync(`${migrationDirectory}/meta/0000_snapshot.json`, "utf8"),
+    ) as { tables: Record<string, { columns: Record<string, unknown> }> };
+    expect(snapshot.tables["public.admin_sessions"]?.columns).not.toHaveProperty("archived_at");
+    expect(snapshot.tables["public.identity_sessions"]?.columns).toHaveProperty("archived_at");
   });
 });

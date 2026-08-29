@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "@steam-top/db";
 import { identities, identityLinks, identitySessions } from "@steam-top/db/schema";
-import { and, count, gt, isNull } from "drizzle-orm";
+import { and, count, eq, gt, isNull } from "drizzle-orm";
 import { createValidatedLiveIdentityProvider, IdentityResolver } from "./resolver";
 import { hashIdentityToken } from "./cookie";
 import { PostgresIdentityStore } from "./postgres-store";
@@ -67,6 +67,11 @@ it.skipIf(!databaseUrl)("never revives a token during a logout and lookup race",
   const issued = await resolver.resolve({});
   await Promise.allSettled([resolver.resolve({ cookieToken: issued.cookieToken }), resolver.revoke(issued.cookieToken)]);
   expect(await store.findSession(hashIdentityToken(issued.cookieToken), now)).toBeNull();
+  const archived = await resolver.resolve({});
+  await resolver.revoke(archived.cookieToken);
+  const [row] = await client.db.select().from(identitySessions).where(eq(identitySessions.tokenHash, hashIdentityToken(archived.cookieToken))).limit(1);
+  expect(row?.revokedAt).toEqual(now);
+  expect(row?.archivedAt).toEqual(now);
 });
 
 it.skipIf(!databaseUrl)("counts only active sessions and rotates one-for-one at capacity with rollback safety", async () => {
