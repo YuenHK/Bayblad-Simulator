@@ -230,6 +230,8 @@ export class RealtimeGateway {
   #lobbyPending = false;
   #frameBroadcastOperations = 0;
   #closing = false;
+  #closePromise: Promise<void> | undefined;
+  #definitivelyStopped = false;
   #pumpPromise: Promise<void> | null = null;
 
   constructor(server: HttpServer, dependencies: RealtimeDependencies) {
@@ -330,6 +332,7 @@ export class RealtimeGateway {
   get activeMatchCount(): number {
     return this.#matches.size;
   }
+  get definitivelyStopped(): boolean { return this.#definitivelyStopped; }
 
   get debugCounts(): Readonly<{
     sessions: number;
@@ -376,23 +379,32 @@ export class RealtimeGateway {
   }
 
   async close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
     this.#closing = true;
+    this.#closePromise = this.#closeInternal();
+    return this.#closePromise;
+  }
+
+  async #closeInternal(): Promise<void> {
+    const errors: unknown[] = [];
     for (const timer of this.#terminalRecoveryTimers.values()) clearTimeout(timer);
     this.#terminalRecoveryTimers.clear();
     if (this.#lobbyTimer) clearTimeout(this.#lobbyTimer);
     this.#lobbyTimer = null;
     for (const session of this.#sessionsById.values()) session.commandsStopped = true;
-    await this.#pumpPromise;
-    await Promise.allSettled([...this.#sessionsById.values()].map((session) => session.commandTail));
-    await Promise.allSettled(this.#roomCommandTails.values());
+    const drains = await Promise.allSettled([this.#pumpPromise ?? Promise.resolve(), ...[...this.#sessionsById.values()].map((session) => session.commandTail), ...this.#roomCommandTails.values()]);
+    for (const result of drains) if (result.status === "rejected") errors.push(result.reason);
     for (const [roomId, match] of this.#matches) this.#cancelMatch(roomId, match);
     this.#terminalMatches.clear();
-    await this.#roomProjections.close();
-    await new Promise<void>((resolve) => this.io.close(() => resolve()));
+    try { await this.#roomProjections.close(); } catch (error) { errors.push(error); }
+    try { await new Promise<void>((resolve) => this.io.close(() => resolve())); } catch (error) { errors.push(error); }
     this.#pendingLimiter.clear();
     this.#sessionCommandLimiter.clear();
     this.#newSessionByClientLimiter.clear();
     this.#newSessionGlobalLimiter.clear();
+    this.#roomCommandTails.clear(); this.#sessionsById.clear(); this.#sessionsByToken.clear(); this.#sessionIdsByParticipant.clear();
+    this.#definitivelyStopped = true;
+    if (errors.length) { const error = new AggregateError(errors, "REALTIME_GATEWAY_CLOSE_FAILED") as AggregateError & { definitivelyStopped: boolean }; error.definitivelyStopped = true; throw error; }
   }
 
   async pump(nowMs = this.#now()): Promise<void> {

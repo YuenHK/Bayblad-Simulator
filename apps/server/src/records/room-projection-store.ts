@@ -82,6 +82,7 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
   }
 
   async enqueue(input: RoomProjectionInput): Promise<"created" | "updated" | "stale"> {
+    if (!this.#transactionEntries.getStore()) return this.transaction(() => this.enqueue(input));
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new RangeError("invalid room projection revision");
     const current = this.#entries.get(input.roomId);
     if (current && current.revision === input.revision) {
@@ -100,6 +101,7 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
     return current ? "updated" : "created";
   }
   async prepare(input: RoomProjectionInput): Promise<PreparedRoomProjection> {
+    if (!this.#transactionEntries.getStore()) return this.transaction(() => this.prepare(input));
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new RangeError("invalid room projection revision");
     const current = this.#entries.get(input.roomId);
     if (current && current.revision > input.revision) throw new RoomProjectionConflictError();
@@ -113,10 +115,11 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
     this.#entries.set(input.roomId, { ...structuredClone(input), status: "prepared", reservationToken, attempt: 0, generation: (current?.generation ?? 0) + 1, leaseToken: null, leaseUntil: null, nextAttemptAt: now, createdAt: current?.createdAt ?? now, updatedAt: now, lastError: null });
     return { ...structuredClone(input), reservationToken };
   }
-  async commitPrepared(prepared: PreparedRoomProjection): Promise<boolean> { const entry = this.#entries.get(prepared.roomId); if (!entry || entry.status !== "prepared" || entry.revision !== prepared.revision || entry.reservationToken !== prepared.reservationToken || JSON.stringify(entry.payload) !== JSON.stringify(prepared.payload)) return false; entry.status = "pending"; entry.reservationToken = null; entry.updatedAt = this.#now(); return true; }
-  async abortPrepared(prepared: PreparedRoomProjection): Promise<boolean> { const entry = this.#entries.get(prepared.roomId); if (!entry || entry.status !== "prepared" || entry.revision !== prepared.revision || entry.reservationToken !== prepared.reservationToken || JSON.stringify(entry.payload) !== JSON.stringify(prepared.payload)) return false; entry.status = "aborted"; entry.reservationToken = null; entry.updatedAt = this.#now(); return true; }
+  async commitPrepared(prepared: PreparedRoomProjection): Promise<boolean> { if (!this.#transactionEntries.getStore()) return this.transaction(() => this.commitPrepared(prepared)); const entry = this.#entries.get(prepared.roomId); if (!entry || entry.status !== "prepared" || entry.revision !== prepared.revision || entry.reservationToken !== prepared.reservationToken || JSON.stringify(entry.payload) !== JSON.stringify(prepared.payload)) return false; entry.status = "pending"; entry.reservationToken = null; entry.updatedAt = this.#now(); return true; }
+  async abortPrepared(prepared: PreparedRoomProjection): Promise<boolean> { if (!this.#transactionEntries.getStore()) return this.transaction(() => this.abortPrepared(prepared)); const entry = this.#entries.get(prepared.roomId); if (!entry || entry.status !== "prepared" || entry.revision !== prepared.revision || entry.reservationToken !== prepared.reservationToken || JSON.stringify(entry.payload) !== JSON.stringify(prepared.payload)) return false; entry.status = "aborted"; entry.reservationToken = null; entry.updatedAt = this.#now(); return true; }
 
   async claimDue(limit: number, now = this.#now()): Promise<readonly ClaimedRoomProjection[]> {
+    if (!this.#transactionEntries.getStore()) return this.transaction(() => this.claimDue(limit, now));
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError("invalid room projection claim limit");
     const due = [...this.#entries.values()]
       .filter((entry) => ["pending", "leased"].includes(entry.status) && entry.nextAttemptAt <= now && (entry.status !== "leased" || !entry.leaseUntil || entry.leaseUntil <= now))
@@ -132,6 +135,7 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
   }
 
   async complete(claim: ClaimedRoomProjection): Promise<boolean> {
+    if (!this.#transactionEntries.getStore()) return this.transaction(() => this.complete(claim));
     const entry = this.#entries.get(claim.roomId);
     if (!entry || entry.revision !== claim.revision || entry.generation !== claim.generation || entry.leaseToken !== claim.leaseToken) return false;
     this.#entries.delete(claim.roomId);
@@ -139,6 +143,7 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
   }
 
   async fail(claim: ClaimedRoomProjection, errorCode: string, now = this.#now()): Promise<boolean> {
+    if (!this.#transactionEntries.getStore()) return this.transaction(() => this.fail(claim, errorCode, now));
     const entry = this.#entries.get(claim.roomId);
     if (!entry || entry.revision !== claim.revision || entry.generation !== claim.generation || entry.leaseToken !== claim.leaseToken) return false;
     entry.attempt += 1;
@@ -152,6 +157,7 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
   }
 
   async pruneDead(now = this.#now(), limit = 1_000): Promise<number> {
+    if (!this.#transactionEntries.getStore()) return this.transaction(() => this.pruneDead(now, limit));
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) throw new RangeError("invalid prune limit");
     let removed = 0; const cutoff = now.getTime() - 30 * 86_400_000;
     for (const entry of this.#entries.values()) if (entry.status === "prepared" && entry.updatedAt.getTime() < now.getTime() - 300_000) { entry.status = "aborted"; entry.reservationToken = null; entry.updatedAt = now; }

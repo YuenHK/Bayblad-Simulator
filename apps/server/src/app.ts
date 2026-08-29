@@ -518,7 +518,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     await stage([gateway.close()]);
     await stage([adminMaintenance ?? Promise.resolve(), drainRetryWorkers()]);
     await stage([battleEngine.shutdown?.() ?? Promise.resolve()]);
-    await stage([options.roomRecordRepository?.releaseStartupLease?.() ?? Promise.resolve()]);
+    if (gateway.definitivelyStopped) await stage([options.roomRecordRepository?.releaseStartupLease?.() ?? Promise.resolve()]);
+    else failures.push(new Error("REALTIME_GATEWAY_STOP_UNCONFIRMED"));
     if (failures.length) throw new AggregateError(failures, "APP_PRECLOSE_FAILED");
   });
   return app as unknown as BuiltApp;
