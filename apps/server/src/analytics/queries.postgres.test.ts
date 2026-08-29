@@ -101,7 +101,7 @@ it.skipIf(!databaseUrl)("coordinates the same cache hash across service instance
 
 it.skipIf(!databaseUrl)("fences a stale cache writer",async()=>{
   const cache=new PostgresAnalyticsCache(client.sql),filters={from:"2026-07-01",to:"2026-07-02"} as const,hash=canonicalFilterHash(filters);
-  const common={filters,filterApplicability:FILTER_APPLICABILITY,usage:[],usagePeriods:{daily:[],weekly:[],monthly:[]},parameterUsage:[],parameters:[],rankings:{top:[],bottom:[],total:0,hasMore:false,snapshotCursor:"test"}};
+  const common={filters,filterApplicability:FILTER_APPLICABILITY,usage:[],usagePeriods:{daily:[],weekly:[],monthly:[]},parameterUsage:[],parameters:[],rankings:{top:[],bottom:[],total:0,hasMore:false,snapshotCursor:"test",overallLaunchDistribution:{Perfect:0,Great:0,Good:0,Miss:0,totalOccurrences:0}}};
   await cache.write(hash,{...common,refreshedAt:"2026-10-02T00:00:00.000Z"});
   await cache.write(hash,{...common,refreshedAt:"2026-10-01T00:00:00.000Z"});
   expect((await cache.read(hash,new Date("2020-01-01")))?.refreshedAt).toBe("2026-10-02T00:00:00.000Z");

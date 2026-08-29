@@ -12,7 +12,7 @@ export const FILTER_APPLICABILITY = Object.freeze({
   parameterPerformance: Object.freeze({population:"one observation per match, participant, parameter group and distinct launch grade",denominator:"at least 10 distinct authoritative completed matches",filters:Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"])}),
 });
 type JsonRow = Readonly<Record<string, unknown>>;
-export type AnalyticsSummary = Readonly<{ filters: AnalyticsFilters; filterApplicability: typeof FILTER_APPLICABILITY; usage: readonly UsageDay[]; usagePeriods: Readonly<{ daily: readonly UsageDay[]; weekly: readonly UsageDay[]; monthly: readonly UsageDay[] }>; parameterUsage: readonly JsonRow[]; parameters: readonly JsonRow[]; rankings:Readonly<{top:readonly JsonRow[];bottom:readonly JsonRow[];total:number;hasMore:boolean;snapshotCursor:string}>; refreshedAt: string }>;
+export type AnalyticsSummary = Readonly<{ filters: AnalyticsFilters; filterApplicability: typeof FILTER_APPLICABILITY; usage: readonly UsageDay[]; usagePeriods: Readonly<{ daily: readonly UsageDay[]; weekly: readonly UsageDay[]; monthly: readonly UsageDay[] }>; parameterUsage: readonly JsonRow[]; parameters: readonly JsonRow[]; rankings:Readonly<{top:readonly JsonRow[];bottom:readonly JsonRow[];total:number;hasMore:boolean;snapshotCursor:string;overallLaunchDistribution:Readonly<Record<string,number>>}>; refreshedAt: string }>;
 export interface AnalyticsCache {
   read(hash: string, maxAge: Date): Promise<AnalyticsSummary | null>;
   write(hash: string, summary: AnalyticsSummary): Promise<void>;
@@ -53,21 +53,22 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
 
 type UsageQuery = (filters: AnalyticsFilters, period: UsagePeriod) => Promise<readonly UsageDay[]>;
 type ParameterQuery = (filters: AnalyticsFilters, page?: Readonly<{ limit?: number; offset?: number;order?:"stable"|"high"|"low";asOf?:string }>) => Promise<readonly unknown[]>;
+type LaunchQuery=(filters:AnalyticsFilters)=>Promise<Readonly<Record<string,number>>>;
 
 export class AnalyticsService {
   #refresh: Promise<AnalyticsSummary> | null = null;
   readonly #inflight = new Map<string, Promise<AnalyticsSummary>>();
   readonly #cursorSecret:Buffer;
-  constructor(private readonly cache: AnalyticsCache, private readonly usageQuery: UsageQuery, private readonly parameterQuery: ParameterQuery, private readonly parameterUsageQuery: ParameterQuery = async () => [], private readonly now = () => new Date(),cursorSecret:Buffer=randomBytes(32),private readonly consistent=<T>(operation:()=>Promise<T>)=>operation()) { if(cursorSecret.length<32)throw new TypeError("analytics cursor secret too short");this.#cursorSecret=cursorSecret; }
+  constructor(private readonly cache: AnalyticsCache, private readonly usageQuery: UsageQuery, private readonly parameterQuery: ParameterQuery, private readonly parameterUsageQuery: ParameterQuery = async () => [], private readonly now = () => new Date(),cursorSecret:Buffer=randomBytes(32),private readonly consistent=<T>(operation:()=>Promise<T>)=>operation(),private readonly launchQuery:LaunchQuery=async()=>Object.freeze({Perfect:0,Great:0,Good:0,Miss:0,totalOccurrences:0})) { if(cursorSecret.length<32)throw new TypeError("analytics cursor secret too short");this.#cursorSecret=cursorSecret; }
   async query(filters: AnalyticsFilters, maxAgeMs = 5 * 60_000): Promise<AnalyticsSummary> {
     const hash = canonicalFilterHash(filters);
     const inflightKey=`${hash}:${maxAgeMs}`; const existing = this.#inflight.get(inflightKey); if (existing) return existing;
     const compute = async () => {
       const now = this.now(); const cached = await this.cache.read(hash, new Date(now.getTime() - maxAgeMs)); if (cached) return cached;
-      const [daily, weekly, monthly, parameterRows, parameterUsage,topRows,bottomRows] = await this.consistent(()=>Promise.all([this.usageQuery(filters, "day"), this.usageQuery(filters, "week"), this.usageQuery(filters, "month"), this.parameterQuery(filters,{limit:100,order:"stable"}), this.parameterUsageQuery(filters),this.parameterQuery(filters,{limit:10,order:"high"}),this.parameterQuery(filters,{limit:10,order:"low"})]));
+      const [daily, weekly, monthly, parameterRows, parameterUsage,topRows,bottomRows,overallLaunchDistribution] = await this.consistent(()=>Promise.all([this.usageQuery(filters, "day"), this.usageQuery(filters, "week"), this.usageQuery(filters, "month"), this.parameterQuery(filters,{limit:100,order:"stable"}), this.parameterUsageQuery(filters),this.parameterQuery(filters,{limit:10,order:"high"}),this.parameterQuery(filters,{limit:10,order:"low"}),this.launchQuery(filters)]));
       const usagePeriods = Object.freeze({ daily, weekly, monthly });
       const parameters=parameterRows as readonly JsonRow[]; const top=topRows as readonly JsonRow[],bottom=bottomRows as readonly JsonRow[];const total=Number((top[0] as {totalGroups?:unknown}|undefined)?.totalGroups??parameters.length);
-      const rankings=Object.freeze({top,bottom,total,hasMore:total>parameters.length,snapshotCursor:Buffer.from(`${hash}:${now.toISOString()}`).toString("base64url")});
+      const rankings=Object.freeze({top,bottom,total,hasMore:total>parameters.length,snapshotCursor:this.#signCursor(JSON.stringify({asOf:now.toISOString(),expiresAt:new Date(now.getTime()+300_000).toISOString(),offset:0,filterHash:hash})),overallLaunchDistribution});
       const summary = Object.freeze({ filters, filterApplicability: FILTER_APPLICABILITY, usage: daily, usagePeriods, parameters, parameterUsage:parameterUsage as readonly JsonRow[],rankings:rankings as AnalyticsSummary["rankings"], refreshedAt: now.toISOString() });
       if(Buffer.byteLength(JSON.stringify(summary),"utf8")>2_000_000)throw new Error("ANALYTICS_PAYLOAD_LIMIT");await this.cache.write(hash, summary); return summary;
     };
@@ -83,13 +84,13 @@ export class AnalyticsService {
     return this.#refresh;
   }
   #signCursor(payload:string){const body=Buffer.from(payload).toString("base64url");return `${body}.${createHmac("sha256",this.#cursorSecret).update(body).digest("base64url")}`;}
-  #readCursor(cursor:string){try{if(cursor.length<20||cursor.length>1024)throw new Error();const [body,signature,...rest]=cursor.split(".");if(!body||!signature||rest.length||body.length>768||signature.length>128)throw new Error();const expected=createHmac("sha256",this.#cursorSecret).update(body).digest();const actual=Buffer.from(signature,"base64url");if(actual.length!==expected.length||!timingSafeEqual(actual,expected))throw new Error();const value=JSON.parse(Buffer.from(body,"base64url").toString("utf8")) as {asOf:string;offset:number;filterHash:string};if(!Number.isSafeInteger(value.offset)||value.offset<0||value.offset>10_000_000||typeof value.asOf!=="string"||typeof value.filterHash!=="string"||Object.keys(value).length!==3)throw new Error();const date=new Date(value.asOf);if(!Number.isFinite(date.getTime())||date.toISOString()!==value.asOf)throw new Error();return value;}catch{throw new RangeError("INVALID_ANALYTICS_CURSOR");}}
+  #readCursor(cursor:string){try{if(cursor.length<20||cursor.length>1024)throw new Error();const [body,signature,...rest]=cursor.split(".");if(!body||!signature||rest.length||body.length>768||signature.length>128)throw new Error();const expected=createHmac("sha256",this.#cursorSecret).update(body).digest();const actual=Buffer.from(signature,"base64url");if(actual.length!==expected.length||!timingSafeEqual(actual,expected))throw new Error();const value=JSON.parse(Buffer.from(body,"base64url").toString("utf8")) as {asOf:string;expiresAt:string;offset:number;filterHash:string};if(!Number.isSafeInteger(value.offset)||value.offset<0||value.offset>1_000_000||typeof value.asOf!=="string"||typeof value.expiresAt!=="string"||typeof value.filterHash!=="string"||Object.keys(value).length!==4)throw new Error();for(const raw of [value.asOf,value.expiresAt]){const date=new Date(raw);if(!Number.isFinite(date.getTime())||date.toISOString()!==raw)throw new Error();}if(this.now().getTime()>new Date(value.expiresAt).getTime())throw new RangeError("ANALYTICS_CURSOR_EXPIRED");return value;}catch(error){if(error instanceof RangeError&&error.message==="ANALYTICS_CURSOR_EXPIRED")throw error;throw new RangeError("INVALID_ANALYTICS_CURSOR");}}
   async parameterPage(filters: AnalyticsFilters, pageSize: number, cursor?: string) {
     if (!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100) throw new RangeError("INVALID_ANALYTICS_PAGE");
-    const filterHash=canonicalFilterHash(filters);let offset=0,asOf=this.now().toISOString();
-    if(cursor){const decoded=this.#readCursor(cursor);if(decoded.filterHash!==filterHash)throw new RangeError("INVALID_ANALYTICS_CURSOR");offset=decoded.offset;asOf=decoded.asOf;}
+    const filterHash=canonicalFilterHash(filters);let offset=0,asOf=this.now().toISOString(),expiresAt=new Date(this.now().getTime()+300_000).toISOString();
+    if(cursor){const decoded=this.#readCursor(cursor);if(decoded.filterHash!==filterHash)throw new RangeError("INVALID_ANALYTICS_CURSOR");offset=decoded.offset;asOf=decoded.asOf;expiresAt=decoded.expiresAt;}
     const queried=await this.parameterQuery(filters,{limit:pageSize+1,offset,order:"stable",asOf});const rows=queried.slice(0,pageSize),hasMore=queried.length>pageSize,nextOffset=offset+rows.length;
-    const total=Number((queried[0] as {totalGroups?:unknown}|undefined)?.totalGroups??offset+rows.length);const payload={asOf,offset:nextOffset,filterHash};
-    return Object.freeze({rows:Object.freeze(rows),nextCursor:hasMore?this.#signCursor(JSON.stringify(payload)):null,total,hasMore,snapshotCursor:this.#signCursor(JSON.stringify({asOf,offset:0,filterHash}))});
+    const total=Number((queried[0] as {totalGroups?:unknown}|undefined)?.totalGroups??offset+rows.length);const payload={asOf,expiresAt,offset:nextOffset,filterHash};
+    return Object.freeze({rows:Object.freeze(rows),nextCursor:hasMore?this.#signCursor(JSON.stringify(payload)):null,total,hasMore,snapshotCursor:this.#signCursor(JSON.stringify({asOf,expiresAt,offset:0,filterHash}))});
   }
 }
