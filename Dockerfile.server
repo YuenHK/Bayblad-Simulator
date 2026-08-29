@@ -1,5 +1,6 @@
-ARG NODE_IMAGE
-FROM ${NODE_IMAGE} AS dependencies
+ARG NODE_IMAGE_REPOSITORY
+ARG NODE_IMAGE_DIGEST
+FROM ${NODE_IMAGE_REPOSITORY}@${NODE_IMAGE_DIGEST} AS dependencies
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
@@ -18,7 +19,7 @@ RUN pnpm exec esbuild apps/server/src/production-entry.ts --bundle --platform=no
 RUN pnpm exec esbuild apps/server/src/migrate-entry.ts --bundle --platform=node --target=node24 --format=esm --external:drizzle-orm --external:postgres --outfile=apps/server/dist/migrate-entry.mjs
 RUN pnpm --filter @steam-top/server deploy --legacy --prod /production/server
 
-FROM ${NODE_IMAGE} AS runtime
+FROM ${NODE_IMAGE_REPOSITORY}@${NODE_IMAGE_DIGEST} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build --chown=node:node /production/server/ ./

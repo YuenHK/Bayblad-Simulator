@@ -1,6 +1,8 @@
-ARG NODE_IMAGE
-ARG CADDY_IMAGE
-FROM ${NODE_IMAGE} AS dependencies
+ARG NODE_IMAGE_REPOSITORY
+ARG NODE_IMAGE_DIGEST
+ARG CADDY_IMAGE_REPOSITORY
+ARG CADDY_IMAGE_DIGEST
+FROM ${NODE_IMAGE_REPOSITORY}@${NODE_IMAGE_DIGEST} AS dependencies
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
@@ -16,7 +18,7 @@ COPY . .
 RUN pnpm install --offline --frozen-lockfile
 RUN pnpm --filter @steam-top/web build
 
-FROM ${CADDY_IMAGE} AS runtime
+FROM ${CADDY_IMAGE_REPOSITORY}@${CADDY_IMAGE_DIGEST} AS runtime
 COPY --from=build --chown=10001:10001 /workspace/apps/web/dist /srv
 COPY --chown=10001:10001 infra/web.Caddyfile /etc/caddy/Caddyfile
 USER 10001:10001
