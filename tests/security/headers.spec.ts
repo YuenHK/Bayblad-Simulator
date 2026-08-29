@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { io } from "socket.io-client";
+import { securityTlsOptions } from "./tls-options";
 
 const httpOrigin = process.env.SECURITY_HTTP_ORIGIN;
 const httpsOrigin = process.env.SECURITY_HTTPS_ORIGIN;
 const allowSkip = process.env.SECURITY_ALLOW_SKIP === "1";
+const nodeTls = securityTlsOptions(process.env);
 
 test.skip((!httpOrigin || !httpsOrigin) && allowSkip, "explicit local skip: production Compose/TLS stack is not running");
 
@@ -60,6 +62,7 @@ test("keeps API and Socket.IO available through HTTPS", async ({ request }) => {
       reconnection: false,
       timeout: 10_000,
       extraHeaders: { cookie: cookie!, origin: httpsOrigin! },
+      ...nodeTls,
     });
     const timer = setTimeout(() => { socket.close(); reject(new Error("WEBSOCKET_CONNECT_TIMEOUT")); }, 12_000);
     socket.once("connect", () => { clearTimeout(timer); const name = socket.io.engine.transport.name; socket.close(); resolve(name); });
