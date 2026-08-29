@@ -924,6 +924,35 @@ describe("BattleEngine simulate-once cache", () => {
     expect(engine.simulationCount).toBe(1);
   });
 
+  it("shutdown drains active and queued claims before it resolves", async () => {
+    const released: string[] = [];
+    const repository = {
+      async get() { return undefined; },
+      async claim(key: string, fingerprint: string) {
+        return { status: "acquired" as const, handle: { authority: key, token: `token-${key}`, fingerprint } };
+      },
+      async renewLease() { return true; },
+      async release(handle: { authority: string }) { released.push(handle.authority); },
+      async saveIfAbsent(_key: string, value: StoredBattleResult) { return value; },
+    } as unknown as ResultRepository;
+    const engine = new BattleEngine({ resultRepository: repository, chunkTicks: 1, maxConcurrent: 1, maxQueued: 1 });
+    const active = engine.simulateOnceAsync("shutdown-active", "round", timeoutInputs(71));
+    await waitForScheduler(() => engine.runningCount === 1);
+    const queued = engine.simulateOnceAsync("shutdown-queued", "round", timeoutInputs(72));
+    await waitForScheduler(() => engine.queuedCount === 1);
+    const activeOutcome = active.catch((error: unknown) => error);
+    const queuedOutcome = queued.catch((error: unknown) => error);
+
+    await engine.shutdown();
+
+    await expect(activeOutcome).resolves.toMatchObject({ name: "AbortError" });
+    await expect(queuedOutcome).resolves.toMatchObject({ name: "AbortError" });
+    expect(released.sort()).toEqual(["15:shutdown-active5:round", "15:shutdown-queued5:round"]);
+    expect(engine.runningCount).toBe(0);
+    expect(engine.queuedCount).toBe(0);
+    await expect(engine.simulateOnceAsync("after-shutdown", "round", inputs())).rejects.toThrow(/closed/i);
+  });
+
   it("rejects unbounded correlation keys", () => {
     const engine = new BattleEngine({ resultRepository: localResultRepository() });
     expect(() => engine.simulateOnce("x".repeat(129), "round", inputs())).toThrow(/correlation/i);

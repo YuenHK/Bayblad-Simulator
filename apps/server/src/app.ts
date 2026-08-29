@@ -30,6 +30,7 @@ export interface BattleEnginePort {
   readonly simulationCount: number;
   simulateOnceAsync(matchId: string, roundId: string, inputs: BattleInputs, options?: Readonly<{ signal?: AbortSignal }>): Promise<BattleResult>;
   cleanup(matchId: string, roundId: string): boolean;
+  shutdown?(): Promise<void>;
 }
 
 export type BuildAppOptions = Readonly<{
@@ -203,6 +204,10 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     forceCloseConnections: true,
     bodyLimit: config.bodyLimit,
   });
+  const reportBackgroundError = options.logError ?? ((error: unknown) => {
+    const candidate = error as { name?: unknown; code?: unknown };
+    app.log.error({ event: "background.operation_failed", errorName: typeof candidate?.name === "string" ? candidate.name.slice(0, 80) : "Error", errorCode: typeof candidate?.code === "string" ? candidate.code.slice(0, 80) : "UNCLASSIFIED" }, "Background operation failed");
+  });
   void app.register(fastifyCookie);
   const adminResolver = (request: IncomingMessage) => ({ clientKey: options.adminClientKeyResolver?.(request) ?? request.socket.remoteAddress ?? "unknown", ...(options.adminClientAddressResolver ? { ip: options.adminClientAddressResolver(request) } : (request.socket.remoteAddress ? { ip: request.socket.remoteAddress } : {})) });
   if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth, adminResolver);
@@ -212,7 +217,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     if (typeof id !== "string" || !/^[0-9a-f-]{36}$/iu.test(id)) return reply.code(400).send({ error: "INVALID_MATCH_ID" });
     try {
       await options.matchRepository!.retryFailedMatch(id, { manual: true });
-      try { await options.adminAuth!.store.audit({ adminUserId: current.user.id, adminSessionId: current.session.id, action: "match.persistence.retry", outcome: "success", details: { matchId: id } }); }
+      try { const store = options.adminAuth!.store; await (store.queueAudit?.bind(store) ?? store.audit.bind(store))({ adminUserId: current.user.id, adminSessionId: current.session.id, action: "match.persistence.retry", outcome: "success", details: { matchId: id } }); }
       catch (auditError) { options.adminAuth!.report("match.persistence.retry.audit_pending", auditError, request.id); }
       return reply.code(204).send();
     } catch (error) {
@@ -273,10 +278,10 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     void options.matchRepository.claimDueJobs(new Date(), 25).then((jobs) => {
       for (const job of jobs) {
         if (retryWorkers.has(job.matchId)) continue;
-        const operation = options.matchRepository!.retryFailedMatch(job.matchId, { claimToken: job.claimToken, generation: job.generation }).then(() => undefined).catch((error) => options.logError?.(error)).finally(() => retryWorkers.delete(job.matchId));
+        const operation = options.matchRepository!.retryFailedMatch(job.matchId, { claimToken: job.claimToken, generation: job.generation }).then(() => undefined).catch(reportBackgroundError).finally(() => retryWorkers.delete(job.matchId));
         retryWorkers.set(job.matchId, operation);
       }
-    }).catch((error) => options.logError?.(error));
+    }).catch(reportBackgroundError);
   };
   const gateway = new RealtimeGateway(app.server, {
     rooms,
@@ -322,7 +327,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     lobbyDebounceMs: config.lobbyDebounceMs,
     ...(options.persistenceRetryDelaysMs ? { persistenceRetryDelaysMs: options.persistenceRetryDelaysMs } : {}),
     maintenance: () => { designLimiter.pruneExpired(); designClientLimiter.pruneExpired(); identityCreationLimiter.pruneExpired(); identityGlobalCreationLimiter.pruneExpired(); pumpRetryJobs(); },
-    ...(options.logError ? { logError: options.logError } : {}),
+    logError: reportBackgroundError,
   });
   app.decorate("realtimeGateway", gateway);
   app.decorate("battleEngine", battleEngine);
@@ -466,7 +471,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   let adminMaintenance: Promise<void> | undefined;
   const runAdminMaintenance = () => {
     if (!options.adminAuth || adminMaintenance) return;
-    adminMaintenance = options.adminAuth.pruneExpiredSessions()
+    adminMaintenance = Promise.all([options.adminAuth.pruneExpiredSessions(), options.adminAuth.store.pumpAuditOutbox?.() ?? Promise.resolve(0)])
       .then(() => undefined)
       .catch((error) => options.adminAuth!.report("admin.maintenance", error))
       .finally(() => { adminMaintenance = undefined; });
@@ -483,6 +488,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     await adminMaintenance;
     await Promise.allSettled(retryWorkers.values());
     await gateway.close();
+    await battleEngine.shutdown?.();
   });
   return app as unknown as BuiltApp;
 }

@@ -60,15 +60,18 @@ it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it 
   const roomsRepository = new PostgresRoomRecordRepository(client.db);
   await roomsRepository.create({ id: roomId, code: `PJ${randomUUID().slice(0, 6)}`, name: "Projection room", ownerIdentityId, participant: { participantPublicId: "projection-owner", identityId: ownerIdentityId, displayName: "Projection owner", role: "player1", isOwner: true, ip: null, userAgent: null, deviceName: null }, at: new Date() });
   const first = new PostgresRoomProjectionStore(client.db); const second = new PostgresRoomProjectionStore(client.db);
-  await first.enqueue({ roomId, revision: 2, payload: { phase: "battle", firstBattleAt: "2026-08-29T02:00:00.000Z" } });
-  await second.enqueue({ roomId, revision: 1, payload: { phase: "launch", firstBattleAt: null } });
+  await first.enqueue({ roomId, revision: 2, payload: { phase: "battle", firstBattleAt: "2026-08-29T02:00:00.000Z", closedAt: null } });
+  await second.enqueue({ roomId, revision: 1, payload: { phase: "launch", firstBattleAt: null, closedAt: null } });
   const [left, right] = await Promise.all([first.claimDue(1, new Date("2099-01-01")), second.claimDue(1, new Date("2099-01-01"))]);
   expect(left.length + right.length).toBe(1);
   const claim = [...left, ...right][0]!;
   expect(claim).toMatchObject({ revision: 2, payload: { phase: "battle" } });
-  await roomsRepository.applyProjection(roomId, claim.payload);
+  await roomsRepository.applyProjection(roomId, claim.revision, claim.payload);
   expect(await first.complete(claim)).toBe(true);
   expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "battle", firstBattleAt: new Date("2026-08-29T02:00:00Z") });
+  expect(await roomsRepository.applyProjection(roomId, 3, { phase: "result", firstBattleAt: null, closedAt: null })).toBe(true);
+  expect(await roomsRepository.applyProjection(roomId, 2, { phase: "launch", firstBattleAt: null, closedAt: null })).toBe(false);
+  expect((await client.db.select().from(rooms).where(eq(rooms.id, roomId)))[0]).toMatchObject({ status: "result", appliedProjectionRevision: 3 });
 }, 30_000);
 
 afterAll(async () => {
@@ -83,11 +86,12 @@ it.skipIf(!databaseUrl)("uses one cross-process claim and survives repository re
   const second = new PostgresBattleResultRepository(client.db, { pollMs: 5, maxWaitMs: 2_000 });
   const key = "36:00000000-0000-4000-8000-0000000000017:round-1";
   const fingerprint = "a".repeat(64);
-  expect(await first.claim(key, fingerprint)).toBe("acquired");
+  const acquired = await first.claim(key, fingerprint);
+  if (!("status" in acquired)) throw new Error("claim was not acquired");
   const waiting = second.claim(key, fingerprint);
   const design = makeDefaultDesign();
   const result = simulateMatchRound(design, design, { seed: 7, launchA: { grade: "Great", angularMultiplier: 1, impulseMultiplier: 1 }, launchB: { grade: "Great", angularMultiplier: 1, impulseMultiplier: 1 } });
-  await first.saveIfAbsent(key, { fingerprint, result });
+  await first.saveClaimed(acquired.handle, { fingerprint, result });
   await expect(waiting).resolves.toEqual({ fingerprint, result });
   await expect(new PostgresBattleResultRepository(client.db).get(key)).resolves.toEqual({ fingerprint, result });
 }, 30_000);
@@ -96,9 +100,12 @@ it.skipIf(!databaseUrl)("recovers an abandoned expired simulation lease", async 
   const first = new PostgresBattleResultRepository(client.db, { leaseMs: 10 });
   const second = new PostgresBattleResultRepository(client.db, { leaseMs: 10, pollMs: 5, maxWaitMs: 1_000 });
   const key = "36:00000000-0000-4000-8000-0000000000027:round-1";
-  expect(await first.claim(key, "b".repeat(64))).toBe("acquired");
+  const stale = await first.claim(key, "b".repeat(64));
+  if (!("status" in stale)) throw new Error("claim was not acquired");
   await new Promise((resolve) => setTimeout(resolve, 15));
-  await expect(second.claim(key, "b".repeat(64))).resolves.toBe("acquired");
+  const replacement = await second.claim(key, "b".repeat(64));
+  if (!("status" in replacement)) throw new Error("replacement claim was not acquired");
+  expect(await first.renewLease(stale.handle)).toBe(false);
 });
 
 it.skipIf(!databaseUrl)("atomically reuses a canonical owned design and reads it after restart", async () => {

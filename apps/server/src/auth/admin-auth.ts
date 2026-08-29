@@ -18,6 +18,8 @@ export interface AdminStore {
   touchSession(hash: string, now: Date): Promise<Readonly<{ session: AdminSession; user: AdminUser }> | null>;
   revokeSession(hash: string, now: Date): Promise<boolean>;
   audit(input: AuditInput): Promise<void>;
+  queueAudit?(input: AuditInput): Promise<void>;
+  pumpAuditOutbox?(now?: Date, limit?: number): Promise<number>;
   admitLoginAttempt(keys: Readonly<{ accountHash: string; clientHash: string }>, now: Date): Promise<boolean>;
   recordLoginFailureAndStatus(keys: Readonly<{ accountHash: string; clientHash: string }>, now: Date): Promise<boolean>;
   resetLoginFailures(keys: Readonly<{ accountHash: string; clientHash: string }>, now: Date): Promise<void>;

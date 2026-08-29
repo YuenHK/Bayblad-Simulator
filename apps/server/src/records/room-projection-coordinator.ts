@@ -13,6 +13,7 @@ export class RoomProjectionCoordinator {
   readonly #apply: ((job: ClaimedRoomProjection) => Promise<void>) | null;
   readonly #runningClaims = new Set<Promise<void>>();
   readonly #pendingEnqueues = new Set<Promise<"created" | "updated" | "stale">>();
+  readonly #retainedEnqueues = new Map<string, { input: RoomProjectionInput; attempt: number; timer: ReturnType<typeof setTimeout> | null }>();
   #closed = false;
   constructor(options: Readonly<{ maxEntries?: number; report?: (error: unknown) => void; store?: RoomProjectionStore; apply?: (job: ClaimedRoomProjection) => Promise<void> }> = {}) {
     this.#maxEntries = options.maxEntries ?? 2_000; this.#report = options.report ?? (() => undefined);
@@ -47,9 +48,26 @@ export class RoomProjectionCoordinator {
   }
   async enqueueProjection(input: RoomProjectionInput): Promise<"created" | "updated" | "stale"> {
     if (this.#closed || !this.#store) throw new Error("ROOM_PROJECTION_COORDINATOR_CLOSED");
-    const operation = this.#store.enqueue(input).finally(() => this.#pendingEnqueues.delete(operation));
+    const operation = this.#store.enqueue(input).then((result) => { this.#clearRetained(input.roomId, input.revision); return result; }).catch((error) => { this.#retain(input); throw error; }).finally(() => this.#pendingEnqueues.delete(operation));
     this.#pendingEnqueues.add(operation);
     return operation;
+  }
+  #clearRetained(roomId: string, revision: number): void {
+    const current = this.#retainedEnqueues.get(roomId);
+    if (!current || current.input.revision > revision) return;
+    if (current.timer) clearTimeout(current.timer);
+    this.#retainedEnqueues.delete(roomId);
+  }
+  #retain(input: RoomProjectionInput): void {
+    if (this.#closed) return;
+    const current = this.#retainedEnqueues.get(input.roomId);
+    if (current && current.input.revision > input.revision) return;
+    if (current?.timer) clearTimeout(current.timer);
+    const entry = { input: structuredClone(input), attempt: current?.attempt ?? 0, timer: null as ReturnType<typeof setTimeout> | null };
+    this.#retainedEnqueues.set(input.roomId, entry);
+    const delay = Math.min(300_000, 1_000 * 2 ** Math.min(8, entry.attempt));
+    entry.timer = setTimeout(() => { entry.timer = null; entry.attempt += 1; void this.enqueueProjection(entry.input).catch(this.#report); }, delay);
+    entry.timer.unref();
   }
   get usesDurableStore(): boolean { return this.#store !== null; }
   async #run(key: string, entry: Entry): Promise<void> {
@@ -66,6 +84,14 @@ export class RoomProjectionCoordinator {
     const latest = this.#entries.get(key);
     if (latest && latest !== entry && latest.running) { latest.running = false; void this.#run(key, latest); }
   }
-  async close(): Promise<void> { this.#closed = true; for (const entry of this.#entries.values()) if (entry.timer) clearTimeout(entry.timer); this.#entries.clear(); await Promise.allSettled([...this.#pendingEnqueues, ...this.#runningClaims]); }
+  async close(): Promise<void> {
+    for (const entry of this.#entries.values()) if (entry.timer) clearTimeout(entry.timer);
+    this.#entries.clear();
+    for (const entry of this.#retainedEnqueues.values()) if (entry.timer) clearTimeout(entry.timer);
+    await Promise.allSettled([...this.#pendingEnqueues, ...this.#runningClaims]);
+    this.#closed = true;
+    if (this.#store) await Promise.allSettled([...this.#retainedEnqueues.values()].map(({ input }) => this.#store!.enqueue(input)));
+    this.#retainedEnqueues.clear();
+  }
   get size(): number { return this.#entries.size; }
 }

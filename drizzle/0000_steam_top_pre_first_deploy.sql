@@ -639,3 +639,17 @@ ALTER TABLE "match_persistence_jobs" ADD COLUMN "claim_token" uuid;--> statement
 ALTER TABLE "match_persistence_jobs" ADD COLUMN "generation" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "match_persistence_jobs" ADD COLUMN "lease_until" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "match_persistence_jobs" ADD CONSTRAINT "match_persistence_jobs_claim" CHECK (("match_persistence_jobs"."status" = 'retrying' and "match_persistence_jobs"."claim_token" is not null and "match_persistence_jobs"."lease_until" is not null) or ("match_persistence_jobs"."status" <> 'retrying' and "match_persistence_jobs"."claim_token" is null and "match_persistence_jobs"."lease_until" is null));--> statement-breakpoint
+ALTER TABLE "rooms" ADD COLUMN "applied_projection_revision" bigint DEFAULT -1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_projection_revision" CHECK ("rooms"."applied_projection_revision" >= -1);--> statement-breakpoint
+CREATE TABLE "admin_audit_outbox" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"payload" jsonb NOT NULL,
+	"attempt_count" integer DEFAULT 0 NOT NULL,
+	"next_attempt_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_error" varchar(128),
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "admin_audit_outbox_attempts" CHECK ("admin_audit_outbox"."attempt_count" >= 0)
+);--> statement-breakpoint
+ALTER TABLE "admin_audit" ADD COLUMN "source_outbox_id" uuid;--> statement-breakpoint
+CREATE INDEX "admin_audit_outbox_due_idx" ON "admin_audit_outbox" USING btree ("next_attempt_at","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "admin_audit_source_outbox_uidx" ON "admin_audit" USING btree ("source_outbox_id") WHERE "admin_audit"."source_outbox_id" is not null;--> statement-breakpoint

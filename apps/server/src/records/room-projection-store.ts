@@ -5,8 +5,9 @@ import { roomProjectionJobs } from "@steam-top/db/schema";
 import { z } from "zod";
 
 export type RoomProjectionPayload = Readonly<{
-  phase: "waiting" | "launch" | "battle" | "result";
+  phase: "waiting" | "launch" | "battle" | "result" | "closed";
   firstBattleAt: string | null;
+  closedAt: string | null;
 }>;
 
 export type RoomProjectionInput = Readonly<{
@@ -108,8 +109,9 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
 }
 
 const payloadSchema = z.object({
-  phase: z.enum(["waiting", "launch", "battle", "result"]),
+  phase: z.enum(["waiting", "launch", "battle", "result", "closed"]),
   firstBattleAt: z.iso.datetime().nullable(),
+  closedAt: z.iso.datetime().nullable(),
 }).strict();
 type Db = DatabaseClient["db"];
 
