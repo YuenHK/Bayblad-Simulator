@@ -39,8 +39,6 @@ jobs:
           rm -f "$RUNNER_TEMP/bootstrap-signing-key"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: bootstrap.tgz }
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
-        with: { subject-path: infra/bootstrap/install-bootstrap.sh }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: "production-bootstrap-${{ github.sha }}"
@@ -48,6 +46,5 @@ jobs:
             bootstrap.tgz
             bootstrap.tgz.sig
             BOOTSTRAP-ARCHIVE-SHA256
-            infra/bootstrap/install-bootstrap.sh
           if-no-files-found: error
           retention-days: 90

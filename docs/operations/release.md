@@ -27,6 +27,8 @@ Tag workflow 產生獨立 attestation `runtime-files.sha256` 及 `release/runtim
 
 `bootstrap-release-approval` 環境必須有 required reviewers 及 restrictive branch policy，並預先由管理員輪換 `EXPECTED_BOOTSTRAP_ARCHIVE_SHA256` 與 `BOOTSTRAP_SIGNING_KEY`。`release-host-integration` 環境只接受管理員固定的 `BOOTSTRAP_RUN_ID`/`BOOTSTRAP_COMMIT`/`BOOTSTRAP_ARCHIVE_SHA256` 及 `BOOTSTRAP_ALLOWED_SIGNERS`；tag job 會從該 protected run 下載 bootstrap，核對外部 digest、GitHub attestation 及 SSH signature，不會用 tag checkout 內的 bootstrap 作信任根。任何 digest 輪換都必須先審閱 bootstrap source，再更新受保護 environment variable；release workflow 無權自行改寫。
 
+`install-bootstrap.sh` 是主機 image provisioning 前置條件，不包在 bootstrap release artifact，也不允許從 candidate path 直接 sudo。主機管理員必須以校外已審核 `INSTALLER_SHA256` 及 `steam-top-bootstrap-installer` SSH signature 驗證 bytes，再安裝為 root-owned 0555 `/usr/local/sbin/install-steam-top-bootstrap`；sudoers 只可列出這個 canonical pinned path。更新 installer 時必須同時輪換外部 digest/signature，不可由 release artifact 自證。
+
 Receipt 不可先複製成非 root 可讀檔案；非 root deploy user 只能透過上述 exact sudo command 取得 `RECEIPT-BEGIN`／base64 payload／`RECEIPT-SIGNATURE`／`RECEIPT-END` framed stdout。CI 會實際建立受限帳號及 sudoers、驗證 direct outbox read 被拒，並解析完整 frame。
 
 Authorization 在 Compose 前由 `pending` 轉為 `deploying`，不會在 command 中斷時假定未產生效果。同 nonce 重試時，host lock 內先 inspect 實際 containers 及 immutable RepoDigests：零容器才可安全重跑 deploy；全部 service/project/config image/running-health/migration exit 均精確相符才可補跑 smoke 及 receipt；任何部分或不符狀態會產生 root-private `RECOVERY-REQUIRED` 並把 authorization 設為 `failed`，禁止盲目 `up`。
