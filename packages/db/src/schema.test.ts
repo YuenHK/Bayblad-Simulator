@@ -320,6 +320,8 @@ describe("persistent PostgreSQL schema", () => {
     expect(sql).toContain('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');
     expect(sql).toContain("rounds_authority_key_matches_correlation");
     expect(sql).toContain("steam_top.allow_audited_delete");
+    expect(sql.match(/IF TG_OP = 'DELETE' AND steam_top_audited_delete_enabled\(\) THEN/g))
+      .toHaveLength(4);
     expect(sql).toContain("completed_matches_are_immutable");
     expect(sql).toContain("completed_rounds_are_immutable");
     expect(sql).toContain("eligible_designs_are_immutable");
