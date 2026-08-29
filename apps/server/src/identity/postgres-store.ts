@@ -1,8 +1,9 @@
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, count, eq, gt, isNull, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
-import { identities, identitySessions } from "@steam-top/db/schema";
+import { identities, identityLinks, identitySessions } from "@steam-top/db/schema";
 import type { Identity, IdentitySession, IdentityStore, SessionDiagnostics, TrustedLiveIdentity } from "./resolver";
-import { GuestDisplayCollisionError, registerDurableIdentityStore, SessionTokenUnavailableError } from "./resolver";
+import { IdentityCapacityError, SessionTokenUnavailableError } from "./resolver";
 
 type Db = DatabaseClient["db"];
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -26,48 +27,78 @@ const diagnosticColumns = (value: SessionDiagnostics) => ({ lastIp: value.ip ?? 
 
 export class PostgresIdentityStore implements IdentityStore {
   readonly #db: Db;
-  constructor(db: Db) { this.#db = db; registerDurableIdentityStore(this); }
+  readonly #maxIdentities: number;
+  readonly #maxSessions: number;
+  constructor(db: Db, options: Readonly<{ maxIdentities?: number; maxSessions?: number }> = {}) {
+    this.#db = db; this.#maxIdentities = options.maxIdentities ?? 1_000_000; this.#maxSessions = options.maxSessions ?? 5_000_000;
+    if (!Number.isSafeInteger(this.#maxIdentities) || this.#maxIdentities < 1) throw new TypeError("maxIdentities must be a positive integer");
+    if (!Number.isSafeInteger(this.#maxSessions) || this.#maxSessions < 1) throw new TypeError("maxSessions must be a positive integer");
+  }
+  async #assertSessionCapacity(tx: Tx): Promise<void> {
+    await tx.execute(sql`select pg_advisory_xact_lock(1937002745)`);
+    const [row] = await tx.select({ value: count() }).from(identitySessions);
+    if ((row?.value ?? 0) >= this.#maxSessions) throw new IdentityCapacityError();
+  }
 
-  async findSession(tokenHash: string, now = new Date(), diagnostic: SessionDiagnostics = {}, rollingExpiresAt?: Date): Promise<IdentitySession | null> {
+  async #assertIdentityCapacity(tx: Tx): Promise<void> {
+    await tx.execute(sql`select pg_advisory_xact_lock(1937002744)`);
+    const [row] = await tx.select({ value: count() }).from(identities);
+    if ((row?.value ?? 0) >= this.#maxIdentities) throw new IdentityCapacityError();
+  }
+
+  async findSession(tokenHash: string, now = new Date()): Promise<IdentitySession | null> {
+    const rows = await this.#db.select({ session: identitySessions, identity: identities }).from(identitySessions)
+      .innerJoin(identities, eq(identitySessions.identityId, identities.id))
+      .where(and(eq(identitySessions.tokenHash, tokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now))).limit(1);
+    return rows[0] ? mapSession(rows[0].session, rows[0].identity) : null;
+  }
+
+  async touchSession(tokenHash: string, now: Date, diagnostic: SessionDiagnostics, rollingExpiresAt: Date): Promise<IdentitySession | null> {
     return this.#db.transaction(async (tx) => {
-      const rows = await tx.select({ session: identitySessions, identity: identities }).from(identitySessions)
-        .innerJoin(identities, eq(identitySessions.identityId, identities.id))
-        .where(and(eq(identitySessions.tokenHash, tokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now))).limit(1);
-      const found = rows[0]; if (!found) return null;
-      const [updated] = await tx.update(identitySessions).set({ lastSeenAt: now, ...(rollingExpiresAt ? { expiresAt: rollingExpiresAt } : {}), ...diagnosticColumns(diagnostic) })
-        .where(eq(identitySessions.id, found.session.id)).returning();
-      await tx.update(identities).set({ lastSeenAt: now, updatedAt: now }).where(eq(identities.id, found.identity.id));
-      return mapSession(updated!, found.identity);
+      const [updated] = await tx.update(identitySessions).set({ lastSeenAt: now, expiresAt: rollingExpiresAt, ...diagnosticColumns(diagnostic) })
+        .where(and(eq(identitySessions.tokenHash, tokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now))).returning();
+      if (!updated) return null;
+      const [identity] = await tx.select().from(identities).where(eq(identities.id, updated.identityId)).limit(1);
+      if (!identity) return null;
+      await tx.update(identities).set({ lastSeenAt: now, updatedAt: now }).where(eq(identities.id, identity.id));
+      return mapSession(updated, identity);
     });
   }
 
   async createGuestSession(input: Readonly<{ tokenHash: string; displayName: string; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics }>): Promise<IdentitySession> {
     try {
       return await this.#db.transaction(async (tx) => {
+        await this.#assertIdentityCapacity(tx);
+        await this.#assertSessionCapacity(tx);
         const [identity] = await tx.insert(identities).values({ status: "guest", displayName: input.displayName, createdAt: input.now, updatedAt: input.now, lastSeenAt: input.now }).returning();
         const [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
         return mapSession(session!, identity!);
       });
-    } catch (error) {
-      if ((error as { code?: string }).code === "23505") throw new GuestDisplayCollisionError();
-      throw error;
-    }
+    } catch (error) { if ((error as { code?: string }).code === "23505") throw new SessionTokenUnavailableError(); throw error; }
   }
 
-  async upsertLiveSession(input: Readonly<{ tokenHash: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; reuseValidSession: boolean; cachedIdentityId?: string }>): Promise<IdentitySession> {
+  async upsertLiveSession(input: Readonly<{ tokenHash: string; previousTokenHash?: string; identity: TrustedLiveIdentity; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics; cachedIdentityId?: string }>): Promise<IdentitySession> {
     try { return await this.#db.transaction(async (tx: Tx) => {
-      await tx.insert(identities).values({ status: "iclass", displayName: input.identity.displayName, studentName: input.identity.studentName, className: input.identity.className, studentNumber: input.identity.studentNumber, deviceName: input.identity.deviceName, iclassExternalId: input.identity.externalId, createdAt: input.now, updatedAt: input.now, lastSeenAt: input.now }).onConflictDoNothing();
-      const [existing] = await tx.select().from(identities).where(eq(identities.iclassExternalId, input.identity.externalId)).limit(1);
+      let [existing] = await tx.select().from(identities).where(eq(identities.iclassExternalId, input.identity.externalId)).limit(1);
+      if (!existing) {
+        await this.#assertIdentityCapacity(tx);
+        [existing] = await tx.insert(identities).values({ status: "iclass", displayName: input.identity.displayName, studentName: input.identity.studentName, className: input.identity.className, studentNumber: input.identity.studentNumber, deviceName: input.identity.deviceName, iclassExternalId: input.identity.externalId, createdAt: input.now, updatedAt: input.now, lastSeenAt: input.now }).returning();
+      }
       if (!existing) throw new Error("IDENTITY_UPSERT_FAILED");
       const [identity] = await tx.update(identities).set({ displayName: input.identity.displayName, studentName: input.identity.studentName, className: input.identity.className, studentNumber: input.identity.studentNumber, deviceName: input.identity.deviceName ?? null, updatedAt: input.now, lastSeenAt: input.now }).where(eq(identities.id, existing.id)).returning();
-      let session: typeof identitySessions.$inferSelect | undefined;
-      if (input.reuseValidSession) {
-        [session] = await tx.update(identitySessions).set({ identityId: identity!.id, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) })
-          .where(and(eq(identitySessions.tokenHash, input.tokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, input.now))).returning();
-        if (!session) throw new SessionTokenUnavailableError();
-      } else {
-        [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
+      if (input.previousTokenHash) {
+        const [previous] = await tx.select({ session: identitySessions, identity: identities }).from(identitySessions).innerJoin(identities, eq(identitySessions.identityId, identities.id))
+          .where(and(eq(identitySessions.tokenHash, input.previousTokenHash), isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, input.now))).limit(1);
+        if (!previous) throw new SessionTokenUnavailableError();
+        const revoked = await tx.update(identitySessions).set({ revokedAt: input.now }).where(and(eq(identitySessions.id, previous.session.id), isNull(identitySessions.revokedAt))).returning();
+        if (revoked.length !== 1) throw new SessionTokenUnavailableError();
+        if (previous.identity.status === "guest" && previous.identity.id !== identity!.id) {
+          await tx.update(identities).set({ mergedIntoIdentityId: identity!.id, mergedAt: input.now, updatedAt: input.now }).where(eq(identities.id, previous.identity.id));
+          await tx.insert(identityLinks).values({ sourceIdentityId: previous.identity.id, targetIdentityId: identity!.id, reason: "verified_cookie_and_iclass", verificationFingerprint: createHash("sha256").update(`${input.identity.externalId}:${previous.identity.id}:${identity!.id}`).digest("hex"), linkedAt: input.now }).onConflictDoNothing();
+        }
       }
+      await this.#assertSessionCapacity(tx);
+      const [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
       return mapSession(session!, identity!);
     }); } catch (error) {
       if (error instanceof SessionTokenUnavailableError || (error as { code?: string }).code === "23505") throw new SessionTokenUnavailableError();

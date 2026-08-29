@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import { designUploadResponseSchema } from "@steam-top/domain";
 import type { IncomingMessage } from "node:http";
+import { isIP } from "node:net";
 import type { BattleInputs, BattleResult, ResultRepository } from "./battle/engine";
 import { BattleEngine } from "./battle/engine";
 import { LaunchCoordinator } from "./battle/launch";
@@ -10,7 +11,8 @@ import { RoomService } from "./rooms/room-service";
 import { RealtimeGateway, type FrameScheduler, type MatchScorer } from "./socket";
 import { TokenBucketLimiter } from "./rate-limit";
 import { COOKIE_NAME } from "./identity/cookie";
-import { IdentityResolver } from "./identity/resolver";
+import { IdentityAdmissionError, IdentityCapacityError, IdentityResolver, IdentityStoreUnavailableError } from "./identity/resolver";
+import { PostgresIdentityStore } from "./identity/postgres-store";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -69,6 +71,11 @@ export type BuildAppOptions = Readonly<{
   logError?: (error: unknown) => void;
   sweepIntervalMs?: number;
   identityResolver?: IdentityResolver;
+  identityIpResolver?: ClientKeyResolver;
+  identityCreationBurst?: number;
+  identityCreationRefillPerSecond?: number;
+  identityGlobalCreationBurst?: number;
+  identityGlobalCreationRefillPerSecond?: number;
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -95,10 +102,12 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (process.env.NODE_ENV === "production" && options.behindProxy && !options.clientKeyResolver) {
     throw new TypeError("Production behindProxy composition requires clientKeyResolver");
   }
+  if (process.env.NODE_ENV === "production" && options.behindProxy && !options.identityIpResolver) throw new TypeError("Production behindProxy composition requires identityIpResolver");
+  if (options.identityIpResolver && !options.behindProxy) throw new TypeError("identityIpResolver requires behindProxy trusted boundary");
   if (options.clientKeyResolver && !options.behindProxy) {
     throw new TypeError("clientKeyResolver requires behindProxy trusted boundary");
   }
-  if (process.env.NODE_ENV === "production" && options.identityResolver?.hasDurableStore !== true) {
+  if (process.env.NODE_ENV === "production" && (!options.identityResolver || !options.identityResolver.isBackedBy(PostgresIdentityStore))) {
     throw new TypeError("Production composition requires a persistent identityResolver");
   }
   const config = {
@@ -132,6 +141,10 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     designRateRefillPerSecond: requirePositive("designRateRefillPerSecond", options.designRateRefillPerSecond ?? 2, false),
     designClientRateBurst: requirePositive("designClientRateBurst", options.designClientRateBurst ?? 600),
     designClientRateRefillPerSecond: requirePositive("designClientRateRefillPerSecond", options.designClientRateRefillPerSecond ?? 20, false),
+    identityCreationBurst: requirePositive("identityCreationBurst", options.identityCreationBurst ?? 500),
+    identityCreationRefillPerSecond: requirePositive("identityCreationRefillPerSecond", options.identityCreationRefillPerSecond ?? 5, false),
+    identityGlobalCreationBurst: requirePositive("identityGlobalCreationBurst", options.identityGlobalCreationBurst ?? 5_000),
+    identityGlobalCreationRefillPerSecond: requirePositive("identityGlobalCreationRefillPerSecond", options.identityGlobalCreationRefillPerSecond ?? 50, false),
   };
   if (config.maxConnectionsPerIp > config.maxConnections) throw new TypeError("maxConnectionsPerIp cannot exceed maxConnections");
   if (config.maxOwnedRoomsPerSession > config.maxRooms) throw new TypeError("maxOwnedRoomsPerSession cannot exceed maxRooms");
@@ -170,6 +183,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   const designClientLimiter = new TokenBucketLimiter({
     burst: config.designClientRateBurst, refillPerSecond: config.designClientRateRefillPerSecond, ...limiterOptions,
   });
+  const identityCreationLimiter = new TokenBucketLimiter({ burst: config.identityCreationBurst, refillPerSecond: config.identityCreationRefillPerSecond, ...limiterOptions });
+  const identityGlobalCreationLimiter = new TokenBucketLimiter({ burst: config.identityGlobalCreationBurst, refillPerSecond: config.identityGlobalCreationRefillPerSecond, ...limiterOptions, maxBuckets: 1 });
   const gateway = new RealtimeGateway(app.server, {
     rooms,
     designs,
@@ -206,7 +221,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     terminalResultTtlMs: config.terminalResultTtlMs,
     maxTerminalResults: config.maxTerminalResults,
     lobbyDebounceMs: config.lobbyDebounceMs,
-    maintenance: () => { designLimiter.pruneExpired(); designClientLimiter.pruneExpired(); },
+    maintenance: () => { designLimiter.pruneExpired(); designClientLimiter.pruneExpired(); identityCreationLimiter.pruneExpired(); identityGlobalCreationLimiter.pruneExpired(); },
     ...(options.logError ? { logError: options.logError } : {}),
   });
   app.decorate("realtimeGateway", gateway);
@@ -215,20 +230,48 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   app.get("/health", async () => ({ status: "ok" }));
   if (options.identityResolver) {
     const identityResolver = options.identityResolver;
+    const allowedIdentityOrigins = new Set(options.allowedOrigins ?? []);
+    const allowIdentityRequest = (headers: Record<string, unknown>) => {
+      if (headers["sec-fetch-site"] === "cross-site") return false;
+      const origin = headers.origin;
+      return typeof origin !== "string" || allowedIdentityOrigins.has(origin);
+    };
+    const identityIp = (request: IncomingMessage): string | undefined => {
+      const candidate = options.identityIpResolver?.(request) ?? request.socket.remoteAddress;
+      if (!candidate) return undefined;
+      let normalized = candidate.trim();
+      if (normalized.startsWith("::ffff:") && isIP(normalized.slice(7)) === 4) normalized = normalized.slice(7);
+      return isIP(normalized) ? normalized : undefined;
+    };
     app.get("/api/identity", async (request, reply) => {
-      const resolved = await identityResolver.resolve({
-        ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}),
-        ...(request.raw.socket.remoteAddress ? { ip: request.raw.socket.remoteAddress } : {}),
-        ...(request.headers["user-agent"] ? { userAgent: request.headers["user-agent"] } : {}),
-      });
+      if (!allowIdentityRequest(request.headers)) return reply.code(403).send({ error: "IDENTITY_ORIGIN_REJECTED" });
+      if (request.headers["content-length"] && request.headers["content-length"] !== "0") return reply.code(413).send({ error: "IDENTITY_BODY_FORBIDDEN" });
+      let resolved;
+      try {
+        const clientKey = safeClientKey(request.raw);
+        const ip = identityIp(request.raw);
+        resolved = await identityResolver.resolve({
+          ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}),
+          ...(ip ? { ip } : {}),
+          ...(request.headers["user-agent"] ? { userAgent: request.headers["user-agent"] } : {}),
+          admitCreation: () => identityCreationLimiter.consume(clientKey) && identityGlobalCreationLimiter.consume("global"),
+        });
+      } catch (error) {
+        if (error instanceof IdentityAdmissionError) return reply.code(429).send({ error: error.message });
+        if (error instanceof IdentityCapacityError || error instanceof IdentityStoreUnavailableError) return reply.code(503).send({ error: error.message });
+        throw error;
+      }
       reply.setCookie(COOKIE_NAME, resolved.cookieToken, {
         path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
         maxAge: Math.max(0, Math.floor((resolved.expiresAt.getTime() - resolved.issuedAt.getTime()) / 1_000)), expires: resolved.expiresAt,
       });
-      return resolved.identity;
+      return { id: resolved.identity.id, status: resolved.identity.status, displayName: resolved.identity.displayName };
     });
     app.post("/api/identity/logout", async (request, reply) => {
-      await identityResolver.revoke(request.cookies[COOKIE_NAME]);
+      if (!allowIdentityRequest(request.headers) || request.headers["x-steam-top-action"] !== "logout") return reply.code(403).send({ error: "IDENTITY_ACTION_REJECTED" });
+      if (request.headers["content-length"] && request.headers["content-length"] !== "0") return reply.code(413).send({ error: "IDENTITY_BODY_FORBIDDEN" });
+      try { await identityResolver.revoke(request.cookies[COOKIE_NAME]); }
+      catch (error) { if (error instanceof IdentityStoreUnavailableError) return reply.code(503).send({ error: error.message }); throw error; }
       reply.clearCookie(COOKIE_NAME, { path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict" });
       return reply.code(204).send();
     });

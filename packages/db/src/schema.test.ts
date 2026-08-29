@@ -334,10 +334,7 @@ describe("persistent PostgreSQL schema", () => {
     const migrationFiles = readdirSync(migrationDirectory)
       .filter((name) => name.endsWith(".sql"))
       .sort();
-    expect(migrationFiles).toEqual([
-      "0000_steam_top_pre_first_deploy.sql",
-      "0001_tranquil_meltdown.sql",
-    ]);
+    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql"]);
     const sql = migrationFiles
       .map((name) => readFileSync(`${migrationDirectory}/${name}`, "utf8"))
       .join("\n");
@@ -361,7 +358,7 @@ describe("persistent PostgreSQL schema", () => {
     expect(sql).toContain("set_row_updated_at");
     expect(sql).toContain("designs_battle_eligible_three_layers");
     expect(sql).toContain("room_participants_active_player_seat_uidx");
-    expect(sql).toContain("identities_guest_display_name_uidx");
+    expect(sql).not.toContain("identities_guest_display_name_uidx");
     expect(sql).toContain("ON DELETE set null");
     expect(sql).toContain("ON DELETE cascade");
     expect(sql.toLowerCase()).not.toContain("fwft2026");
@@ -377,17 +374,12 @@ describe("persistent PostgreSQL schema", () => {
     expect(config).toContain("postgresql://localhost/steam_top_schema_generation");
 
     const metadataFiles = readdirSync(`${migrationDirectory}/meta`).sort();
-    expect(metadataFiles).toEqual([
-      "0000_snapshot.json",
-      "0001_snapshot.json",
-      "_journal.json",
-    ]);
+    expect(metadataFiles).toEqual(["0000_snapshot.json", "_journal.json"]);
     const journal = JSON.parse(
       readFileSync(`${migrationDirectory}/meta/_journal.json`, "utf8"),
     ) as { entries: Array<{ tag: string }> };
     expect(journal.entries).toEqual([
       expect.objectContaining({ tag: "0000_steam_top_pre_first_deploy" }),
-      expect.objectContaining({ tag: "0001_tranquil_meltdown" }),
     ]);
   });
 });

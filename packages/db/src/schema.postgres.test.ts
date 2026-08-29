@@ -140,6 +140,11 @@ it.skipIf(testDatabaseUrl === undefined)(
               status: "guest",
               displayName: "訪客-A1B2",
             },
+            {
+              id: "00000000-0000-4000-8000-000000000003",
+              status: "guest",
+              displayName: "訪客-A1B2",
+            },
           ]);
 
           await db.insert(schema.designs).values([
