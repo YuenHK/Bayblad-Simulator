@@ -93,6 +93,10 @@ describe("analytics summary cache", () => {
     const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};let now=Date.parse("2026-08-01T00:00:00Z");const service=new AnalyticsService(cache,async()=>[],async()=>[1,2],async()=>[],()=>new Date(now),Buffer.alloc(32,4));const filters={from:"2026-08-01",to:"2026-08-02"} as const;
     const first=await service.parameterPage(filters,1);now+=300_001;await expect(service.parameterPage(filters,1,first.nextCursor!)).rejects.toThrow("ANALYTICS_CURSOR_EXPIRED");
   });
+  it("re-signs a 4:59-old cached summary cursor for a fresh five-minute response window",async()=>{
+    let saved:Awaited<ReturnType<AnalyticsService["query"]>>|null=null,now=Date.parse("2026-08-01T00:00:00Z");const cache:AnalyticsCache={read:async(_hash,maxAge)=>saved&&new Date(saved.refreshedAt)>=maxAge?saved:null,write:async(_hash,value)=>{saved=value;}};const service=new AnalyticsService(cache,async()=>[],async()=>[{totalGroups:1}],async()=>[],()=>new Date(now),Buffer.alloc(32,6));const filters={from:"2026-08-01",to:"2026-08-02"} as const;
+    await service.query(filters);now+=299_000;const cached=await service.query(filters);now+=299_000;await expect(service.parameterPage(filters,1,cached.rankings.snapshotCursor)).resolves.toMatchObject({total:1});
+  });
 
   it("coalesces refreshes and returns a fresh cached summary", async () => {
     let writes = 0;

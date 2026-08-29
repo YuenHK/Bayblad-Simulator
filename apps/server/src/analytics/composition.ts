@@ -12,5 +12,5 @@ export function createProductionAnalytics(client: DatabaseClient): AnalyticsServ
   if(process.env.NODE_ENV==="production"&&(!cursorSecret||cursorSecret.length<32))throw new TypeError("ANALYTICS_CURSOR_SECRET must contain at least 32 bytes");
   const cache=new PostgresAnalyticsCache(client.sql);const snapshotDb=new AsyncLocalStorage<PostgresJsDatabase<typeof schema>>(); const current=()=>snapshotDb.getStore()??client.db;
   const consistent=<T>(operation:()=>Promise<T>)=>snapshotDb.run(drizzle(cache.currentExecutor() as never,{schema}),operation);
-  return new AnalyticsService(cache, (filters, period) => usageAnalytics(current(), filters, period), (filters,page) => parameterPerformance(current(), filters,page), (filters) => parameterUsage(current(), filters),undefined,cursorSecret,consistent,(filters)=>overallLaunchDistribution(current(),filters));
+  return new AnalyticsService(cache, (filters, period,cutoff) => usageAnalytics(current(), filters, period,cutoff), (filters,page) => parameterPerformance(current(), filters,page), (filters,page) => parameterUsage(current(), filters,page?.asOf),undefined,cursorSecret,consistent,(filters,cutoff)=>overallLaunchDistribution(current(),filters,cutoff));
 }

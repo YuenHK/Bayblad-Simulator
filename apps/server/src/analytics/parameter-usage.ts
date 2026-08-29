@@ -8,21 +8,23 @@ type SqlRow = Readonly<{ scope:ParameterUsageRow["scope"];dimension: ParameterUs
 
 export function normalizeParameterUsage(rows: readonly SqlRow[]): readonly ParameterUsageRow[] {
   return rows.map((row) => {
-    const count = Number(row.count), total = Number(row.total);
+    const count = Number(row.count), total = Number(row.total),totalGroups=Number(row.totalGroups),population=Number(row.population);
     if (!Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(total) || total < count || total < 1) throw new Error("INVALID_PARAMETER_USAGE");
-    return Object.freeze({ scope:row.scope,dimension: row.dimension, value: Object.freeze({ ...row.value }), count, proportion: count / total, performanceModelVersion: row.performanceModelVersion,totalGroups:Number(row.totalGroups),truncated:row.truncated,population:Number(row.population) });
+    if(!Number.isSafeInteger(totalGroups)||totalGroups<1||!Number.isSafeInteger(population)||population!==total||row.truncated!==(totalGroups>20))throw new Error("INVALID_PARAMETER_USAGE_METADATA");
+    return Object.freeze({ scope:row.scope,dimension: row.dimension, value: Object.freeze({ ...row.value }), count, proportion: count / total, performanceModelVersion: row.performanceModelVersion,totalGroups,truncated:row.truncated,population });
   });
 }
 
-export async function parameterUsage(db: PostgresJsDatabase<typeof schema>, input: AnalyticsFilters): Promise<readonly ParameterUsageRow[]> {
+export async function parameterUsage(db: PostgresJsDatabase<typeof schema>, input: AnalyticsFilters,cutoff?:string): Promise<readonly ParameterUsageRow[]> {
   const filters = analyticsFiltersSchema.parse(input); const bounds = hongKongDateBounds(filters.from, filters.to);
   const conditions: SQL[] = [sql`d.created_at >= ${bounds.from}::timestamptz`, sql`d.created_at < ${bounds.toExclusive}::timestamptz`];
+  if(cutoff)conditions.push(sql`d.created_at<=${cutoff}::timestamptz`);
   if (filters.performanceModelVersion) conditions.push(sql`d.performance_model_version=${filters.performanceModelVersion}`);
   if (filters.className) conditions.push(sql`s.class_name_snapshot=${filters.className}`);
   if (filters.identityStatus) conditions.push(sql`s.identity_status_snapshot=${filters.identityStatus}`);
   const scope=filters.physicsModelVersion?"completedMatchDesigns":"allEligibleDesigns";
   const matchDesigns=filters.physicsModelVersion?sql`filtered_matches as materialized (
-      select player1_design_id,player2_design_id from matches where status='completed' and completed_at>=${bounds.from}::timestamptz and completed_at<${bounds.toExclusive}::timestamptz and physics_model_version=${filters.physicsModelVersion}
+      select player1_design_id,player2_design_id from matches where status='completed' and completed_at>=${bounds.from}::timestamptz and completed_at<${bounds.toExclusive}::timestamptz ${cutoff?sql`and completed_at<=${cutoff}::timestamptz`:sql``} and physics_model_version=${filters.physicsModelVersion}
         ${filters.performanceModelVersion?sql`and performance_model_version=${filters.performanceModelVersion}`:sql``}
     ), eligible_design_ids as materialized (
       select player1_design_id id from filtered_matches union select player2_design_id from filtered_matches
