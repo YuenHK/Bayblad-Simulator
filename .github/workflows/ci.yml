@@ -119,6 +119,26 @@ jobs:
           SQL
           ADMIN_SMOKE_SECRET_FILE="$RUNNER_TEMP/admin-smoke.json" ./scripts/production-smoke.sh "$PUBLIC_ORIGIN" "$nonce"
           rm -f "$RUNNER_TEMP/admin-smoke.json"
+      - name: Verify non-root framed receipt export boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          nonce="$(printf '7%.0s' {1..64})"
+          sudo install -d -o root -g root -m 0755 /opt/steam-top/scripts
+          sudo install -o root -g root -m 0555 scripts/fetch-host-receipt.sh /opt/steam-top/scripts/fetch-host-receipt.sh
+          sudo install -d -o root -g root -m 0700 /var/lib/steam-top-receipts
+          printf '{"nonce":"%s","smoke":"passed"}\n' "$nonce" | sudo tee "/var/lib/steam-top-receipts/$nonce.json" >/dev/null
+          printf 'fixture-signature\n' | sudo tee "/var/lib/steam-top-receipts/$nonce.json.sig" >/dev/null
+          sudo chmod 0400 "/var/lib/steam-top-receipts/$nonce.json" "/var/lib/steam-top-receipts/$nonce.json.sig"
+          sudo useradd --system --no-create-home steam-top-deploy
+          printf 'steam-top-deploy ALL=(root) NOPASSWD: SETENV: /opt/steam-top/scripts/fetch-host-receipt.sh %s\n' "$nonce" | sudo tee /etc/sudoers.d/steam-top-receipt-ci >/dev/null
+          sudo chmod 0440 /etc/sudoers.d/steam-top-receipt-ci
+          sudo visudo -cf /etc/sudoers.d/steam-top-receipt-ci
+          if sudo -u steam-top-deploy test -r "/var/lib/steam-top-receipts/$nonce.json"; then exit 1; fi
+          sudo -u steam-top-deploy sudo HOST_RECEIPT_OUTBOX_DIR=/var/lib/steam-top-receipts /opt/steam-top/scripts/fetch-host-receipt.sh "$nonce" > "$RUNNER_TEMP/framed-receipt"
+          grep -Fx "RECEIPT-BEGIN $nonce" "$RUNNER_TEMP/framed-receipt"
+          grep -Fx 'RECEIPT-SIGNATURE' "$RUNNER_TEMP/framed-receipt"
+          grep -Fx "RECEIPT-END $nonce" "$RUNNER_TEMP/framed-receipt"
       - run: pnpm test:security
       - if: always()
         run: docker compose -f compose.yaml -f compose.build.yaml down -v
