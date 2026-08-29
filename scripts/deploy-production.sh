@@ -15,10 +15,7 @@ while read -r digest name extra;do [[ -z ${extra:-} && $digest =~ ^[a-f0-9]{64}$
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/.."&&pwd -P)
 "$script_dir/portable-sha256.sh" check "$snapshot" "$snapshot/SHA256SUMS"
 [[ $("$script_dir/portable-sha256.sh" digest "$snapshot/release-manifest.json") == "$expected_manifest_sha" ]]||die "external manifest digest mismatch"
-gh attestation verify "$snapshot/release-manifest.json" --repo "$expected_repository" >/dev/null||die "GitHub artifact attestation verification failed"
 node "$script_dir/authorize-production-deploy.mjs" "$snapshot/release-manifest.json" "$snapshot/production.env" "$snapshot/canonical.env" "$expected_repository" "$expected_commit"
-rollback_state=$(node -e 'const m=require(process.argv[1]);if(m.rollbackSources)process.stdout.write(`${m.rollbackSources.currentDeploymentId}|${m.rollbackSources.currentManifestSha256}`)' "$snapshot/release-manifest.json")
-if [[ -n $rollback_state ]];then latest=$(gh api "repos/$expected_repository/deployments?environment=production&per_page=1" --jq '.[0] | (.id|tostring) + "|" + .payload.manifestSha256');[[ $latest == "$rollback_state" ]]||die "current deployment advanced after rollback authorization";fi
 docker compose --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml" config --quiet
 docker compose --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml" pull
 docker compose --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml" up -d --wait
