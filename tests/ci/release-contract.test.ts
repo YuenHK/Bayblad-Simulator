@@ -132,6 +132,10 @@ describe("rollback deletion monotonicity", () => {
     expect(read("infra/backup/finalize-cutover.sh")).toContain("backup_trusted_root_deployment");
     expect(read("infra/backup/finalize-cutover.sh")).toContain("promotion_audit");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-isolation.sh");
+    expect(read(".github/workflows/db.yml")).toContain("test-promotion-full.sh");
+    expect(read("infra/backup/test-promotion-full.sh")).toContain("promote-restored-target.sh");
+    expect(read("infra/backup/test-promotion-full.sh")).toContain("finalize-cutover.sh");
+    expect(read("infra/backup/test-promotion-full.sh")).toContain("promotion_audit");
     expect(promotion.indexOf("allow_connections false")).toBeLessThan(promotion.indexOf("pg_terminate_backend"));
     expect(promotion.indexOf("pg_terminate_backend")).toBeLessThan(promotion.indexOf("pg_advisory_xact_lock"));
     expect(promotion).toMatch(/cleanup\(\)[\s\S]*allow_connections true/u);
