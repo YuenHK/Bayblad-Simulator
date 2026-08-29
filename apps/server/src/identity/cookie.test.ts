@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryIdentityStore, IdentityResolver, trustedLiveIdentity } from "./resolver";
+import { InMemoryIdentityStore, IdentityResolver, createValidatedLiveIdentityProvider } from "./resolver";
 import { COOKIE_NAME, hashIdentityToken, issueIdentityToken, serializeIdentityCookie } from "./cookie";
 
 const now = new Date("2026-08-29T00:00:00.000Z");
@@ -27,12 +27,34 @@ describe("identity cookie", () => {
 });
 
 describe("IdentityResolver", () => {
+  it("allows duplicate four-character guest display codes because UUID is the identity key", async () => {
+    const store = new InMemoryIdentityStore();
+    const common = { displayName: "訪客-AAAA", now, expiresAt: new Date(now.getTime() + 86_400_000), diagnostics: {} };
+    const [a, b] = await Promise.all([
+      store.createGuestSession({ ...common, tokenHash: hashIdentityToken("C".repeat(43)) }),
+      store.createGuestSession({ ...common, tokenHash: hashIdentityToken("D".repeat(43)) }),
+    ]);
+    expect(a.identity.displayName).toBe(b.identity.displayName);
+    expect(a.identity.id).not.toBe(b.identity.id);
+  });
+
+  it("validates live adapter output and rejects plain or unsafe objects", async () => {
+    const resolver = new IdentityResolver(new InMemoryIdentityStore(), { now: () => now });
+    const plain = { externalId: "dev", displayName: "Name", studentName: "Name", className: "1A", studentNumber: "1" };
+    await expect(resolver.resolve(request(), plain as never)).rejects.toThrow("UNTRUSTED_LIVE_IDENTITY");
+    await expect(createValidatedLiveIdentityProvider({ resolve: async () => ({ ...plain, displayName: "x".repeat(81) }) }).resolve()).rejects.toThrow();
+    await expect(createValidatedLiveIdentityProvider({ resolve: async () => ({ ...plain, className: "1A\nInjected" }) }).resolve()).rejects.toThrow();
+  });
+
+  it.each([0, 1.5, 86_399_999, 365 * 86_400_000 + 1, Number.POSITIVE_INFINITY])("rejects unsafe cookie lifetime %s", (lifetimeMs) => {
+    expect(() => new IdentityResolver(new InMemoryIdentityStore(), { lifetimeMs })).toThrow(/lifetimeMs/);
+  });
   it("prefers trusted live identity over cookie and guest", async () => {
     const store = new InMemoryIdentityStore();
     const resolver = new IdentityResolver(store, { now: () => now });
     const cached = await resolver.resolve(request());
-    const live = trustedLiveIdentity({ externalId: "dev-1", displayName: "1A 陳同學", studentName: "陳同學", className: "1A", studentNumber: "07", deviceName: "1A07 iPad" });
-    const result = await resolver.resolve(request(cached.cookieToken), live);
+    const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: "dev-1", displayName: "1A 陳同學", studentName: "陳同學", className: "1A", studentNumber: "07", deviceName: "1A07 iPad" }) }).resolve();
+    const result = await resolver.resolve(request(cached.cookieToken), live!);
     expect(result.identity).toMatchObject({ status: "iclass", displayName: "1A 陳同學", className: "1A", studentNumber: "07" });
     const replay = await resolver.resolve(request(result.cookieToken));
     expect(replay.identity).toMatchObject({ status: "cookie", displayName: "1A 陳同學", className: "1A", studentNumber: "07", deviceName: "1A07 iPad" });
@@ -65,9 +87,9 @@ describe("IdentityResolver", () => {
   it("rotates an expired or revoked session", async () => {
     let time = now;
     const store = new InMemoryIdentityStore();
-    const resolver = new IdentityResolver(store, { now: () => time, lifetimeMs: 1000 });
+    const resolver = new IdentityResolver(store, { now: () => time, lifetimeMs: 86_400_000 });
     const expired = await resolver.resolve(request());
-    time = new Date(now.getTime() + 1001);
+    time = new Date(now.getTime() + 86_400_001);
     const rotated = await resolver.resolve(request(expired.cookieToken));
     expect(rotated.identity.id).not.toBe(expired.identity.id);
     await store.revokeSession(hashIdentityToken(rotated.cookieToken), time);
@@ -78,15 +100,15 @@ describe("IdentityResolver", () => {
   it.each(["unknown", "expired", "revoked"] as const)("never revives a %s token when live identity is present", async (state) => {
     let time = now;
     const store = new InMemoryIdentityStore();
-    const resolver = new IdentityResolver(store, { now: () => time, lifetimeMs: 1000 });
-    const live = trustedLiveIdentity({ externalId: "device-secure", displayName: "1A 07", studentName: "陳同學", className: "1A", studentNumber: "07" });
+    const resolver = new IdentityResolver(store, { now: () => time, lifetimeMs: 86_400_000 });
+    const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: "device-secure", displayName: "1A 07", studentName: "陳同學", className: "1A", studentNumber: "07" }) }).resolve();
     let oldToken = "B".repeat(43);
     if (state !== "unknown") {
-      const issued = await resolver.resolve(request(), live); oldToken = issued.cookieToken;
-      if (state === "expired") time = new Date(now.getTime() + 1001);
+      const issued = await resolver.resolve(request(), live!); oldToken = issued.cookieToken;
+      if (state === "expired") time = new Date(now.getTime() + 86_400_001);
       else await store.revokeSession(hashIdentityToken(oldToken), time);
     }
-    const result = await resolver.resolve(request(oldToken), live);
+    const result = await resolver.resolve(request(oldToken), live!);
     expect(result.cookieToken).not.toBe(oldToken);
     expect(result.identity.status).toBe("iclass");
     expect((await resolver.resolve(request(oldToken))).cookieToken).not.toBe(oldToken);
@@ -100,13 +122,14 @@ describe("IdentityResolver", () => {
     expect(new Set(results.map((item) => item.identity.id))).toEqual(new Set([initial.identity.id]));
   });
 
-  it("keeps a valid live session stable under concurrent resolution", async () => {
+  it("rotates a valid live session under concurrent resolution without splitting identity", async () => {
     const store = new InMemoryIdentityStore();
     const resolver = new IdentityResolver(store, { now: () => now });
-    const live = trustedLiveIdentity({ externalId: "device-concurrent", displayName: "1B 11", studentName: "李同學", className: "1B", studentNumber: "11" });
-    const initial = await resolver.resolve(request(), live);
-    const results = await Promise.all(Array.from({ length: 20 }, () => resolver.resolve(request(initial.cookieToken), live)));
-    expect(new Set(results.map((item) => item.cookieToken))).toEqual(new Set([initial.cookieToken]));
+    const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: "device-concurrent", displayName: "1B 11", studentName: "李同學", className: "1B", studentNumber: "11" }) }).resolve();
+    const initial = await resolver.resolve(request(), live!);
+    const results = await Promise.all(Array.from({ length: 20 }, () => resolver.resolve(request(initial.cookieToken), live!)));
+    expect(new Set(results.map((item) => item.cookieToken)).size).toBe(20);
+    expect(results.every((item) => item.cookieToken !== initial.cookieToken)).toBe(true);
     expect(new Set(results.map((item) => item.identity.id))).toEqual(new Set([initial.identity.id]));
   });
 
@@ -119,9 +142,21 @@ describe("IdentityResolver", () => {
     expect(session?.userAgent).toHaveLength(512);
   });
 
+  it("keeps lookup read-only until the cached session is adopted", async () => {
+    const store = new InMemoryIdentityStore();
+    const resolver = new IdentityResolver(store, { now: () => now });
+    const issued = await resolver.resolve(request());
+    const before = await store.findSession(hashIdentityToken(issued.cookieToken), now);
+    await store.findSession(hashIdentityToken(issued.cookieToken), new Date(now.getTime() + 100));
+    const after = await store.findSession(hashIdentityToken(issued.cookieToken), now);
+    expect(after?.lastSeenAt).toEqual(before?.lastSeenAt);
+    expect(after?.expiresAt).toEqual(before?.expiresAt);
+  });
+
   it("fails closed without leaking token or PII when storage fails", async () => {
     const resolver = new IdentityResolver({
       findSession: async () => { throw new Error("db unavailable"); },
+      touchSession: async () => { throw new Error("db unavailable"); },
       createGuestSession: async () => { throw new Error("db unavailable"); },
       upsertLiveSession: async () => { throw new Error("db unavailable"); },
       revokeSession: async () => false,
