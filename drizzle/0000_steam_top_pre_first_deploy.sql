@@ -803,3 +803,5 @@ CREATE TABLE "admin_command_operations" ("operation_id" uuid PRIMARY KEY NOT NUL
 CREATE INDEX "admin_command_operations_due_idx" ON "admin_command_operations" USING btree ("next_retry_at","created_at");
 --> statement-breakpoint
 ALTER TABLE "match_participant_snapshots" ADD COLUMN "display_name_snapshot" varchar(80);
+--> statement-breakpoint
+CREATE UNIQUE INDEX "admin_audit_command_correlation_uidx" ON "admin_audit" USING btree ("action",("details"->>'operationId')) WHERE "admin_audit"."details" ? 'operationId' and "admin_audit"."action" in ('admin.room.command.accepted','admin.platform.pause','admin.room.close','admin.room.remove');

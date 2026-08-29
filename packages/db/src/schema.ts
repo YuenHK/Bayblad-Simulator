@@ -1063,6 +1063,7 @@ export const adminAudit = pgTable(
     ),
     index("admin_audit_target_idx").on(table.targetType, table.targetId),
     uniqueIndex("admin_audit_source_outbox_uidx").on(table.sourceOutboxId).where(sql`${table.sourceOutboxId} is not null`),
+    uniqueIndex("admin_audit_command_correlation_uidx").on(table.action, sql`(${table.details}->>'operationId')`).where(sql`${table.details} ? 'operationId' and ${table.action} in ('admin.room.command.accepted','admin.platform.pause','admin.room.close','admin.room.remove')`),
   ],
 );
 

@@ -42,7 +42,7 @@ const actionSchema = z.discriminatedUnion("action", [
 export interface AdminRealtimeCommands {
   setPlatformPaused(paused: boolean): void;
   adminCloseRoom(roomId: string, signal?: AbortSignal): Promise<void>;
-  adminRemoveParticipant(roomId: string, participantId: string, signal?: AbortSignal, progress?: (step: string) => Promise<void>): Promise<void>;
+  adminRemoveParticipant(roomId: string, participantId: string, context?: Readonly<{ signal: AbortSignal; currentStep?: string; fence: (completedStep?: string) => Promise<void> }>): Promise<void>;
 }
 export function registerAdminDashboardRoutes(
   app: FastifyInstance,
