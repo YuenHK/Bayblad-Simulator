@@ -73,6 +73,8 @@ export type PublicRoom = Readonly<{
 
 export type RoomView = PublicRoom;
 export type RoomCheckpoint = Readonly<{ roomId: string; room: Room | null; roomIdsByCode: Map<string, string>; lobbyRevision: number }>;
+export type PersistedRoomTransition = "launch" | "battle" | "result" | "next-round" | "retry-round" | "finish" | "cancel";
+export type PersistedRoomTransitionReservation = Readonly<{ roomId: string; expectedRevision: number; before: RoomCheckpoint; after: RoomCheckpoint }>;
 
 type Participant = {
   readonly internalUserId: string;
@@ -148,6 +150,36 @@ export class RoomService {
   restore(checkpoint: RoomCheckpoint): void {
     if (checkpoint.room) this.#rooms.set(checkpoint.roomId, this.#copyRoom(checkpoint.room)); else this.#rooms.delete(checkpoint.roomId);
     this.#roomIdsByCode = new Map(checkpoint.roomIdsByCode); this.#lobbyRevision = checkpoint.lobbyRevision;
+  }
+
+  reservePersistedTransition(roomId: string, transition: PersistedRoomTransition): PersistedRoomTransitionReservation {
+    const before = this.checkpoint(roomId);
+    try {
+      if (transition === "launch") this.setPhase(roomId, "launch");
+      else if (transition === "battle") this.setPhase(roomId, "battle");
+      else if (transition === "result") this.setPhase(roomId, "result");
+      else if (transition === "next-round") this.nextRound(roomId);
+      else if (transition === "retry-round") this.retryRound(roomId);
+      else if (transition === "finish") this.finishMatch(roomId);
+      else this.cancelMatch(roomId);
+      const after = this.checkpoint(roomId);
+      return { roomId, expectedRevision: after.room?.revision ?? -1, before, after };
+    } finally {
+      this.restore(before);
+    }
+  }
+
+  applyPersistedTransition(reservation: PersistedRoomTransitionReservation): boolean {
+    const current = this.#rooms.get(reservation.roomId);
+    if (!current || current.revision + 1 !== reservation.expectedRevision || reservation.before.room?.revision !== current.revision) return false;
+    this.restore(reservation.after);
+    return true;
+  }
+
+  discardPersistedRoom(roomId: string): void {
+    const room = this.#rooms.get(roomId);
+    if (!room) return;
+    this.#rooms.delete(roomId); this.#roomIdsByCode.delete(room.code); this.#lobbyRevision += 1;
   }
   #roomIdsByCode = new Map<string, string>();
   #lobbyRevision = 0;

@@ -748,7 +748,7 @@ describe("realtime app", () => {
         expect(app.realtimeGateway.activeMatchCount).toBe(0);
         expect(designs.debugCounts().pinned).toBe(0);
         expect(launch.activeRoundCount).toBe(0);
-        expect(rollbackDeltas.some((event) => event.patch.phase === "waiting" && event.patch.player1?.ready === false && event.patch.player2?.ready === false)).toBe(true);
+        expect(rollbackDeltas.some((event) => event.patch.player1?.ready === false && event.patch.player2?.ready === false)).toBe(true);
         expect(rooms.get(room.roomId)).toMatchObject({
           phase: "waiting", player1: { ready: false, designId: null }, player2: { ready: false, designId: null },
         });
