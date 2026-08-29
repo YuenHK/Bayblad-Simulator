@@ -1,21 +1,105 @@
-{$PUBLIC_ORIGIN} {
-	@webclip path /start
-	log_skip @webclip
+{
+	servers {
+		timeouts {
+			read_body 30s
+			read_header 10s
+			idle 5m
+			write 30m
+		}
+		max_header_size 32KB
+	}
+}
 
-	encode zstd gzip
-	handle /api/* {
-		reverse_proxy server:3000
+{$PUBLIC_ORIGIN} {
+	log {
+		output stdout
+		format json
 	}
-	handle /socket.io/* {
-		reverse_proxy server:3000
+
+	# Web Clip tokens and teacher filters may carry identifiers. These routes are
+	# intentionally absent from access logs; application audit logs remain durable.
+	@sensitive_log path /start /api/admin/* /socket.io/*
+	log_skip @sensitive_log
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: wss:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), browsing-topics=()"
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Resource-Policy same-origin
+		X-Frame-Options DENY
 	}
-	handle /start* {
-		reverse_proxy server:3000
+
+	# Remove all client-supplied proxy and device identity claims. Caddy then
+	# derives X-Forwarded-For, -Host and -Proto from the trusted edge request.
+	request_header -X-Forwarded-*
+	request_header -X-Real-IP
+	request_header -X-Student-*
+	request_header -X-Device-*
+	request_header -X-IClass-*
+
+	@compressible not path /start /api/admin/*
+	encode @compressible zstd gzip
+
+	@api path /api/*
+	handle @api {
+		request_body {
+			max_size 3MB
+		}
+		reverse_proxy server:3000 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+				keepalive 2m
+			}
+		}
 	}
+
+	@socket path /socket.io/*
+	handle @socket {
+		reverse_proxy server:3000 {
+			stream_timeout 45m
+			stream_close_delay 5m
+			flush_interval -1
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+				keepalive 2m
+			}
+		}
+	}
+
+	handle /start {
+		request_body {
+			max_size 16KB
+		}
+		reverse_proxy server:3000 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
 	handle /health/* {
 		reverse_proxy server:3000
 	}
+
 	handle {
-		reverse_proxy web:8080
+		reverse_proxy web:8080 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	handle_errors {
+		header -Server
+		header Content-Type "text/plain; charset=utf-8"
+		respond "服務暫時不可用" {http.error.status_code}
 	}
 }
