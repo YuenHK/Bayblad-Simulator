@@ -23,6 +23,8 @@ Tag workflow 產生獨立 attestation `runtime-files.sha256` 及 `release/runtim
 
 主機在同一 production lock 內核對 authorization 的 `expectedPreviousState` 與 root0700 outbox 內 `deployment-ledger.json`。只有實際 container/image/DB 核對、公開 smoke 及 host receipt 簽署完成後，才會以 `steam-top-host-deployment-ledger` namespace 原子推進 ledger；同 nonce retry 只可重播相同 receipt，stale predecessor 或並行 actor 必須拒絕。Bootstrap 在建立 signed protected state 前會再驗 ledger signature、deployment id、manifest、nonce 及 predecessor chain，因此 GitHub status 不能單獨冒充主機已部署狀態。
 
+Protected current 並非可覆寫的單一 JSON：主機以 root0400 payload/signature generation、連續 hash 及原子 pointer 保留每代狀態。`record-deployment.yml` 必須先執行預裝 bootstrap `activate-production-state.sh`，驗簽 nonce-bound activation receipt 後才可把 GitHub Deployment 標為 success。如 runner 在其間中斷，只可用 `reconcile-deployment.yml` 從 bootstrap `fetch-receipt.sh` 取得原主機 receipt，再幂等 activate 及驗簽 activation receipt；若 latest deployment、manifest、nonce 或 predecessor 已變，必須拒絕，不得把舊 deployment 復活。Pointer 中斷時只可從驗簽且 hash-chain 完整的最新 generation 復原。
+
 `db.yml` 的 root-owned `/opt/steam-top` 只是一次性 PostgreSQL 功能 integration fixture，不是 production bootstrap 證據、不會產生可供正式部署信任的 state。正式 acceptance 必須取得校方主機上 `/opt/steam-top-bootstrap/verify-bootstrap.sh` 的 digest 證據，並與受保護 `bootstrap.yml` artifact 及主機 root0400 config 相符。
 
 `bootstrap-release-approval` 環境必須有 required reviewers 及 restrictive branch policy，並預先由管理員輪換 `EXPECTED_BOOTSTRAP_ARCHIVE_SHA256` 與 `BOOTSTRAP_SIGNING_KEY`。`release-host-integration` 環境只接受管理員固定的 `BOOTSTRAP_RUN_ID`/`BOOTSTRAP_COMMIT`/`BOOTSTRAP_ARCHIVE_SHA256` 及 `BOOTSTRAP_ALLOWED_SIGNERS`；tag job 會從該 protected run 下載 bootstrap，核對外部 digest、GitHub attestation 及 SSH signature，不會用 tag checkout 內的 bootstrap 作信任根。任何 digest 輪換都必須先審閱 bootstrap source，再更新受保護 environment variable；release workflow 無權自行改寫。

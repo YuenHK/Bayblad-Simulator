@@ -13,7 +13,7 @@ jobs:
     environment: production
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions: { contents: read, deployments: write, id-token: write, attestations: write }
+    permissions: { contents: read, actions: read, deployments: write, id-token: write, attestations: write }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with: { persist-credentials: false }
@@ -28,6 +28,7 @@ jobs:
           SSH_PRIVATE_KEY: "${{ secrets.SSH_PRIVATE_KEY }}"
           REMOTE_HOST_RECEIPT_OUTBOX_DIR: "${{ secrets.REMOTE_HOST_RECEIPT_OUTBOX_DIR }}"
           HOST_RECEIPT_ALLOWED_SIGNERS: "${{ secrets.HOST_RECEIPT_ALLOWED_SIGNERS }}"
+          PROTECTED_STATE_ALLOWED_SIGNERS: "${{ secrets.PROTECTED_STATE_ALLOWED_SIGNERS }}"
         run: |
           set -euo pipefail
           [[ "$DEPLOYMENT_ID" =~ ^[1-9][0-9]*$ && "$NONCE" =~ ^[a-f0-9]{64}$ && "$SSH_HOST" =~ ^[A-Za-z0-9.-]+$ && "$SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ && "$REMOTE_HOST_RECEIPT_OUTBOX_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]]
@@ -35,13 +36,26 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses?per_page=1" > statuses.json
           gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" > latest.json
           node -e 'const d=require("./deployment.json"),s=require("./statuses.json"),latest=require("./latest.json")[0],p=d.payload;if(d.environment!=="production"||p?.nonce!==process.env.NONCE||p?.schemaVersion!==4||p?.purpose!=="production"||s[0]?.state!=="in_progress"||latest?.id!==d.id||latest?.payload?.nonce!==p.nonce||latest?.payload?.manifestSha256!==p.manifestSha256||latest?.payload?.expectedPreviousState!==p.expectedPreviousState)process.exit(1)'
+          authorization_run=$(node -p 'const x=require("./deployment.json").payload.authorizationRunId;if(!/^[1-9][0-9]*$/.test(x))process.exit(1);x')
+          gh run download "$authorization_run" -n "deployment-authorization-$DEPLOYMENT_ID" -D authorization-artifact
+          cp authorization-artifact/deployment-authorization.json reconcile-authorization.json
+          gh attestation verify reconcile-authorization.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/record-deployment.yml" >/dev/null
+          node -e 'const a=require("./reconcile-authorization.json"),d=require("./deployment.json"),p=d.payload;if(a.schemaVersion!==1||a.purpose!=="production-deployment-authorization"||a.repository!==process.env.GITHUB_REPOSITORY||a.deploymentId!==String(d.id)||a.nonce!==p.nonce||a.manifestSha256!==p.manifestSha256||a.commit!==d.sha||a.expectedPreviousState!==p.expectedPreviousState)process.exit(1)'
           install -m 700 -d "$HOME/.ssh";printf '%s\n' "$SSH_HOST_KEY" > "$HOME/.ssh/known_hosts";printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519";chmod 600 "$HOME/.ssh/id_ed25519"
-          ssh "$SSH_USER@$SSH_HOST" "sudo HOST_RECEIPT_OUTBOX_DIR='$REMOTE_HOST_RECEIPT_OUTBOX_DIR' /opt/steam-top/scripts/fetch-host-receipt.sh '$NONCE'" > receipt.frame
+          ssh "$SSH_USER@$SSH_HOST" "sudo /opt/steam-top-bootstrap/fetch-receipt.sh '$NONCE'" > receipt.frame
           node scripts/parse-host-receipt-frame.mjs receipt.frame "$NONCE" deployment-receipt.json deployment-receipt.json.sig
           printf '%s\n' "$HOST_RECEIPT_ALLOWED_SIGNERS" > host-allowed-signers;ssh-keygen -Y verify -q -f host-allowed-signers -I steam-top-production-host -n steam-top-production-deployment -s deployment-receipt.json.sig < deployment-receipt.json
           node -e 'const d=require("./deployment.json"),r=require("./deployment-receipt.json");if(r.nonce!==d.payload.nonce||r.manifestDigest!==d.payload.manifestSha256||r.commit!==d.sha||r.schemaVersion!==4||r.purpose!=="production")process.exit(1)'
+          scp -q reconcile-authorization.json "$SSH_USER@$SSH_HOST:/tmp/reconcile-authorization-$NONCE.json"
+          ssh "$SSH_USER@$SSH_HOST" "set -eu;trap 'rm -f /tmp/reconcile-authorization-$NONCE.json' EXIT;sudo /opt/steam-top-bootstrap/activate-production-state.sh /tmp/reconcile-authorization-$NONCE.json" > activation.frame
+          node scripts/parse-host-receipt-frame.mjs activation.frame "$NONCE" activation-receipt.json activation-receipt.json.sig
+          printf '%s\n' "$PROTECTED_STATE_ALLOWED_SIGNERS" > state-allowed-signers
+          ssh-keygen -Y verify -q -f state-allowed-signers -I state -n steam-top-production-activation -s activation-receipt.json.sig < activation-receipt.json
+          node -e 'const a=require("./activation-receipt.json"),d=require("./deployment.json");if(a.schemaVersion!==1||a.purpose!=="production-activation-receipt"||a.deploymentId!==String(d.id)||a.nonce!==d.payload.nonce||!/^[a-f0-9]{64}$/.test(a.stateDigest))process.exit(1)'
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: { subject-path: deployment-receipt.json }
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with: { subject-path: activation-receipt.json }
       - name: Complete the existing deployment exactly once
         env: { GH_TOKEN: "${{ github.token }}", DEPLOYMENT_ID: "${{ inputs.deployment_id }}" }
         run: |
@@ -50,3 +64,5 @@ jobs:
           [[ "$latest" == "$DEPLOYMENT_ID" ]]
           node scripts/create-deployment-status.mjs "$DEPLOYMENT_ID" status.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" --input status.json
+          after=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0].id|tostring')
+          [[ "$after" == "$DEPLOYMENT_ID" ]]
