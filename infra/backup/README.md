@@ -20,6 +20,8 @@ export BACKUP_DIR='/srv/steam-top/backups'
 export AGE_RECIPIENT='age1...'
 export DELETION_LEDGER_FILE='/srv/steam-top/deletion-ledger/ledger.log'
 export DELETION_LEDGER_CLI='/opt/steam-top/apps/server/dist/admin/deletion-ledger-cli.js'
+export DELETION_LEDGER_CLI_ROOT='/opt/steam-top/apps/server/dist'
+export DELETION_LEDGER_CLI_SHA256='由受信任建置產生的 64 位 SHA-256'
 export DELETION_SOURCE_INSTANCE_ID='與 restore_control marker 完全相符的 UUID'
 export BACKUP_SIGNING_KEY='/離線或秘密管理器掛載/signing-key'
 export BACKUP_ALLOWED_SIGNERS_FILE='/受限制位置/allowed_signers'
@@ -55,7 +57,7 @@ export BACKUP_SIGNER_ID='steam-top-backup-2026'
 
 目標資料庫必須預先套用 migration，並由資料庫管理員在單一 transaction 先執行 `set local steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA'`，再把 `restore_control.deployment_environment` 單例設為非 `production`、`restore_allowed=true`；一般 update/delete/truncate 均由 trigger 拒絕。操作者還須提供完全相符的 `restore_target_id`。整個 `restore_control` schema 不包含在 dump 內，還原前後均會核對。腳本先以 pinned signing 公鑰驗證簽署，再處理解密；並要求目前外部 deletion ledger 與備份 manifest 完全一致，舊備份即使密碼及簽署均正確也會被拒絕。
 
-腳本先驗證檔名、非 symlink、manifest、內嵌 ledger 狀態機與密文 SHA-256，再以 `age --decrypt` 串流至 `pg_restore --single-transaction --clean --if-exists`。每個新備份通過完整驗證後才寫入另外簽署的 `VERIFIED` marker；每日 retention 只計 marker、簽署及組件均有效的備份，損壞備份不會擠走 30 份有效備份。`scrub-backups.sh` 應以較低頻率重新讀取及雜湊全部密文。任何 archive／SQL 錯誤會回滾整次還原，不留下半套 schema 或資料。完成後會核對來源 schema、刪除稽核列數及 target marker。另由教師後台抽查一個已知日期範圍的設計、對戰、排行榜統計和 Excel 匯出，記錄實際 RPO/RTO、操作者、備份檔 checksum 及結果；至少每學期演練一次。
+腳本先驗證檔名、非 symlink、manifest、內嵌 ledger 狀態機與密文 SHA-256，再啟動已釘選路徑及 digest 的 ledger guard；guard 以相同 OS lock 阻止刪除追加，直至 `pg_restore --single-transaction --clean --if-exists`、schema／列數及 marker 全部核對完成。每個新備份的簽署 manifest 包含唯一 backup UUID 及精確目錄名稱，通過完整驗證後才寫入另外簽署、同時綁定 manifest 與 checksum 的 `VERIFIED` marker；每日 retention 只計 marker、簽署及組件均有效且 backup UUID／密文 digest 不重複的備份，損壞或重複備份不會擠走 30 份有效備份。`scrub-backups.sh` 應以較低頻率重新讀取及雜湊全部密文。任何 archive／SQL 錯誤會回滾整次還原，不留下半套 schema 或資料。完成後會核對來源 schema、刪除稽核列數及 target marker。另由教師後台抽查一個已知日期範圍的設計、對戰、排行榜統計和 Excel 匯出，記錄實際 RPO/RTO、操作者、備份檔 checksum 及結果；至少每學期演練一次。
 
 ## 自動測試及事故處理
 
