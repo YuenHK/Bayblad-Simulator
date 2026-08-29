@@ -55,7 +55,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0].id' | grep -Fx "$(node -p 'require("./current-state.json").deploymentId')"
           ./scripts/portable-sha256.sh manifest release release-manifest.json > release/SHA256SUMS
           ./scripts/portable-sha256.sh digest release/release-manifest.json > release/EXTERNAL-MANIFEST-SHA256
-          printf '{"previousRun":"%s","previousCommit":"%s","currentRun":"%s","currentCommit":"%s"}\n' "$PREVIOUS_RUN" "$PREVIOUS_COMMIT" "$CURRENT_RUN" "$CURRENT_COMMIT" > release/ROLLBACK-SOURCES.json
+          node scripts/create-rollback-sources.mjs current-state.json "$PREVIOUS_RUN" "$PREVIOUS_ARTIFACT" "$PREVIOUS_COMMIT" "$PREVIOUS_SHA" release/ROLLBACK-SOURCES.json
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: { subject-path: release/release-manifest.json }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
