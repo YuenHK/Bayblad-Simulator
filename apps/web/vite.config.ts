@@ -6,6 +6,7 @@ export default defineConfig({
     proxy: {
       "/api": { target: process.env.TEST_REALTIME_PROXY, changeOrigin: false },
       "/socket.io": { target: process.env.TEST_REALTIME_PROXY, ws: true, changeOrigin: true },
+      "/__test": { target: process.env.TEST_REALTIME_PROXY, changeOrigin: false },
     },
   } } : {}),
   test: {

@@ -95,6 +95,19 @@ export const deletionScopeEnum = pgEnum("deletion_scope", [
 ]);
 export const adminLoginScopeEnum = pgEnum("admin_login_scope", ["account", "client", "global"]);
 
+export const platformSettings = pgTable("platform_settings", {
+  singleton: boolean("singleton").primaryKey().notNull().default(true),
+  paused: boolean("paused").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [check("platform_settings_singleton", sql`${table.singleton} = true`)]);
+
+export const adminCommandOperations = pgTable("admin_command_operations", {
+  operationId: uuid("operation_id").primaryKey(), payloadHash: text("payload_hash").notNull(),
+  status: varchar("status", { length: 16 }).notNull(), httpStatus: smallint("http_status").notNull(),
+  responseJson: jsonb("response_json").$type<Readonly<Record<string, unknown>>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [check("admin_command_operations_hash", sql`${table.payloadHash} ~ '^[a-f0-9]{64}$'`), check("admin_command_operations_status", sql`${table.status} in ('accepted','applied','audit_pending','completed','failed')`)]);
+
 export type BattleResultSnapshot = Readonly<Record<string, unknown>>;
 
 export const restoreControl = pgSchema("restore_control");
@@ -873,6 +886,7 @@ export const matchParticipantSnapshots = pgTable("match_participant_snapshots", 
   identityIdAtStart: uuid("identity_id_at_start"),
   canonicalIdentityIdAtStart: uuid("canonical_identity_id_at_start"),
   identityStatusSnapshot: identityStatusEnum("identity_status_snapshot"),
+  displayNameSnapshot: varchar("display_name_snapshot", { length: 80 }),
   classNameSnapshot: varchar("class_name_snapshot", { length: 30 }),
   designId: uuid("design_id").notNull().references(() => designs.id, { onDelete: "restrict" }),
   capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),

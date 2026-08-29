@@ -13,6 +13,7 @@ import type {
   AdminParameterUsageRow,
 } from "@steam-top/protocol";
 import type { AnalyticsResponse } from "./types";
+import { localizeAdminKey, localizeAdminValue } from "./localize";
 
 const names: Record<string, string> = {
   layerShape: "形狀",
@@ -27,16 +28,10 @@ const names: Record<string, string> = {
   layerActualAreaBucket: "面積",
 };
 function valueLabel(value: Readonly<Record<string, unknown>>): string {
-  if (value.category === "Other") return "其他";
-  return Object.entries(value)
-    .map(
-      ([key, item]) =>
-        `${key}: ${item === null ? "不適用" : typeof item === "object" ? JSON.stringify(item) : String(item)}`,
-    )
-    .join("、");
+  return localizeAdminValue(value);
 }
 const performanceLabel = (row: AdminParameterPerformanceRow) =>
-  `${names[row.dimension] ?? row.dimension}｜${valueLabel(row.value)}｜${row.launchGrade}｜對手 ${row.opponentStrengthBand}`;
+  `${names[row.dimension] ?? localizeAdminKey(row.dimension)}｜${valueLabel(row.value)}｜${localizeAdminValue(row.launchGrade)}｜對手 ${localizeAdminValue(row.opponentStrengthBand)}`;
 function Performance({
   title,
   rows,
@@ -83,7 +78,7 @@ function Performance({
 export function AnalyticsCharts({ data }: { data: AnalyticsResponse }) {
   const launch = Object.entries(data.rankings.overallLaunchDistribution)
     .filter(([key]) => key !== "totalOccurrences")
-    .map(([grade, count]) => ({ grade, count }));
+    .map(([grade, count]) => ({ grade: localizeAdminValue(grade), count }));
   return (
     <section className="panel admin-section" aria-labelledby="analytics-title">
       <h2 id="analytics-title">使用及參數統計</h2>

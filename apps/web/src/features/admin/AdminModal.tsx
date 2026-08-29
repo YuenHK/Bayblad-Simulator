@@ -9,7 +9,9 @@ export function AdminModal({
   children: ReactNode;
 }) {
   const dialog = useRef<HTMLElement>(null),
-    restore = useRef<HTMLElement | null>(null);
+    restore = useRef<HTMLElement | null>(null),
+    closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     restore.current =
       document.activeElement instanceof HTMLElement
@@ -25,7 +27,7 @@ export function AdminModal({
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        closeRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -46,7 +48,7 @@ export function AdminModal({
       document.removeEventListener("keydown", key);
       restore.current?.focus();
     };
-  }, [onClose]);
+  }, []);
   return (
     <div
       className="modal-scrim"

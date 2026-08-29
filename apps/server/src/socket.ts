@@ -358,12 +358,27 @@ export class RealtimeGateway {
 
   adminRemoveParticipant(roomId: string, participantId: string): Promise<void> {
     return this.#adminRoomTail(roomId, async () => {
-      const sessionId = this.#sessionIdsByParticipant.get(roomId)?.get(participantId); if (!sessionId) throw Object.assign(new Error("PARTICIPANT_NOT_FOUND"), { code: "PARTICIPANT_NOT_FOUND" });
+      const sessionId = this.#sessionIdsByParticipant.get(roomId)?.get(participantId);
+      const participantExists = this.#rooms.adminRooms().find(room => room.roomId === roomId)?.players.concat(this.#rooms.adminRooms().find(room => room.roomId === roomId)?.spectators ?? []).some(participant => participant.id === participantId);
+      if (!participantExists) throw Object.assign(new Error("PARTICIPANT_NOT_FOUND"), { code: "PARTICIPANT_NOT_FOUND" });
+      const match = this.#matches.get(roomId);
+      if (match) {
+        this.#emitToRoom(roomId, { type: "match.cancelled", roomId, matchId: match.matchId, reason: "admin-removed", protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() });
+        this.#cancelMatch(roomId, match);
+        await this.#transitionRoomPhase(roomId, "waiting", "cancel");
+      }
       const checkpoint = this.#rooms.checkpoint(roomId); this.#rooms.adminRemove(roomId, participantId);
       try { if (this.#roomRecordRepository) { const view = this.#rooms.get(roomId); if (view) { const projection = this.#roomRoleProjection(roomId); await this.#roomRecordRepository.leaveAndSync(roomId, participantId, new Date(this.#now()), projection.roles, projection.ownerParticipantId, projection.ownerIdentityId); } else await this.#roomRecordRepository.leave(roomId, participantId, new Date(this.#now())); } }
       catch (error) { this.#rooms.restore(checkpoint); throw error; }
-      const session = this.#sessionsById.get(sessionId); if (session) { const event = { type: "room.departed", departureId: this.#createServerEventId(), roomId, reason: "removed", protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() } as const; this.#queueDeparture(session, event); for (const socketId of session.socketIds) { const socket = this.io.sockets.sockets.get(socketId); if (socket) this.#emit(socket, event); } session.roomIds.delete(roomId); session.ownedRoomIds.delete(roomId); }
+      const session = sessionId ? this.#sessionsById.get(sessionId) : undefined; if (session) { const event = { type: "room.departed", departureId: this.#createServerEventId(), roomId, reason: "removed", protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() } as const; this.#queueDeparture(session, event); for (const socketId of session.socketIds) { const socket = this.io.sockets.sockets.get(socketId); if (socket) this.#emit(socket, event); } session.roomIds.delete(roomId); session.ownedRoomIds.delete(roomId); }
       this.#sessionIdsByParticipant.get(roomId)?.delete(participantId); this.#syncTransportRoles(roomId); if (this.#rooms.hasRoom(roomId)) this.#broadcastRoom(roomId); this.#broadcastLobby();
+      const remaining = this.#rooms.adminRooms().find(room => room.roomId === roomId);
+      if (remaining && remaining.players.length === 0) {
+        const view = this.#rooms.get(roomId), closedAt = new Date(this.#now());
+        if (view && this.#roomRecordRepository) await this.#roomRecordRepository.close(roomId, closedAt, view.revision + 1);
+        this.#rooms.adminClose(roomId);
+        this.#departWholeRoom(roomId, "closed"); this.#cleanupRoom(roomId); this.#broadcastLobby();
+      }
     });
   }
 
@@ -602,6 +617,7 @@ export class RealtimeGateway {
           protocolVersion: PROTOCOL_VERSION,
           serverEventId: this.#createServerEventId(),
         });
+        this.#emit(socket, { type: "platform.status", paused: this.#rooms.platformPaused, protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() });
         this.#emit(socket, this.#rooms.lobbySnapshot());
         this.#pruneSessionOutcomes(session, this.#now());
         for (const { event } of session.pendingDepartures.values()) this.#emit(socket, event);

@@ -223,7 +223,7 @@ export class PostgresMatchRepository implements MatchRepository {
       for (const participant of [{ slot: "player1" as const, identityId: input.player1IdentityId, designId: input.player1DesignId }, { slot: "player2" as const, identityId: input.player2IdentityId, designId: input.player2DesignId }]) {
         const [identity] = participant.identityId ? await tx.select().from(identities).where(eq(identities.id, participant.identityId)).limit(1) : [];
         const canonical = participant.identityId ? await tx.execute<{ id: string }>(sql`with recursive chain as (select id,merged_into_identity_id,0 depth from identities where id=${participant.identityId} union all select i.id,i.merged_into_identity_id,c.depth+1 from identities i join chain c on i.id=c.merged_into_identity_id where c.depth<16) select id from chain order by depth desc limit 1`) : [];
-        await tx.insert(matchParticipantSnapshots).values({ matchId: input.id, slot: participant.slot, identityIdAtStart: participant.identityId, canonicalIdentityIdAtStart: canonical[0]?.id ?? participant.identityId, identityStatusSnapshot: identity?.status ?? null, classNameSnapshot: identity?.className ?? null, designId: participant.designId, capturedAt: input.startedAt });
+        await tx.insert(matchParticipantSnapshots).values({ matchId: input.id, slot: participant.slot, identityIdAtStart: participant.identityId, canonicalIdentityIdAtStart: canonical[0]?.id ?? participant.identityId, identityStatusSnapshot: identity?.status ?? null, displayNameSnapshot: identity?.displayName ?? null, classNameSnapshot: identity?.className ?? null, designId: participant.designId, capturedAt: input.startedAt });
       }
       return true;
     });

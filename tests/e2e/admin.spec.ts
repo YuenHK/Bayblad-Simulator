@@ -7,16 +7,46 @@ async function login(page: Page) {
   await page.getByRole("button", { name: "登入" }).press("Enter");
   await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
 }
+async function confirmAction(page: Page) {
+  await page.getByLabel("再次輸入管理員密碼").pressSequentially(password);
+  await page.getByRole("button", { name: "確認" }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+}
 test("教師登入、房間確認、篩選、統計及刪除流程不外洩密碼", async ({ page }) => {
   await login(page);
   expect(page.url()).not.toContain(password);
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
     password,
   );
-  await expect(page.getByText("1 間房間")).toBeVisible();
-  await page.getByRole("button", { name: "強制關房" }).click();
+  await expect(page.getByText("2 間房間")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "學生總分排行榜（只供教師查看）" })).toBeVisible();
+  await expect(page.getByText("發射判定分佈")).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "匯出 Excel" }).click();
+  const download = await downloadPromise, stream = await download.createReadStream();
+  const first = await new Promise<Buffer>((resolve, reject) => stream.once("data", resolve).once("error", reject));
+  expect(first.subarray(0, 2).toString()).toBe("PK");
+  await page.getByRole("button", { name: "暫停平台" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
-  await page.getByRole("button", { name: "取消" }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "暫停平台" })).toBeFocused();
+  await page.getByRole("button", { name: "暫停平台" }).click();
+  await confirmAction(page);
+  await expect(page.getByRole("button", { name: "恢復平台" })).toBeVisible();
+  await page.getByRole("button", { name: "恢復平台" }).click();
+  await confirmAction(page);
+  const leeRoom = page.locator("article").filter({ hasText: "1B 李同學" });
+  await leeRoom.getByRole("button", { name: "移除 1B 李同學" }).click();
+  await confirmAction(page);
+  await expect(page.getByText("1B 李同學")).toBeHidden();
+  const chanRoom = page.locator("article").filter({ hasText: "1A 陳同學" });
+  await chanRoom.getByRole("button", { name: "強制關房" }).click();
+  await confirmAction(page);
+  await expect(page.getByText("0 間房間")).toBeVisible();
+  const stats = await page.request.get("/__test/stats", { headers: { "x-test-secret": "steam-top-e2e-only" } });
+  expect((await stats.json()).adminAudits).toEqual(expect.arrayContaining(["admin.platform.pause", "admin.room.remove", "admin.room.close"]));
+  await page.getByLabel("班別").fill("2B");
+  await expect(page.getByText("此頁沒有紀錄。")).toBeVisible();
   await page.getByLabel("班別").fill("1A");
   await expect(page.getByText("iPad-01")).toBeVisible();
   await page.getByRole("checkbox", { name: "選取 陳同學" }).check();
@@ -38,6 +68,16 @@ test.describe("iPad 與減少動態效果", () => {
   test("可用鍵盤瀏覽後台", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await login(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    const undersized = await page.locator("button, input, select").evaluateAll(elements => elements.filter(element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && (rect.height < 44 || rect.width < 44); }).length);
+    expect(undersized).toBe(0);
+    const opener = page.getByRole("button", { name: "刪除紀錄" });
+    await opener.click();
+    await expect(page.getByLabel("刪除範圍")).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(page.locator(":focus")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(opener).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(page.locator(":focus")).toBeVisible();
   });

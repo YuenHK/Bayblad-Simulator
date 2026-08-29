@@ -28,6 +28,8 @@ import { registerAnalyticsRoutes } from "./analytics/routes";
 import { registerExportRoutes, type ExportDataSource } from "./exports/workbook";
 import { registerDeleteRecordRoutes, type DeletionStore } from "./admin/delete-records";
 import { registerAdminDashboardRoutes } from "./admin/dashboard-routes";
+import { InMemoryPlatformSettingsStore, type PlatformSettingsStore } from "./admin/platform-settings";
+import { InMemoryAdminCommandStore, type AdminCommandStore } from "./admin/command-operations";
 import { registerAdminRecordRoutes, type AdminRecordsSource } from "./admin/records-routes";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
@@ -112,6 +114,8 @@ export type BuildAppOptions = Readonly<{
   exportDataSource?: ExportDataSource;
   deletionStore?: DeletionStore;
   adminRecordsSource?: AdminRecordsSource;
+  platformSettingsStore?: PlatformSettingsStore;
+  adminCommandStore?: AdminCommandStore;
   analyticsRefreshIntervalMs?: number;
 }>;
 
@@ -355,7 +359,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     logError: reportBackgroundError,
   });
   app.decorate("realtimeGateway", gateway);
-  if (options.adminAuth) registerAdminDashboardRoutes(app, options.adminAuth, rooms, gateway, adminResolver);
+  const platformSettings = options.platformSettingsStore ?? new InMemoryPlatformSettingsStore();
+  app.addHook("onReady", async () => gateway.setPlatformPaused(await platformSettings.readPaused()));
+  if (options.adminAuth) registerAdminDashboardRoutes(app, options.adminAuth, rooms, gateway, adminResolver, platformSettings, options.adminCommandStore ?? new InMemoryAdminCommandStore());
   app.decorate("battleEngine", battleEngine);
 
   let authorityHealthy = true;

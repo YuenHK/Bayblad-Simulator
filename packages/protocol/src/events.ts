@@ -288,6 +288,12 @@ export const lobbySnapshotEventSchema = z
   })
   .strict();
 
+export const platformStatusEventSchema = z.object({
+  type: z.literal("platform.status"),
+  paused: z.boolean(),
+  ...serverEnvelopeShape,
+}).strict();
+
 export const occupiedSeatSchema = z
   .object({
     participantId: participantIdSchema,
@@ -755,7 +761,7 @@ export const matchCancelledEventSchema = z
     type: z.literal("match.cancelled"),
     roomId: correlationIdSchema,
     matchId: correlationIdSchema,
-    reason: z.enum(["attempt-limit", "server-error"]),
+    reason: z.enum(["attempt-limit", "server-error", "admin-removed"]),
     ...serverEnvelopeShape,
   })
   .strict();
@@ -828,6 +834,7 @@ export const matchPersistenceFailedEventSchema = z
 export const serverEventSchema = z.discriminatedUnion("type", [
   protocolWelcomeEventSchema,
   lobbySnapshotEventSchema,
+  platformStatusEventSchema,
   roomSnapshotEventSchema,
   roomDeltaEventSchema,
   launchScheduleEventSchema,
@@ -1091,3 +1098,13 @@ export type AdminParameterPerformanceRow = z.infer<
 >;
 export type AdminRecordRow = z.infer<typeof adminRecordRowSchema>;
 export type AdminRecordsPage = z.infer<typeof adminRecordsPageSchema>;
+
+export const adminLeaderboardRowSchema = z.object({
+  identityId: z.uuid(), displayName: z.string().min(1).max(80), className: z.string().max(30).nullable(),
+  battleScore: z.number().nonnegative(), challengeScore: z.number().nonnegative(), totalScore: z.number().nonnegative(),
+  matches: z.number().int().nonnegative(), rank: z.number().int().positive(),
+}).strict();
+export const adminLeaderboardPageSchema = z.object({
+  rows: z.array(adminLeaderboardRowSchema), total: z.number().int().nonnegative(), page: z.number().int().positive(), pageSize: z.number().int().positive(),
+}).strict();
+export type AdminLeaderboardPage = z.infer<typeof adminLeaderboardPageSchema>;
