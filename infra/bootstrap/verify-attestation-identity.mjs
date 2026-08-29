@@ -1,5 +1,8 @@
-import { readFileSync } from "node:fs";
-const [evidencePath,configPath]=process.argv.slice(2),evidence=JSON.parse(readFileSync(evidencePath,"utf8")),config=JSON.parse(readFileSync(configPath,"utf8"));
-const flattened=[];const walk=(x)=>{if(typeof x==="string")flattened.push(x);else if(Array.isArray(x))x.forEach(walk);else if(x&&typeof x==="object")for(const [k,v] of Object.entries(x)){flattened.push(`${k}=${String(v)}`);walk(v)}};walk(evidence);
-const workflowRef=config.workflowRef,workflowSha=config.workflowSha,workflowIdentity=config.workflowIdentity;
-if(!workflowIdentity||!workflowRef?.startsWith("refs/heads/")||!/^[a-f0-9]{40}$/u.test(workflowSha)||!flattened.some(x=>x.includes(workflowIdentity))||!flattened.some(x=>x.includes(workflowRef))||!flattened.some(x=>x.includes(workflowSha)))throw new Error("attestation workflowRef/workflowSha identity mismatch");
+import {createHash} from "node:crypto";
+import {readFileSync} from "node:fs";
+import {basename} from "node:path";
+const [evidencePath,configPath,subjectPath]=process.argv.slice(2),evidence=JSON.parse(readFileSync(evidencePath,"utf8")),config=JSON.parse(readFileSync(configPath,"utf8")),subject=readFileSync(subjectPath),digest=createHash("sha256").update(subject).digest("hex");
+if(!Array.isArray(evidence)||evidence.length!==1)throw new Error("one attestation verification result required");
+const result=evidence[0]?.verificationResult,subjects=result?.statement?.subject,certificate=result?.signature?.certificate;
+if(!result||!Array.isArray(subjects)||subjects.length!==1||subjects[0]?.name!==basename(subjectPath)||subjects[0]?.digest?.sha256!==digest)throw new Error("attestation subject mismatch");
+if(certificate?.issuer!=="https://token.actions.githubusercontent.com"||certificate.sourceRepositoryUri!==`https://github.com/${config.repository}`||certificate.sourceRepositoryRef!==config.workflowRef||certificate.sourceWorkflow!==config.workflowIdentity||certificate.sourceWorkflowDigest!==config.workflowSha)throw new Error("attestation certificate identity mismatch");
