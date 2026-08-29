@@ -40,37 +40,47 @@ export class ImportedDeviceMapAdapter implements IClassAdapter {
 }
 
 function parseCsv(value: string): string[][] {
-  const rows: string[][] = []; let row: string[] = []; let field = ""; let quoted = false;
+  value = value.replaceAll("\r\n", "\n"); if (value.includes("\r")) throw new Error("INVALID_DEVICE_MAP_CSV");
+  const rows: string[][] = []; let row: string[] = []; let field = ""; let quoted = false; let afterQuote = false;
   for (let index = 0; index < value.length; index += 1) {
     const char = value[index]!;
-    if (quoted) { if (char === '"' && value[index + 1] === '"') { field += '"'; index += 1; } else if (char === '"') quoted = false; else field += char; continue; }
-    if (char === '"' && field === "") { quoted = true; continue; }
-    if (char === ",") { row.push(field); field = ""; continue; }
-    if (char === "\n") { row.push(field.replace(/\r$/u, "")); rows.push(row); row = []; field = ""; continue; }
+    if (quoted) { if (char === '"' && value[index + 1] === '"') { field += '"'; index += 1; } else if (char === '"') { quoted = false; afterQuote = true; } else field += char; continue; }
+    if (afterQuote && char !== "," && char !== "\n") throw new Error("INVALID_DEVICE_MAP_CSV");
+    if (char === '"') { if (field !== "" || afterQuote) throw new Error("INVALID_DEVICE_MAP_CSV"); quoted = true; continue; }
+    if (char === ",") { row.push(field); field = ""; afterQuote = false; continue; }
+    if (char === "\n") { row.push(field); rows.push(row); row = []; field = ""; afterQuote = false; continue; }
+    if (afterQuote) throw new Error("INVALID_DEVICE_MAP_CSV");
     field += char;
   }
   if (quoted) throw new Error("INVALID_DEVICE_MAP_CSV");
-  row.push(field.replace(/\r$/u, "")); rows.push(row); return rows;
+  row.push(field); rows.push(row); return rows;
 }
 
 export class ApiIClassAdapter implements IClassAdapter {
   readonly #baseUrl: URL; readonly #bearerToken: string; readonly #fetch: typeof fetch; readonly #timeoutMs: number; readonly #maxAttempts: number;
-  #failures = 0; #openUntil = 0;
-  constructor(input: Readonly<{ baseUrl: string; bearerToken: string; fetcher?: typeof fetch; timeoutMs?: number; maxAttempts?: number; production?: boolean }>) {
-    this.#baseUrl = new URL(input.baseUrl); if ((input.production ?? process.env.NODE_ENV === "production") && this.#baseUrl.protocol !== "https:") throw new TypeError("ICLASS_HTTPS_REQUIRED");
+  readonly #now: () => number; readonly #sleep: (ms: number) => Promise<void>;
+  #failures = 0; #openUntil = 0; #halfOpen = false;
+  constructor(input: Readonly<{ baseUrl: string; bearerToken: string; fetcher?: typeof fetch; timeoutMs?: number; maxAttempts?: number; production?: boolean; now?: () => number; sleep?: (ms: number) => Promise<void> }>) {
+    this.#baseUrl = new URL(input.baseUrl); if (this.#baseUrl.protocol !== "https:") throw new TypeError("ICLASS_HTTPS_REQUIRED");
+    if (this.#baseUrl.username || this.#baseUrl.password || this.#baseUrl.hash) throw new TypeError("ICLASS_URL_INVALID");
     this.#bearerToken = z.string().min(1).max(1_024).parse(input.bearerToken); this.#fetch = input.fetcher ?? fetch; this.#timeoutMs = input.timeoutMs ?? 3_000; this.#maxAttempts = input.maxAttempts ?? 2;
+    this.#now = input.now ?? Date.now; this.#sleep = input.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 100 || this.#timeoutMs > 30_000) throw new TypeError("ICLASS_TIMEOUT_INVALID");
     if (!Number.isSafeInteger(this.#maxAttempts) || this.#maxAttempts < 1 || this.#maxAttempts > 5) throw new TypeError("ICLASS_ATTEMPTS_INVALID");
   }
   async resolveDevice(externalDeviceId: string): Promise<IClassDevice | null> {
-    const id = clean(128).parse(externalDeviceId); if (Date.now() < this.#openUntil) throw new Error("ICLASS_UNAVAILABLE");
+    const id = clean(128).parse(externalDeviceId); if (this.#now() < this.#openUntil) throw new Error("ICLASS_UNAVAILABLE");
+    const halfOpenProbe = this.#failures >= 3;
+    if (halfOpenProbe) { if (this.#halfOpen) throw new Error("ICLASS_UNAVAILABLE"); this.#halfOpen = true; }
+    try {
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
       try {
         const url = new URL(`devices/${encodeURIComponent(id)}`, this.#baseUrl.toString().replace(/\/?$/u, "/"));
-        const response = await this.#fetch(url, { headers: { accept: "application/json", authorization: `Bearer ${this.#bearerToken}` }, signal: AbortSignal.timeout(this.#timeoutMs) });
+        const response = await this.#fetch(url, { headers: { accept: "application/json", authorization: `Bearer ${this.#bearerToken}` }, signal: AbortSignal.timeout(this.#timeoutMs), redirect: "error" });
         if (response.status === 404) { this.#failures = 0; return null; }
-        if (response.status === 401) throw new Error("ICLASS_UNAUTHORIZED");
-        if (!response.ok) throw new Error("ICLASS_UNAVAILABLE");
+        if (response.status === 401 || response.status === 403) throw new Error("ICLASS_UNAUTHORIZED");
+        if (response.status === 408 || response.status === 429 || response.status >= 500) throw new Error("ICLASS_UNAVAILABLE");
+        if (!response.ok) throw new Error("ICLASS_INVALID_RESPONSE");
         if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new Error("ICLASS_INVALID_RESPONSE");
         const declared = Number(response.headers.get("content-length")); if (Number.isFinite(declared) && declared > 64 * 1_024) throw new Error("ICLASS_INVALID_RESPONSE");
         const reader = response.body?.getReader(); let size = 0; const chunks: Uint8Array[] = [];
@@ -83,10 +93,12 @@ export class ApiIClassAdapter implements IClassAdapter {
         this.#failures = 0; return validated.data;
       } catch (error) {
         if (error instanceof Error && ["ICLASS_UNAUTHORIZED", "ICLASS_INVALID_RESPONSE"].includes(error.message)) throw error;
-        if (attempt === this.#maxAttempts) { this.#failures += 1; if (this.#failures >= 3) this.#openUntil = Date.now() + 30_000; throw new Error("ICLASS_UNAVAILABLE"); }
-        await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
+        const cause = (error as { cause?: { message?: string } })?.cause?.message ?? ""; if (/redirect/iu.test(cause)) throw new Error("ICLASS_INVALID_RESPONSE");
+        if (attempt === this.#maxAttempts) { this.#failures += 1; if (this.#failures >= 3) this.#openUntil = this.#now() + 30_000; throw new Error("ICLASS_UNAVAILABLE"); }
+        await this.#sleep(25 * attempt);
       }
     }
     throw new Error("ICLASS_UNAVAILABLE");
+    } finally { if (halfOpenProbe) this.#halfOpen = false; }
   }
 }

@@ -1,5 +1,5 @@
 {
-  "id": "aad48b1e-f9e2-4b9e-8b47-f106907d71a9",
+  "id": "ab4bf0de-affd-458f-84be-3ca1b0c0007b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2723,6 +2723,18 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "reservation_hash": {
+          "name": "reservation_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reserved_until": {
+          "name": "reserved_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -2731,6 +2743,21 @@
           "columns": [
             {
               "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "webclip_token_nonces_reservation_lease_idx": {
+          "name": "webclip_token_nonces_reservation_lease_idx",
+          "columns": [
+            {
+              "expression": "reserved_until",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2754,6 +2781,10 @@
         "webclip_token_nonces_expiry_after_issue": {
           "name": "webclip_token_nonces_expiry_after_issue",
           "value": "\"webclip_token_nonces\".\"expires_at\" > \"webclip_token_nonces\".\"issued_at\""
+        },
+        "webclip_token_nonces_reservation_consistent": {
+          "name": "webclip_token_nonces_reservation_consistent",
+          "value": "(\"webclip_token_nonces\".\"reservation_hash\" is null and \"webclip_token_nonces\".\"reserved_until\" is null) or (\"webclip_token_nonces\".\"reservation_hash\" ~ '^[a-f0-9]{64}$' and \"webclip_token_nonces\".\"reserved_until\" is not null)"
         }
       },
       "isRLSEnabled": false

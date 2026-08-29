@@ -177,8 +177,11 @@ CREATE TABLE "webclip_token_nonces" (
 	"issued_at" timestamp with time zone NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"used_at" timestamp with time zone,
+	"reservation_hash" text,
+	"reserved_until" timestamp with time zone,
 	CONSTRAINT "webclip_token_nonces_jti_hash_format" CHECK ("webclip_token_nonces"."jti_hash" ~ '^[a-f0-9]{64}$'),
-	CONSTRAINT "webclip_token_nonces_expiry_after_issue" CHECK ("webclip_token_nonces"."expires_at" > "webclip_token_nonces"."issued_at")
+	CONSTRAINT "webclip_token_nonces_expiry_after_issue" CHECK ("webclip_token_nonces"."expires_at" > "webclip_token_nonces"."issued_at"),
+	CONSTRAINT "webclip_token_nonces_reservation_consistent" CHECK (("webclip_token_nonces"."reservation_hash" is null and "webclip_token_nonces"."reserved_until" is null) or ("webclip_token_nonces"."reservation_hash" ~ '^[a-f0-9]{64}$' and "webclip_token_nonces"."reserved_until" is not null))
 );
 --> statement-breakpoint
 CREATE TABLE "matches" (
@@ -337,6 +340,7 @@ CREATE UNIQUE INDEX "identity_sessions_token_hash_uidx" ON "identity_sessions" U
 CREATE INDEX "identity_sessions_identity_last_seen_idx" ON "identity_sessions" USING btree ("identity_id","last_seen_at");--> statement-breakpoint
 CREATE INDEX "identity_sessions_active_expires_at_idx" ON "identity_sessions" USING btree ("expires_at") WHERE "identity_sessions"."revoked_at" is null;--> statement-breakpoint
 CREATE INDEX "webclip_token_nonces_expiry_idx" ON "webclip_token_nonces" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "webclip_token_nonces_reservation_lease_idx" ON "webclip_token_nonces" USING btree ("reserved_until");--> statement-breakpoint
 CREATE UNIQUE INDEX "matches_idempotency_fingerprint_uidx" ON "matches" USING btree ("idempotency_fingerprint");--> statement-breakpoint
 CREATE INDEX "matches_completed_at_idx" ON "matches" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "matches_status_completed_at_idx" ON "matches" USING btree ("status","completed_at");--> statement-breakpoint

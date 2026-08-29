@@ -151,6 +151,7 @@ export class RealtimeClient {
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
   readonly #bootstrapIdentity: boolean;
+  readonly #identityTimeoutMs: number;
   readonly #clock = new ClientClockEstimator();
   readonly #listeners = new Set<() => void>();
   readonly #bound = new Map<string, (...args: unknown[]) => void>();
@@ -170,14 +171,17 @@ export class RealtimeClient {
   #lastDepartureEventId: string | null = null;
   #lastErrorEventId: string | null = null;
   #startGeneration = 0;
+  #identityController: AbortController | null = null;
 
-  constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number; bootstrapIdentity?: boolean }>) {
+  constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number; bootstrapIdentity?: boolean; identityTimeoutMs?: number }>) {
     this.#transport = options.transport;
     this.#storage = options.storage ?? defaultStorage();
     this.#apiBase = (options.apiBase ?? "").replace(/\/$/u, "");
     this.#fetch = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? Date.now;
     this.#bootstrapIdentity = options.bootstrapIdentity ?? false;
+    this.#identityTimeoutMs = options.identityTimeoutMs ?? 10_000;
+    if (!Number.isSafeInteger(this.#identityTimeoutMs) || this.#identityTimeoutMs < 100 || this.#identityTimeoutMs > 60_000) throw new TypeError("identityTimeoutMs is invalid");
     this.#token = null;
     delete this.#transport.auth.displayName;
   }
@@ -206,29 +210,33 @@ export class RealtimeClient {
   retryIdentity(): void {
     if (!this.#started || !this.#bootstrapIdentity) return;
     const generation = ++this.#startGeneration;
+    this.#identityController?.abort();
     this.#set({ identityStatus: "loading", lastError: null, status: "connecting" });
     void this.#bootstrap(generation);
   }
 
   async #bootstrap(generation: number): Promise<void> {
     this.#set({ identityStatus: "loading" });
+    this.#identityController?.abort(); const controller = new AbortController(); this.#identityController = controller;
+    const timeout = setTimeout(() => controller.abort(new DOMException("辨識裝置逾時", "TimeoutError")), this.#identityTimeoutMs);
     try {
-      const response = await this.#fetch(`${this.#apiBase}/api/identity`, { method: "GET", credentials: "include", cache: "no-store", headers: { accept: "application/json" } });
+      const response = await awaitWithAbort(this.#fetch(`${this.#apiBase}/api/identity`, { method: "GET", credentials: "include", cache: "no-store", headers: { accept: "application/json" }, signal: controller.signal }), controller.signal);
       if (!response.ok) throw new Error("IDENTITY_BOOTSTRAP_FAILED");
       const schema = z.strictObject({ id: z.uuid(), status: z.enum(["iclass", "cookie", "guest"]), displayName: z.string().min(1).max(80) });
-      const identity = schema.parse(await response.json());
+      const identity = schema.parse(await awaitWithAbort(response.json() as Promise<unknown>, controller.signal));
       if (!this.#started || generation !== this.#startGeneration) return;
       this.#set({ identityStatus: "ready", identity });
       this.#transport.connect();
     } catch {
       if (!this.#started || generation !== this.#startGeneration) return;
       this.#set({ identityStatus: "unavailable", identity: null, status: "offline", lastError: "暫時未能辨識裝置，請重試；iClass 不可用時仍會以訪客身份進入。" });
-    }
+    } finally { clearTimeout(timeout); if (this.#identityController === controller) this.#identityController = null; }
   }
 
   stop(): void {
     if (!this.#started) return;
     this.#startGeneration += 1;
+    this.#identityController?.abort(); this.#identityController = null;
     for (const [event, listener] of this.#bound) this.#transport.off(event, listener);
     this.#bound.clear();
     this.#transport.disconnect();

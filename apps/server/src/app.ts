@@ -307,6 +307,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       reply.header("Referrer-Policy", "no-referrer").header("Cache-Control", "no-store");
       const token = (request.query as { t?: unknown }).t;
       let resolved;
+      let reservation: Awaited<ReturnType<WebClipTokenService["reserveVerified"]>> | undefined;
       if (!allowIdentityRequest(request.headers) || (request.headers["content-length"] && request.headers["content-length"] !== "0")) return reply.redirect("/", 303);
       try {
         if (!options.webClipTokens || !options.iClassAdapter || typeof token !== "string") throw new Error("INVALID_DEVICE_TOKEN");
@@ -314,11 +315,17 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
         let device;
         try { device = await options.iClassAdapter.resolveDevice(verified.deviceId); }
         catch { throw new Error("ICLASS_LOOKUP_RETRYABLE"); }
-        if (!device) { await options.webClipTokens.consumeVerified(verified); throw new Error("ICLASS_DEVICE_NOT_FOUND"); }
-        await options.webClipTokens.consumeVerified(verified);
+        reservation = await options.webClipTokens.reserveVerified(verified);
+        if (!device) { await options.webClipTokens.commitReservation(reservation); reservation = undefined; throw new Error("ICLASS_DEVICE_NOT_FOUND"); }
         const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: device.externalDeviceId, displayName: device.studentName, studentName: device.studentName, className: device.className, studentNumber: device.studentNumber, deviceName: device.deviceName }) }).resolve();
         resolved = await resolveIdentityRequest(request, live ?? undefined);
-      } catch {
+        await options.webClipTokens.commitReservation(reservation); reservation = undefined;
+      } catch (error) {
+        const failedAfterIdentityWrite = Boolean(resolved && reservation);
+        if (reservation && options.webClipTokens) { try { await options.webClipTokens.releaseReservation(reservation); } catch { /* lease expiry permits retry */ } }
+        if (error instanceof Error && error.message === "DEVICE_TOKEN_IN_PROGRESS") { reply.header("X-Identity-Bootstrap", "in-progress"); return reply.redirect("/", 303); }
+        if (error instanceof Error && error.message === "DEVICE_TOKEN_COMMIT_FAILED") { reply.header("X-Identity-Bootstrap", "retry"); return reply.redirect("/", 303); }
+        if (failedAfterIdentityWrite) { reply.header("X-Identity-Bootstrap", "retry"); return reply.redirect("/", 303); }
         try { resolved = await resolveIdentityRequest(request); } catch { /* identity API can retry later */ }
       }
       if (resolved) setIdentityCookie(reply, resolved);
@@ -365,9 +372,13 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
 
   const intervalMs = config.sweepIntervalMs;
   const timer = intervalMs > 0 ? setInterval(() => gateway.pump(), intervalMs) : undefined;
+  const nonceTimer = intervalMs > 0 && options.webClipTokens ? setInterval(() => { void options.webClipTokens!.pruneExpired().catch(() => undefined); }, Math.max(60_000, intervalMs)) : undefined;
   timer?.unref();
+  nonceTimer?.unref();
+  if (options.webClipTokens) void options.webClipTokens.pruneExpired().catch(() => undefined);
   app.addHook("preClose", async () => {
     if (timer) clearInterval(timer);
+    if (nonceTimer) clearInterval(nonceTimer);
     await gateway.close();
   });
   return app as unknown as BuiltApp;

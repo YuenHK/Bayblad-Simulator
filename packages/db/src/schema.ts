@@ -222,11 +222,15 @@ export const webClipTokenNonces = pgTable(
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     usedAt: timestamp("used_at", { withTimezone: true }),
+    reservationHash: text("reservation_hash"),
+    reservedUntil: timestamp("reserved_until", { withTimezone: true }),
   },
   (table) => [
     index("webclip_token_nonces_expiry_idx").on(table.expiresAt),
+    index("webclip_token_nonces_reservation_lease_idx").on(table.reservedUntil),
     check("webclip_token_nonces_jti_hash_format", sql`${table.jtiHash} ~ '^[a-f0-9]{64}$'`),
     check("webclip_token_nonces_expiry_after_issue", sql`${table.expiresAt} > ${table.issuedAt}`),
+    check("webclip_token_nonces_reservation_consistent", sql`(${table.reservationHash} is null and ${table.reservedUntil} is null) or (${table.reservationHash} ~ '^[a-f0-9]{64}$' and ${table.reservedUntil} is not null)`),
   ],
 );
 

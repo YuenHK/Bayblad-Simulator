@@ -1,0 +1,8 @@
+simulator.example.edu.hk {
+	# Web Clip token is a bearer credential. Never log the /start query string.
+	@webclip path /start
+	log_skip @webclip
+
+	encode zstd gzip
+	reverse_proxy steam-top-server:3000
+}
