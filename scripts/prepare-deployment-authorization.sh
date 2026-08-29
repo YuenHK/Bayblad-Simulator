@@ -32,6 +32,6 @@ NODE
 bound=$(gh api "repos/$repository/deployments/$deployment_id" --jq '[.payload.nonce,.payload.expectedPreviousState,.payload.manifestSha256,.sha,.environment]|join("|")');[[ $bound == "$nonce|$expected_state|$manifest_sha|$commit|$expected_environment" ]]||die "deployment state advanced"
 output="$state_dir/$nonce.json";[[ ! -e $output && ! -e $output.consumed ]]||die "nonce used";tmp=$(mktemp "$state_dir/.authorization.XXXXXX");trap 'rm -rf "$snapshot";rm -f "$tmp"' EXIT
 node - "$snapshot/pending.json" "$repository" "$deployment_id" "$purpose" "$tmp" <<'NODE'
-const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[2])),p=r.payload;fs.writeFileSync(process.argv[6],JSON.stringify({schemaVersion:2,purpose:process.argv[5],repository:process.argv[3],deploymentId:process.argv[4],nonce:p.nonce,manifestSha256:p.manifestSha256,commit:p.commit,expectedPreviousState:p.expectedPreviousState,signerKind:p.signerKind,sourceWorkflow:p.sourceWorkflow,authorizedAt:new Date().toISOString()})+"\n",{mode:0o400});
+const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[2])),p=r.payload;fs.writeFileSync(process.argv[6],JSON.stringify({schemaVersion:2,state:"pending",purpose:process.argv[5],repository:process.argv[3],deploymentId:process.argv[4],nonce:p.nonce,manifestSha256:p.manifestSha256,commit:p.commit,expectedPreviousState:p.expectedPreviousState,signerKind:p.signerKind,sourceWorkflow:p.sourceWorkflow,authorizedAt:new Date().toISOString()})+"\n",{mode:0o400});
 NODE
 chmod 400 "$tmp";mv "$tmp" "$output";rm -rf "$snapshot";trap - EXIT
