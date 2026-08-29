@@ -15,9 +15,10 @@ export function outcomeResidual(outcome:0|0.5|1,ownStrength:number,opponentStren
   return outcome-expectedWinProbability(ownStrength,opponentStrengthValue);
 }
 export type OverallLaunchDistribution=Readonly<{Perfect:number;Great:number;Good:number;Miss:number;totalOccurrences:number}>;
-export async function overallLaunchDistribution(db:PostgresJsDatabase<typeof schema>,input:AnalyticsFilters):Promise<OverallLaunchDistribution>{
+export async function overallLaunchDistribution(db:PostgresJsDatabase<typeof schema>,input:AnalyticsFilters,cutoff?:string):Promise<OverallLaunchDistribution>{
   const filters=analyticsFiltersSchema.parse(input),bounds=hongKongDateBounds(filters.from,filters.to);const conditions:SQL[]=[sql`m.status='completed'`,sql`m.completed_at>=${bounds.from}::timestamptz`,sql`m.completed_at<${bounds.toExclusive}::timestamptz`];
   if(filters.performanceModelVersion)conditions.push(sql`m.performance_model_version=${filters.performanceModelVersion}`);if(filters.physicsModelVersion)conditions.push(sql`m.physics_model_version=${filters.physicsModelVersion}`);
+  if(cutoff)conditions.push(sql`m.completed_at<=${cutoff}::timestamptz`);
   if(filters.className)conditions.push(sql`ps.class_name_snapshot=${filters.className}`);if(filters.identityStatus)conditions.push(sql`ps.identity_status_snapshot=${filters.identityStatus}`);
   const rows=await db.execute(sql`select count(*) filter(where grade='Perfect')::text perfect,count(*) filter(where grade='Great')::text great,count(*) filter(where grade='Good')::text good,count(*) filter(where grade='Miss')::text miss,count(*)::text total from matches m join rounds r on r.match_id=m.id cross join lateral(values('player1'::player_slot,r.launch_grade_a),('player2'::player_slot,r.launch_grade_b)) g(slot,grade) join match_participant_snapshots ps on ps.match_id=m.id and ps.slot=g.slot where ${sql.join(conditions,sql` and `)}`) as unknown as readonly {perfect:string;great:string;good:string;miss:string;total:string}[];const row=rows[0]??{perfect:"0",great:"0",good:"0",miss:"0",total:"0"};return Object.freeze({Perfect:Number(row.perfect),Great:Number(row.great),Good:Number(row.good),Miss:Number(row.miss),totalOccurrences:Number(row.total)});
 }

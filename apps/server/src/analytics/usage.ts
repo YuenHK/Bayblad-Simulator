@@ -83,9 +83,10 @@ function eventSnapshotFilters(filters: AnalyticsFilters, alias: "ds" | "rs" | "p
 }
 
 /** Completed matches are the sole authority for battle counts; dates are Hong Kong civil dates. */
-export async function usageAnalytics(db: PostgresJsDatabase<typeof schema>, input: AnalyticsFilters, period: UsagePeriod = "day"): Promise<readonly UsageDay[]> {
+export async function usageAnalytics(db: PostgresJsDatabase<typeof schema>, input: AnalyticsFilters, period: UsagePeriod = "day",cutoff?:string): Promise<readonly UsageDay[]> {
   const filters = analyticsFiltersSchema.parse(input);
   const bounds = hongKongDateBounds(filters.from, filters.to);
+  const cutoffSql=cutoff?sql`and first_activity_at <= ${cutoff}::timestamptz`:sql``;const designCutoff=cutoff?sql`and d.created_at <= ${cutoff}::timestamptz`:sql``;const roomCutoff=cutoff?sql`and r.created_at <= ${cutoff}::timestamptz`:sql``;const matchCutoff=cutoff?sql`and m.completed_at <= ${cutoff}::timestamptz`:sql``;
   const designModel = filters.performanceModelVersion ? sql`and d.performance_model_version = ${filters.performanceModelVersion}` : sql``;
   const matchModels = sql`${filters.performanceModelVersion ? sql`and m.performance_model_version = ${filters.performanceModelVersion}` : sql``} ${filters.physicsModelVersion ? sql`and m.physics_model_version = ${filters.physicsModelVersion}` : sql``}`;
   const matchIdentity = filters.className || filters.identityStatus
@@ -101,32 +102,32 @@ export async function usageAnalytics(db: PostgresJsDatabase<typeof schema>, inpu
       select ${period === "day" ? sql`a.activity_date` : sql`date_trunc(${period},a.activity_date)::date`} local_date,
              count(distinct a.anonymous_device_id)::bigint active_devices
       from device_activity_days a
-      where a.activity_date >= ${filters.from}::date and a.activity_date <= ${filters.to}::date ${activityFilters(filters)}
+      where a.activity_date >= ${filters.from}::date and a.activity_date <= ${filters.to}::date ${cutoffSql} ${activityFilters(filters)}
       group by 1
     ), design_counts as (
       select ${localBucket(sql`d.created_at`, period)} local_date, count(*)::bigint design_count
       from designs d left join design_event_snapshots ds on ds.design_id=d.id
       where d.created_at >= ${bounds.from}::timestamptz and d.created_at < ${bounds.toExclusive}::timestamptz
-        ${eventSnapshotFilters(filters, "ds")} ${designModel}
+        ${designCutoff} ${eventSnapshotFilters(filters, "ds")} ${designModel}
       group by 1
     ), room_counts as (
       select ${localBucket(sql`r.created_at`, period)} local_date, count(*)::bigint room_count
       from rooms r left join room_event_snapshots rs on rs.room_id=r.id
       where r.created_at >= ${bounds.from}::timestamptz and r.created_at < ${bounds.toExclusive}::timestamptz
-        ${eventSnapshotFilters(filters, "rs")}
+        ${roomCutoff} ${eventSnapshotFilters(filters, "rs")}
       group by 1
     ), match_counts as (
       select ${localBucket(sql`m.completed_at`, period)} local_date, count(distinct m.id)::bigint completed_match_count
       from matches m
       where m.status='completed' and m.completed_at >= ${bounds.from}::timestamptz and m.completed_at < ${bounds.toExclusive}::timestamptz
-        ${matchModels}
+        ${matchCutoff} ${matchModels}
         ${matchIdentity}
       group by 1
     ), shape_counts as (
       select ${localBucket(sql`d.created_at`, period)} local_date, l.shape::text shape, count(*)::bigint shape_count
       from designs d join design_layers l on l.design_id=d.id left join design_event_snapshots ds on ds.design_id=d.id
       where d.created_at >= ${bounds.from}::timestamptz and d.created_at < ${bounds.toExclusive}::timestamptz
-        ${eventSnapshotFilters(filters, "ds")} ${designModel}
+        ${designCutoff} ${eventSnapshotFilters(filters, "ds")} ${designModel}
       group by 1,2
     ), shapes as (
       select *, sum(shape_count) over(partition by local_date)::bigint total_shape_count from shape_counts
