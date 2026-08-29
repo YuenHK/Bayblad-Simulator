@@ -20,6 +20,7 @@ export BACKUP_DIR='/srv/steam-top/backups'
 export AGE_RECIPIENT='age1...'
 export DELETION_LEDGER_FILE='/srv/steam-top/deletion-ledger/ledger.log'
 export DELETION_LEDGER_CLI='/opt/steam-top/apps/server/dist/admin/deletion-ledger-cli.js'
+export DELETION_SOURCE_INSTANCE_ID='與 restore_control marker 完全相符的 UUID'
 export BACKUP_SIGNING_KEY='/離線或秘密管理器掛載/signing-key'
 export BACKUP_ALLOWED_SIGNERS_FILE='/受限制位置/allowed_signers'
 export BACKUP_SIGNER_ID='steam-top-backup-2026'
@@ -28,7 +29,7 @@ export BACKUP_SIGNER_ID='steam-top-backup-2026'
 
 腳本先在只讀 repeatable-read transaction 以 `pg_export_snapshot()` 固定快照；刪除稽核列數與 `pg_dump --snapshot` 因而來自完全相同的資料狀態，再把 custom-format dump 串流到 age recipient 加密。每個唯一 staging 目錄內的密文、checksum、manifest、ledger snapshot 及 OpenSSH 簽署會逐一 `fsync`；`COMPLETE` 最後寫入，再原子改名及同步父目錄。只有完整目錄才可還原。manifest 不包含 URL、密碼、學生姓名或篩選內容。
 
-`DELETION_LEDGER_FILE` 是備份目錄以外、`0600` 的外部 append-only tombstone。刪除流程先寫 `P`，資料庫提交後寫 `C`；已知未執行則寫 `A`。備份必須經正式 Node CLI 的 `snapshot` 子命令，在與寫入相同的 token／heartbeat lease 下取得一致副本。任何未解決的 `P` 會令備份 fail closed；禁止手工追加或修改 ledger。運維人員只能在已獲授權後使用 CLI `reconcile`：CLI 會查詢 `deletion_audit`，存在才寫 `C`；只有資料庫明確可用、查無 audit 並同時提供 `--confirm-rolled-back` 才可寫 `A`。資料庫不可用時不會改動 ledger。其 digest 令任何早於最新刪除的備份無法還原敏感資料。
+`DELETION_LEDGER_FILE` 是備份目錄以外、`0600` 的外部 append-only tombstone。`P` 同時保存資料庫 instance UUID 與 operation digest；提交後只可追加一次相符的 `C`，已知未執行只可追加一次 `A`。嚴格狀態機會拒絕孤立、重複、錯 digest 或互相衝突的紀錄。備份必須經正式 Node CLI 的 `snapshot` 子命令，在與寫入相同的 PID／OS process-start 鎖下取得一致副本；仍存活的程序即使暫停亦永不被搶鎖。任何未解決的 `P` 會令備份 fail closed；禁止手工追加或修改 ledger。運維人員只能使用用途為 `deletion_reconcile` 的一次性 reauth grant、完全確認字句及授權環境呼叫 CLI `reconcile`；CLI 會核對目前資料庫 instance UUID 及 `deletion_audit`。資料庫不可用、instance 不符或 grant 無效時不會改動 ledger。
 
 ## 私鑰及輪替
 
@@ -54,7 +55,7 @@ export BACKUP_SIGNER_ID='steam-top-backup-2026'
 
 目標資料庫必須預先套用 migration，並由資料庫管理員在單一 transaction 先執行 `set local steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA'`，再把 `restore_control.deployment_environment` 單例設為非 `production`、`restore_allowed=true`；一般 update/delete/truncate 均由 trigger 拒絕。操作者還須提供完全相符的 `restore_target_id`。整個 `restore_control` schema 不包含在 dump 內，還原前後均會核對。腳本先以 pinned signing 公鑰驗證簽署，再處理解密；並要求目前外部 deletion ledger 與備份 manifest 完全一致，舊備份即使密碼及簽署均正確也會被拒絕。
 
-腳本先驗證檔名、非 symlink、manifest 與密文 SHA-256，再以 `age --decrypt` 串流至 `pg_restore --single-transaction --clean --if-exists`。任何 archive／SQL 錯誤會回滾整次還原，不留下半套 schema 或資料。完成後會核對來源 schema、刪除稽核列數及 target marker。另由教師後台抽查一個已知日期範圍的設計、對戰、排行榜統計和 Excel 匯出，記錄實際 RPO/RTO、操作者、備份檔 checksum 及結果；至少每學期演練一次。
+腳本先驗證檔名、非 symlink、manifest、內嵌 ledger 狀態機與密文 SHA-256，再以 `age --decrypt` 串流至 `pg_restore --single-transaction --clean --if-exists`。每個新備份通過完整驗證後才寫入另外簽署的 `VERIFIED` marker；每日 retention 只計 marker、簽署及組件均有效的備份，損壞備份不會擠走 30 份有效備份。`scrub-backups.sh` 應以較低頻率重新讀取及雜湊全部密文。任何 archive／SQL 錯誤會回滾整次還原，不留下半套 schema 或資料。完成後會核對來源 schema、刪除稽核列數及 target marker。另由教師後台抽查一個已知日期範圍的設計、對戰、排行榜統計和 Excel 匯出，記錄實際 RPO/RTO、操作者、備份檔 checksum 及結果；至少每學期演練一次。
 
 ## 自動測試及事故處理
 

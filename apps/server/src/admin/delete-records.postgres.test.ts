@@ -40,7 +40,7 @@ async function recordFixture(suffix: string) {
 
 async function completeFixture(ids: Awaited<ReturnType<typeof recordFixture>>) {
   const at = new Date("2026-08-15T04:00:00Z");
-  await client.sql.unsafe(`update matches set status='completed',player1_battle_points=2,player2_battle_points=0,player1_challenge_points=0,player2_challenge_points=0.5,player1_total=2,player2_total=0.5,winner='player1',round_winners='["player1","player1"]',created_at=$2,started_at=$2,completed_at=$2 where id=$1`, [ids.match, at]);
+  await client.sql.unsafe(`update matches set status='completed',player1_battle_points=2,player2_battle_points=0,player1_challenge_points=0,player2_challenge_points=0.5,player1_total=2,player2_total=0.5,winner='player1',round_winners='["player1","player1"]',created_at=$2-interval '1 day',started_at=$2-interval '1 day',completed_at=$2 where id=$1`, [ids.match, at]);
   await client.sql.unsafe("update designs set created_at=$2 where id in($1,$3)",[ids.design1,at,ids.design2]);
   await client.sql.unsafe(`insert into match_participant_snapshots(match_id,slot,identity_id_at_start,canonical_identity_id_at_start,identity_status_snapshot,class_name_snapshot,design_id,captured_at) values($1,'player1',$2,$2,'iclass','1A',$3,$6),($1,'player2',$4,$4,'iclass','1B',$5,$6)`, [ids.match, ids.identity1, ids.design1, ids.identity2, ids.design2, at]);
 }
@@ -100,7 +100,7 @@ it.skipIf(!databaseUrl).each([
   ["identity", "5"], ["class", "6"], ["date_range", "7"], ["all", "8"],
 ] as const)("removes %s records from real analytics, export source and generated workbook", async (scope,suffix) => {
   const ids = await recordFixture(suffix); await completeFixture(ids); const filters={from:"2026-08-15",to:"2026-08-15"} as const, source=new PostgresExportDataSource(client);
-  const futureMatch=`90000000-0000-4000-8000-${suffix.padStart(12,"0")}`;if(scope==="date_range")await client.sql.unsafe(`insert into matches(id,idempotency_fingerprint,status,player1_identity_id,player2_identity_id,player1_design_id,player2_design_id,performance_model_version,physics_model_version,protocol_version,created_at,started_at) values($1,$2,'in_progress',$3,$4,$5,$6,'1.0.0','2.0.0',1,'2026-08-16T04:00:00Z','2026-08-16T04:00:00Z')`,[futureMatch,`f${suffix}`.padEnd(64,"0"),ids.identity1,ids.identity2,ids.design1,ids.design2]);
+  const futureMatch=`90000000-0000-4000-8000-${suffix.padStart(12,"0")}`;if(scope==="date_range")await client.sql.unsafe(`insert into matches(id,idempotency_fingerprint,status,player1_identity_id,player2_identity_id,player1_design_id,player2_design_id,performance_model_version,physics_model_version,protocol_version,created_at,started_at) values($1,$2,'in_progress',$3,$4,$5,$6,'1.0.0','2.0.0',1,'2026-08-15T04:00:00Z','2026-08-16T04:00:00Z')`,[futureMatch,`f${suffix}`.padEnd(64,"0"),ids.identity1,ids.identity2,ids.design1,ids.design2]);
   expect(await source.withSnapshot(filters,undefined,async snapshot=>snapshot.metadata.rowCounts?.matches??-1)).toBe(1);
   expect((await usageAnalytics(client.db,filters,"day")).reduce((sum,row)=>sum+row.completedMatches,0)).toBe(1);
   const filter=scope==="identity"?{scope,identityId:ids.identity1}:scope==="class"?{scope,className:"1A"}:scope==="date_range"?{scope,from:"2026-08-15",to:"2026-08-15"}:{scope};
