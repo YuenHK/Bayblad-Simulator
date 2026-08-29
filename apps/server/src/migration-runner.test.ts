@@ -32,6 +32,7 @@ describe("single baseline migration", () => {
   it("applies a fresh baseline atomically and records its hash", async () => {
     const target = executor();
     await expect(applyBaselineMigration(target.value, source)).resolves.toBe("applied");
+    expect(target.executed.slice(0, 2)).toEqual(["advisory-lock", "prepare-ledger"]);
     expect(target.executed.some((statement) => statement.includes("CREATE SCHEMA"))).toBe(true);
     expect(target.insert).toHaveBeenCalledWith(EXPECTED_MIGRATION_ID, EXPECTED_MIGRATION_SHA256);
   });
@@ -39,7 +40,7 @@ describe("single baseline migration", () => {
   it("is idempotent only when the ledger hash is exact", async () => {
     const exact = executor({ ledger: { id: EXPECTED_MIGRATION_ID, sha256: EXPECTED_MIGRATION_SHA256 } });
     await expect(applyBaselineMigration(exact.value, source)).resolves.toBe("already-applied");
-    expect(exact.executed).toEqual(["prepare-ledger", "advisory-lock"]);
+    expect(exact.executed).toEqual(["advisory-lock", "prepare-ledger"]);
     await expect(applyBaselineMigration(executor({ ledger: { id: EXPECTED_MIGRATION_ID, sha256: "0".repeat(64) } }).value, source)).rejects.toThrow("MIGRATION_HASH_MISMATCH");
   });
 

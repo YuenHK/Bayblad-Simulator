@@ -25,10 +25,12 @@ describe("static production deployment contract", () => {
   });
 
   it("requires immutable image references and validates them before deployment", () => {
-    expect(compose).toContain("${NODE_IMAGE:?");
-    expect(compose).toContain("${POSTGRES_IMAGE:?");
-    expect(compose).toContain("${CADDY_IMAGE:?");
-    expect(read("scripts/validate-deployment-env.mjs")).toContain("@sha256:");
+    for (const prefix of ["NODE", "POSTGRES", "CADDY"]) {
+      expect(compose).toContain(`\${${prefix}_IMAGE_REPOSITORY:?`);
+      expect(compose).toContain(`\${${prefix}_IMAGE_DIGEST:?`);
+    }
+    expect(read("Dockerfile.server")).toContain("${NODE_IMAGE_REPOSITORY}@${NODE_IMAGE_DIGEST}");
+    expect(read("scripts/validate-deployment-env.mjs")).toContain("^sha256:");
   });
 
   it("mounts the safe CSV map read-only at a fixed internal path", () => {

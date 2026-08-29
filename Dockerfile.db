@@ -1,5 +1,6 @@
-ARG POSTGRES_IMAGE
-FROM ${POSTGRES_IMAGE}
+ARG POSTGRES_IMAGE_REPOSITORY
+ARG POSTGRES_IMAGE_DIGEST
+FROM ${POSTGRES_IMAGE_REPOSITORY}@${POSTGRES_IMAGE_DIGEST}
 COPY --chmod=755 infra/postgres/secure-entrypoint.sh /usr/local/bin/secure-entrypoint.sh
 ENTRYPOINT ["secure-entrypoint.sh"]
 CMD ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/var/lib/postgresql/tls/server.crt", "-c", "ssl_key_file=/var/lib/postgresql/tls/server.key"]

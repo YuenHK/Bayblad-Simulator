@@ -14,7 +14,8 @@ services:
       context: .
       dockerfile: Dockerfile.db
       args:
-        POSTGRES_IMAGE: ${POSTGRES_IMAGE:?POSTGRES_IMAGE immutable digest is required}
+        POSTGRES_IMAGE_REPOSITORY: ${POSTGRES_IMAGE_REPOSITORY:?POSTGRES_IMAGE_REPOSITORY is required}
+        POSTGRES_IMAGE_DIGEST: ${POSTGRES_IMAGE_DIGEST:?POSTGRES_IMAGE_DIGEST is required}
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-steam_top}
@@ -68,7 +69,8 @@ services:
       context: .
       dockerfile: Dockerfile.server
       args:
-        NODE_IMAGE: ${NODE_IMAGE:?NODE_IMAGE immutable digest is required}
+        NODE_IMAGE_REPOSITORY: ${NODE_IMAGE_REPOSITORY:?NODE_IMAGE_REPOSITORY is required}
+        NODE_IMAGE_DIGEST: ${NODE_IMAGE_DIGEST:?NODE_IMAGE_DIGEST is required}
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
@@ -127,8 +129,10 @@ services:
       context: .
       dockerfile: Dockerfile.web
       args:
-        NODE_IMAGE: ${NODE_IMAGE:?NODE_IMAGE immutable digest is required}
-        CADDY_IMAGE: ${CADDY_IMAGE:?CADDY_IMAGE immutable digest is required}
+        NODE_IMAGE_REPOSITORY: ${NODE_IMAGE_REPOSITORY:?NODE_IMAGE_REPOSITORY is required}
+        NODE_IMAGE_DIGEST: ${NODE_IMAGE_DIGEST:?NODE_IMAGE_DIGEST is required}
+        CADDY_IMAGE_REPOSITORY: ${CADDY_IMAGE_REPOSITORY:?CADDY_IMAGE_REPOSITORY is required}
+        CADDY_IMAGE_DIGEST: ${CADDY_IMAGE_DIGEST:?CADDY_IMAGE_DIGEST is required}
     tmpfs:
       - /tmp:size=16m,noexec,nosuid,nodev
       - /config:size=16m,nosuid,nodev
@@ -145,7 +149,7 @@ services:
         reservations: { memory: 32M }
 
   caddy:
-    image: ${CADDY_IMAGE:?CADDY_IMAGE immutable digest is required}
+    image: "${CADDY_IMAGE_REPOSITORY:?CADDY_IMAGE_REPOSITORY is required}@${CADDY_IMAGE_DIGEST:?CADDY_IMAGE_DIGEST is required}"
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
