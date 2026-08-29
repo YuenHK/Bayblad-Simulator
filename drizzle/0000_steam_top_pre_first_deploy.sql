@@ -37,6 +37,7 @@ CREATE TABLE "admin_sessions" (
 	"last_seen_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"revoked_at" timestamp with time zone,
+	"archived_at" timestamp with time zone,
 	"last_ip" "inet",
 	"user_agent" varchar(512),
 	CONSTRAINT "admin_sessions_token_hash_format" CHECK ("admin_sessions"."token_hash" ~ '^[a-f0-9]{64}$' and "admin_sessions"."csrf_token_hash" ~ '^[a-f0-9]{64}$'),
@@ -324,7 +325,7 @@ CREATE UNIQUE INDEX "identity_links_source_uidx" ON "identity_links" USING btree
 CREATE INDEX "identity_links_target_idx" ON "identity_links" USING btree ("target_identity_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "identity_sessions_token_hash_uidx" ON "identity_sessions" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "identity_sessions_identity_last_seen_idx" ON "identity_sessions" USING btree ("identity_id","last_seen_at");--> statement-breakpoint
-CREATE INDEX "identity_sessions_expires_at_idx" ON "identity_sessions" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "identity_sessions_active_expires_at_idx" ON "identity_sessions" USING btree ("expires_at") WHERE "identity_sessions"."revoked_at" is null;--> statement-breakpoint
 CREATE UNIQUE INDEX "matches_idempotency_fingerprint_uidx" ON "matches" USING btree ("idempotency_fingerprint");--> statement-breakpoint
 CREATE INDEX "matches_completed_at_idx" ON "matches" USING btree ("completed_at");--> statement-breakpoint
 CREATE INDEX "matches_status_completed_at_idx" ON "matches" USING btree ("status","completed_at");--> statement-breakpoint

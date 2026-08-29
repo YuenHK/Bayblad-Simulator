@@ -21,6 +21,7 @@ export type IdentitySession = Readonly<{
   lastSeenAt: Date;
   expiresAt: Date;
   revokedAt?: Date;
+  archivedAt?: Date;
   lastIp?: string;
   userAgent?: string;
 }>;
@@ -74,6 +75,7 @@ export class IdentityResolver {
   readonly #store: IdentityStore;
   readonly #now: () => Date;
   readonly #lifetimeMs: number;
+  readonly #liveRotations = new Map<string, Promise<Readonly<{ identity: Identity; cookieToken: string; issuedAt: Date; expiresAt: Date; isNew: boolean }>>>();
   constructor(store: IdentityStore, options: Readonly<{ now?: () => Date; lifetimeMs?: number }> = {}) {
     this.#store = store;
     this.#now = options.now ?? (() => new Date());
@@ -93,18 +95,22 @@ export class IdentityResolver {
       const cached = validToken ? await this.#store.findSession(hashIdentityToken(validToken), now) : null;
       if (live) {
         if (!trustedLiveValues.has(live as object)) throw new TypeError("UNTRUSTED_LIVE_IDENTITY");
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          const token = issueIdentityToken();
-          try {
-            const compatible = cached?.identity.status === "guest" || (cached?.identity.status === "iclass" && cached.identity.externalId === live.externalId);
-            const session = await this.#store.upsertLiveSession({ tokenHash: hashIdentityToken(token), ...(attempt === 0 && compatible && validToken ? { previousTokenHash: hashIdentityToken(validToken), cachedIdentityId: cached.identity.id } : {}), identity: live, now, expiresAt, diagnostics: diagnostic });
-            return { identity: session.identity, cookieToken: token, issuedAt: now, expiresAt, isNew: true };
-          } catch (error) {
-            if (error instanceof SessionTokenUnavailableError) continue;
-            throw error;
+        const compatible = cached?.identity.status === "guest" || (cached?.identity.status === "iclass" && cached.identity.externalId === live.externalId);
+        const rotationKey = compatible && validToken ? hashIdentityToken(validToken) : undefined;
+        const rotate = async () => {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const token = issueIdentityToken();
+            try {
+              const session = await this.#store.upsertLiveSession({ tokenHash: hashIdentityToken(token), ...(attempt === 0 && rotationKey && cached ? { previousTokenHash: rotationKey, cachedIdentityId: cached.identity.id } : {}), identity: live, now, expiresAt, diagnostics: diagnostic });
+              return { identity: session.identity, cookieToken: token, issuedAt: now, expiresAt, isNew: true } as const;
+            } catch (error) { if (error instanceof SessionTokenUnavailableError) continue; throw error; }
           }
-        }
-        throw new Error("IDENTITY_TOKEN_EXHAUSTED");
+          throw new Error("IDENTITY_TOKEN_EXHAUSTED");
+        };
+        if (!rotationKey) return await rotate();
+        const pending = this.#liveRotations.get(rotationKey); if (pending) return await pending;
+        const operation = rotate(); this.#liveRotations.set(rotationKey, operation);
+        try { return await operation; } finally { if (this.#liveRotations.get(rotationKey) === operation) this.#liveRotations.delete(rotationKey); }
       }
       if (cached && !cached.revokedAt && cached.expiresAt > now) {
         const touched = await this.#store.touchSession(hashIdentityToken(validToken!), now, diagnostic, expiresAt);
@@ -180,6 +186,6 @@ export class InMemoryIdentityStore implements IdentityStore {
   }
   async revokeSession(tokenHash: string, now: Date): Promise<boolean> {
     const session = this.#sessions.get(tokenHash); if (!session) return false;
-    this.#sessions.set(tokenHash, Object.freeze({ ...session, revokedAt: now })); return true;
+    this.#sessions.set(tokenHash, Object.freeze({ ...session, revokedAt: now, archivedAt: now })); return true;
   }
 }

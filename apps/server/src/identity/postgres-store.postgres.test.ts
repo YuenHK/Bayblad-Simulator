@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "@steam-top/db";
+import { identities, identityLinks, identitySessions } from "@steam-top/db/schema";
+import { and, count, gt, isNull } from "drizzle-orm";
 import { createValidatedLiveIdentityProvider, IdentityResolver } from "./resolver";
 import { hashIdentityToken } from "./cookie";
 import { PostgresIdentityStore } from "./postgres-store";
@@ -14,7 +16,7 @@ let client: DatabaseClient;
 beforeAll(async () => {
   if (!databaseUrl) return;
   const local = /(?:localhost|127\.0\.0\.1)/u.test(databaseUrl);
-  client = createDatabaseClient({ url: databaseUrl, ssl: local ? false : "require", allowInsecure: local, maxConnections: 1 });
+  client = createDatabaseClient({ url: databaseUrl, ssl: local ? false : "require", allowInsecure: local, maxConnections: 10 });
   await client.sql.unsafe(`create schema ${schemaName}`);
   await client.sql.unsafe(`set search_path to ${schemaName},public`);
   const directory = fileURLToPath(new URL("../../../../drizzle", import.meta.url));
@@ -41,9 +43,21 @@ it.skipIf(!databaseUrl)("allows duplicate guest labels and atomically upgrades c
   const resolver = new IdentityResolver(store, { now: () => now });
   const guest = await resolver.resolve({});
   const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: "ipad-concurrent", displayName: "1A 07", studentName: "陳同學", className: "1A", studentNumber: "07" }) }).resolve();
-  const upgraded = await Promise.all(Array.from({ length: 5 }, () => resolver.resolve({ cookieToken: guest.cookieToken }, live!)));
+  let arrived = 0; let release!: () => void;
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  const attempts = Array.from({ length: 5 }, async () => { arrived += 1; await barrier; return resolver.resolve({ cookieToken: guest.cookieToken }, live!); });
+  while (arrived < 5) await Promise.resolve();
+  release();
+  const upgraded = await Promise.all(attempts);
   expect(new Set(upgraded.map((item) => item.identity.id)).size).toBe(1);
+  expect(new Set(upgraded.map((item) => item.cookieToken)).size).toBe(1);
   expect(await store.findSession(hashIdentityToken(guest.cookieToken), now)).toBeNull();
+  const [identityCount] = await client.db.select({ value: count() }).from(identities);
+  const [linkCount] = await client.db.select({ value: count() }).from(identityLinks);
+  const [activeCount] = await client.db.select({ value: count() }).from(identitySessions).where(and(isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now)));
+  expect(identityCount!.value).toBe(4);
+  expect(linkCount!.value).toBe(1);
+  expect(activeCount!.value).toBe(3);
 });
 
 it.skipIf(!databaseUrl)("never revives a token during a logout and lookup race", async () => {
@@ -53,4 +67,19 @@ it.skipIf(!databaseUrl)("never revives a token during a logout and lookup race",
   const issued = await resolver.resolve({});
   await Promise.allSettled([resolver.resolve({ cookieToken: issued.cookieToken }), resolver.revoke(issued.cookieToken)]);
   expect(await store.findSession(hashIdentityToken(issued.cookieToken), now)).toBeNull();
+});
+
+it.skipIf(!databaseUrl)("counts only active sessions and rotates one-for-one at capacity with rollback safety", async () => {
+  const now = new Date("2026-08-29T00:00:00Z");
+  const [baseline] = await client.db.select({ value: count() }).from(identitySessions).where(and(isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now)));
+  const limit = baseline!.value + 1;
+  const store = new PostgresIdentityStore(client.db, { maxIdentities: 1_000, maxSessions: limit });
+  for (let index = 0; index < 20; index += 1) await store.createGuestSession({ tokenHash: hashIdentityToken(`${index}`.padStart(43, "G").replaceAll(/[^A-Za-z0-9_-]/gu, "G")), displayName: "訪客-OLD", now, expiresAt: new Date(now.getTime() - 1), diagnostics: {} });
+  const active = await store.createGuestSession({ tokenHash: hashIdentityToken("H".repeat(43)), displayName: "訪客-CAP", now, expiresAt: new Date(now.getTime() + 86_400_000), diagnostics: {} });
+  await expect(store.createGuestSession({ tokenHash: hashIdentityToken("I".repeat(43)), displayName: "訪客-FULL", now, expiresAt: new Date(now.getTime() + 86_400_000), diagnostics: {} })).rejects.toThrow("IDENTITY_CAPACITY_REACHED");
+  const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: "ipad-cap", displayName: "1A 08", studentName: "何同學", className: "1A", studentNumber: "08" }) }).resolve();
+  const rotatedHash = hashIdentityToken("J".repeat(43));
+  await store.upsertLiveSession({ tokenHash: rotatedHash, previousTokenHash: active.tokenHash, identity: live!, now, expiresAt: new Date(now.getTime() + 86_400_000), diagnostics: {}, cachedIdentityId: active.identity.id });
+  await expect(store.upsertLiveSession({ tokenHash: rotatedHash, previousTokenHash: rotatedHash, identity: live!, now, expiresAt: new Date(now.getTime() + 86_400_000), diagnostics: {} })).rejects.toThrow();
+  expect(await store.findSession(rotatedHash, now)).not.toBeNull();
 });

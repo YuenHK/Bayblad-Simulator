@@ -138,6 +138,8 @@ git commit -m "feat: resolve cached and guest identities safely"
 
 實作決策：身份 Cookie 採 256-bit opaque token、資料庫只存 SHA-256 hash；每次有效使用把期限滾動至 180 日後，`Max-Age` 與 `Expires` 以整秒一致。回傳 `status` 表示本次辨識來源：即時可信身份為 `iclass`、已驗證身份的 Cookie 重播為 `cookie`、匿名訪客及其 Cookie 重播為 `guest`；學生敏感欄位只留在伺服器及教師後台，公共 DTO 只含 id、status、displayName。四位訪客碼只是可重複顯示名稱，身份以 UUID／participantId 區分。查詢 session 不延長期限，只有最終採用 Cookie 後才 touch；live 身份一律原子換發新 token，訪客升級時同一交易撤銷舊 token 並建立身份連結。IP／user-agent 僅是診斷欄位；代理環境必須注入獨立可信 IP resolver。無效／無 Cookie 的身份建立受有界每客戶及全域 token bucket 與 store capacity 保護。正式環境只接受實際 PostgresIdentityStore，記憶體 adapter 只供測試。Socket.IO 將於 iClass adapter／即時整合任務改為由 HttpOnly Cookie resolver 供應 displayName，現階段不接受 client JSON 作 live 身份。
 
+威脅及容量說明：瀏覽器送出不在 allowlist 的 Origin 或 `Sec-Fetch-Site: cross-site` 會在任何寫入前被拒；缺少這兩個 header 則刻意容許受管理 Web Clip、CLI 及非瀏覽器客戶端，並由建立限流與容量上限防濫用。每個可信 client key 預設可突發 600 個新身份、其後每秒只補 0.01 個；全平台可突發 5,000 個、每秒補 0.1 個。以單校 NAT 計算，600 部同時首次進站可全數通過，第 601 個需等待約 100 秒；有效 Cookie 重用不扣建立額度。Postgres 只把 `revoked_at is null and expires_at > now` 計入 auth capacity，並以 `revoked_at is null` partial index配合到期時間查詢；已撤銷／到期 session 可永久保留作稽核，`archivedAt` 標示已撤銷封存，絕不再作驗證容量。未來清理只可刪除或不可逆遮蔽 token hash 等驗證材料，必須保留獲授權的診斷／稽核紀錄，不會自動刪除永久紀錄。Task 3 正式組裝只接受經簽署 Web Clip 或可信 API adapter 的輸出；禁止以 request body、query 或 client JSON 建立 live identity provider。
+
 ### 任務 3：iClass Web Clip 整合接口
 
 **文件：**

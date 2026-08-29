@@ -57,11 +57,14 @@ describe("identity routes", () => {
   });
 
   it("bounds no-cookie creation churn while preserving the normal school NAT burst", async () => {
-    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore({ maxSessions: 600 })), identityCreationBurst: 500, identityCreationRefillPerSecond: 0.001, sweepIntervalMs: 0 }); apps.push(app);
+    let clock = 0;
+    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore({ maxSessions: 700 })), now: () => clock, sweepIntervalMs: 0 }); apps.push(app);
     const responses = [];
-    for (let index = 0; index < 501; index += 1) responses.push(await app.inject({ method: "GET", url: "/api/identity" }));
-    expect(responses.slice(0, 500).every((response) => response.statusCode === 200)).toBe(true);
-    expect(responses[500]?.statusCode).toBe(429);
+    for (let index = 0; index < 601; index += 1) responses.push(await app.inject({ method: "GET", url: "/api/identity" }));
+    expect(responses.slice(0, 600).every((response) => response.statusCode === 200)).toBe(true);
+    expect(responses[600]?.statusCode).toBe(429);
+    clock += 100_000;
+    expect((await app.inject({ method: "GET", url: "/api/identity" })).statusCode).toBe(200);
   });
 
   it("rejects cross-site identity writes and logout without action header", async () => {
