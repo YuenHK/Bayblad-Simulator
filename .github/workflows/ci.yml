@@ -389,12 +389,14 @@ jobs:
           set -a;source /tmp/integration-images.env;set +a
           env | grep -E '^(PUBLIC_ORIGIN|SERVER_IMAGE|WEB_IMAGE|DATABASE_IMAGE|CADDY_IMAGE_REPOSITORY|CADDY_IMAGE_DIGEST|POSTGRES_DB|POSTGRES_USER|POSTGRES_PASSWORD|DATABASE_URL|COOKIE_SIGNING_KEY|ADMIN_USERNAME|ADMIN_INITIAL_PASSWORD|ADMIN_CSRF_SECRET|WEBCLIP_SIGNING_KEY|WEBCLIP_EXCHANGE_KEY|ANALYTICS_CURSOR_SECRET|ICLASS_API_BEARER_TOKEN|ICLASS_MODE|POSTGRES_TLS_CERT_PATH|POSTGRES_TLS_KEY_PATH)=' | sudo tee /opt/steam-top/.release-integration/production.env >/dev/null
           sudo chmod 0600 /opt/steam-top/.release-integration/production.env
-          runtime=$(readlink -f /opt/steam-top/current)
+          runtime=$(readlink -f /opt/steam-top/release-integration-current)
           sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" up -d --wait
           sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" cp caddy:/data/caddy/pki/authorities/local/root.crt /tmp/integration-root.crt
           sudo cp /tmp/integration-root.crt /usr/local/share/ca-certificates/steam-top-integration.crt
           sudo update-ca-certificates
-          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml exec -T db psql -U steam_top -d steam_top -c "set steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA';update restore_control.deployment_environment set environment='production',restore_allowed=false where singleton"
+          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml exec -T db psql -U steam_top -d steam_top -c "set steam_top.configure_restore_target='RESTORE_NONPRODUCTION_DATA';update restore_control.deployment_environment set environment='production',restore_allowed=false,restore_target_id='00000000-0000-4000-8000-000000000099' where singleton"
+          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml exec -T db psql -U steam_top -d steam_top -v ON_ERROR_STOP=1 -c "create role steam_top_app login password 'integration-app-password';grant connect on database steam_top to steam_top_app;grant usage on schema public to steam_top_app;grant select,insert,update,delete on all tables in schema public to steam_top_app;grant usage,select,update on all sequences in schema public to steam_top_app"
+          sudo sed -i 's|^DATABASE_URL=.*|DATABASE_URL=postgresql://steam_top_app:integration-app-password@db:5432/steam_top?sslmode=require|' /opt/steam-top/.release-integration/production.env
           sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml down
       - name: Authorize and invoke the complete host core as non-root
         shell: bash
@@ -409,6 +411,34 @@ jobs:
           node scripts/parse-host-receipt-frame.mjs receipt.frame "$INTEGRATION_NONCE" receipt.json receipt.sig
           node -e 'const r=require("./receipt.json");if(r.schemaVersion!==4||r.purpose!=="release-integration"||r.smoke?.complete!==true)process.exit(1)'
           test -f "/opt/steam-top/.release-integration/authorization/$INTEGRATION_NONCE.json.consumed"
+      - name: Activate the actual host receipt and complete canonical integration cutover
+        shell: bash
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          TEST_DATABASE_URL: postgresql://steam_top:integration-postgres-password@127.0.0.1:15432/steam_top
+          CANONICAL_EXISTING_DATABASE: steam_top
+          CANONICAL_APP_ROLE: steam_top_app
+          CANONICAL_PUBLIC_ORIGIN: https://steam-top.integration.test:18443
+          SMOKE_INTEGRATION_MODE: "true"
+        run: |
+          set -euo pipefail
+          receipt_generation=$(readlink -f "/opt/steam-top/.release-integration/outbox/receipts/$INTEGRATION_NONCE/current")
+          test -f "$receipt_generation/payload.json" -a -f "$receipt_generation/payload.json.sig"
+          runtime_sha=$(node -p 'require("./deployment-authorization.json").runtimeManifestSha256')
+          sudo /opt/steam-top-bootstrap/activate-production-state.sh "$GITHUB_WORKSPACE/deployment-authorization.json" > activation.frame
+          target=$(node -p 'require(process.argv[1]).database.restoreTargetId' "$receipt_generation/payload.json")
+          runtime=/opt/steam-top/releases/$runtime_sha
+          CANONICAL_CUTOVER_HOOK="$runtime/infra/backup/test-host-core-cutover-hook.sh" CANONICAL_STATE_NONCE="$INTEGRATION_NONCE" CANONICAL_HOST_RECEIPT_FILE="$receipt_generation/payload.json" CANONICAL_RESTORE_TARGET_ID="$target" CANONICAL_DEPLOYMENT_MANIFEST_SHA="$INTEGRATION_MANIFEST_SHA" RUNTIME_INSTALL_MANIFEST_SHA256="$runtime_sha" "$runtime/infra/backup/test-promotion-full.sh"
+          test "$(node -p 'require(process.argv[1]).purpose' "$receipt_generation/payload.json")" = release-integration
+          sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" up -d --force-recreate --wait server
+          probe=$(openssl rand -hex 32)
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -v nonce="$probe" -v target="$target" -c "insert into restore_control.deployment_probe(nonce,restore_target_id,system_identifier) values (:'nonce',:'target',(select system_identifier from pg_control_system()))"
+          SMOKE_INTEGRATION_MODE=true ADMIN_SMOKE_SECRET_FILE=/opt/steam-top/.release-integration/secrets/admin-smoke.json "$runtime/scripts/production-smoke.sh" "$CANONICAL_PUBLIC_ORIGIN" "$probe"
+      - name: Mark the release approved only after canonical cutover
+        shell: bash
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -euo pipefail
           printf '{"state":"success","environment":"release-host-integration","description":"isolated host core and full smoke passed"}\n' > integration-success.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$INTEGRATION_DEPLOYMENT_ID/statuses" --input integration-success.json
           printf '{"schemaVersion":1,"purpose":"approved-release","commit":"%s","manifestSha256":"%s","integrationDeploymentId":"%s"}\n' "$RELEASE_COMMIT" "$INTEGRATION_MANIFEST_SHA" "$INTEGRATION_DEPLOYMENT_ID" > candidate/APPROVED-RELEASE.json
@@ -424,7 +454,7 @@ jobs:
         run: |
           set +e
           failures=""
-          runtime=$(readlink -f /opt/steam-top/current 2>/dev/null);if [[ -n $runtime ]];then sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" down -v --remove-orphans || failures="$failures compose";fi
+          runtime=$(readlink -f /opt/steam-top/release-integration-current 2>/dev/null);if [[ -n $runtime ]];then sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" down -v --remove-orphans || failures="$failures compose";fi
           docker logout ghcr.io || failures="$failures registry-logout"
           sudo rm -f /etc/sudoers.d/steam-top-integration /usr/local/share/ca-certificates/steam-top-integration.crt /usr/local/sbin/install-steam-top-bootstrap /tmp/integration-root.crt /tmp/integration-images.env server.key server.crt || failures="$failures secrets"
           sudo update-ca-certificates || failures="$failures ca-trust"
