@@ -62,8 +62,12 @@ describe("release CI contract", () => {
 
   it("supports production deployment only through the fail-closed wrapper", () => {
     const deploy = read("scripts/deploy-production.sh");
+    const preparer = read("scripts/prepare-deployment-authorization.sh");
     expect(deploy).toContain("authorize-production-deploy.mjs");
-    expect(deploy).toContain("gh attestation verify");
+    expect(deploy).not.toContain("gh attestation verify");
+    expect(deploy).not.toContain("gh api");
+    expect(preparer).toContain("gh attestation verify");
+    expect(preparer).toContain("gh api");
     expect(deploy).toContain("portable-sha256.sh");
     expect(deploy.indexOf(" config --quiet")).toBeLessThan(deploy.indexOf(" pull"));
     expect(deploy.indexOf(" pull")).toBeLessThan(deploy.indexOf(" up -d --wait"));
