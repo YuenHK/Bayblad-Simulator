@@ -61,3 +61,5 @@ Promotion 成功後只寫 root-owned 0400 `promotion-ready`，PUBLIC 及 app rol
 Promotion/finalize 的 commit authority 分別是 DB `promotion_outbox` 及 `finalize_outbox`，不是 filesystem phase file。若 transaction 已 commit 但 ready/archive 寫入中斷，狀態必須視為「DB 已完成、filesystem 待 reconcile」，不可當作失敗並回復舊 ACL。在 app 仍停流量時以同一 nonce 執行 `reconcile-promotion-ready.sh` 或 `reconcile-finalize-outbox.sh`；它們只從 DB authoritative row 幂等地重建/完成檔案，已完成檔必須與 authoritative fields/digest 相符，不重做 grant 或寫 audit。
 
 Promotion 的受限 operator 必須是目標 database owner（供 `ALTER DATABASE`），並只額外取得 `pg_signal_backend` 及 restore schema/table/sequence 所需權限；不要求 superuser。Maintenance service 必須連同一 cluster 的另一 database，preflight 會比較 `system_identifier`，不同 cluster 一律拒絕。若 app role 經 parent role 繼承 `CONNECT`，direct revoke 後的 effective privilege 仍為 true，promotion 會在 transaction 內 fail closed；正式設定應使用不含任何 inherited `CONNECT` 的專用 app role。
+
+`record-cutover-receipt.sh` 在任何 public probe/smoke 前必須驗簽 protected generation、對應 activation receipt 及 host deployment receipt，並核對 activation 的 state digest/nonce/deployment/time。Cutover `createdAt` 來自 DB deployment-probe outbox 的固定 `created_at`，retry 不得用 wall clock 重寫或產生第二種 receipt。
