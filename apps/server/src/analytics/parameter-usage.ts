@@ -3,14 +3,14 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import * as schema from "@steam-top/db/schema";
 import { analyticsFiltersSchema, hongKongDateBounds, type AnalyticsFilters } from "./usage";
 
-export type ParameterUsageRow = Readonly<{ scope:"allEligibleDesigns"|"completedMatchDesigns";dimension: "layerShape" | "layerSides" | "layerActualArea" | "holes" | "weight" | "layerOrder" | "metalDiscDiameter"; value: Readonly<Record<string, string | number | boolean | null>>; count: number; proportion: number; performanceModelVersion: string }>;
-type SqlRow = Readonly<{ scope:ParameterUsageRow["scope"];dimension: ParameterUsageRow["dimension"]; value: Record<string, string | number | boolean | null>; count: string | number; total: string | number; performanceModelVersion: string }>;
+export type ParameterUsageRow = Readonly<{ scope:"allEligibleDesigns"|"completedMatchDesigns";dimension: "layerShape" | "layerSides" | "layerActualArea" | "holes" | "weight" | "layerOrder" | "metalDiscDiameter"; value: Readonly<Record<string, string | number | boolean | null>>; count: number; proportion: number; performanceModelVersion: string;totalGroups:number;truncated:boolean;population:number }>;
+type SqlRow = Readonly<{ scope:ParameterUsageRow["scope"];dimension: ParameterUsageRow["dimension"]; value: Record<string, string | number | boolean | null>; count: string | number; total: string | number; performanceModelVersion: string;totalGroups:string|number;truncated:boolean;population:string|number }>;
 
 export function normalizeParameterUsage(rows: readonly SqlRow[]): readonly ParameterUsageRow[] {
   return rows.map((row) => {
     const count = Number(row.count), total = Number(row.total);
     if (!Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(total) || total < count || total < 1) throw new Error("INVALID_PARAMETER_USAGE");
-    return Object.freeze({ scope:row.scope,dimension: row.dimension, value: Object.freeze({ ...row.value }), count, proportion: count / total, performanceModelVersion: row.performanceModelVersion });
+    return Object.freeze({ scope:row.scope,dimension: row.dimension, value: Object.freeze({ ...row.value }), count, proportion: count / total, performanceModelVersion: row.performanceModelVersion,totalGroups:Number(row.totalGroups),truncated:row.truncated,population:Number(row.population) });
   });
 }
 
@@ -44,9 +44,14 @@ export async function parameterUsage(db: PostgresJsDatabase<typeof schema>, inpu
       union all select 'metalDiscDiameter',jsonb_build_object('diameterMm',d.metal_disc_diameter_mm,'placement','under_bottom','none',(d.metal_disc_diameter_mm=0)),d.performance_model_version from filtered_designs d
     ), grouped as (
       select dimension,value,performance_model_version,count(*)::bigint count from observations group by dimension,value,performance_model_version
+    ), ranked as (
+      select *,row_number() over(partition by dimension,performance_model_version order by count desc,value::text) rank,count(*) over(partition by dimension,performance_model_version) total_groups,sum(count) over(partition by dimension,performance_model_version) population from grouped
+    ), collapsed as (
+      select dimension,performance_model_version,case when rank<=20 then value else jsonb_build_object('category','Other') end value,sum(count)::bigint count,max(total_groups)::bigint total_groups,max(population)::bigint population
+      from ranked group by dimension,performance_model_version,case when rank<=20 then value else jsonb_build_object('category','Other') end
     )
-    select ${scope}::text scope,dimension,value,count::text,sum(count) over(partition by dimension,performance_model_version)::text total,performance_model_version "performanceModelVersion"
-    from grouped order by performance_model_version,dimension,count desc,value::text limit 2000
+    select ${scope}::text scope,dimension,value,count::text,population::text total,performance_model_version "performanceModelVersion",total_groups::text "totalGroups",(total_groups>20) truncated,population::text population
+    from collapsed order by performance_model_version,dimension,count desc,value::text
   `);
   return normalizeParameterUsage(rows as unknown as SqlRow[]);
 }

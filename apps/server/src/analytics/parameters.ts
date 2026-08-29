@@ -14,8 +14,15 @@ export function expectedWinProbability(ownStrength:number,opponentStrengthValue:
 export function outcomeResidual(outcome:0|0.5|1,ownStrength:number,opponentStrengthValue:number):number {
   return outcome-expectedWinProbability(ownStrength,opponentStrengthValue);
 }
+export type OverallLaunchDistribution=Readonly<{Perfect:number;Great:number;Good:number;Miss:number;totalOccurrences:number}>;
+export async function overallLaunchDistribution(db:PostgresJsDatabase<typeof schema>,input:AnalyticsFilters):Promise<OverallLaunchDistribution>{
+  const filters=analyticsFiltersSchema.parse(input),bounds=hongKongDateBounds(filters.from,filters.to);const conditions:SQL[]=[sql`m.status='completed'`,sql`m.completed_at>=${bounds.from}::timestamptz`,sql`m.completed_at<${bounds.toExclusive}::timestamptz`];
+  if(filters.performanceModelVersion)conditions.push(sql`m.performance_model_version=${filters.performanceModelVersion}`);if(filters.physicsModelVersion)conditions.push(sql`m.physics_model_version=${filters.physicsModelVersion}`);
+  if(filters.className)conditions.push(sql`ps.class_name_snapshot=${filters.className}`);if(filters.identityStatus)conditions.push(sql`ps.identity_status_snapshot=${filters.identityStatus}`);
+  const rows=await db.execute(sql`select count(*) filter(where grade='Perfect')::text perfect,count(*) filter(where grade='Great')::text great,count(*) filter(where grade='Good')::text good,count(*) filter(where grade='Miss')::text miss,count(*)::text total from matches m join rounds r on r.match_id=m.id cross join lateral(values('player1'::player_slot,r.launch_grade_a),('player2'::player_slot,r.launch_grade_b)) g(slot,grade) join match_participant_snapshots ps on ps.match_id=m.id and ps.slot=g.slot where ${sql.join(conditions,sql` and `)}`) as unknown as readonly {perfect:string;great:string;good:string;miss:string;total:string}[];const row=rows[0]??{perfect:"0",great:"0",good:"0",miss:"0",total:"0"};return Object.freeze({Perfect:Number(row.perfect),Great:Number(row.great),Good:Number(row.good),Miss:Number(row.miss),totalOccurrences:Number(row.total)});
+}
 
-type ParameterSqlRow = Readonly<{ dimension:string; value:Record<string,string|number|boolean|null>; launchGrade:"Perfect"|"Great"|"Good"|"Miss"; opponentStrengthBand:"low"|"medium"|"high"; performanceModelVersion:string; physicsModelVersion:string; sampleSize:string|number; participantObservations:string|number; averageScore:string|number; winRate:string|number; opponentAverageStrength:string|number; expectedWinRate:string|number; outcomeResidual:string|number; perfectCount:string|number;greatCount:string|number;goodCount:string|number;missCount:string|number;totalGroups:string|number }>;
+type ParameterSqlRow = Readonly<{ dimension:string; value:Record<string,string|number|boolean|null>; launchGrade:"Perfect"|"Great"|"Good"|"Miss"; opponentStrengthBand:"low"|"medium"|"high"; performanceModelVersion:string; physicsModelVersion:string; sampleSize:string|number; participantObservations:string|number; averageScore:string|number; winRate:string|number; opponentAverageStrength:string|number; expectedWinRate:string|number; outcomeResidual:string|number; gradeOccurrenceCount:string|number;totalGroups:string|number }>;
 
 function finite(value: string | number): number {
   const result = Number(value);
@@ -29,7 +36,7 @@ export function normalizeParameterRows(rows: readonly ParameterSqlRow[]) {
     performanceModelVersion: row.performanceModelVersion, physicsModelVersion: row.physicsModelVersion,
     totalGroups:finite(row.totalGroups),
     sampleSize: finite(row.sampleSize), participantObservations: finite(row.participantObservations), averageScore: finite(row.averageScore), winRate: finite(row.winRate), opponentAverageStrength: finite(row.opponentAverageStrength),expectedWinRate:finite(row.expectedWinRate),outcomeResidual:finite(row.outcomeResidual),
-    launchOccurrences:Object.freeze({Perfect:finite(row.perfectCount),Great:finite(row.greatCount),Good:finite(row.goodCount),Miss:finite(row.missCount)}),
+    gradeOccurrenceCount:finite(row.gradeOccurrenceCount),
   }));
 }
 
@@ -97,7 +104,7 @@ export async function parameterPerformance(db: PostgresJsDatabase<typeof schema>
       avg(score)::text "averageScore",avg(won)::text "winRate",avg(opponent_strength)::text "opponentAverageStrength",
       avg(1.0/(1.0+exp((opponent_strength-own_strength)/15.0)))::text "expectedWinRate",
       avg(won-1.0/(1.0+exp((opponent_strength-own_strength)/15.0)))::text "outcomeResidual",
-      sum(perfect_count)::text "perfectCount",sum(great_count)::text "greatCount",sum(good_count)::text "goodCount",sum(miss_count)::text "missCount",count(*) over()::text "totalGroups"
+      sum(case launch_grade when 'Perfect' then perfect_count when 'Great' then great_count when 'Good' then good_count else miss_count end)::text "gradeOccurrenceCount",count(*) over()::text "totalGroups"
     from observations group by performance_model_version,physics_model_version,dimension,value,launch_grade,case when opponent_strength<40 then 'low' when opponent_strength<70 then 'medium' else 'high' end
     having count(distinct match_id)>=10
     order by ${ordering}

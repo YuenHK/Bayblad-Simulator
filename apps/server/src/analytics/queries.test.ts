@@ -33,19 +33,19 @@ describe("analytics query contracts", () => {
 
   it("drops parameter groups below ten completed matches and maps launch distribution", () => {
     const result = normalizeParameterRows([
-      { dimension:"totalMassGBucket",value:{fromG:40,toG:45},launchGrade:"Perfect",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"10",participantObservations:"12",averageScore:"1.75",winRate:"0.6",opponentAverageStrength:"64",expectedWinRate:"0.45",outcomeResidual:"0.15",perfectCount:"2",greatCount:"0",goodCount:"1",missCount:"0",totalGroups:"20" },
-      { dimension:"holes",value:{count:4},launchGrade:"Good",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"9",participantObservations:"9",averageScore:"2",winRate:"1",opponentAverageStrength:"60",expectedWinRate:"0.5",outcomeResidual:"0.5",perfectCount:"0",greatCount:"0",goodCount:"1",missCount:"0",totalGroups:"20" },
+      { dimension:"totalMassGBucket",value:{fromG:40,toG:45},launchGrade:"Perfect",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"10",participantObservations:"12",averageScore:"1.75",winRate:"0.6",opponentAverageStrength:"64",expectedWinRate:"0.45",outcomeResidual:"0.15",gradeOccurrenceCount:"2",totalGroups:"20" },
+      { dimension:"holes",value:{count:4},launchGrade:"Good",opponentStrengthBand:"medium",performanceModelVersion:"perf-1",physicsModelVersion:"physics-1",sampleSize:"9",participantObservations:"9",averageScore:"2",winRate:"1",opponentAverageStrength:"60",expectedWinRate:"0.5",outcomeResidual:"0.5",gradeOccurrenceCount:"1",totalGroups:"20" },
     ]);
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ dimension:"totalMassGBucket",sampleSize: 10, averageScore: 1.75, winRate: 0.6, launchGrade:"Perfect",opponentStrengthBand:"medium" });
-    expect(result[0]?.launchOccurrences).toEqual({Perfect:2,Great:0,Good:1,Miss:0});
+    expect(result[0]?.gradeOccurrenceCount).toBe(2);
     expect(Object.keys(result[0] ?? {})).not.toContain("studentName");
   });
 });
 
 it("returns explicit whole-design parameter usage dimensions without PII", () => {
-  const rows = normalizeParameterUsage([{scope:"allEligibleDesigns", dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: "3", total: "4", performanceModelVersion: "perf-1" }]);
-  expect(rows).toEqual([{scope:"allEligibleDesigns", dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: 3, proportion: .75, performanceModelVersion: "perf-1" }]);
+  const rows = normalizeParameterUsage([{scope:"allEligibleDesigns", dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: "3", total: "4", performanceModelVersion: "perf-1",totalGroups:"2",truncated:false,population:"4" }]);
+  expect(rows).toEqual([{scope:"allEligibleDesigns", dimension: "metalDiscDiameter", value: { diameterMm: 0, placement: "under_bottom", none: true }, count: 3, proportion: .75, performanceModelVersion: "perf-1",totalGroups:2,truncated:false,population:4 }]);
   expect(JSON.stringify(rows)).not.toMatch(/student|className|device/iu);
 });
 it("defines opponent strength from the authoritative design prediction rather than match score",()=>{
@@ -84,8 +84,14 @@ describe("analytics summary cache", () => {
   });
   it("defines high and low rankings primarily by average score",async()=>{
     const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};const high={averageScore:2,winRate:.5,sampleSize:10,outcomeResidual:-.4,totalGroups:2};const low={averageScore:1,winRate:1,sampleSize:20,outcomeResidual:.9,totalGroups:2};
-    const service=new AnalyticsService(cache,async()=>[],async(_filters,page)=>page?.order==="high"?[high,low]:page?.order==="low"?[low,high]:[high,low]);
-    const summary=await service.query({from:"2026-08-01",to:"2026-08-02"});expect(summary.rankings.top[0]).toBe(high);expect(summary.rankings.bottom[0]).toBe(low);
+    const service=new AnalyticsService(cache,async()=>[],async(_filters,page)=>page?.order==="high"?[high,low]:page?.order==="low"?[low,high]:[high,low],async()=>[],undefined,undefined,undefined,async()=>({Perfect:2,Great:0,Good:1,Miss:0,totalOccurrences:3}));
+    const filters={from:"2026-08-01",to:"2026-08-02"} as const;const summary=await service.query(filters);expect(summary.rankings.top[0]).toBe(high);expect(summary.rankings.bottom[0]).toBe(low);
+    expect(summary.rankings.overallLaunchDistribution).toEqual({Perfect:2,Great:0,Good:1,Miss:0,totalOccurrences:3});
+    await expect(service.parameterPage(filters,1,summary.rankings.snapshotCursor)).resolves.toMatchObject({rows:[high]});
+  });
+  it("rejects an expired signed analytics cursor with an explicit retry code",async()=>{
+    const cache:AnalyticsCache={read:async()=>null,write:async()=>undefined};let now=Date.parse("2026-08-01T00:00:00Z");const service=new AnalyticsService(cache,async()=>[],async()=>[1,2],async()=>[],()=>new Date(now),Buffer.alloc(32,4));const filters={from:"2026-08-01",to:"2026-08-02"} as const;
+    const first=await service.parameterPage(filters,1);now+=300_001;await expect(service.parameterPage(filters,1,first.nextCursor!)).rejects.toThrow("ANALYTICS_CURSOR_EXPIRED");
   });
 
   it("coalesces refreshes and returns a fresh cached summary", async () => {
