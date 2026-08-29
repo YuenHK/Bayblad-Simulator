@@ -81,6 +81,8 @@ it.skipIf(!databaseUrl)("rejects a same-count member swap against the materializ
   expect((await client.sql.unsafe("select id from matches where id=$1", [ids.match]))).toHaveLength(1);
 });
 
+it.skipIf(!databaseUrl)("atomically enforces the active preview cap across workers",async()=>{await client.sql.unsafe("delete from deletion_previews");const now=new Date(),stores=Array.from({length:5},()=>new PostgresDeletionStore(client,3));const results=await Promise.allSettled(stores.map(store=>store.createPreview({filter:{scope:"identity",identityId:randomUUID()},adminUserId:adminId,adminSessionId:sessionId,now,expiresAt:new Date(now.getTime()+300_000)})));expect(results.filter(result=>result.status==="fulfilled")).toHaveLength(3);expect(results.filter(result=>result.status==="rejected")).toHaveLength(2);await client.sql.unsafe("delete from deletion_previews");});
+
 it.skipIf(!databaseUrl)("rolls back audit, preview consumption and records when any delete fails", async () => {
   const ids = await recordFixture("3"), store = new PostgresDeletionStore(client), now = new Date();
   const preview = await store.createPreview({ filter: { scope: "identity", identityId: ids.identity1 }, adminUserId: adminId, adminSessionId: sessionId, now, expiresAt: new Date(now.getTime() + 300_000) });
@@ -97,6 +99,7 @@ it.skipIf(!databaseUrl).each([
   ["identity", "5"], ["class", "6"], ["date_range", "7"], ["all", "8"],
 ] as const)("removes %s records from real analytics, export source and generated workbook", async (scope,suffix) => {
   const ids = await recordFixture(suffix); await completeFixture(ids); const filters={from:"2026-08-15",to:"2026-08-15"} as const, source=new PostgresExportDataSource(client);
+  const futureMatch=`90000000-0000-4000-8000-${suffix.padStart(12,"0")}`;if(scope==="date_range")await client.sql.unsafe(`insert into matches(id,idempotency_fingerprint,status,player1_identity_id,player2_identity_id,player1_design_id,player2_design_id,performance_model_version,physics_model_version,protocol_version,started_at) values($1,$2,'in_progress',$3,$4,$5,$6,'1.0.0','2.0.0',1,'2026-08-16T04:00:00Z')`,[futureMatch,`f${suffix}`.padEnd(64,"0"),ids.identity1,ids.identity2,ids.design1,ids.design2]);
   expect(await source.withSnapshot(filters,undefined,async snapshot=>snapshot.metadata.rowCounts?.matches??-1)).toBe(1);
   expect((await usageAnalytics(client.db,filters,"day")).reduce((sum,row)=>sum+row.completedMatches,0)).toBe(1);
   const filter=scope==="identity"?{scope,identityId:ids.identity1}:scope==="class"?{scope,className:"1A"}:scope==="date_range"?{scope,from:"2026-08-15",to:"2026-08-15"}:{scope};
@@ -104,5 +107,6 @@ it.skipIf(!databaseUrl).each([
   expect((await store.execute({previewToken:preview.previewToken,filterHash:preview.filterHash,adminUserId:adminId,adminSessionId:sessionId,now})).status).toBe("ok");
   expect(await source.withSnapshot(filters,undefined,async snapshot=>snapshot.metadata.rowCounts?.matches??-1)).toBe(0);
   expect((await usageAnalytics(client.db,filters,"day")).reduce((sum,row)=>sum+row.completedMatches,0)).toBe(0);
+  if(scope==="date_range"){expect((await client.sql.unsafe("select id from identities where id=$1",[ids.identity1]))).toHaveLength(1);expect((await client.sql.unsafe("select id from matches where id=$1",[futureMatch]))).toHaveLength(1);}
   const workbook=new ExcelJS.Workbook();await workbook.xlsx.load(await buildWorkbookBuffer(source,filters) as never);expect(workbook.getWorksheet("對戰紀錄")!.rowCount).toBe(8);
 },30_000);

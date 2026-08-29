@@ -57,7 +57,7 @@ export class InMemoryDeletionStore implements DeletionStore {
       return day >= filter.from && day <= filter.to;
     });
   }
-  #counts(filter: DeletionFilter): DeletionCounts { const selected = this.#selected(filter); return Object.freeze({ identities: selected.length, designs: selected.reduce((sum, row) => sum + row.designs, 0), matches: selected.reduce((sum, row) => sum + row.matches, 0) }); }
+  #counts(filter: DeletionFilter): DeletionCounts { const selected = this.#selected(filter); return Object.freeze({ identities: filter.scope==="date_range"?0:selected.length, designs: selected.reduce((sum, row) => sum + row.designs, 0), matches: selected.reduce((sum, row) => sum + row.matches, 0) }); }
   async createPreview(input: { filter: DeletionFilter; adminUserId: string; adminSessionId: string; now: Date; expiresAt: Date }): Promise<DeletionPreview> {
     const previewToken = randomBytes(32).toString("base64url"), tokenHash = createHash("sha256").update(previewToken).digest("hex"), filter = deletionFilterSchema.parse(input.filter), filterHash = deletionFilterHash(filter), counts = this.#counts(filter);
     this.#previews.set(tokenHash, { tokenHash, filter, filterHash, adminUserId: input.adminUserId, adminSessionId: input.adminSessionId, expiresAt: input.expiresAt, counts });
@@ -80,7 +80,7 @@ export class InMemoryDeletionStore implements DeletionStore {
     const selected = new Set(this.#selected(row.filter).map((record) => record.identityId));
     const auditId = randomUUID();
     const audit = Object.freeze({ auditId, adminUserId: input.adminUserId, scope: row.filter.scope, filterHash: row.filterHash, previewCount: actual.identities + actual.designs + actual.matches, deletedIdentityCount: actual.identities, deletedDesignCount: actual.designs, deletedMatchCount: actual.matches });
-    this.#records = this.#records.filter((record) => !selected.has(record.identityId));
+    this.#records = row.filter.scope==="date_range"?this.#records.map(record=>selected.has(record.identityId)?{...record,designs:0,matches:0}:record):this.#records.filter((record) => !selected.has(record.identityId));
     this.#previews.set(key, { tokenHash: row.tokenHash, filterHash: row.filterHash, adminUserId: row.adminUserId, adminSessionId: row.adminSessionId, expiresAt: row.expiresAt, counts: row.counts, outcome: { auditId, counts: actual } });
     this.audits.push(audit);
     return { status: "ok" as const, auditId, counts: actual };
@@ -114,7 +114,6 @@ const designPredicate = (alias: string) => `(
 )`;
 const identityPredicate = (alias: string) => `(
   $1 = 'all' or ($1 = 'identity' and ${alias}.id = $2::uuid) or ($1 = 'class' and ${alias}.class_name = $3)
-  or ($1 = 'date_range' and (${alias}.created_at at time zone 'Asia/Hong_Kong')::date between $4::date and $5::date)
 )`;
 const roomPredicate = (alias: string) => `(
   $1 = 'all' or ($1 = 'identity' and (${alias}.owner_identity_id = $2::uuid or exists(select 1 from room_event_snapshots rs where rs.room_id=${alias}.id and (rs.owner_identity_id_at_creation=$2::uuid or rs.canonical_identity_id_at_creation=$2::uuid))))
@@ -157,7 +156,8 @@ export class PostgresDeletionStore implements DeletionStore {
   async createPreview(input: { filter: DeletionFilter; adminUserId: string; adminSessionId: string; now: Date; expiresAt: Date }): Promise<DeletionPreview> {
     const filter = deletionFilterSchema.parse(input.filter), previewToken = randomBytes(32).toString("base64url"), filterHash = deletionFilterHash(filter);
     const hash = tokenDigest(previewToken);
-    const counts = await this.client.sql.begin("isolation level repeatable read", async (transaction) => {
+    const counts = await this.client.sql.begin("read write", async (transaction) => {
+      await transaction.unsafe("select pg_advisory_xact_lock(hashtext('steam_top_deletion_preview_cap'))");
       await transaction.unsafe(`delete from deletion_previews where token_hash in(select token_hash from deletion_previews where expires_at<=$1 order by expires_at limit 500)`, [input.now]);
       const active = rows(await transaction.unsafe("select count(*)::integer count from deletion_previews where consumed_at is null and expires_at>$1", [input.now]))[0];
       if (count(active?.count) >= this.maxActivePreviews) throw new Error("DELETION_PREVIEW_CAPACITY");
@@ -183,9 +183,10 @@ export class PostgresDeletionStore implements DeletionStore {
   async execute(input: { previewToken: string; filterHash: string; adminUserId: string; adminSessionId: string; now: Date }): ReturnType<DeletionStore["execute"]> {
     const auditId = randomUUID();
     if (this.ledger) await this.ledger.recordPending({ auditId, operationDigest: input.filterHash });
-    for (let attempt = 0; attempt < 3; attempt++) try { const result=await this.executeOnce(input, auditId); if(this.ledger){if(result.status==="ok"&&!result.recovered)await this.ledger.recordCommitted({auditId,operationDigest:input.filterHash});else if(result.status!=="ok")await this.ledger.recordAborted({auditId,operationDigest:input.filterHash});} return result; } catch (error) { if (!retryableTransaction(error) || attempt === 2) throw error; }
+    for (let attempt = 0; attempt < 3; attempt++) try { const result=await this.executeOnce(input, auditId); if(this.ledger){if(result.status==="ok"&&!result.recovered)await this.ledger.recordCommitted({auditId,operationDigest:input.filterHash});else await this.ledger.recordAborted({auditId,operationDigest:input.filterHash});} return result; } catch (error) { if (retryableTransaction(error) && attempt < 2) continue; await this.#resolveFailedLedger(auditId,input.filterHash,error); throw error; }
     throw new Error("UNREACHABLE_DELETION_RETRY");
   }
+  async #resolveFailedLedger(auditId:string,operationDigest:string,error:unknown){if(!this.ledger)return;try{const found=rows(await this.client.sql.unsafe("select 1 from deletion_audit where id=$1",[auditId])).length>0;if(found){await this.ledger.recordCommitted({auditId,operationDigest});return;}const code=String((error as {code?:unknown})?.code??"");if(retryableTransaction(error)||/^(?:22|23|40|55)[0-9A-Z]{3}$/u.test(code))await this.ledger.recordAborted({auditId,operationDigest});/* connection/commit uncertainty deliberately leaves P */}catch{/* unresolved P is the fail-closed recovery state */}}
   private executeOnce(input: { previewToken: string; filterHash: string; adminUserId: string; adminSessionId: string; now: Date }, auditId: string): ReturnType<DeletionStore["execute"]> {
     return this.client.sql.begin("isolation level serializable", async (transaction) => {
       await transaction.unsafe("set local lock_timeout='5s'");

@@ -11,6 +11,7 @@ import {
   jsonb,
   numeric,
   pgEnum,
+  pgSchema,
   pgTable,
   primaryKey,
   smallint,
@@ -96,7 +97,8 @@ export const adminLoginScopeEnum = pgEnum("admin_login_scope", ["account", "clie
 
 export type BattleResultSnapshot = Readonly<Record<string, unknown>>;
 
-export const deploymentEnvironment = pgTable("deployment_environment", {
+export const restoreControl = pgSchema("restore_control");
+export const deploymentEnvironment = restoreControl.table("deployment_environment", {
   singleton: boolean("singleton").primaryKey().notNull().default(true),
   environment: varchar("environment", { length: 16 }).notNull().default("production"),
   restoreAllowed: boolean("restore_allowed").notNull().default(false),

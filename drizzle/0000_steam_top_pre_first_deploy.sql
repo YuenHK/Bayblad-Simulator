@@ -1,5 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";--> statement-breakpoint
-CREATE TABLE "deployment_environment" (
+CREATE SCHEMA "restore_control";--> statement-breakpoint
+CREATE TABLE "restore_control"."deployment_environment" (
 	"singleton" boolean PRIMARY KEY DEFAULT true NOT NULL,
 	"environment" varchar(16) DEFAULT 'production' NOT NULL,
 	"restore_allowed" boolean DEFAULT false NOT NULL,
@@ -8,8 +9,8 @@ CREATE TABLE "deployment_environment" (
 	CONSTRAINT "deployment_environment_value" CHECK ("environment" in ('production','staging','test','development')),
 	CONSTRAINT "deployment_environment_restore_guard" CHECK (("environment" = 'production' and "restore_allowed" = false) or "environment" <> 'production')
 );--> statement-breakpoint
-INSERT INTO "deployment_environment" ("singleton") VALUES (true);--> statement-breakpoint
-CREATE OR REPLACE FUNCTION "steam_top_protect_deployment_environment"() RETURNS trigger LANGUAGE plpgsql AS $$
+INSERT INTO "restore_control"."deployment_environment" ("singleton") VALUES (true);--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "restore_control"."steam_top_protect_deployment_environment"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'TRUNCATE' THEN RAISE EXCEPTION 'deployment_environment is protected' USING ERRCODE='55000', CONSTRAINT='deployment_environment_is_protected'; END IF;
   IF current_setting('steam_top.configure_restore_target', true) <> 'RESTORE_NONPRODUCTION_DATA' THEN
@@ -17,8 +18,8 @@ BEGIN
   END IF;
   RETURN COALESCE(NEW, OLD);
 END; $$;--> statement-breakpoint
-CREATE TRIGGER "deployment_environment_is_protected" BEFORE UPDATE OR DELETE ON "deployment_environment" FOR EACH ROW EXECUTE FUNCTION "steam_top_protect_deployment_environment"();--> statement-breakpoint
-CREATE TRIGGER "deployment_environment_truncate_is_protected" BEFORE TRUNCATE ON "deployment_environment" FOR EACH STATEMENT EXECUTE FUNCTION "steam_top_protect_deployment_environment"();--> statement-breakpoint
+CREATE TRIGGER "deployment_environment_is_protected" BEFORE UPDATE OR DELETE ON "restore_control"."deployment_environment" FOR EACH ROW EXECUTE FUNCTION "restore_control"."steam_top_protect_deployment_environment"();--> statement-breakpoint
+CREATE TRIGGER "deployment_environment_truncate_is_protected" BEFORE TRUNCATE ON "restore_control"."deployment_environment" FOR EACH STATEMENT EXECUTE FUNCTION "restore_control"."steam_top_protect_deployment_environment"();--> statement-breakpoint
 CREATE TABLE "analytics_daily_summaries" (
 	"summary_date" date NOT NULL,
 	"filter_hash" text NOT NULL,
