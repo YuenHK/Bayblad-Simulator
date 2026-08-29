@@ -1,0 +1,21 @@
+{$PUBLIC_HOST} {
+	@webclip path /start
+	log_skip @webclip
+
+	encode zstd gzip
+	handle /api/* {
+		reverse_proxy server:3000
+	}
+	handle /socket.io/* {
+		reverse_proxy server:3000
+	}
+	handle /start* {
+		reverse_proxy server:3000
+	}
+	handle /health/* {
+		reverse_proxy server:3000
+	}
+	handle {
+		reverse_proxy web:8080
+	}
+}

@@ -8,3 +8,5 @@ export * from "./exports/workbook";
 export * from "./exports/postgres-source";
 export * from "./admin/delete-records";
 export * from "./admin/deletion-ledger";
+export * from "./config";
+export * from "./readiness";
