@@ -485,13 +485,20 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   nonceTimer?.unref();
   adminMaintenanceTimer?.unref();
   if (options.webClipTokens) void options.webClipTokens.pruneExpired().catch(() => undefined);
+  let leaseHealthTimer: ReturnType<typeof setInterval> | undefined;
   app.addHook("onReady", async () => {
     // We intentionally fail closed rather than attempting to resume battles whose
     // in-memory timing/physics state cannot be reconstructed after a process exit.
+    if (process.env.NODE_ENV === "production") await options.roomRecordRepository?.acquireStartupLease?.();
     await options.roomRecordRepository?.reconcileOrphanedActiveRooms?.(new Date());
+    if (process.env.NODE_ENV === "production" && options.roomRecordRepository?.verifyStartupLease) {
+      leaseHealthTimer = setInterval(() => { void options.roomRecordRepository!.verifyStartupLease!().catch((error) => { reportBackgroundError(error); void gateway.close(); }); }, 5_000);
+      leaseHealthTimer.unref();
+    }
   });
   app.addHook("preClose", async () => {
     retryPumpClosing = true;
+    if (leaseHealthTimer) clearInterval(leaseHealthTimer);
     if (timer) clearInterval(timer);
     if (nonceTimer) clearInterval(nonceTimer);
     if (adminMaintenanceTimer) clearInterval(adminMaintenanceTimer);
@@ -499,6 +506,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     await retryClaimPump;
     while (retryWorkers.size) await Promise.allSettled([...retryWorkers.values()]);
     await gateway.close();
+    await options.roomRecordRepository?.releaseStartupLease?.();
     await battleEngine.shutdown?.();
   });
   return app as unknown as BuiltApp;

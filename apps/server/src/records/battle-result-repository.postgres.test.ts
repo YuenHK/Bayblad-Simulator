@@ -30,6 +30,15 @@ beforeAll(async () => {
   }
 }, 30_000);
 
+it.skipIf(!databaseUrl)("holds a dedicated single-instance advisory lock until release", async () => {
+  const first = new PostgresRoomRecordRepository(client.db, client.sql); const second = new PostgresRoomRecordRepository(client.db, client.sql);
+  await first.acquireStartupLease();
+  await expect(second.acquireStartupLease()).rejects.toThrow("ROOM_SINGLE_INSTANCE_LOCK_HELD");
+  await first.releaseStartupLease();
+  await expect(second.acquireStartupLease()).resolves.toBeUndefined();
+  await second.releaseStartupLease();
+});
+
 it.skipIf(!databaseUrl)("projects room owner, phases, first battle metadata and closure idempotently", async () => {
   const ownerIdentityId = randomUUID(); const challengerIdentityId = randomUUID(); const roomId = randomUUID();
   await client.db.insert(identities).values([{ id: ownerIdentityId, status: "guest", displayName: "Owner" }, { id: challengerIdentityId, status: "guest", displayName: "Challenger" }]);
