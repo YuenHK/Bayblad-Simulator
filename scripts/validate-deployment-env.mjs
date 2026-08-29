@@ -1,14 +1,8 @@
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { parseProductionEnv } from "./production-env.mjs";
 
-const values = { ...process.env };
-const baseOnly = process.argv.includes("--base-only");
-const environmentFile = process.argv.slice(2).find((value) => value !== "--base-only");
-if (environmentFile) {
-  for (const line of readFileSync(environmentFile, "utf8").split(/\r?\n/u)) {
-    const match = /^([A-Z][A-Z0-9_]*)=(.*)$/u.exec(line);
-    if (match) values[match[1]] = match[2];
-  }
-}
+export function validateDeploymentValues(values,baseOnly=false) {
 if (!baseOnly) {
   for (const name of ["SERVER_IMAGE", "WEB_IMAGE", "DATABASE_IMAGE"]) {
     if (!/^[a-z0-9][a-z0-9._\/-]*@sha256:[a-f0-9]{64}$/u.test(values[name] ?? "")) throw new Error(`${name} must be repository@sha256:<64 lowercase hex>`);
@@ -22,4 +16,5 @@ for (const prefix of ["NODE", "POSTGRES", "CADDY"]) {
 }
 const origin = new URL(values.PUBLIC_ORIGIN ?? "");
 if (origin.protocol !== "https:" || origin.port || origin.pathname !== "/" || origin.search || origin.hash || origin.username || origin.password) throw new Error("PUBLIC_ORIGIN must be an HTTPS origin on the default port");
-process.stdout.write("deployment environment references validated\n");
+}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const values = { ...process.env };const baseOnly = process.argv.includes("--base-only");const environmentFile = process.argv.slice(2).find((value) => value !== "--base-only");if (environmentFile) Object.assign(values, parseProductionEnv(readFileSync(environmentFile, "utf8")));validateDeploymentValues(values,baseOnly);process.stdout.write("deployment environment references validated\n");}

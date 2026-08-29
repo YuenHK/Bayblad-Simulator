@@ -52,6 +52,8 @@ describe("release CI contract", () => {
     expect(workflow).toContain("--provenance=mode=max");
     expect(workflow).toContain("scripts/create-release-manifest.mjs");
     expect(workflow).toContain("release-manifest");
+    expect(workflow).toContain("actions/attest-build-provenance@");
+    expect(workflow).toContain("portable-sha256.sh manifest .release");
     expect(workflow).not.toContain("Resolve immutable base-image digests");
     expect(read("scripts/validate-deployment-env.mjs")).toContain("SERVER_IMAGE");
     expect(read("scripts/validate-deployment-env.mjs")).toContain("repository@sha256");
@@ -59,9 +61,9 @@ describe("release CI contract", () => {
 
   it("supports production deployment only through the fail-closed wrapper", () => {
     const deploy = read("scripts/deploy-production.sh");
-    expect(deploy).toContain("validate-deployment-env.mjs");
-    expect(deploy).toContain("verify-release-manifest.mjs");
-    expect(deploy).toContain("sha256sum -c SHA256SUMS");
+    expect(deploy).toContain("authorize-production-deploy.mjs");
+    expect(deploy).toContain("gh attestation verify");
+    expect(deploy).toContain("portable-sha256.sh");
     expect(deploy.indexOf(" config --quiet")).toBeLessThan(deploy.indexOf(" pull"));
     expect(deploy.indexOf(" pull")).toBeLessThan(deploy.indexOf(" up -d --wait"));
     expect(read("docs/operations/release.md")).toContain("直接執行 `docker compose` 不受支援");
@@ -110,7 +112,13 @@ describe("rollback deletion monotonicity", () => {
     expect(promotion).toContain("host-trust-guard.sh");
     expect(read("infra/backup/restore.sh")).toContain("host-trust-guard.sh");
     expect(read("infra/backup/host-trust-guard.sh")).toContain("PGPASSWORD/PGOPTIONS forbidden");
+    expect(read("infra/backup/host-trust-guard.sh")).toContain("backup_canonical_path");
+    expect(read("infra/backup/host-trust-guard.sh")).toContain('backup_root_file_mode "$canonical_cli" 555');
+    expect(read("infra/backup/host-trust-guard.sh")).toContain('backup_root_file_mode "$canonical_manifest" 444');
     expect(promotion).toContain("environment='production',restore_allowed=false");
+    expect(promotion).toContain("pg_terminate_backend");
+    expect(promotion).toContain("revoke connect");
+    expect(promotion.indexOf("pg_advisory_xact_lock")).toBeLessThan(promotion.indexOf("count(*) from deletion_audit"));
     expect(release).toContain("禁止資料庫回復");
   });
 });
