@@ -1,4 +1,17 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";--> statement-breakpoint
+CREATE TABLE "analytics_daily_summaries" (
+	"summary_date" date NOT NULL,
+	"filter_hash" text NOT NULL,
+	"filters_json" jsonb NOT NULL,
+	"usage_json" jsonb NOT NULL,
+	"usage_periods_json" jsonb NOT NULL,
+	"parameters_json" jsonb NOT NULL,
+	"refreshed_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "analytics_daily_summaries_pk" PRIMARY KEY("summary_date","filter_hash"),
+	CONSTRAINT "analytics_daily_summaries_hash_format" CHECK ("filter_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "analytics_daily_summaries_json_shape" CHECK (jsonb_typeof("filters_json") = 'object' and jsonb_typeof("usage_json") = 'array' and jsonb_typeof("usage_periods_json") = 'object' and jsonb_typeof("parameters_json") = 'array')
+);--> statement-breakpoint
+CREATE INDEX "analytics_daily_summaries_refreshed_idx" ON "analytics_daily_summaries" USING btree ("refreshed_at");--> statement-breakpoint
 CREATE TABLE "battle_results" (
 	"authority_key_hash" text PRIMARY KEY NOT NULL,
 	"correlation_key" varchar(264) NOT NULL,
