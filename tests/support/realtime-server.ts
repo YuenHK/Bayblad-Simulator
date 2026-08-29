@@ -8,6 +8,7 @@ import {
 } from "../../apps/server/src/battle/engine";
 import { DesignRegistry } from "../../apps/server/src/design-registry";
 import { RoomService } from "../../apps/server/src/rooms/room-service";
+import { IdentityResolver, InMemoryIdentityStore } from "../../apps/server/src/identity/resolver";
 
 if (process.env.NODE_ENV !== "test") throw new Error("The realtime test server is test-only");
 
@@ -86,6 +87,7 @@ const app = buildApp({
   },
   allowedOrigins: ["http://127.0.0.1:4173"],
   allowMissingOrigin: true,
+  identityResolver: new IdentityResolver(new InMemoryIdentityStore(), { now: () => new Date(now()) }),
   sweepIntervalMs: 25,
 });
 

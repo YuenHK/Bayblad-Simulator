@@ -85,6 +85,15 @@ export class IdentityResolver {
   }
   isBackedBy<T extends IdentityStore>(constructor: abstract new (...args: never[]) => T): boolean { return this.#store instanceof constructor; }
 
+  async authenticate(cookieToken: unknown): Promise<Identity | null> {
+    if (!isIdentityToken(cookieToken)) return null;
+    try {
+      const session = await this.#store.findSession(hashIdentityToken(cookieToken), this.#now());
+      if (!session) return null;
+      return session.identity.status === "iclass" ? { ...session.identity, status: "cookie" } : session.identity;
+    } catch { throw new IdentityStoreUnavailableError(); }
+  }
+
   async resolve(request: Readonly<{ cookieToken?: string; ip?: string; userAgent?: string; admitCreation?: () => boolean }>, live?: TrustedLiveIdentity): Promise<Readonly<{ identity: Identity; cookieToken: string; issuedAt: Date; expiresAt: Date; isNew: boolean }>> {
     const now = this.#now();
     const maxAgeSeconds = Math.floor(this.#lifetimeMs / 1_000);

@@ -1,5 +1,5 @@
 {
-  "id": "cbbb9337-6a1c-4010-9270-93346d018fc7",
+  "id": "aad48b1e-f9e2-4b9e-8b47-f106907d71a9",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1495,10 +1495,10 @@
             }
           ],
           "isUnique": false,
+          "where": "\"identity_sessions\".\"revoked_at\" is null",
           "concurrently": false,
           "method": "btree",
-          "with": {},
-          "where": "\"identity_sessions\".\"revoked_at\" is null"
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -2686,6 +2686,74 @@
         "rounds_battle_result_shape": {
           "name": "rounds_battle_result_shape",
           "value": "jsonb_typeof(\"rounds\".\"battle_result_json\") = 'object' and \"rounds\".\"battle_result_json\" ?& array['modelVersion','seed','ticks','frames','outcome','finalStats'] and jsonb_typeof(\"rounds\".\"battle_result_json\"->'modelVersion') = 'string' and length(btrim(\"rounds\".\"battle_result_json\"->>'modelVersion')) > 0 and \"rounds\".\"battle_result_json\"->>'modelVersion' = \"rounds\".\"physics_model_version\" and jsonb_typeof(\"rounds\".\"battle_result_json\"->'seed') = 'number' and (\"rounds\".\"battle_result_json\"->>'seed')::numeric = trunc((\"rounds\".\"battle_result_json\"->>'seed')::numeric) and (\"rounds\".\"battle_result_json\"->>'seed')::numeric between -9007199254740991 and 9007199254740991 and (\"rounds\".\"battle_result_json\"->>'seed')::numeric = \"rounds\".\"seed\"::numeric and jsonb_typeof(\"rounds\".\"battle_result_json\"->'ticks') = 'number' and (\"rounds\".\"battle_result_json\"->>'ticks')::numeric = trunc((\"rounds\".\"battle_result_json\"->>'ticks')::numeric) and (\"rounds\".\"battle_result_json\"->>'ticks')::numeric between 0 and 5400 and (\"rounds\".\"battle_result_json\"->>'ticks')::numeric = \"rounds\".\"ticks\"::numeric and jsonb_typeof(\"rounds\".\"battle_result_json\"->'frames') = 'array' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'finalStats') = 'object' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'outcome') = 'object' and \"rounds\".\"battle_result_json\"->'outcome' ?& array['winner','reason'] and \"rounds\".\"battle_result_json\"->'outcome'->>'winner' = \"rounds\".\"outcome\"::text and \"rounds\".\"battle_result_json\"->'outcome'->>'reason' = \"rounds\".\"outcome_reason\"::text"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.webclip_token_nonces": {
+      "name": "webclip_token_nonces",
+      "schema": "",
+      "columns": {
+        "jti_hash": {
+          "name": "jti_hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "used_at": {
+          "name": "used_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "webclip_token_nonces_expiry_idx": {
+          "name": "webclip_token_nonces_expiry_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "webclip_token_nonces_jti_hash_format": {
+          "name": "webclip_token_nonces_jti_hash_format",
+          "value": "\"webclip_token_nonces\".\"jti_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "webclip_token_nonces_expiry_after_issue": {
+          "name": "webclip_token_nonces_expiry_after_issue",
+          "value": "\"webclip_token_nonces\".\"expires_at\" > \"webclip_token_nonces\".\"issued_at\""
         }
       },
       "isRLSEnabled": false

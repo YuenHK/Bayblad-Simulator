@@ -8,6 +8,7 @@ import { and, count, eq, gt, isNull } from "drizzle-orm";
 import { createValidatedLiveIdentityProvider, IdentityResolver } from "./resolver";
 import { hashIdentityToken } from "./cookie";
 import { PostgresIdentityStore } from "./postgres-store";
+import { PostgresTokenNonceStore } from "./postgres-token-nonce";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const schemaName = `identity_${randomUUID().replaceAll("-", "")}`;
@@ -30,6 +31,15 @@ afterAll(async () => {
   await client.sql.unsafe("set search_path to public");
   await client.sql.unsafe(`drop schema ${schemaName} cascade`);
   await client.close();
+});
+
+it.skipIf(!databaseUrl)("atomically consumes a durable Web Clip nonce once under concurrency", async () => {
+  const store = new PostgresTokenNonceStore(client.db);
+  const issuedAt = new Date("2026-08-29T00:00:00Z"); const expiresAt = new Date("2026-08-29T00:05:00Z");
+  const jtiHash = "a".repeat(64);
+  await store.issue({ jtiHash, deviceId: "ipad-atomic", issuedAt, expiresAt });
+  const results = await Promise.all(Array.from({ length: 12 }, () => store.consume(jtiHash, new Date("2026-08-29T00:01:00Z"))));
+  expect(results.filter(Boolean)).toEqual(["ipad-atomic"]);
 });
 
 it.skipIf(!databaseUrl)("allows duplicate guest labels and atomically upgrades concurrent live identity", async () => {

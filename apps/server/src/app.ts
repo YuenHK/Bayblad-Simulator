@@ -11,8 +11,10 @@ import { RoomService } from "./rooms/room-service";
 import { RealtimeGateway, type FrameScheduler, type MatchScorer } from "./socket";
 import { TokenBucketLimiter } from "./rate-limit";
 import { COOKIE_NAME } from "./identity/cookie";
-import { IdentityAdmissionError, IdentityCapacityError, IdentityResolver, IdentityStoreUnavailableError } from "./identity/resolver";
+import { createValidatedLiveIdentityProvider, IdentityAdmissionError, IdentityCapacityError, IdentityResolver, IdentityStoreUnavailableError } from "./identity/resolver";
 import { PostgresIdentityStore } from "./identity/postgres-store";
+import type { IClassAdapter } from "./identity/iclass-adapter";
+import type { WebClipTokenService } from "./identity/webclip-token";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -76,6 +78,9 @@ export type BuildAppOptions = Readonly<{
   identityCreationRefillPerSecond?: number;
   identityGlobalCreationBurst?: number;
   identityGlobalCreationRefillPerSecond?: number;
+  iClassAdapter?: IClassAdapter;
+  webClipTokens?: WebClipTokenService;
+  testIdentityResolver?: (request: IncomingMessage) => Promise<Readonly<{ identityId: string; displayName: string }> | null>;
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -96,6 +101,7 @@ function requireNonnegative(name: string, value: number): number {
 }
 
 export function buildApp(options: BuildAppOptions): BuiltApp {
+  if (process.env.NODE_ENV === "production" && options.testIdentityResolver) throw new TypeError("testIdentityResolver is forbidden in production");
   if (process.env.NODE_ENV === "production" && !options.allowedOrigins?.length) {
     throw new TypeError("Production composition requires allowedOrigins");
   }
@@ -185,6 +191,27 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   });
   const identityCreationLimiter = new TokenBucketLimiter({ burst: config.identityCreationBurst, refillPerSecond: config.identityCreationRefillPerSecond, ...limiterOptions });
   const identityGlobalCreationLimiter = new TokenBucketLimiter({ burst: config.identityGlobalCreationBurst, refillPerSecond: config.identityGlobalCreationRefillPerSecond, ...limiterOptions, maxBuckets: 1 });
+  const cookieFromRequest = (request: IncomingMessage): string | undefined => {
+    const raw = request.headers.cookie;
+    if (!raw) return undefined;
+    for (const item of raw.split(";")) {
+      const separator = item.indexOf("=");
+      if (separator < 0 || item.slice(0, separator).trim() !== COOKIE_NAME) continue;
+      try { return decodeURIComponent(item.slice(separator + 1).trim()); } catch { return undefined; }
+    }
+    return undefined;
+  };
+  const authenticateIdentity = options.identityResolver
+    ? async (request: IncomingMessage) => {
+        const identity = await options.identityResolver!.authenticate(cookieFromRequest(request));
+        return identity ? { identityId: identity.id, displayName: identity.displayName } : null;
+      }
+    : options.testIdentityResolver ?? (process.env.NODE_ENV === "test"
+      ? async (_request: IncomingMessage, auth?: Record<string, unknown>) => {
+          const displayName = typeof auth?.displayName === "string" ? auth.displayName : "";
+          return displayName ? { identityId: `test:${displayName}`, displayName } : null;
+        }
+      : async () => null);
   const gateway = new RealtimeGateway(app.server, {
     rooms,
     designs,
@@ -215,6 +242,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     newSessionGlobalBurst: config.newSessionGlobalBurst,
     newSessionGlobalRefillPerSecond: config.newSessionGlobalRefillPerSecond,
     clientKeyResolver: safeClientKey,
+    authenticateIdentity: options.testIdentityResolver ?? authenticateIdentity,
     maxRooms: config.maxRooms,
     maxOwnedRoomsPerSession: config.maxOwnedRoomsPerSession,
     maxMatchAttempts: config.maxMatchAttempts,
@@ -266,6 +294,24 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
         maxAge: Math.max(0, Math.floor((resolved.expiresAt.getTime() - resolved.issuedAt.getTime()) / 1_000)), expires: resolved.expiresAt,
       });
       return { id: resolved.identity.id, status: resolved.identity.status, displayName: resolved.identity.displayName };
+    });
+    app.get("/start", async (request, reply) => {
+      reply.header("Referrer-Policy", "no-referrer").header("Cache-Control", "no-store");
+      const token = (request.query as { t?: unknown }).t;
+      let resolved;
+      try {
+        if (!options.webClipTokens || !options.iClassAdapter || typeof token !== "string") throw new Error("INVALID_DEVICE_TOKEN");
+        const externalDeviceId = await options.webClipTokens.consume(token);
+        const device = await options.iClassAdapter.resolveDevice(externalDeviceId);
+        if (!device) throw new Error("ICLASS_DEVICE_NOT_FOUND");
+        const provider = createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: device.externalDeviceId, displayName: device.studentName, studentName: device.studentName, className: device.className, studentNumber: device.studentNumber, deviceName: device.deviceName }) });
+        const live = await provider.resolve();
+        resolved = await identityResolver.resolve({ ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}) }, live ?? undefined);
+      } catch {
+        try { resolved = await identityResolver.resolve({ ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}) }); } catch { /* identity API can retry later */ }
+      }
+      if (resolved) reply.setCookie(COOKIE_NAME, resolved.cookieToken, { path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", maxAge: Math.max(0, Math.floor((resolved.expiresAt.getTime() - resolved.issuedAt.getTime()) / 1_000)), expires: resolved.expiresAt });
+      return reply.redirect("/", 303);
     });
     app.post("/api/identity/logout", async (request, reply) => {
       if (!allowIdentityRequest(request.headers) || request.headers["x-steam-top-action"] !== "logout") return reply.code(403).send({ error: "IDENTITY_ACTION_REJECTED" });

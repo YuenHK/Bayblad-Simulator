@@ -3,12 +3,30 @@ import { buildApp, type BattleEnginePort } from "../app";
 import { IdentityResolver, InMemoryIdentityStore } from "./resolver";
 import { PostgresIdentityStore } from "./postgres-store";
 import { hashIdentityToken } from "./cookie";
+import { ImportedDeviceMapAdapter } from "./iclass-adapter";
+import { InMemoryTokenNonceStore, WebClipTokenService } from "./webclip-token";
 
 const battleEngine: BattleEnginePort = { simulationCount: 0, simulateOnceAsync: async () => { throw new Error("unused"); }, cleanup: () => false };
 const apps: ReturnType<typeof buildApp>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
 describe("identity routes", () => {
+  it("exchanges an opaque Web Clip token and immediately redirects to a clean URL", async () => {
+    const adapter = new ImportedDeviceMapAdapter();
+    await adapter.replaceFromCsv("externalDeviceId,deviceName,studentName,className,studentNumber\nipad-001,1A-iPad-01,陳同學,1A,01");
+    const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(1) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() });
+    const token = await tokens.issue("ipad-001");
+    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), iClassAdapter: adapter, webClipTokens: tokens, sweepIntervalMs: 0 }); apps.push(app);
+    const response = await app.inject({ method: "GET", url: `/start?t=${encodeURIComponent(token)}` });
+    expect(response).toMatchObject({ statusCode: 303, headers: { location: "/", "referrer-policy": "no-referrer", "cache-control": "no-store" } });
+    const cookie = response.cookies[0]!;
+    const identity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${cookie.name}=${cookie.value}` } });
+    expect(identity.json()).toMatchObject({ status: "cookie", displayName: "陳同學" });
+    expect(response.body).not.toContain(token);
+    const replay = await app.inject({ method: "GET", url: `/start?t=${encodeURIComponent(token)}` });
+    expect(replay.statusCode).toBe(303);
+    expect(replay.cookies[0]).toBeDefined();
+  });
   it("automatically creates and then reuses an identity without collecting a name", async () => {
     const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), sweepIntervalMs: 0 }); apps.push(app);
     const first = await app.inject({ method: "GET", url: "/api/identity" });

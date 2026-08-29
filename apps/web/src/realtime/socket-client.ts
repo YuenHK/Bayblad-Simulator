@@ -60,6 +60,8 @@ export class ClientClockEstimator {
 }
 
 export type RealtimeState = Readonly<{
+  identityStatus: "idle" | "loading" | "ready" | "unavailable";
+  identity: Readonly<{ id: string; status: "iclass" | "cookie" | "guest"; displayName: string }> | null;
   status: "offline" | "connecting" | "online" | "reconnecting";
   sessionStatus: "new" | "resumed" | "replaced" | null;
   lobbyRooms: readonly LobbyRoom[];
@@ -84,14 +86,14 @@ export type RealtimeState = Readonly<{
   pendingActions: number;
 }>;
 
-const SESSION_KEY = "steam-top.session-token";
 const DESIGN_CACHE_KEY = "steam-top.design-cache";
 const CLOCK_PING_TTL_MS = 30_000;
 const MAX_PENDING_PINGS = 8;
 const designCacheSchema = z.object({
-  sessionToken: z.string().min(32).max(256), fingerprint: z.string(), designId: z.uuid(),
+  fingerprint: z.string(), designId: z.uuid(),
 }).strict();
 const initialState: RealtimeState = {
+  identityStatus: "idle", identity: null,
   status: "offline", sessionStatus: null, lobbyRooms: [], room: null,
   battleStarted: null, schedule: null, privateGrade: null, spectatorGrades: null,
   frames: [], roundFinished: null, matchFinished: null, cancelledReason: null,
@@ -148,6 +150,7 @@ export class RealtimeClient {
   readonly #apiBase: string;
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
+  readonly #bootstrapIdentity: boolean;
   readonly #clock = new ClientClockEstimator();
   readonly #listeners = new Set<() => void>();
   readonly #bound = new Map<string, (...args: unknown[]) => void>();
@@ -166,15 +169,17 @@ export class RealtimeClient {
   #pendingDepartureEventId: string | null = null;
   #lastDepartureEventId: string | null = null;
   #lastErrorEventId: string | null = null;
+  #startGeneration = 0;
 
-  constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number }>) {
+  constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number; bootstrapIdentity?: boolean }>) {
     this.#transport = options.transport;
     this.#storage = options.storage ?? defaultStorage();
     this.#apiBase = (options.apiBase ?? "").replace(/\/$/u, "");
     this.#fetch = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? Date.now;
-    this.#token = this.#storage.get(SESSION_KEY);
-    this.#transport.auth.sessionToken = this.#token ?? undefined;
+    this.#bootstrapIdentity = options.bootstrapIdentity ?? false;
+    this.#token = null;
+    delete this.#transport.auth.displayName;
   }
 
   getState = (): RealtimeState => this.#state;
@@ -193,11 +198,37 @@ export class RealtimeClient {
     this.#listen("connect_error", () => this.#set({ status: "reconnecting", lastError: "連線失敗，正在重試。" }));
     this.#listen("server.event", (raw) => this.#receive(raw));
     this.#set({ status: "connecting" });
-    this.#transport.connect();
+    const generation = ++this.#startGeneration;
+    if (this.#bootstrapIdentity) void this.#bootstrap(generation);
+    else this.#transport.connect();
+  }
+
+  retryIdentity(): void {
+    if (!this.#started || !this.#bootstrapIdentity) return;
+    const generation = ++this.#startGeneration;
+    this.#set({ identityStatus: "loading", lastError: null, status: "connecting" });
+    void this.#bootstrap(generation);
+  }
+
+  async #bootstrap(generation: number): Promise<void> {
+    this.#set({ identityStatus: "loading" });
+    try {
+      const response = await this.#fetch(`${this.#apiBase}/api/identity`, { method: "GET", credentials: "include", cache: "no-store", headers: { accept: "application/json" } });
+      if (!response.ok) throw new Error("IDENTITY_BOOTSTRAP_FAILED");
+      const schema = z.strictObject({ id: z.uuid(), status: z.enum(["iclass", "cookie", "guest"]), displayName: z.string().min(1).max(80) });
+      const identity = schema.parse(await response.json());
+      if (!this.#started || generation !== this.#startGeneration) return;
+      this.#set({ identityStatus: "ready", identity });
+      this.#transport.connect();
+    } catch {
+      if (!this.#started || generation !== this.#startGeneration) return;
+      this.#set({ identityStatus: "unavailable", identity: null, status: "offline", lastError: "暫時未能辨識裝置，請重試；iClass 不可用時仍會以訪客身份進入。" });
+    }
   }
 
   stop(): void {
     if (!this.#started) return;
+    this.#startGeneration += 1;
     for (const [event, listener] of this.#bound) this.#transport.off(event, listener);
     this.#bound.clear();
     this.#transport.disconnect();
@@ -259,7 +290,7 @@ export class RealtimeClient {
       const parsed = designUploadResponseSchema.safeParse(raw);
       if (!parsed.success) throw new Error("伺服器回應格式錯誤，請重試。");
       if (this.#token !== requestToken) throw new DOMException("連線已更新", "AbortError");
-      this.#storage.set(DESIGN_CACHE_KEY, JSON.stringify({ sessionToken: requestToken, fingerprint: JSON.stringify(design), designId: parsed.data.designId }));
+      this.#storage.set(DESIGN_CACHE_KEY, JSON.stringify({ fingerprint: JSON.stringify(design), designId: parsed.data.designId }));
       return parsed.data.designId;
     } catch (error) {
       if (timedOut) throw new Error("上載設計逾時，請重試。");
@@ -290,7 +321,7 @@ export class RealtimeClient {
     if (this.#seenServerEvents.size > 1_024) this.#seenServerEvents.delete(this.#seenServerEvents.values().next().value!);
     switch (event.type) {
       case "protocol.welcome":
-        if (event.sessionToken) { this.#token = event.sessionToken; this.#storage.set(SESSION_KEY, event.sessionToken); this.#transport.auth.sessionToken = event.sessionToken; }
+        if (event.sessionToken) { this.#token = event.sessionToken; this.#transport.auth.sessionToken = event.sessionToken; }
         if ((event.sessionStatus ?? "new") !== "resumed") { this.#storage.remove(DESIGN_CACHE_KEY); this.#clearAllServerState(); }
         this.#set({ status: "online", sessionStatus: event.sessionStatus ?? "new", lastError: null });
         this.#beginClockSync();
@@ -468,9 +499,9 @@ export class RealtimeClient {
         if (parsed.success) cached = parsed.data; else this.#storage.remove(DESIGN_CACHE_KEY);
       } catch { this.#storage.remove(DESIGN_CACHE_KEY); }
     }
-    let designId = cached?.sessionToken === sessionToken && cached.fingerprint === fingerprint ? cached.designId : await this.uploadDesign(design, signal);
+    let designId = cached?.fingerprint === fingerprint ? cached.designId : await this.uploadDesign(design, signal);
     const ensureCurrentSession = () => { if (signal?.aborted || this.#token !== sessionToken) throw new DOMException("操作已取消", "AbortError"); };
-    const save = () => this.#storage.set(DESIGN_CACHE_KEY, JSON.stringify({ sessionToken, fingerprint, designId }));
+    const save = () => this.#storage.set(DESIGN_CACHE_KEY, JSON.stringify({ fingerprint, designId }));
     ensureCurrentSession();
     save();
     try { await this.commandAsync({ type: "player.ready", roomId, designId }); }
@@ -487,11 +518,9 @@ export class RealtimeClient {
 
 export function createRealtimeClient(apiBase = import.meta.env.VITE_API_BASE_URL ?? window.location.origin): RealtimeClient {
   const storage = defaultStorage();
-  const token = storage.get(SESSION_KEY);
-  const guest = `訪客-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
   const socket: Socket = io(apiBase, {
     autoConnect: false, reconnection: true, reconnectionDelay: 500, reconnectionDelayMax: 8_000,
-    randomizationFactor: 0.25, auth: { displayName: guest, sessionToken: token ?? undefined },
+    randomizationFactor: 0.25, auth: {},
   });
-  return new RealtimeClient({ transport: socket as unknown as RealtimeTransport, apiBase, storage });
+  return new RealtimeClient({ transport: socket as unknown as RealtimeTransport, apiBase, storage, bootstrapIdentity: true });
 }
