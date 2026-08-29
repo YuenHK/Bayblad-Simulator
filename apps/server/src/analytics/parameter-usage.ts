@@ -20,11 +20,17 @@ export async function parameterUsage(db: PostgresJsDatabase<typeof schema>, inpu
   if (filters.performanceModelVersion) conditions.push(sql`d.performance_model_version=${filters.performanceModelVersion}`);
   if (filters.className) conditions.push(sql`s.class_name_snapshot=${filters.className}`);
   if (filters.identityStatus) conditions.push(sql`s.identity_status_snapshot=${filters.identityStatus}`);
-  if(filters.physicsModelVersion)conditions.push(sql`exists(select 1 from matches m where m.status='completed' and (m.player1_design_id=d.id or m.player2_design_id=d.id) and m.completed_at>=${bounds.from}::timestamptz and m.completed_at<${bounds.toExclusive}::timestamptz and m.physics_model_version=${filters.physicsModelVersion})`);
   const scope=filters.physicsModelVersion?"completedMatchDesigns":"allEligibleDesigns";
+  const matchDesigns=filters.physicsModelVersion?sql`filtered_matches as materialized (
+      select player1_design_id,player2_design_id from matches where status='completed' and completed_at>=${bounds.from}::timestamptz and completed_at<${bounds.toExclusive}::timestamptz and physics_model_version=${filters.physicsModelVersion}
+        ${filters.performanceModelVersion?sql`and performance_model_version=${filters.performanceModelVersion}`:sql``}
+    ), eligible_design_ids as materialized (
+      select player1_design_id id from filtered_matches union select player2_design_id from filtered_matches
+    ),`:sql``;
+  const eligibleJoin=filters.physicsModelVersion?sql`join eligible_design_ids e on e.id=d.id`:sql``;
   const rows = await db.execute(sql`
-    with filtered_designs as materialized (
-      select d.* from designs d left join design_event_snapshots s on s.design_id=d.id where ${sql.join(conditions, sql` and `)}
+    with ${matchDesigns} filtered_designs as materialized (
+      select d.* from designs d ${eligibleJoin} left join design_event_snapshots s on s.design_id=d.id where ${sql.join(conditions, sql` and `)}
     ), layer_orders as (
       select d.id,d.performance_model_version,string_agg(l.shape::text,'>' order by l.layer_order) value
       from filtered_designs d join design_layers l on l.design_id=d.id group by d.id,d.performance_model_version

@@ -18,9 +18,9 @@ export function registerAnalyticsRoutes(app: FastifyInstance, auth: AdminAuthSer
     const current=await authenticateAdminRead(request,reply,auth); if(!current)return;
     const raw=request.query as Record<string,unknown>; const {pageSize:rawSize,cursor,...filterValues}=raw;
     const parsed=analyticsFiltersSchema.safeParse(filterValues); const pageSize=rawSize===undefined?50:typeof rawSize==="string"&&/^\d{1,3}$/u.test(rawSize)?Number(rawSize):NaN;
-    let offset=0; try { if(cursor!==undefined){ if(typeof cursor!=="string"||!/^[A-Za-z0-9_-]{1,32}$/u.test(cursor))throw new Error(); const value=Buffer.from(cursor,"base64url").toString("utf8"); if(!/^\d{1,7}$/u.test(value))throw new Error(); offset=Number(value); } } catch { return reply.code(400).send({error:"INVALID_ANALYTICS_CURSOR"}); }
+    if(cursor!==undefined&&(typeof cursor!=="string"||cursor.length>1024))return reply.code(400).send({error:"INVALID_ANALYTICS_CURSOR"});
     if(!parsed.success||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100)return reply.code(400).send({error:"INVALID_ANALYTICS_FILTERS"});
-    try { const page=await analytics.parameterPage(parsed.data,pageSize,offset); reply.header("Cache-Control","private, no-store"); return {rows:page.rows,total:page.total,hasMore:page.hasMore,snapshotCursor:page.snapshotCursor,nextCursor:page.nextOffset===null?null:Buffer.from(String(page.nextOffset)).toString("base64url")}; }
-    catch(error){auth.report("admin.analytics.parameters",error,request.id);return reply.code(503).send({error:"ANALYTICS_UNAVAILABLE"});}
+    try { const page=await analytics.parameterPage(parsed.data,pageSize,typeof cursor==="string"?cursor:undefined); reply.header("Cache-Control","private, no-store"); return page; }
+    catch(error){if(error instanceof RangeError)return reply.code(400).send({error:error.message});auth.report("admin.analytics.parameters",error,request.id);return reply.code(503).send({error:"ANALYTICS_UNAVAILABLE"});}
   });
 }

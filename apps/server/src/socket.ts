@@ -47,11 +47,16 @@ type Session = {
   commandsStopped: boolean;
   disconnectedAt: number | null;
   lastActiveAt: number;
+  lastActivityRecordedAt: number;
   clockChallenges: Map<string, Readonly<{ serverSentAtMs: number; expiresAtMs: number }>>;
   clockPingIds: Map<string, number>;
   observedRtts: number[];
   pendingDepartures: Map<string, Readonly<{ event: Extract<ServerEvent, { type: "room.departed" }>; expiresAtMs: number }>>;
 };
+const hkActivityDateFormatter=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Hong_Kong",year:"numeric",month:"2-digit",day:"2-digit"});
+export function shouldRecordRealtimeActivity(lastRecordedAt:number,receivedAt:number):boolean {
+  return hkActivityDateFormatter.format(new Date(receivedAt))!==hkActivityDateFormatter.format(new Date(lastRecordedAt))||receivedAt-lastRecordedAt>=300_000;
+}
 
 export type FrameScheduler = (
   delayMs: number,
@@ -663,6 +668,7 @@ export class RealtimeGateway {
       commandsStopped: false,
       disconnectedAt: null,
       lastActiveAt: now,
+      lastActivityRecordedAt: now,
       clockChallenges: new Map(),
       clockPingIds: new Map(),
       observedRtts: [],
@@ -905,9 +911,12 @@ export class RealtimeGateway {
       } else { if (!this.#roomProjections.usesDurableStore) await this.#projectRoomClosure(event.roomId, closingRevision, this.#now()); this.#cleanupRoom(event.roomId); }
       this.#broadcastLobby();
     } else if (event.type === "clock.ping") {
-      void this.#recordIdentityActivity?.(socket.request).catch(this.#logError);
       this.#pruneSessionOutcomes(session, receivedAtMs);
       if (session.clockPingIds.has(event.pingId)) throw Object.assign(new Error("CLOCK_PING_REPLAY"), { code: "CLOCK_PING_REPLAY" });
+      if (shouldRecordRealtimeActivity(session.lastActivityRecordedAt,receivedAtMs)) {
+        session.lastActivityRecordedAt=receivedAtMs;
+        void this.#recordIdentityActivity?.(socket.request).catch(this.#logError);
+      }
       const serverSentAtMs = Math.max(receivedAtMs, this.#now());
       session.clockPingIds.set(event.pingId, serverSentAtMs + CLOCK_CHALLENGE_TTL_MS);
       session.clockChallenges.set(event.pingId, { serverSentAtMs, expiresAtMs: serverSentAtMs + CLOCK_CHALLENGE_TTL_MS });

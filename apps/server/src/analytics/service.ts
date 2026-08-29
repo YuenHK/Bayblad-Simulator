@@ -1,15 +1,15 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseClient } from "@steam-top/db";
 import type { AnalyticsFilters, UsageDay, UsagePeriod } from "./usage";
 
 export const FILTER_APPLICABILITY = Object.freeze({
-  activeDevices: Object.freeze(["date", "className", "identityStatus"]),
-  designsAndShapes: Object.freeze(["date", "className", "identityStatus", "performanceModelVersion"]),
-  rooms: Object.freeze(["date", "className", "identityStatus"]),
-  completedMatches: Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"]),
-  parameterUsage: Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"]),
-  parameterPerformance: Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"]),
+  activeDevices: Object.freeze({population:"unique anonymous devices with meaningful activity per HK civil bucket",denominator:"none",filters:Object.freeze(["date", "className", "identityStatus"])}),
+  designsAndShapes: Object.freeze({population:"eligible immutable design snapshots created in range",denominator:"layers within each shape dimension",filters:Object.freeze(["date", "className", "identityStatus", "performanceModelVersion"])}),
+  rooms: Object.freeze({population:"rooms created in range",denominator:"none",filters:Object.freeze(["date", "className", "identityStatus"])}),
+  completedMatches: Object.freeze({population:"authoritative completed matches in range",denominator:"none",filters:Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"])}),
+  parameterUsage: Object.freeze({population:"all eligible designs; when physicsModelVersion is set, distinct designs used in matching completed matches",denominator:"observations within dimension and performance model",filters:Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"])}),
+  parameterPerformance: Object.freeze({population:"one observation per match, participant, parameter group and distinct launch grade",denominator:"at least 10 distinct authoritative completed matches",filters:Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"])}),
 });
 type JsonRow = Readonly<Record<string, unknown>>;
 export type AnalyticsSummary = Readonly<{ filters: AnalyticsFilters; filterApplicability: typeof FILTER_APPLICABILITY; usage: readonly UsageDay[]; usagePeriods: Readonly<{ daily: readonly UsageDay[]; weekly: readonly UsageDay[]; monthly: readonly UsageDay[] }>; parameterUsage: readonly JsonRow[]; parameters: readonly JsonRow[]; rankings:Readonly<{top:readonly JsonRow[];bottom:readonly JsonRow[];total:number;hasMore:boolean;snapshotCursor:string}>; refreshedAt: string }>;
@@ -56,16 +56,21 @@ type ParameterQuery = (filters: AnalyticsFilters, page?: Readonly<{ limit?: numb
 export class AnalyticsService {
   #refresh: Promise<AnalyticsSummary> | null = null;
   readonly #inflight = new Map<string, Promise<AnalyticsSummary>>();
-  constructor(private readonly cache: AnalyticsCache, private readonly usageQuery: UsageQuery, private readonly parameterQuery: ParameterQuery, private readonly parameterUsageQuery: ParameterQuery = async () => [], private readonly now = () => new Date()) {}
+  readonly #pageSnapshots=new Map<string,Readonly<{filterHash:string;asOf:number;rows:readonly unknown[]}>>();
+  readonly #cursorSecret:Buffer;
+  constructor(private readonly cache: AnalyticsCache, private readonly usageQuery: UsageQuery, private readonly parameterQuery: ParameterQuery, private readonly parameterUsageQuery: ParameterQuery = async () => [], private readonly now = () => new Date(),cursorSecret:Buffer=randomBytes(32),private readonly consistent=<T>(operation:()=>Promise<T>)=>operation()) { if(cursorSecret.length<32)throw new TypeError("analytics cursor secret too short");this.#cursorSecret=cursorSecret; }
   async query(filters: AnalyticsFilters, maxAgeMs = 5 * 60_000): Promise<AnalyticsSummary> {
     const hash = canonicalFilterHash(filters);
     const inflightKey=`${hash}:${maxAgeMs}`; const existing = this.#inflight.get(inflightKey); if (existing) return existing;
     const compute = async () => {
       const now = this.now(); const cached = await this.cache.read(hash, new Date(now.getTime() - maxAgeMs)); if (cached) return cached;
-      const [daily, weekly, monthly, parameters, parameterUsage,top,bottom] = await Promise.all([this.usageQuery(filters, "day"), this.usageQuery(filters, "week"), this.usageQuery(filters, "month"), this.parameterQuery(filters), this.parameterUsageQuery(filters),this.parameterQuery(filters,{limit:10,order:"high"}),this.parameterQuery(filters,{limit:10,order:"low"})]);
+      const [daily, weekly, monthly, parameterRows, parameterUsage] = await this.consistent(()=>Promise.all([this.usageQuery(filters, "day"), this.usageQuery(filters, "week"), this.usageQuery(filters, "month"), this.parameterQuery(filters,{limit:5_000,order:"stable"}), this.parameterUsageQuery(filters)]));
       const usagePeriods = Object.freeze({ daily, weekly, monthly });
-      const total=Number((top[0] as {totalGroups?:unknown}|undefined)?.totalGroups??0); const rankings=Object.freeze({top,bottom,total,hasMore:total>10,snapshotCursor:Buffer.from(`${hash}:${now.toISOString()}`).toString("base64url")});
-      const summary = Object.freeze({ filters, filterApplicability: FILTER_APPLICABILITY, usage: daily, usagePeriods, parameters:parameters as readonly JsonRow[], parameterUsage:parameterUsage as readonly JsonRow[],rankings:rankings as AnalyticsSummary["rankings"], refreshedAt: now.toISOString() }); await this.cache.write(hash, summary); return summary;
+      const parameters=parameterRows as readonly JsonRow[]; const total=Number((parameters[0] as {totalGroups?:unknown}|undefined)?.totalGroups??parameters.length);
+      const tie=(row:JsonRow)=>JSON.stringify([row.performanceModelVersion,row.physicsModelVersion,row.dimension,row.value,row.launchGrade,row.opponentStrengthBand]);
+      const ranked=[...parameters].sort((a,b)=>Number(b.outcomeResidual)-Number(a.outcomeResidual)||Number(b.averageScore)-Number(a.averageScore)||Number(b.winRate)-Number(a.winRate)||tie(a).localeCompare(tie(b)));
+      const rankings=Object.freeze({top:Object.freeze(ranked.slice(0,10)),bottom:Object.freeze(ranked.slice(-10).reverse()),total,hasMore:total>parameters.length,snapshotCursor:Buffer.from(`${hash}:${now.toISOString()}`).toString("base64url")});
+      const summary = Object.freeze({ filters, filterApplicability: FILTER_APPLICABILITY, usage: daily, usagePeriods, parameters, parameterUsage:parameterUsage as readonly JsonRow[],rankings:rankings as AnalyticsSummary["rankings"], refreshedAt: now.toISOString() }); await this.cache.write(hash, summary); return summary;
     };
     const operation = (this.cache.exclusive ? this.cache.exclusive(hash, compute) : compute()).finally(() => { this.#inflight.delete(inflightKey); });
     this.#inflight.set(inflightKey, operation); return operation;
@@ -78,10 +83,16 @@ export class AnalyticsService {
     this.#refresh = this.query({ from, to: local }, 0).finally(() => { this.#refresh = null; });
     return this.#refresh;
   }
-  async parameterPage(filters: AnalyticsFilters, pageSize: number, offset: number) {
-    if (!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100||!Number.isSafeInteger(offset)||offset<0||offset>1_000_000) throw new RangeError("INVALID_ANALYTICS_PAGE");
-    const rows=await this.parameterQuery(filters,{limit:pageSize+1,offset}); const hasMore=rows.length>pageSize;
-    const total=Number((rows[0] as {totalGroups?:unknown}|undefined)?.totalGroups??offset+Math.min(rows.length,pageSize));
-    return Object.freeze({ rows:Object.freeze(rows.slice(0,pageSize)), nextOffset:hasMore?offset+pageSize:null, total, hasMore, snapshotCursor:canonicalFilterHash(filters) });
+  #signCursor(payload:string){const body=Buffer.from(payload).toString("base64url");return `${body}.${createHmac("sha256",this.#cursorSecret).update(body).digest("base64url")}`;}
+  #readCursor(cursor:string){const [body,signature,...rest]=cursor.split(".");if(!body||!signature||rest.length)throw new RangeError("INVALID_ANALYTICS_CURSOR");const expected=createHmac("sha256",this.#cursorSecret).update(body).digest();const actual=Buffer.from(signature,"base64url");if(actual.length!==expected.length||!timingSafeEqual(actual,expected))throw new RangeError("INVALID_ANALYTICS_CURSOR");const value=JSON.parse(Buffer.from(body,"base64url").toString("utf8")) as {snapshotId:string;offset:number;filterHash:string};if(!Number.isSafeInteger(value.offset)||value.offset<0||typeof value.snapshotId!=="string"||typeof value.filterHash!=="string")throw new RangeError("INVALID_ANALYTICS_CURSOR");return value;}
+  async parameterPage(filters: AnalyticsFilters, pageSize: number, cursor?: string) {
+    if (!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100) throw new RangeError("INVALID_ANALYTICS_PAGE");
+    const filterHash=canonicalFilterHash(filters), now=this.now().getTime(); for(const [id,snapshot] of this.#pageSnapshots)if(now-snapshot.asOf>300_000)this.#pageSnapshots.delete(id);
+    let snapshotId:string,offset=0,snapshot:Readonly<{filterHash:string;asOf:number;rows:readonly unknown[]}>|undefined;
+    if(cursor){const decoded=this.#readCursor(cursor);if(decoded.filterHash!==filterHash)throw new RangeError("INVALID_ANALYTICS_CURSOR");snapshotId=decoded.snapshotId;offset=decoded.offset;snapshot=this.#pageSnapshots.get(snapshotId);if(!snapshot)throw new RangeError("ANALYTICS_CURSOR_EXPIRED");}
+    else {snapshotId=randomBytes(16).toString("hex");const rows=await this.parameterQuery(filters,{limit:5_000,order:"stable"});snapshot=Object.freeze({filterHash,asOf:now,rows:Object.freeze([...rows])});this.#pageSnapshots.set(snapshotId,snapshot);while(this.#pageSnapshots.size>100)this.#pageSnapshots.delete(this.#pageSnapshots.keys().next().value!);}
+    const rows=snapshot.rows.slice(offset,offset+pageSize),nextOffset=offset+rows.length,hasMore=nextOffset<snapshot.rows.length;
+    const nextCursor=hasMore?this.#signCursor(JSON.stringify({snapshotId,offset:nextOffset,filterHash})):null;
+    return Object.freeze({rows:Object.freeze(rows),nextCursor,total:snapshot.rows.length,hasMore,snapshotCursor:this.#signCursor(JSON.stringify({snapshotId,offset:0,filterHash}))});
   }
 }
