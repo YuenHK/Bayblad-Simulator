@@ -5,7 +5,7 @@ die(){ echo "deployment authorization refused: $1" >&2;exit 1;}
 artifact=$1;pending=$2;repository=$3;deployment_id=$4;token_file=$5;state_dir=$6
 purpose=${DEPLOYMENT_AUTHORIZATION_PURPOSE:-};case $purpose in production) expected_environment=production;;release-integration) expected_environment=release-host-integration;;*) die "authorization purpose";;esac
 script_path=$(realpath "$0");script_dir=$(CDPATH= cd -- "$(dirname -- "$script_path")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/.."&&pwd -P);source "$root/infra/backup/host-trust-guard.sh"
-[[ $script_path == /opt/steam-top/scripts/prepare-deployment-authorization.sh ]]||die "installed canonical path required"
+[[ $script_path == /opt/steam-top/scripts/prepare-deployment-authorization.sh || $script_path =~ ^/opt/steam-top/releases/[a-f0-9]{64}/scripts/prepare-deployment-authorization\.sh$ ]]||die "installed canonical path required"
 backup_trusted_root_deployment "$root" "$script_dir" "$root/infra/backup"||die "installed deployment trust"
 backup_private_file "$token_file"||die "token trust"
 [[ $artifact == /* && -d $artifact && ! -L $artifact && $pending == /* && -f $pending && ! -L $pending ]]||die "unsafe inputs"

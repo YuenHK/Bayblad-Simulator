@@ -23,8 +23,7 @@ jobs:
           node scripts/validate-rollback-inputs.mjs
           node scripts/verify-rollback-go-live.mjs "$GITHUB_REPOSITORY" production-rollback-approval
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN" > previous-run.json
-          tag=$(node scripts/verify-release-run.mjs previous-run.json "$PREVIOUS_COMMIT");object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.type+"|"+.object.sha');for _ in 1 2 3 4;do type=${object%%|*};sha=${object#*|};[[ $type == tag ]]||break;object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq '.object.type+"|"+.object.sha');done;[[ $object == "commit|$PREVIOUS_COMMIT" ]]
-          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.ref + " " + .object.sha' | grep -Fx "refs/tags/$tag $PREVIOUS_COMMIT"
+          tag=$(node scripts/verify-release-run.mjs previous-run.json "$PREVIOUS_COMMIT");scripts/fetch-github-tag-chain.sh "$GITHUB_REPOSITORY" "$tag" previous-tag-chain.ndjson;node scripts/verify-github-tag-chain.mjs previous-tag-chain.ndjson "$PREVIOUS_COMMIT"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN/artifacts" > previous-artifacts.json
           node scripts/verify-run-artifact.mjs previous-artifacts.json "$PREVIOUS_ARTIFACT"
           gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" > deployment.json
@@ -35,7 +34,7 @@ jobs:
           current_run=$(node -p 'require("./current-state.json").runId'); current_commit=$(node -p 'require("./current-state.json").commit'); current_artifact=$(node -p 'require("./current-state.json").artifact')
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$current_run" > current-run.json
           current_tag=$(node scripts/verify-deployment-source-run.mjs current-run.json current-state.json)
-          if [[ -n "$current_tag" ]];then gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$current_tag" --jq '.ref + " " + .object.sha' | grep -Fx "refs/tags/$current_tag $current_commit";fi
+          if [[ -n "$current_tag" ]];then scripts/fetch-github-tag-chain.sh "$GITHUB_REPOSITORY" "$current_tag" current-tag-chain.ndjson;node scripts/verify-github-tag-chain.mjs current-tag-chain.ndjson "$current_commit";fi
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$current_run/artifacts" > current-artifacts.json
           node scripts/verify-run-artifact.mjs current-artifacts.json "$current_artifact"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -54,6 +53,7 @@ jobs:
           mkdir release
           node scripts/create-authorized-rollback.mjs sources/previous/release-manifest.json sources/current/release-manifest.json "$PREVIOUS_COMMIT" "$CURRENT_COMMIT" "$GITHUB_REPOSITORY" current-state.json release/release-manifest.json
           cp sources/current/runtime-files.sha256 release/runtime-files.sha256
+          cp -a sources/current/runtime release/runtime
           gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0].id' | grep -Fx "$(node -p 'require("./current-state.json").deploymentId')"
           ./scripts/portable-sha256.sh manifest release release-manifest.json runtime-files.sha256 > release/SHA256SUMS
           ./scripts/portable-sha256.sh digest release/release-manifest.json > release/EXTERNAL-MANIFEST-SHA256

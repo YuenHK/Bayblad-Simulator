@@ -1,0 +1,9 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+const read=(p:string)=>readFileSync(p,"utf8");
+describe("independently installed production bootstrap",()=>{
+  it("is a small fixed root with externally pinned source trust",()=>{const install=read("infra/bootstrap/install-bootstrap.sh"),verify=read("infra/bootstrap/verify-bootstrap.sh");expect(install).toContain("EXPECTED_BOOTSTRAP_ARCHIVE_SHA256");expect(install).toContain("BOOTSTRAP_ALLOWED_SIGNERS_FILE");expect(install).toContain("/opt/steam-top-bootstrap");expect(verify).toContain("/etc/steam-top-bootstrap/trust.json");expect(verify).toContain("bootstrapSha256");expect(verify).toContain("root-owned exact mode");});
+  it("verifies protected workflow identity before installing a versioned runtime",()=>{const prepare=read("infra/bootstrap/prepare-release.sh"),identity=read("infra/bootstrap/verify-attestation-identity.mjs");expect(prepare).toContain("gh attestation verify");expect(prepare).toContain("--format json");expect(prepare).toContain("APPROVED-RELEASE.json");expect(prepare).toContain("runtime-files.sha256");expect(prepare).toContain('/opt/steam-top/releases/');expect(prepare).toContain("current.next");expect(identity).toContain("workflowRef");expect(identity).toContain("workflowSha");});
+  it("production sudo invokes only the preinstalled bootstrap",()=>{const workflow=read(".github/workflows/record-deployment.yml"),docs=read("docs/operations/release.md");expect(workflow).toContain("/opt/steam-top-bootstrap/deploy-release.sh");expect(workflow).not.toContain("sudo DEPLOYMENT_AUTHORIZATION_PURPOSE=production /opt/steam-top/scripts/");expect(docs).toContain("/opt/steam-top-bootstrap");expect(docs).toContain("校方主機管理員");});
+  it("stages the exact runtime files in the attested release artifact",()=>{const workflow=read(".github/workflows/ci.yml");expect(workflow).toContain("stage-runtime-files.mjs");expect(workflow).toContain("release/runtime");});
+});

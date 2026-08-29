@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $(id -u) -eq 0 && $# -eq 8 ]]||{ echo "bootstrap deploy requires root and eight bound arguments" >&2;exit 1;}
+/opt/steam-top-bootstrap/verify-bootstrap.sh;artifact=$1;bundle=$2;pending=$3;manifest=$4;repository=$5;commit=$6;nonce=$7;expected_and_id=$8;expected=${expected_and_id%|*};deployment_id=${expected_and_id##*|};config=/etc/steam-top-bootstrap/trust.json
+mapfile -t paths < <(node - "$config" <<'NODE'
+const x=require(process.argv[2]),paths=["githubTokenFile","authorizationDir","productionEnvFile","hostReceiptSigningKey","adminSmokeSecretFile","hostReceiptOutbox","pgServiceFile","pgPassFile"];for(const k of paths)if(typeof x[k]!=="string"||!x[k].startsWith("/"))process.exit(1);if(!/^[A-Za-z0-9._-]+$/.test(x.pgServiceName))process.exit(1);for(const k of paths)console.log(x[k]);console.log(x.pgServiceName);
+NODE
+)
+/opt/steam-top-bootstrap/prepare-release.sh "$artifact" "$bundle" "$pending" "${paths[0]}" "${paths[1]}"
+runtime_sha=$(node -p 'require(process.argv[1]).runtimeManifestSha256' "$bundle");core="/opt/steam-top/releases/$runtime_sha/scripts/host-deploy-and-receipt.sh"
+exec env HOST_RECEIPT_SIGNING_KEY="${paths[3]}" PRODUCTION_AUTHORIZATION_DIR="${paths[1]}" DEPLOYMENT_AUTHORIZATION_PURPOSE=production ADMIN_SMOKE_SECRET_FILE="${paths[4]}" HOST_RECEIPT_OUTBOX_DIR="${paths[5]}" PGSERVICEFILE="${paths[6]}" PGPASSFILE="${paths[7]}" HOST_RECEIPT_PGSERVICE="${paths[8]}" "$core" "$artifact" "${paths[2]}" "$manifest" "$repository" "$commit" "$nonce" "$expected" "$deployment_id"

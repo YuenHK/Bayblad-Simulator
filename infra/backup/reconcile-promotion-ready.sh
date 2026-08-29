@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $(id -u) -eq 0 && $# -eq 2 && $2 =~ ^[a-f0-9]{64}$ ]]||exit 1;state=$1;nonce=$2;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P)
+[[ $(id -u) -eq 0 && $# -eq 2 && $2 =~ ^[a-f0-9]{64}$ ]]||exit 1;state=$1;nonce=$2;script_path=$(realpath "$0");script_dir=$(CDPATH= cd -- "$(dirname -- "$script_path")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);source "$script_dir/host-trust-guard.sh"
+[[ $script_path =~ ^/opt/steam-top(/releases/[a-f0-9]{64})?/infra/backup/reconcile-promotion-ready\.sh$ && -n ${RUNTIME_INSTALL_MANIFEST_SHA256:-} && -n ${PROMOTE_PGSERVICE:-} && -n ${PGSERVICEFILE:-} && -n ${PGPASSFILE:-} ]]||exit 1;backup_trusted_root_deployment "$root" "$script_dir" "$root/scripts"||exit 1;backup_root_file_mode "$script_path" 555||exit 1;backup_private_file "$PGSERVICEFILE"&&backup_private_file "$PGPASSFILE"||exit 1;backup_reject_libpq_overrides PROMOTE_PGSERVICE||exit 1;"$root/scripts/verify-runtime-install.sh" "$root"||exit 1
 [[ -d $state && ! -L $state && $(realpath "$state") == "$state" ]]||exit 1;read -r owner mode < <(stat -c '%u %a' "$state");[[ $owner == 0 && $mode == 700 ]]||exit 1;ready="$state/promotion-ready";tmp="$state/.promotion-ready.$nonce.$$";trap 'rm -f "$tmp" "$tmp.sha256"' EXIT
 row=$(PGSERVICE="$PROMOTE_PGSERVICE" psql -X -v ON_ERROR_STOP=1 -v nonce="$nonce" -AtF '|' -c "select system_identifier,database_name,app_role,restore_target_id,ledger_rows,nonce from restore_control.promotion_outbox where nonce=:'nonce' and state='committed'");IFS='|' read -r system_id database role target rows bound_nonce <<EOF
 $row

@@ -107,17 +107,21 @@ try {
     const ack = waitWhere(client.socket, "command.ack", (reply) => reply.causedByEventId === request.eventId && reply.commandType === "launch.tap");
     const result = waitWhere(client.socket, "launch.result.private", (reply) => reply.roomId === room.roomId && reply.roundId === event.roundId);
     client.socket.emit("client.event", request);
-    await Promise.all([ack, result]);
+    const [accepted, privateResult] = await Promise.all([ack, result]);
+    if (accepted.roomId && accepted.roomId !== room.roomId || privateResult.matchId && typeof privateResult.matchId !== "string") throw new Error("tap binding invalid");
   };
-  [a, b].forEach((client, index) => client.socket.on("server.event", (event) => {
+  const handlers = [a, b].map((client, index) => (event) => {
     if (event.type === "launch.schedule") { rounds[index].add(event.roundId); submissions.push(tap(client, event)); }
-  }));
-  a.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
-  b.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
+  });
+  [a, b].forEach((client,index)=>client.socket.on("server.event",handlers[index]));
+  const readyA=command("player.ready",{roomId:room.roomId,designId:d1}),readyB=command("player.ready",{roomId:room.roomId,designId:d2});
+  const readyAcknowledge=waitWhere(a.socket,"command.ack",reply=>reply.causedByEventId===readyA.eventId&&reply.commandType==="player.ready"),readyBAcknowledge=waitWhere(b.socket,"command.ack",reply=>reply.causedByEventId===readyB.eventId&&reply.commandType==="player.ready");
+  a.socket.emit("client.event",readyA);b.socket.emit("client.event",readyB);await Promise.all([readyAcknowledge,readyBAcknowledge]);
   const [matchA, matchB] = await Promise.all([finishedA, finishedB]);
-  await Promise.all(submissions);
+  [a,b].forEach((client,index)=>client.socket.off("server.event",handlers[index]));const sealedSubmissions=[...submissions];await Promise.all(sealedSubmissions);
   if (matchA.matchId !== matchB.matchId || matchA.roomId !== room.roomId || matchA.roundWinners.length < 2) throw new Error("match correlation invalid");
-  if (rounds.some((seen) => seen.size !== matchA.roundWinners.length) || [...rounds[0]].some((roundId) => !rounds[1].has(roundId))) throw new Error("per-client rhythm coverage invalid");
+  const expectedRounds=new Set(matchA.roundWinners.map(value=>typeof value==="string"?value:value.roundId));
+  if(expectedRounds.size!==matchA.roundWinners.length||rounds.some(seen=>seen.size!==expectedRounds.size||[...expectedRounds].some(roundId=>!seen.has(roundId)))||sealedSubmissions.length!==expectedRounds.size*2)throw new Error("per-client rhythm coverage invalid");
   if (![d1, d2].every((id) => typeof id === "string" && id.length > 0)) throw new Error("design correlation invalid");
   a.socket.emit("client.event", command("room.close", { roomId: room.roomId }));
 } finally {
