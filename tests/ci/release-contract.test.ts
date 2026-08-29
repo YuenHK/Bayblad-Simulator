@@ -21,6 +21,8 @@ describe("release CI contract", () => {
     expect(workflow).toMatch(/image:\s*postgres@sha256:[a-f0-9]{64}/u);
     expect(databaseWorkflow).toMatch(/image:\s*postgres@sha256:[a-f0-9]{64}/u);
     expect(databaseWorkflow).toContain("persist-credentials: false");
+    expect(workflow.match(/timeout-minutes:/gu)?.length).toBeGreaterThanOrEqual(3);
+    expect(databaseWorkflow).toContain("timeout-minutes:");
     for (const command of ["pnpm lint", "pnpm typecheck", "pnpm test", "pnpm test:e2e", "pnpm --filter @steam-top/db test:postgres", "pnpm --filter @steam-top/server test:postgres"]) {
       expect(workflow).toContain(`run: ${command}`);
     }
@@ -53,6 +55,18 @@ describe("release CI contract", () => {
     expect(workflow).not.toContain("Resolve immutable base-image digests");
     expect(read("scripts/validate-deployment-env.mjs")).toContain("SERVER_IMAGE");
     expect(read("scripts/validate-deployment-env.mjs")).toContain("repository@sha256");
+  });
+
+  it("supports production deployment only through the fail-closed wrapper", () => {
+    const deploy = read("scripts/deploy-production.sh");
+    expect(deploy).toContain("validate-deployment-env.mjs");
+    expect(deploy).toContain("verify-release-manifest.mjs");
+    expect(deploy).toContain("sha256sum -c SHA256SUMS");
+    expect(deploy.indexOf(" config --quiet")).toBeLessThan(deploy.indexOf(" pull"));
+    expect(deploy.indexOf(" pull")).toBeLessThan(deploy.indexOf(" up -d --wait"));
+    expect(read("docs/operations/release.md")).toContain("直接執行 `docker compose` 不受支援");
+    expect(read("scripts/create-application-rollback.mjs")).toContain("database:current.images.database");
+    expect(read("docs/operations/release.md")).toContain("prepare-application-rollback.sh");
   });
 
   it("always tears down the production-like stack", () => {
@@ -91,6 +105,11 @@ describe("rollback deletion monotonicity", () => {
     expect(preflight).toContain("deletion ledger advanced; database rollback forbidden");
     expect(preflight).toContain("deletion_ledger_sha256");
     expect(promotion).toContain("hold-lock");
+    expect(promotion.indexOf("hold-lock")).toBeLessThan(promotion.indexOf("verify-backup-set.sh"));
+    expect(promotion).toContain("signed immutable snapshot verification failed");
+    expect(promotion).toContain("host-trust-guard.sh");
+    expect(read("infra/backup/restore.sh")).toContain("host-trust-guard.sh");
+    expect(read("infra/backup/host-trust-guard.sh")).toContain("PGPASSWORD/PGOPTIONS forbidden");
     expect(promotion).toContain("environment='production',restore_allowed=false");
     expect(release).toContain("禁止資料庫回復");
   });
