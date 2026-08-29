@@ -3,7 +3,16 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseClient } from "@steam-top/db";
 import type { AnalyticsFilters, UsageDay, UsagePeriod } from "./usage";
 
-export type AnalyticsSummary = Readonly<{ filters: AnalyticsFilters; usage: readonly UsageDay[]; usagePeriods: Readonly<{ daily: readonly UsageDay[]; weekly: readonly UsageDay[]; monthly: readonly UsageDay[] }>; parameterUsage: readonly unknown[]; parameters: readonly unknown[]; refreshedAt: string }>;
+export const FILTER_APPLICABILITY = Object.freeze({
+  activeDevices: Object.freeze(["date", "className", "identityStatus"]),
+  designsAndShapes: Object.freeze(["date", "className", "identityStatus", "performanceModelVersion"]),
+  rooms: Object.freeze(["date", "className", "identityStatus"]),
+  completedMatches: Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"]),
+  parameterUsage: Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"]),
+  parameterPerformance: Object.freeze(["date", "className", "identityStatus", "performanceModelVersion", "physicsModelVersion"]),
+});
+type JsonRow = Readonly<Record<string, unknown>>;
+export type AnalyticsSummary = Readonly<{ filters: AnalyticsFilters; filterApplicability: typeof FILTER_APPLICABILITY; usage: readonly UsageDay[]; usagePeriods: Readonly<{ daily: readonly UsageDay[]; weekly: readonly UsageDay[]; monthly: readonly UsageDay[] }>; parameterUsage: readonly JsonRow[]; parameters: readonly JsonRow[]; rankings:Readonly<{top:readonly JsonRow[];bottom:readonly JsonRow[];total:number;hasMore:boolean;snapshotCursor:string}>; refreshedAt: string }>;
 export interface AnalyticsCache {
   read(hash: string, maxAge: Date): Promise<AnalyticsSummary | null>;
   write(hash: string, summary: AnalyticsSummary): Promise<void>;
@@ -20,17 +29,17 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
   constructor(private readonly sql: DatabaseClient["sql"]) {}
   async read(hash: string, maxAge: Date): Promise<AnalyticsSummary | null> {
     const executor = this.#transaction.getStore() ?? this.sql;
-    const rows = await executor<readonly { filters_json: AnalyticsFilters; usage_json: readonly UsageDay[]; usage_periods_json: AnalyticsSummary["usagePeriods"]; parameter_usage_json: readonly unknown[]; parameters_json: readonly unknown[]; refreshed_at: Date }[]>`
-      select filters_json,usage_json,usage_periods_json,parameter_usage_json,parameters_json,refreshed_at from analytics_daily_summaries
+    const rows = await executor<readonly { filters_json: AnalyticsFilters; usage_json: readonly UsageDay[]; usage_periods_json: AnalyticsSummary["usagePeriods"]; parameter_usage_json: readonly unknown[]; parameters_json: readonly unknown[]; rankings_json:AnalyticsSummary["rankings"]; refreshed_at: Date }[]>`
+      select filters_json,usage_json,usage_periods_json,parameter_usage_json,parameters_json,rankings_json,refreshed_at from analytics_daily_summaries
       where filter_hash=${hash} and refreshed_at >= ${maxAge} order by summary_date desc limit 1`;
     const row = rows[0];
-    return row ? Object.freeze({ filters: row.filters_json, usage: row.usage_json, usagePeriods: row.usage_periods_json, parameterUsage: row.parameter_usage_json, parameters: row.parameters_json, refreshedAt: row.refreshed_at.toISOString() }) : null;
+    return row ? Object.freeze({ filters: row.filters_json, filterApplicability: FILTER_APPLICABILITY, usage: row.usage_json, usagePeriods: row.usage_periods_json, parameterUsage: row.parameter_usage_json as readonly JsonRow[], parameters: row.parameters_json as readonly JsonRow[],rankings:row.rankings_json, refreshedAt: row.refreshed_at.toISOString() }) : null;
   }
   async write(hash: string, summary: AnalyticsSummary): Promise<void> {
     const executor = this.#transaction.getStore() ?? this.sql;
-    await executor`insert into analytics_daily_summaries(summary_date,filter_hash,filters_json,usage_json,usage_periods_json,parameter_usage_json,parameters_json,refreshed_at)
-      values ((${summary.refreshedAt}::timestamptz at time zone 'Asia/Hong_Kong')::date,${hash},${executor.json(summary.filters)},${executor.json(summary.usage)},${executor.json(summary.usagePeriods)},${executor.json(summary.parameterUsage as readonly never[])},${executor.json(summary.parameters as readonly never[])},${summary.refreshedAt}::timestamptz)
-      on conflict(summary_date,filter_hash) do update set filters_json=excluded.filters_json,usage_json=excluded.usage_json,usage_periods_json=excluded.usage_periods_json,parameter_usage_json=excluded.parameter_usage_json,parameters_json=excluded.parameters_json,refreshed_at=excluded.refreshed_at
+    await executor`insert into analytics_daily_summaries(summary_date,filter_hash,filters_json,usage_json,usage_periods_json,parameter_usage_json,parameters_json,rankings_json,refreshed_at)
+      values ((${summary.refreshedAt}::timestamptz at time zone 'Asia/Hong_Kong')::date,${hash},${executor.json(summary.filters)},${executor.json(summary.usage)},${executor.json(summary.usagePeriods)},${executor.json(summary.parameterUsage as readonly never[])},${executor.json(summary.parameters as readonly never[])},${executor.json(summary.rankings as never)},${summary.refreshedAt}::timestamptz)
+      on conflict(summary_date,filter_hash) do update set filters_json=excluded.filters_json,usage_json=excluded.usage_json,usage_periods_json=excluded.usage_periods_json,parameter_usage_json=excluded.parameter_usage_json,parameters_json=excluded.parameters_json,rankings_json=excluded.rankings_json,refreshed_at=excluded.refreshed_at
       where excluded.refreshed_at >= analytics_daily_summaries.refreshed_at`;
     await executor`delete from analytics_daily_summaries where refreshed_at < now() - interval '400 days'`;
     await executor`delete from analytics_daily_summaries where (summary_date,filter_hash) in
@@ -42,7 +51,7 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
 }
 
 type UsageQuery = (filters: AnalyticsFilters, period: UsagePeriod) => Promise<readonly UsageDay[]>;
-type ParameterQuery = (filters: AnalyticsFilters, page?: Readonly<{ limit?: number; offset?: number }>) => Promise<readonly unknown[]>;
+type ParameterQuery = (filters: AnalyticsFilters, page?: Readonly<{ limit?: number; offset?: number;order?:"stable"|"high"|"low" }>) => Promise<readonly unknown[]>;
 
 export class AnalyticsService {
   #refresh: Promise<AnalyticsSummary> | null = null;
@@ -50,15 +59,16 @@ export class AnalyticsService {
   constructor(private readonly cache: AnalyticsCache, private readonly usageQuery: UsageQuery, private readonly parameterQuery: ParameterQuery, private readonly parameterUsageQuery: ParameterQuery = async () => [], private readonly now = () => new Date()) {}
   async query(filters: AnalyticsFilters, maxAgeMs = 5 * 60_000): Promise<AnalyticsSummary> {
     const hash = canonicalFilterHash(filters);
-    const existing = this.#inflight.get(hash); if (existing) return existing;
+    const inflightKey=`${hash}:${maxAgeMs}`; const existing = this.#inflight.get(inflightKey); if (existing) return existing;
     const compute = async () => {
       const now = this.now(); const cached = await this.cache.read(hash, new Date(now.getTime() - maxAgeMs)); if (cached) return cached;
-      const [daily, weekly, monthly, parameters, parameterUsage] = await Promise.all([this.usageQuery(filters, "day"), this.usageQuery(filters, "week"), this.usageQuery(filters, "month"), this.parameterQuery(filters), this.parameterUsageQuery(filters)]);
+      const [daily, weekly, monthly, parameters, parameterUsage,top,bottom] = await Promise.all([this.usageQuery(filters, "day"), this.usageQuery(filters, "week"), this.usageQuery(filters, "month"), this.parameterQuery(filters), this.parameterUsageQuery(filters),this.parameterQuery(filters,{limit:10,order:"high"}),this.parameterQuery(filters,{limit:10,order:"low"})]);
       const usagePeriods = Object.freeze({ daily, weekly, monthly });
-      const summary = Object.freeze({ filters, usage: daily, usagePeriods, parameters, parameterUsage, refreshedAt: now.toISOString() }); await this.cache.write(hash, summary); return summary;
+      const total=Number((top[0] as {totalGroups?:unknown}|undefined)?.totalGroups??0); const rankings=Object.freeze({top,bottom,total,hasMore:total>10,snapshotCursor:Buffer.from(`${hash}:${now.toISOString()}`).toString("base64url")});
+      const summary = Object.freeze({ filters, filterApplicability: FILTER_APPLICABILITY, usage: daily, usagePeriods, parameters:parameters as readonly JsonRow[], parameterUsage:parameterUsage as readonly JsonRow[],rankings:rankings as AnalyticsSummary["rankings"], refreshedAt: now.toISOString() }); await this.cache.write(hash, summary); return summary;
     };
-    const operation = (this.cache.exclusive ? this.cache.exclusive(hash, compute) : compute()).finally(() => { this.#inflight.delete(hash); });
-    this.#inflight.set(hash, operation); return operation;
+    const operation = (this.cache.exclusive ? this.cache.exclusive(hash, compute) : compute()).finally(() => { this.#inflight.delete(inflightKey); });
+    this.#inflight.set(inflightKey, operation); return operation;
   }
   refreshDefaultWindow(now = this.now()): Promise<AnalyticsSummary> {
     if (this.#refresh) return this.#refresh;
@@ -71,6 +81,7 @@ export class AnalyticsService {
   async parameterPage(filters: AnalyticsFilters, pageSize: number, offset: number) {
     if (!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100||!Number.isSafeInteger(offset)||offset<0||offset>1_000_000) throw new RangeError("INVALID_ANALYTICS_PAGE");
     const rows=await this.parameterQuery(filters,{limit:pageSize+1,offset}); const hasMore=rows.length>pageSize;
-    return Object.freeze({ rows:Object.freeze(rows.slice(0,pageSize)), nextOffset:hasMore?offset+pageSize:null });
+    const total=Number((rows[0] as {totalGroups?:unknown}|undefined)?.totalGroups??offset+Math.min(rows.length,pageSize));
+    return Object.freeze({ rows:Object.freeze(rows.slice(0,pageSize)), nextOffset:hasMore?offset+pageSize:null, total, hasMore, snapshotCursor:canonicalFilterHash(filters) });
   }
 }

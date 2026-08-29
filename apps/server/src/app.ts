@@ -269,8 +269,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     return undefined;
   };
   const authenticateIdentity = options.identityResolver
-    ? async (request: IncomingMessage) => {
-        const identity = await options.identityResolver!.authenticate(cookieFromRequest(request));
+      ? async (request: IncomingMessage) => {
+        const cookie=cookieFromRequest(request); const identity = await options.identityResolver!.authenticate(cookie);
+        if(identity) await options.identityResolver!.recordActivity(cookie);
         return identity ? { identityId: identity.id, displayName: identity.displayName, identitySource: identity.status, ...(identity.deviceName ? { deviceName: identity.deviceName } : {}) } : null;
       }
     : options.testIdentityResolver ?? (process.env.NODE_ENV === "test"
@@ -330,6 +331,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     clientKeyResolver: safeClientKey,
     diagnosticIpResolver: diagnosticIp,
     authenticateIdentity: options.testIdentityResolver ?? authenticateIdentity,
+    ...(options.identityResolver?{recordIdentityActivity:async(request:IncomingMessage)=>{await options.identityResolver!.recordActivity(cookieFromRequest(request));}}:{}),
     maxRooms: config.maxRooms,
     maxOwnedRoomsPerSession: config.maxOwnedRoomsPerSession,
     maxMatchAttempts: config.maxMatchAttempts,

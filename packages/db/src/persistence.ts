@@ -2,6 +2,8 @@ import {
   designSchema,
   predictDesignPerformance,
   validateDesign,
+  makeMassLayerVertices,
+  polygonArea,
 } from "@steam-top/domain";
 import { launchGradeSchema, matchRoundWinnerSchema } from "@steam-top/protocol";
 import { z } from "zod";
@@ -73,6 +75,7 @@ export function buildDesignSnapshotRows(
     shape: layer.shape,
     points: layer.points,
     diameterMm: layer.diameterMm,
+    actualAreaMm2: Math.abs(polygonArea(makeMassLayerVertices(layer))),
     cornerRoundness: layer.cornerRoundness,
     rotationDeg: layer.rotationDeg,
     color: layer.color,

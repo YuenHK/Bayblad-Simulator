@@ -260,11 +260,12 @@ export const analyticsDailySummaries = pgTable("analytics_daily_summaries", {
   usagePeriodsJson: jsonb("usage_periods_json").$type<Readonly<Record<string, unknown>>>().notNull(),
   parameterUsageJson: jsonb("parameter_usage_json").$type<readonly unknown[]>().notNull(),
   parametersJson: jsonb("parameters_json").$type<readonly unknown[]>().notNull(),
+  rankingsJson: jsonb("rankings_json").$type<Readonly<Record<string, unknown>>>().notNull(),
   refreshedAt: timestamp("refreshed_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.summaryDate, table.filterHash] }), index("analytics_daily_summaries_refreshed_idx").on(table.refreshedAt),
   check("analytics_daily_summaries_hash_format", sql`${table.filterHash} ~ '^[a-f0-9]{64}$'`),
-  check("analytics_daily_summaries_json_shape", sql`jsonb_typeof(${table.filtersJson})='object' and jsonb_typeof(${table.usageJson})='array' and jsonb_typeof(${table.usagePeriodsJson})='object' and jsonb_typeof(${table.parameterUsageJson})='array' and jsonb_typeof(${table.parametersJson})='array'`),
+  check("analytics_daily_summaries_json_shape", sql`jsonb_typeof(${table.filtersJson})='object' and jsonb_typeof(${table.usageJson})='array' and jsonb_typeof(${table.usagePeriodsJson})='object' and jsonb_typeof(${table.parameterUsageJson})='array' and jsonb_typeof(${table.parametersJson})='array' and jsonb_typeof(${table.rankingsJson})='object'`),
 ]);
 
 export const designs = pgTable(
@@ -423,6 +424,7 @@ export const designLayers = pgTable(
       scale: 3,
       mode: "number",
     }).notNull(),
+    actualAreaMm2: numeric("actual_area_mm2", { precision: 12, scale: 4, mode: "number" }).notNull(),
     cornerRoundness: numeric("corner_roundness", {
       precision: 5,
       scale: 4,
@@ -470,6 +472,7 @@ export const designLayers = pgTable(
       "design_layers_diameter_range",
       sql`${table.diameterMm} between 20 and 80`,
     ),
+    check("design_layers_actual_area_positive", sql`${table.actualAreaMm2} > 0`),
     check(
       "design_layers_roundness_range",
       sql`${table.cornerRoundness} between 0 and 1`,
