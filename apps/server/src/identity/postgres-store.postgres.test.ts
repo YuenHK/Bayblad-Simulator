@@ -38,8 +38,10 @@ it.skipIf(!databaseUrl)("atomically consumes a durable Web Clip nonce once under
   const issuedAt = new Date("2026-08-29T00:00:00Z"); const expiresAt = new Date("2026-08-29T00:05:00Z");
   const jtiHash = "a".repeat(64);
   await store.issue({ jtiHash, deviceId: "ipad-atomic", issuedAt, expiresAt });
-  const results = await Promise.all(Array.from({ length: 12 }, () => store.consume(jtiHash, new Date("2026-08-29T00:01:00Z"))));
-  expect(results.filter(Boolean)).toEqual(["ipad-atomic"]);
+  const hashes = Array.from({ length: 12 }, (_, index) => index.toString(16).padStart(64, "b")); const now = new Date("2026-08-29T00:01:00Z");
+  const results = await Promise.all(hashes.map((reservationHash) => store.reserve(jtiHash, reservationHash, now, new Date(now.getTime() + 15_000))));
+  expect(results.filter((result) => result === "acquired")).toHaveLength(1);
+  const winner = hashes[results.indexOf("acquired")]!; expect(await store.commit(jtiHash, winner, now)).toBe("ipad-atomic"); expect(await store.commit(jtiHash, winner, now)).toBe("ipad-atomic");
 });
 
 it.skipIf(!databaseUrl)("allows duplicate guest labels and atomically upgrades concurrent live identity", async () => {

@@ -44,6 +44,17 @@ describe("identity routes", () => {
     expect(await store.findSession(hashIdentityToken(guestCookie.value))).toBeNull();
   });
 
+  it("releases a reservation when identity persistence fails so the same token can retry", async () => {
+    class FailOnceStore extends InMemoryIdentityStore { failed = false; override async upsertLiveSession(input: Parameters<InMemoryIdentityStore["upsertLiveSession"]>[0]) { if (!this.failed) { this.failed = true; throw new Error("database unavailable"); } return super.upsertLiveSession(input); } }
+    const store = new FailOnceStore(); const resolver = new IdentityResolver(store); const guest = await resolver.resolve({});
+    const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(8) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() }); const token = await tokens.issue("ipad-db-retry");
+    const adapter = { resolveDevice: async () => ({ externalDeviceId: "ipad-db-retry", deviceName: "d", studentName: "吳同學", className: "1D", studentNumber: "04" }) };
+    const app = buildApp({ battleEngine, identityResolver: resolver, iClassAdapter: adapter, webClipTokens: tokens, sweepIntervalMs: 0 }); apps.push(app);
+    const failed = await app.inject({ method: "GET", url: `/start?t=${token}`, headers: { cookie: `steam_top_identity=${guest.cookieToken}` } }); expect(failed.statusCode).toBe(303);
+    const retried = await app.inject({ method: "GET", url: `/start?t=${token}`, headers: { cookie: `steam_top_identity=${guest.cookieToken}` } }); const cookie = retried.cookies[0]!;
+    const identity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${cookie.name}=${cookie.value}` } }); expect(identity.json().displayName).toBe("吳同學");
+  });
+
   it("consumes a permanently unknown mapped device while retaining guest access", async () => {
     const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(3) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() });
     const token = await tokens.issue("unknown"); let known = false;
@@ -69,9 +80,9 @@ describe("identity routes", () => {
 
     const raceToken = await tokens.issue("ipad-race");
     const raced = await Promise.all([app.inject({ method: "GET", url: `/start?t=${raceToken}` }), app.inject({ method: "GET", url: `/start?t=${raceToken}` })]);
-    const identities = await Promise.all(raced.map((response) => app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${response.cookies[0]!.name}=${response.cookies[0]!.value}` } })));
-    expect(identities.filter((response) => response.json().displayName === "黃同學")).toHaveLength(1);
-    expect(identities.filter((response) => response.json().status === "guest")).toHaveLength(1);
+    expect(raced.filter((response) => response.cookies.length > 0)).toHaveLength(1);
+    expect(raced.filter((response) => response.headers["x-identity-bootstrap"] === "in-progress")).toHaveLength(1);
+    const winner = raced.find((response) => response.cookies.length > 0)!; const identity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${winner.cookies[0]!.name}=${winner.cookies[0]!.value}` } }); expect(identity.json().displayName).toBe("黃同學");
   });
 
   it("applies start admission limits and trusted IP/user-agent diagnostics to guest fallback", async () => {

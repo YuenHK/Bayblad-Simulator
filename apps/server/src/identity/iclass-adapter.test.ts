@@ -6,6 +6,16 @@ const row = { externalDeviceId: "ipad-001", deviceName: "1A-iPad-01", studentNam
 const secret = new Uint8Array(32).fill(7);
 
 describe("Web Clip token", () => {
+  it("leases reservations, releases failures, permits crash takeover, commits idempotently and prunes", async () => {
+    const store = new InMemoryTokenNonceStore(); let now = 1_000;
+    const service = new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: store, now: () => now });
+    const token = await service.issue("ipad-lease", 10_000); const one = await service.inspect(token); const first = await service.reserveVerified(one, 1_000);
+    const two = await service.inspect(token); await expect(service.reserveVerified(two, 1_000)).rejects.toThrow("DEVICE_TOKEN_IN_PROGRESS");
+    expect(await service.releaseReservation(first)).toBe(true); const afterRelease = await service.reserveVerified(two, 1_000); expect(await service.commitReservation(afterRelease)).toBe("ipad-lease"); expect(await service.commitReservation(afterRelease)).toBe("ipad-lease");
+    const crashToken = await service.issue("ipad-crash", 2_000); const crash = await service.reserveVerified(await service.inspect(crashToken), 1_000); now += 1_001;
+    const takeover = await service.reserveVerified(await service.inspect(crashToken), 1_000); await expect(service.commitReservation(crash)).rejects.toThrow("DEVICE_TOKEN_COMMIT_FAILED"); await expect(service.commitReservation(takeover)).resolves.toBe("ipad-crash");
+    now += 20_000; expect(await service.pruneExpired(10)).toBe(2);
+  });
   it("requires a durable atomic nonce store in production", () => {
     expect(() => new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore(), production: true })).toThrow("WEBCLIP_DURABLE_NONCE_STORE_REQUIRED");
   });
@@ -17,7 +27,7 @@ describe("Web Clip token", () => {
     const results = await Promise.allSettled([service.consume(token), service.consume(token)]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.find((result) => result.status === "fulfilled")).toMatchObject({ value: "ipad-001" });
-    expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: expect.objectContaining({ message: "DEVICE_TOKEN_REPLAYED" }) });
+    expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: expect.objectContaining({ message: "DEVICE_TOKEN_IN_PROGRESS" }) });
   });
 
   it("rejects tampering, expiry, future issue time, wrong audience and oversized tokens", async () => {
@@ -58,13 +68,25 @@ describe("ImportedDeviceMapAdapter", () => {
     const adapter = new ImportedDeviceMapAdapter({ maxBytes: 200 });
     const header = "externalDeviceId,deviceName,studentName,className,studentNumber\n";
     await expect(adapter.replaceFromCsv(`${header}x,d,a,1A,1\nx,d,b,1A,2`)).rejects.toThrow("DUPLICATE_EXTERNAL_DEVICE_ID");
-    await expect(adapter.replaceFromCsv(`${header}x,d,=IMPORTXML(\"x\"),1A,1`)).rejects.toThrow("CSV_FORMULA_FORBIDDEN");
+    await expect(adapter.replaceFromCsv(`${header}x,d,"=IMPORTXML(""x"")",1A,1`)).rejects.toThrow("CSV_FORMULA_FORBIDDEN");
     await expect(adapter.replaceFromCsv(`${header}x,d\u0000,a,1A,1`)).rejects.toThrow();
     await expect(adapter.replaceFromCsv("x".repeat(201))).rejects.toThrow("DEVICE_MAP_TOO_LARGE");
+    await expect(adapter.replaceFromCsv(`${header}x,"closed"junk,a,1A,1`)).rejects.toThrow("INVALID_DEVICE_MAP_CSV");
+    await expect(adapter.replaceFromCsv(`${header}x,raw"quote,a,1A,1`)).rejects.toThrow("INVALID_DEVICE_MAP_CSV");
   });
 });
 
 describe("ApiIClassAdapter", () => {
+  it("uses deterministic circuit timing and permits only one half-open probe", async () => {
+    let now = 0; let resolveProbe!: (response: Response) => void;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("down", { status: 503 }));
+    const adapter = new ApiIClassAdapter({ baseUrl: "https://iclass.example", bearerToken: "secret", fetcher, maxAttempts: 1, now: () => now, sleep: async () => undefined });
+    for (let index = 0; index < 3; index += 1) await expect(adapter.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_UNAVAILABLE");
+    const attempts = fetcher.mock.calls.length; now = 29_999; await expect(adapter.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_UNAVAILABLE"); expect(fetcher).toHaveBeenCalledTimes(attempts);
+    now = 30_000; fetcher.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveProbe = resolve; }));
+    const probe = adapter.resolveDevice("ipad-001"); await Promise.resolve(); const concurrent = adapter.resolveDevice("ipad-001"); await expect(concurrent).rejects.toThrow("ICLASS_UNAVAILABLE");
+    resolveProbe(new Response(JSON.stringify(row), { headers: { "content-type": "application/json" } })); await expect(probe).resolves.toEqual(row); expect(fetcher).toHaveBeenCalledTimes(attempts + 1);
+  });
   it("retries transient 5xx/timeouts, opens its circuit, and enforces the streamed body cap", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("down", { status: 503 }));
     const adapter = new ApiIClassAdapter({ baseUrl: "https://iclass.example", bearerToken: "secret", fetcher, maxAttempts: 2, timeoutMs: 100 });
@@ -90,6 +112,15 @@ describe("ApiIClassAdapter", () => {
     await expect(missing.resolveDevice("ipad-001")).resolves.toMatchObject({ studentName: "陳同學" });
     const permanent = new FallbackIClassAdapter({ resolveDevice: async () => { throw new Error("ICLASS_UNAUTHORIZED"); } }, csv);
     await expect(permanent.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_UNAUTHORIZED");
+    for (const status of [400, 403, 409, 422]) {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("bad", { status }));
+      const fatal = new FallbackIClassAdapter(new ApiIClassAdapter({ baseUrl: "https://iclass.example", bearerToken: "secret", fetcher, maxAttempts: 1 }), csv);
+      await expect(fatal.resolveDevice("ipad-001")).rejects.toThrow(status === 403 ? "ICLASS_UNAUTHORIZED" : "ICLASS_INVALID_RESPONSE");
+    }
+    for (const status of [429, 500]) {
+      const fallback = new FallbackIClassAdapter(new ApiIClassAdapter({ baseUrl: "https://iclass.example", bearerToken: "secret", fetcher: async () => new Response("retry", { status }), maxAttempts: 1 }), csv);
+      await expect(fallback.resolveDevice("ipad-001")).resolves.toMatchObject({ studentName: "陳同學" });
+    }
   });
   it("uses a secret bearer, validates JSON and maps 404 to null", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify(row), { status: 200, headers: { "content-type": "application/json" } })).mockResolvedValueOnce(new Response(null, { status: 404 }));
@@ -103,5 +134,11 @@ describe("ApiIClassAdapter", () => {
     expect(() => new ApiIClassAdapter({ baseUrl: "http://iclass.example", bearerToken: "secret", production: true })).toThrow("ICLASS_HTTPS_REQUIRED");
     const wrong = new ApiIClassAdapter({ baseUrl: "https://iclass.example", bearerToken: "secret", fetcher: async () => new Response("x", { headers: { "content-type": "text/plain" } }), maxAttempts: 1 });
     await expect(wrong.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_INVALID_RESPONSE");
+    for (const url of ["https://user:pass@iclass.example/api", "https://iclass.example/api#secret"]) expect(() => new ApiIClassAdapter({ baseUrl: url, bearerToken: "secret" })).toThrow("ICLASS_URL_INVALID");
+    for (const status of [301, 302, 307]) {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status, headers: { location: "https://evil.example/steal" } }));
+      const redirected = new ApiIClassAdapter({ baseUrl: "https://iclass.example/api", bearerToken: "secret", fetcher, maxAttempts: 1 });
+      await expect(redirected.resolveDevice("ipad-001")).rejects.toThrow("ICLASS_INVALID_RESPONSE"); expect(fetcher).toHaveBeenCalledTimes(1); expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ redirect: "error" });
+    }
   });
 });

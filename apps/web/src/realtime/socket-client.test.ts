@@ -44,6 +44,21 @@ describe("RealtimeClient", () => {
     expect(client.getState()).toMatchObject({ identityStatus: "ready", identity: { status: "guest", displayName: "訪客-ABCD" } });
     expect([...values.values()].join(" ")).not.toContain("訪客-ABCD");
   });
+  it("times out stalled identity fetch/body and retry aborts the previous bootstrap", async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = new FakeTransport(); let calls = 0;
+      const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+        calls += 1;
+        if (calls === 1) return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true }));
+        return { ok: true, json: () => new Promise<unknown>(() => undefined) } as Response;
+      });
+      const client = new RealtimeClient({ transport, fetcher, bootstrapIdentity: true, identityTimeoutMs: 100 }); client.start();
+      await vi.advanceTimersByTimeAsync(100); expect(client.getState()).toMatchObject({ identityStatus: "unavailable", status: "offline" });
+      client.retryIdentity(); await vi.advanceTimersByTimeAsync(100); expect(client.getState().identityStatus).toBe("unavailable");
+      expect(transport.connect).not.toHaveBeenCalled(); client.stop();
+    } finally { vi.useRealTimers(); }
+  });
   it("在客戶端時鐘慢 5 秒與 50ms RTT 時收旂 offset，正確轉換 server target", () => {
     const estimator = new ClientClockEstimator();
     estimator.add({ clientSentAtMs: 1_000, serverReceivedAtMs: 6_025, serverSentAtMs: 6_026, clientReceivedAtMs: 1_051 });

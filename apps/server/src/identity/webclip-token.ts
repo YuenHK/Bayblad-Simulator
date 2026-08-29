@@ -11,10 +11,13 @@ export interface TokenNonceStore {
   readonly durable?: boolean;
   issue(input: Readonly<{ jtiHash: string; deviceId: string; issuedAt: Date; expiresAt: Date }>): Promise<void>;
   lookup(jtiHash: string, now: Date): Promise<string | null>;
-  consume(jtiHash: string, now: Date): Promise<string | null>;
+  reserve(jtiHash: string, reservationHash: string, now: Date, leaseUntil: Date): Promise<"acquired" | "in-progress" | "missing">;
+  commit(jtiHash: string, reservationHash: string, usedAt: Date): Promise<string | null>;
+  release(jtiHash: string, reservationHash: string): Promise<boolean>;
+  pruneExpired(before: Date, batchSize: number): Promise<number>;
 }
 
-type NonceRecord = Readonly<{ deviceId: string; issuedAt: Date; expiresAt: Date; usedAt?: Date }>;
+type NonceRecord = Readonly<{ deviceId: string; issuedAt: Date; expiresAt: Date; usedAt?: Date; reservationHash?: string; reservedUntil?: Date }>;
 export class InMemoryTokenNonceStore implements TokenNonceStore {
   readonly durable = false;
   readonly #records = new Map<string, NonceRecord>();
@@ -22,11 +25,24 @@ export class InMemoryTokenNonceStore implements TokenNonceStore {
     if (this.#records.has(input.jtiHash)) throw new Error("DEVICE_TOKEN_NONCE_COLLISION");
     this.#records.set(input.jtiHash, Object.freeze({ deviceId: input.deviceId, issuedAt: input.issuedAt, expiresAt: input.expiresAt }));
   }
-  async consume(jtiHash: string, now: Date): Promise<string | null> {
+  async reserve(jtiHash: string, reservationHash: string, now: Date, leaseUntil: Date): Promise<"acquired" | "in-progress" | "missing"> {
     const record = this.#records.get(jtiHash);
-    if (!record || record.usedAt || record.expiresAt <= now) return null;
-    this.#records.set(jtiHash, Object.freeze({ ...record, usedAt: now }));
+    if (!record || record.usedAt || record.expiresAt <= now) return "missing";
+    if (record.reservationHash && record.reservedUntil && record.reservedUntil > now && record.reservationHash !== reservationHash) return "in-progress";
+    this.#records.set(jtiHash, Object.freeze({ ...record, reservationHash, reservedUntil: leaseUntil })); return "acquired";
+  }
+  async commit(jtiHash: string, reservationHash: string, usedAt: Date): Promise<string | null> {
+    const record = this.#records.get(jtiHash); if (!record || record.reservationHash !== reservationHash) return null;
+    if (!record.usedAt && (!record.reservedUntil || record.reservedUntil <= usedAt)) return null;
+    if (!record.usedAt) this.#records.set(jtiHash, Object.freeze({ ...record, usedAt }));
     return record.deviceId;
+  }
+  async release(jtiHash: string, reservationHash: string): Promise<boolean> {
+    const record = this.#records.get(jtiHash); if (!record || record.usedAt || record.reservationHash !== reservationHash) return false;
+    const { reservationHash: _hash, reservedUntil: _until, ...released } = record; this.#records.set(jtiHash, Object.freeze(released)); return true;
+  }
+  async pruneExpired(before: Date, batchSize: number): Promise<number> {
+    let removed = 0; for (const [hash, record] of this.#records) { if (removed >= batchSize) break; if (record.expiresAt <= before) { this.#records.delete(hash); removed += 1; } } return removed;
   }
   async lookup(jtiHash: string, now: Date): Promise<string | null> {
     const record = this.#records.get(jtiHash);
@@ -43,6 +59,7 @@ function decodeCanonical(value: string): unknown {
 }
 const jtiHash = (jti: string) => createHash("sha256").update(jti, "ascii").digest("hex");
 export type VerifiedWebClipToken = Readonly<{ deviceId: string; expiresAt: Date }>;
+export type WebClipReservation = Readonly<{ deviceId: string; expiresAt: Date }>;
 
 export class WebClipTokenService {
   readonly #keys: Readonly<Record<string, Uint8Array>>;
@@ -51,6 +68,7 @@ export class WebClipTokenService {
   readonly #store: TokenNonceStore;
   readonly #now: () => number;
   readonly #verified = new WeakMap<object, string>();
+  readonly #reservations = new WeakMap<object, Readonly<{ jtiHash: string; reservationHash: string }>>();
   constructor(input: Readonly<{ keys: Readonly<Record<string, Uint8Array>>; activeKeyId: string; audience: string; nonceStore: TokenNonceStore; now?: () => number; production?: boolean }>) {
     if (!input.keys[input.activeKeyId]) throw new TypeError("WEBCLIP_ACTIVE_KEY_MISSING");
     for (const secret of Object.values(input.keys)) if (secret.byteLength < 32) throw new TypeError("WEBCLIP_SECRET_TOO_SHORT");
@@ -88,14 +106,27 @@ export class WebClipTokenService {
     this.#verified.set(verified, hash);
     return verified;
   }
-  async consumeVerified(verified: VerifiedWebClipToken): Promise<string> {
+  async reserveVerified(verified: VerifiedWebClipToken, leaseMs = 15_000): Promise<WebClipReservation> {
     const hash = this.#verified.get(verified as object); if (!hash) throw new Error("INVALID_DEVICE_TOKEN_HANDLE");
     if (verified.expiresAt.getTime() <= this.#now()) throw new Error("DEVICE_TOKEN_EXPIRED");
-    const deviceId = await this.#store.consume(hash, new Date(this.#now()));
-    if (!deviceId || deviceId !== verified.deviceId) throw new Error("DEVICE_TOKEN_REPLAYED");
-    this.#verified.delete(verified as object); return deviceId;
+    if (!Number.isSafeInteger(leaseMs) || leaseMs < 1_000 || leaseMs > 60_000) throw new TypeError("DEVICE_TOKEN_LEASE_INVALID");
+    const reservationHash = createHash("sha256").update(randomBytes(32)).digest("hex"); const now = this.#now();
+    const status = await this.#store.reserve(hash, reservationHash, new Date(now), new Date(Math.min(verified.expiresAt.getTime(), now + leaseMs)));
+    if (status === "in-progress") throw new Error("DEVICE_TOKEN_IN_PROGRESS"); if (status === "missing") throw new Error("DEVICE_TOKEN_REPLAYED");
+    const reservation = Object.freeze({ deviceId: verified.deviceId, expiresAt: verified.expiresAt }); this.#reservations.set(reservation, { jtiHash: hash, reservationHash }); return reservation;
   }
-  async consume(token: unknown): Promise<string> {
-    return this.consumeVerified(await this.inspect(token));
+  async commitReservation(reservation: WebClipReservation): Promise<string> {
+    const owned = this.#reservations.get(reservation as object); if (!owned) throw new Error("INVALID_DEVICE_TOKEN_RESERVATION");
+    const deviceId = await this.#store.commit(owned.jtiHash, owned.reservationHash, new Date(this.#now()));
+    if (!deviceId || deviceId !== reservation.deviceId) throw new Error("DEVICE_TOKEN_COMMIT_FAILED"); return deviceId;
   }
+  async releaseReservation(reservation: WebClipReservation): Promise<boolean> {
+    const owned = this.#reservations.get(reservation as object); if (!owned) return false;
+    const released = await this.#store.release(owned.jtiHash, owned.reservationHash); this.#reservations.delete(reservation as object); return released;
+  }
+  async consumeVerified(verified: VerifiedWebClipToken): Promise<string> {
+    const reservation = await this.reserveVerified(verified); return this.commitReservation(reservation);
+  }
+  async consume(token: unknown): Promise<string> { return this.consumeVerified(await this.inspect(token)); }
+  async pruneExpired(batchSize = 500): Promise<number> { return this.#store.pruneExpired(new Date(this.#now()), batchSize); }
 }
