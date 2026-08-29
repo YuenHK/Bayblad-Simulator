@@ -336,7 +336,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   app.decorate("realtimeGateway", gateway);
   app.decorate("battleEngine", battleEngine);
 
-  app.get("/health", async () => ({ status: "ok", identity: { iclass: options.iClassStatus ?? (options.iClassAdapter ? "api" : "disabled") } }));
+  let authorityHealthy = true;
+  app.addHook("onRequest", async (request, reply) => { if (!authorityHealthy && request.url !== "/health") return reply.code(503).send({ error: "ROOM_AUTHORITY_UNHEALTHY" }); });
+  app.get("/health", async (_request, reply) => { if (!authorityHealthy) reply.code(503); return { status: authorityHealthy ? "ok" : "unhealthy", identity: { iclass: options.iClassStatus ?? (options.iClassAdapter ? "api" : "disabled") } }; });
   if (options.identityResolver) {
     const identityResolver = options.identityResolver;
     const allowedIdentityOrigins = new Set(options.allowedOrigins ?? []);
@@ -486,13 +488,18 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   adminMaintenanceTimer?.unref();
   if (options.webClipTokens) void options.webClipTokens.pruneExpired().catch(() => undefined);
   let leaseHealthTimer: ReturnType<typeof setInterval> | undefined;
+  let supervisedShutdown: Promise<void> | undefined;
   app.addHook("onReady", async () => {
     // We intentionally fail closed rather than attempting to resume battles whose
     // in-memory timing/physics state cannot be reconstructed after a process exit.
     if (process.env.NODE_ENV === "production") await options.roomRecordRepository?.acquireStartupLease?.();
     await options.roomRecordRepository?.reconcileOrphanedActiveRooms?.(new Date());
     if (process.env.NODE_ENV === "production" && options.roomRecordRepository?.verifyStartupLease) {
-      leaseHealthTimer = setInterval(() => { void options.roomRecordRepository!.verifyStartupLease!().catch((error) => { reportBackgroundError(error); void gateway.close(); }); }, 5_000);
+      leaseHealthTimer = setInterval(() => { void options.roomRecordRepository!.verifyStartupLease!().catch((error) => {
+        if (!authorityHealthy) return;
+        authorityHealthy = false; reportBackgroundError(error);
+        supervisedShutdown ??= app.close(); void supervisedShutdown.catch(reportBackgroundError);
+      }); }, 5_000);
       leaseHealthTimer.unref();
     }
   });
@@ -502,12 +509,13 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     if (timer) clearInterval(timer);
     if (nonceTimer) clearInterval(nonceTimer);
     if (adminMaintenanceTimer) clearInterval(adminMaintenanceTimer);
-    await adminMaintenance;
-    await retryClaimPump;
-    while (retryWorkers.size) await Promise.allSettled([...retryWorkers.values()]);
-    await gateway.close();
-    await options.roomRecordRepository?.releaseStartupLease?.();
-    await battleEngine.shutdown?.();
+    const drainRetryWorkers = async () => { await retryClaimPump; while (retryWorkers.size) await Promise.allSettled([...retryWorkers.values()]); };
+    const results = await Promise.allSettled([
+      adminMaintenance ?? Promise.resolve(), drainRetryWorkers(), gateway.close(),
+      options.roomRecordRepository?.releaseStartupLease?.() ?? Promise.resolve(), battleEngine.shutdown?.() ?? Promise.resolve(),
+    ]);
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length) throw new AggregateError(failures, "APP_PRECLOSE_FAILED");
   });
   return app as unknown as BuiltApp;
 }

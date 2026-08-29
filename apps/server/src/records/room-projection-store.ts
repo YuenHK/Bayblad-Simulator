@@ -56,6 +56,7 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
   readonly #leaseMs: number;
   readonly #maxAttempts: number;
   readonly #now: () => Date;
+  #transactionTail: Promise<void> = Promise.resolve();
 
   constructor(options: Readonly<{ maxEntries?: number; leaseMs?: number; maxAttempts?: number; now?: () => Date }> = {}) {
     this.#maxEntries = options.maxEntries ?? 2_000;
@@ -65,9 +66,13 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
     if (!Number.isSafeInteger(this.#maxEntries) || this.#maxEntries < 1) throw new RangeError("invalid room projection capacity");
   }
   async transaction<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.#transactionTail; let release!: () => void;
+    this.#transactionTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
     const snapshot = structuredClone(this.#entries);
     try { return await operation(); }
     catch (error) { this.#entries.clear(); for (const [key, value] of snapshot) this.#entries.set(key, value); throw error; }
+    finally { release(); }
   }
 
   async enqueue(input: RoomProjectionInput): Promise<"created" | "updated" | "stale"> {
