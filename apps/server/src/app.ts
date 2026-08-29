@@ -23,6 +23,8 @@ import { PostgresMatchRepository, type MatchRepository } from "./records/match-r
 import { PostgresBattleResultRepository } from "./records/battle-result-repository";
 import { PostgresRoomRecordRepository, type RoomRecordRepository } from "./records/room-repository";
 import { PostgresRoomProjectionStore, type RoomProjectionStore } from "./records/room-projection-store";
+import type { AnalyticsService } from "./analytics/service";
+import { registerAnalyticsRoutes } from "./analytics/routes";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -101,6 +103,8 @@ export type BuildAppOptions = Readonly<{
   adminClientAddressResolver?: ClientKeyResolver;
   adminMaintenanceIntervalMs?: number;
   persistenceRetryDelaysMs?: readonly number[];
+  analyticsService?: AnalyticsService;
+  analyticsRefreshIntervalMs?: number;
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -213,6 +217,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   void app.register(fastifyCookie);
   const adminResolver = (request: IncomingMessage) => ({ clientKey: options.adminClientKeyResolver?.(request) ?? request.socket.remoteAddress ?? "unknown", ...(options.adminClientAddressResolver ? { ip: options.adminClientAddressResolver(request) } : (request.socket.remoteAddress ? { ip: request.socket.remoteAddress } : {})) });
   if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth, adminResolver);
+  if (options.adminAuth && options.analyticsService) registerAnalyticsRoutes(app, options.adminAuth, options.analyticsService);
   if (options.adminAuth && options.matchRepository) app.post("/api/admin/records/matches/:id/retry", async (request, reply) => {
     const current = await authenticateAdminMutation(request, reply, options.adminAuth!, adminResolver); if (!current) return;
     const id = (request.params as { id?: unknown }).id;
@@ -485,9 +490,13 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       .finally(() => { adminMaintenance = undefined; });
   };
   const adminMaintenanceTimer = options.adminAuth ? setInterval(runAdminMaintenance, adminMaintenanceIntervalMs) : undefined;
+  const analyticsRefreshIntervalMs = options.analyticsRefreshIntervalMs ?? 24 * 60 * 60_000;
+  if (!Number.isFinite(analyticsRefreshIntervalMs) || analyticsRefreshIntervalMs < 60_000) throw new TypeError("analyticsRefreshIntervalMs must be at least one minute");
+  const analyticsRefreshTimer = options.analyticsService ? setInterval(() => { void options.analyticsService!.refreshDefaultWindow().catch(reportBackgroundError); }, analyticsRefreshIntervalMs) : undefined;
   timer?.unref();
   nonceTimer?.unref();
   adminMaintenanceTimer?.unref();
+  analyticsRefreshTimer?.unref();
   if (options.webClipTokens) void options.webClipTokens.pruneExpired().catch(() => undefined);
   let leaseHealthTimer: ReturnType<typeof setInterval> | undefined;
   let supervisedShutdown: Promise<void> | undefined;
@@ -512,6 +521,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     if (timer) clearInterval(timer);
     if (nonceTimer) clearInterval(nonceTimer);
     if (adminMaintenanceTimer) clearInterval(adminMaintenanceTimer);
+    if (analyticsRefreshTimer) clearInterval(analyticsRefreshTimer);
     const failures: unknown[] = [];
     const stage = async (operations: readonly Promise<unknown>[]) => { const results = await Promise.allSettled(operations); for (const result of results) if (result.status === "rejected") failures.push(result.reason); };
     const drainRetryWorkers = async () => { await retryClaimPump; while (retryWorkers.size) await Promise.allSettled([...retryWorkers.values()]); };
