@@ -33,15 +33,17 @@ afterAll(async () => {
   await client.close();
 });
 
-it.skipIf(!databaseUrl)("atomically consumes a durable Web Clip nonce once under concurrency", async () => {
+it.skipIf(!databaseUrl)("atomically exchanges a durable Web Clip nonce and recovers the same attempt", async () => {
   const store = new PostgresTokenNonceStore(client.db);
   const issuedAt = new Date("2026-08-29T00:00:00Z"); const expiresAt = new Date("2026-08-29T00:05:00Z");
   const jtiHash = "a".repeat(64);
   await store.issue({ jtiHash, deviceId: "ipad-atomic", issuedAt, expiresAt });
-  const hashes = Array.from({ length: 12 }, (_, index) => index.toString(16).padStart(64, "b")); const now = new Date("2026-08-29T00:01:00Z");
-  const results = await Promise.all(hashes.map((reservationHash) => store.reserve(jtiHash, reservationHash, now, new Date(now.getTime() + 15_000))));
-  expect(results.filter((result) => result === "acquired")).toHaveLength(1);
-  const winner = hashes[results.indexOf("acquired")]!; expect(await store.commit(jtiHash, winner, now)).toBe("ipad-atomic"); expect(await store.commit(jtiHash, winner, now)).toBe("ipad-atomic");
+  const now = new Date("2026-08-29T00:01:00Z"), attemptHash="b".repeat(64);
+  const identityStore=new PostgresIdentityStore(client.db); const persisted=await identityStore.createGuestSession({tokenHash:"c".repeat(64),displayName:"nonce-test",now,expiresAt:new Date(now.getTime()+86_400_000),diagnostics:{}});
+  const created={identityId:persisted.identity.id,sessionId:persisted.id,tokenHash:persisted.tokenHash,committedAt:now};
+  expect(await store.exchange({jtiHash,attemptHash,now},async()=>created)).toMatchObject({status:"committed"});
+  expect(await store.exchange({jtiHash,attemptHash,now},async()=>{throw new Error("must not run");})).toMatchObject({status:"recovered"});
+  expect(await store.exchange({jtiHash,attemptHash:"d".repeat(64),now},async()=>created)).toEqual({status:"replay"});
 });
 
 it.skipIf(!databaseUrl)("allows duplicate guest labels and atomically upgrades concurrent live identity", async () => {

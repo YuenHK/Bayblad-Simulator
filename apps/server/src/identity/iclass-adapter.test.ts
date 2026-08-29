@@ -6,15 +6,15 @@ const row = { externalDeviceId: "ipad-001", deviceName: "1A-iPad-01", studentNam
 const secret = new Uint8Array(32).fill(7);
 
 describe("Web Clip token", () => {
-  it("leases reservations, releases failures, permits crash takeover, commits idempotently and prunes", async () => {
+  it("commits an exchange once and recovers only for the same browser attempt", async () => {
     const store = new InMemoryTokenNonceStore(); let now = 1_000;
     const service = new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: store, now: () => now });
-    const token = await service.issue("ipad-lease", 10_000); const one = await service.inspect(token); const first = await service.reserveVerified(one, 1_000);
-    const two = await service.inspect(token); await expect(service.reserveVerified(two, 1_000)).rejects.toThrow("DEVICE_TOKEN_IN_PROGRESS");
-    expect(await service.releaseReservation(first)).toBe(true); const afterRelease = await service.reserveVerified(two, 1_000); expect(await service.commitReservation(afterRelease)).toBe("ipad-lease"); expect(await service.commitReservation(afterRelease)).toBe("ipad-lease");
-    const crashToken = await service.issue("ipad-crash", 2_000); const crash = await service.reserveVerified(await service.inspect(crashToken), 1_000); now += 1_001;
-    const takeover = await service.reserveVerified(await service.inspect(crashToken), 1_000); await expect(service.commitReservation(crash)).rejects.toThrow("DEVICE_TOKEN_COMMIT_FAILED"); await expect(service.commitReservation(takeover)).resolves.toBe("ipad-crash");
-    now += 20_000; expect(await service.pruneExpired(10)).toBe(2);
+    const token = await service.issue("ipad-lease", 10_000); const verified = await service.inspect(token); const attempt = Buffer.alloc(32,1).toString("base64url"); const handle = service.prepareExchange(verified, attempt);
+    const create = async () => ({ identityId:"00000000-0000-0000-0000-000000000001", sessionId:"00000000-0000-0000-0000-000000000002", tokenHash:handle.tokenHash, committedAt:new Date(now) });
+    await expect(service.exchange(handle, create)).resolves.toMatchObject({status:"committed"});
+    const recovered = service.prepareExchange(await service.inspect(token), attempt); await expect(service.exchange(recovered, create)).resolves.toMatchObject({status:"recovered"});
+    const replay = service.prepareExchange(await service.inspect(token), Buffer.alloc(32,2).toString("base64url")); await expect(service.exchange(replay, create)).resolves.toEqual({status:"replay"});
+    now += 20_000; expect(await service.pruneExpired(10)).toBe(1);
   });
   it("requires a durable atomic nonce store in production", () => {
     expect(() => new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore(), production: true })).toThrow("WEBCLIP_DURABLE_NONCE_STORE_REQUIRED");
@@ -24,10 +24,10 @@ describe("Web Clip token", () => {
     const service = new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: store, now: () => 1_000_000 });
     const token = await service.issue("ipad-001", 300_000);
     expect(token).not.toContain("ipad-001");
-    const results = await Promise.allSettled([service.consume(token), service.consume(token)]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.find((result) => result.status === "fulfilled")).toMatchObject({ value: "ipad-001" });
-    expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: expect.objectContaining({ message: "DEVICE_TOKEN_IN_PROGRESS" }) });
+    const attempt=Buffer.alloc(32,4).toString("base64url"), first=service.prepareExchange(await service.inspect(token),attempt),second=service.prepareExchange(await service.inspect(token),attempt);
+    const created={identityId:"00000000-0000-0000-0000-000000000011",sessionId:"00000000-0000-0000-0000-000000000012",tokenHash:first.tokenHash,committedAt:new Date(1_000_000)};
+    const results=await Promise.all([service.exchange(first,async()=>created),service.exchange(second,async()=>created)]);
+    expect(results.map(result=>result.status).sort()).toEqual(["committed","recovered"]);
   });
 
   it("rejects tampering, expiry, future issue time, wrong audience and oversized tokens", async () => {
@@ -35,10 +35,10 @@ describe("Web Clip token", () => {
     let now = 10_000;
     const service = new WebClipTokenService({ keys: { k1: secret }, activeKeyId: "k1", audience: "steam-top", nonceStore: store, now: () => now });
     const token = await service.issue("ipad-001", 1_000);
-    await expect(service.consume(`${token.slice(0, -1)}x`)).rejects.toThrow("INVALID_DEVICE_TOKEN");
+    await expect(service.inspect(`${token.slice(0, -1)}x`)).rejects.toThrow("INVALID_DEVICE_TOKEN");
     now = 12_000;
-    await expect(service.consume(token)).rejects.toThrow("DEVICE_TOKEN_EXPIRED");
-    await expect(service.consume("x".repeat(5_000))).rejects.toThrow("INVALID_DEVICE_TOKEN");
+    await expect(service.inspect(token)).rejects.toThrow("DEVICE_TOKEN_EXPIRED");
+    await expect(service.inspect("x".repeat(5_000))).rejects.toThrow("INVALID_DEVICE_TOKEN");
   });
 
   it("supports secret rotation while rejecting algorithm confusion and non-canonical base64url", async () => {
@@ -46,11 +46,11 @@ describe("Web Clip token", () => {
     const old = new WebClipTokenService({ keys: { old: secret }, activeKeyId: "old", audience: "steam-top", nonceStore: store, now: () => 1_000 });
     const token = await old.issue("ipad-001", 1_000);
     const rotated = new WebClipTokenService({ keys: { old: secret, next: new Uint8Array(32).fill(9) }, activeKeyId: "next", audience: "steam-top", nonceStore: store, now: () => 1_500 });
-    await expect(rotated.consume(token)).resolves.toBe("ipad-001");
+    await expect(rotated.inspect(token)).resolves.toMatchObject({deviceId:"ipad-001"});
     const parts = token.split(".");
     const noneHeader = Buffer.from(JSON.stringify({ alg: "none", kid: "old", typ: "JWT", v: 1 })).toString("base64url");
-    await expect(rotated.consume(`${noneHeader}.${parts[1]}.${parts[2]}`)).rejects.toThrow("INVALID_DEVICE_TOKEN");
-    await expect(rotated.consume(`${parts[0]}=.${parts[1]}.${parts[2]}`)).rejects.toThrow("INVALID_DEVICE_TOKEN");
+    await expect(rotated.inspect(`${noneHeader}.${parts[1]}.${parts[2]}`)).rejects.toThrow("INVALID_DEVICE_TOKEN");
+    await expect(rotated.inspect(`${parts[0]}=.${parts[1]}.${parts[2]}`)).rejects.toThrow("INVALID_DEVICE_TOKEN");
   });
 });
 

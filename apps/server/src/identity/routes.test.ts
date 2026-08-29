@@ -9,6 +9,11 @@ import { InMemoryTokenNonceStore, WebClipTokenService } from "./webclip-token";
 const battleEngine: BattleEnginePort = { simulationCount: 0, simulateOnceAsync: async () => { throw new Error("unused"); }, cleanup: () => false };
 const apps: ReturnType<typeof buildApp>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
+async function exchange(app: ReturnType<typeof buildApp>, token: string, identityCookie?: string) {
+  const first = await app.inject({ method:"GET", url:`/start?t=${encodeURIComponent(token)}`, ...(identityCookie ? {headers:{cookie:identityCookie}} : {}) });
+  const attempt = first.cookies.find(c=>c.name==="steam_top_webclip_attempt")!;
+  return app.inject({ method:"GET", url:`/start?t=${encodeURIComponent(token)}`, headers:{cookie:[identityCookie,`${attempt.name}=${attempt.value}`].filter(Boolean).join("; ")} });
+}
 
 describe("identity routes", () => {
   it("exchanges an opaque Web Clip token and immediately redirects to a clean URL", async () => {
@@ -17,15 +22,15 @@ describe("identity routes", () => {
     const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(1) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() });
     const token = await tokens.issue("ipad-001");
     const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), iClassAdapter: adapter, webClipTokens: tokens, sweepIntervalMs: 0 }); apps.push(app);
-    const response = await app.inject({ method: "GET", url: `/start?t=${encodeURIComponent(token)}` });
+    const response = await exchange(app, token);
     expect(response).toMatchObject({ statusCode: 303, headers: { location: "/", "referrer-policy": "no-referrer", "cache-control": "no-store" } });
     const cookie = response.cookies[0]!;
     const identity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${cookie.name}=${cookie.value}` } });
     expect(identity.json()).toMatchObject({ status: "cookie", displayName: "陳同學" });
     expect(response.body).not.toContain(token);
-    const replay = await app.inject({ method: "GET", url: `/start?t=${encodeURIComponent(token)}` });
+    const replay = await exchange(app, token);
     expect(replay.statusCode).toBe(303);
-    expect(replay.cookies[0]).toBeDefined();
+    expect(replay.cookies.find(c=>c.name==="steam_top_identity")).toBeUndefined();
   });
 
   it("does not consume a token on transient lookup failure, then upgrades the same guest cookie on retry", async () => {
@@ -50,12 +55,14 @@ describe("identity routes", () => {
     const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(8) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() }); const token = await tokens.issue("ipad-db-retry");
     const adapter = { resolveDevice: async () => ({ externalDeviceId: "ipad-db-retry", deviceName: "d", studentName: "吳同學", className: "1D", studentNumber: "04" }) };
     const app = buildApp({ battleEngine, identityResolver: resolver, iClassAdapter: adapter, webClipTokens: tokens, sweepIntervalMs: 0 }); apps.push(app);
-    const failed = await app.inject({ method: "GET", url: `/start?t=${token}`, headers: { cookie: `steam_top_identity=${guest.cookieToken}` } }); expect(failed.statusCode).toBe(303);
-    const retried = await app.inject({ method: "GET", url: `/start?t=${token}`, headers: { cookie: `steam_top_identity=${guest.cookieToken}` } }); const cookie = retried.cookies[0]!;
+    const firstStage = await app.inject({ method:"GET",url:`/start?t=${token}`,headers:{cookie:`steam_top_identity=${guest.cookieToken}`}}); const attempt=firstStage.cookies.find(c=>c.name==="steam_top_webclip_attempt")!;
+    const combined=`steam_top_identity=${guest.cookieToken}; ${attempt.name}=${attempt.value}`;
+    const failed = await app.inject({ method: "GET", url: `/start?t=${token}`, headers: { cookie:combined } }); expect(failed.statusCode).toBe(303);
+    const retried = await app.inject({ method: "GET", url: `/start?t=${token}`, headers: { cookie:combined } }); const cookie = retried.cookies.find(c=>c.name==="steam_top_identity")!;
     const identity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${cookie.name}=${cookie.value}` } }); expect(identity.json().displayName).toBe("吳同學");
   });
 
-  it("consumes a permanently unknown mapped device while retaining guest access", async () => {
+  it("does not create a guest for an unknown device and permits a later mapped retry", async () => {
     const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(3) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() });
     const token = await tokens.issue("unknown"); let known = false;
     const adapter = { resolveDevice: async () => known ? { externalDeviceId: "unknown", deviceName: "d", studentName: "X", className: "1A", studentNumber: "1" } : null };
@@ -64,7 +71,7 @@ describe("identity routes", () => {
     known = true;
     const replay = await app.inject({ method: "GET", url: `/start?t=${token}`, headers: { cookie: `${first.cookies[0]!.name}=${first.cookies[0]!.value}` } });
     const identity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${replay.cookies[0]!.name}=${replay.cookies[0]!.value}` } });
-    expect(identity.json().status).toBe("guest");
+    expect(identity.json()).toMatchObject({status:"cookie",displayName:"X"});
   });
 
   it("upgrades through API-to-CSV fallback and permits only one winner after concurrent adapter lookups", async () => {
@@ -74,27 +81,25 @@ describe("identity routes", () => {
     const tokens = new WebClipTokenService({ keys: { k1: new Uint8Array(32).fill(5) }, activeKeyId: "k1", audience: "steam-top", nonceStore: new InMemoryTokenNonceStore() });
     const fallbackToken = await tokens.issue("ipad-race");
     const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), iClassAdapter: fallback, webClipTokens: tokens, sweepIntervalMs: 0 }); apps.push(app);
-    const viaCsv = await app.inject({ method: "GET", url: `/start?t=${fallbackToken}` });
+    const viaCsv = await exchange(app, fallbackToken);
     const csvIdentity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${viaCsv.cookies[0]!.name}=${viaCsv.cookies[0]!.value}` } });
     expect(csvIdentity.json().displayName).toBe("黃同學");
 
     const raceToken = await tokens.issue("ipad-race");
-    const raced = await Promise.all([app.inject({ method: "GET", url: `/start?t=${raceToken}` }), app.inject({ method: "GET", url: `/start?t=${raceToken}` })]);
-    expect(raced.filter((response) => response.cookies.length > 0)).toHaveLength(1);
-    expect(raced.filter((response) => response.headers["x-identity-bootstrap"] === "in-progress")).toHaveLength(1);
-    const winner = raced.find((response) => response.cookies.length > 0)!; const identity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${winner.cookies[0]!.name}=${winner.cookies[0]!.value}` } }); expect(identity.json().displayName).toBe("黃同學");
+    const stage=await app.inject({method:"GET",url:`/start?t=${raceToken}`});const attempt=stage.cookies.find(c=>c.name==="steam_top_webclip_attempt")!;const attemptCookie=`${attempt.name}=${attempt.value}`;
+    const raced = await Promise.all([app.inject({ method: "GET", url: `/start?t=${raceToken}`,headers:{cookie:attemptCookie} }), app.inject({ method: "GET", url: `/start?t=${raceToken}`,headers:{cookie:attemptCookie} })]);
+    expect(raced.filter((response) => response.cookies.some(c=>c.name==="steam_top_identity"))).toHaveLength(2);
+    const winner = raced[0]!; const identityCookie=winner.cookies.find(c=>c.name==="steam_top_identity")!; const identity = await app.inject({ method: "GET", url: "/api/identity", headers: { cookie: `${identityCookie.name}=${identityCookie.value}` } }); expect(identity.json().displayName).toBe("黃同學");
   });
 
-  it("applies start admission limits and trusted IP/user-agent diagnostics to guest fallback", async () => {
+  it("does not create guest identities from invalid start tokens", async () => {
     const store = new InMemoryIdentityStore({ maxSessions: 700 }); let clock = 0;
     const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(store), behindProxy: true, clientKeyResolver: () => "managed-nat", identityIpResolver: () => "203.0.113.9", identityCreationBurst: 2, identityGlobalCreationBurst: 2, now: () => clock, sweepIntervalMs: 0 }); apps.push(app);
     const first = await app.inject({ method: "GET", url: "/start?t=invalid", headers: { "user-agent": "Managed iPad\u0000" } });
     const second = await app.inject({ method: "GET", url: "/start?t=invalid" });
     const blocked = await app.inject({ method: "GET", url: "/start?t=invalid" });
     expect([first, second, blocked].every((response) => response.statusCode === 303)).toBe(true);
-    expect(first.cookies[0]).toBeDefined(); expect(second.cookies[0]).toBeDefined(); expect(blocked.cookies).toHaveLength(0);
-    const session = await store.findSession(hashIdentityToken(first.cookies[0]!.value));
-    expect(session).toMatchObject({ lastIp: "203.0.113.9", userAgent: "Managed iPad" });
+    expect(first.cookies).toHaveLength(0); expect(second.cookies).toHaveLength(0); expect(blocked.cookies).toHaveLength(0);
     clock += 100_000;
   });
   it("automatically creates and then reuses an identity without collecting a name", async () => {

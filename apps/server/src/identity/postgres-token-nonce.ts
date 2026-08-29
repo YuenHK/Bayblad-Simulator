@@ -1,7 +1,8 @@
-import { and, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, eq, gt, inArray, lte } from "drizzle-orm";
+import { timingSafeEqual } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 import { webClipTokenNonces } from "@steam-top/db/schema";
-import type { TokenNonceStore } from "./webclip-token";
+import type { StoredWebClipExchange, TokenNonceStore } from "./webclip-token";
 
 export class PostgresTokenNonceStore implements TokenNonceStore {
   readonly durable = true;
@@ -11,23 +12,22 @@ export class PostgresTokenNonceStore implements TokenNonceStore {
     await this.#db.insert(webClipTokenNonces).values(input);
   }
   async lookup(jtiHash: string, now: Date): Promise<string | null> {
-    const [record] = await this.#db.select({ deviceId: webClipTokenNonces.deviceId }).from(webClipTokenNonces).where(and(eq(webClipTokenNonces.jtiHash, jtiHash), isNull(webClipTokenNonces.usedAt), gt(webClipTokenNonces.expiresAt, now))).limit(1);
+    const [record] = await this.#db.select({ deviceId: webClipTokenNonces.deviceId }).from(webClipTokenNonces).where(and(eq(webClipTokenNonces.jtiHash, jtiHash), gt(webClipTokenNonces.expiresAt, now))).limit(1);
     return record?.deviceId ?? null;
   }
-  async reserve(jtiHash: string, reservationHash: string, now: Date, leaseUntil: Date): Promise<"acquired" | "in-progress" | "missing"> {
-    const [reserved] = await this.#db.update(webClipTokenNonces).set({ reservationHash, reservedUntil: leaseUntil }).where(and(eq(webClipTokenNonces.jtiHash, jtiHash), isNull(webClipTokenNonces.usedAt), gt(webClipTokenNonces.expiresAt, now), or(isNull(webClipTokenNonces.reservationHash), lte(webClipTokenNonces.reservedUntil, now), eq(webClipTokenNonces.reservationHash, reservationHash)))).returning({ deviceId: webClipTokenNonces.deviceId });
-    if (reserved) return "acquired";
-    const [existing] = await this.#db.select({ usedAt: webClipTokenNonces.usedAt, expiresAt: webClipTokenNonces.expiresAt, reservedUntil: webClipTokenNonces.reservedUntil }).from(webClipTokenNonces).where(eq(webClipTokenNonces.jtiHash, jtiHash)).limit(1);
-    return existing && !existing.usedAt && existing.expiresAt > now && existing.reservedUntil && existing.reservedUntil > now ? "in-progress" : "missing";
-  }
-  async commit(jtiHash: string, reservationHash: string, usedAt: Date): Promise<string | null> {
-    const [committed] = await this.#db.update(webClipTokenNonces).set({ usedAt }).where(and(eq(webClipTokenNonces.jtiHash, jtiHash), eq(webClipTokenNonces.reservationHash, reservationHash), isNull(webClipTokenNonces.usedAt), gt(webClipTokenNonces.reservedUntil, usedAt))).returning({ deviceId: webClipTokenNonces.deviceId });
-    if (committed) return committed.deviceId;
-    const [idempotent] = await this.#db.select({ deviceId: webClipTokenNonces.deviceId }).from(webClipTokenNonces).where(and(eq(webClipTokenNonces.jtiHash, jtiHash), eq(webClipTokenNonces.reservationHash, reservationHash), gt(webClipTokenNonces.usedAt, new Date(0)))).limit(1);
-    return idempotent?.deviceId ?? null;
-  }
-  async release(jtiHash: string, reservationHash: string): Promise<boolean> {
-    const rows = await this.#db.update(webClipTokenNonces).set({ reservationHash: null, reservedUntil: null }).where(and(eq(webClipTokenNonces.jtiHash, jtiHash), eq(webClipTokenNonces.reservationHash, reservationHash), isNull(webClipTokenNonces.usedAt))).returning({ jtiHash: webClipTokenNonces.jtiHash }); return rows.length === 1;
+  async exchange<T extends StoredWebClipExchange>(input: Readonly<{ jtiHash: string; attemptHash: string; now: Date }>, create: (transaction?: unknown) => Promise<T>) {
+    return this.#db.transaction(async (tx) => {
+      const [row] = await tx.select().from(webClipTokenNonces).where(eq(webClipTokenNonces.jtiHash, input.jtiHash)).for("update").limit(1);
+      if (!row || row.expiresAt <= input.now) return { status: "missing" as const };
+      if (row.usedAt) {
+        const a = Buffer.from(row.attemptHash ?? "", "hex"), b = Buffer.from(input.attemptHash, "hex");
+        if (a.length !== 32 || b.length !== 32 || !timingSafeEqual(a, b) || !row.resultIdentityId || !row.resultSessionId || !row.resultTokenHash || !row.committedAt) return { status: "replay" as const };
+        return { status: "recovered" as const, result: { identityId: row.resultIdentityId, sessionId: row.resultSessionId, tokenHash: row.resultTokenHash, committedAt: row.committedAt } as T };
+      }
+      const result = await create(tx);
+      await tx.update(webClipTokenNonces).set({ usedAt: input.now, attemptHash: input.attemptHash, resultIdentityId: result.identityId, resultSessionId: result.sessionId, resultTokenHash: result.tokenHash, committedAt: result.committedAt }).where(eq(webClipTokenNonces.jtiHash, input.jtiHash));
+      return { status: "committed" as const, result };
+    });
   }
   async pruneExpired(before: Date, batchSize: number): Promise<number> {
     const rows = await this.#db.select({ jtiHash: webClipTokenNonces.jtiHash }).from(webClipTokenNonces).where(lte(webClipTokenNonces.expiresAt, before)).limit(batchSize);

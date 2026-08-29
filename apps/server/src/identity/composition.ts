@@ -17,12 +17,16 @@ function signingKeys(env: NodeJS.ProcessEnv): Readonly<Record<string, Uint8Array
     const bytes = Buffer.from(encoded, "base64url"); if (bytes.byteLength < 32 || bytes.toString("base64url") !== encoded) throw new Error("INVALID_WEBCLIP_SIGNING_KEY"); return [kid, Uint8Array.from(bytes)];
   }));
 }
+function exchangeKey(env: NodeJS.ProcessEnv): Uint8Array {
+  const encoded = required(env, "WEBCLIP_EXCHANGE_KEY"); const bytes = Buffer.from(encoded, "base64url");
+  if (bytes.byteLength < 32 || bytes.toString("base64url") !== encoded) throw new Error("INVALID_WEBCLIP_EXCHANGE_KEY"); return Uint8Array.from(bytes);
+}
 
 export async function createIClassComposition(env: NodeJS.ProcessEnv, db: DatabaseClient["db"], dependencies: Readonly<{ fetcher?: typeof fetch; readCsv?: (path: string) => Promise<string> }> = {}): Promise<IClassComposition> {
   const mode = modeSchema.parse(required(env, "ICLASS_MODE"));
   if (mode === "guest-only-explicit") return Object.freeze({ iClassStatus: "disabled" });
   const keys = signingKeys(env); const activeKeyId = required(env, "WEBCLIP_ACTIVE_KEY_ID");
-  const tokens = new WebClipTokenService({ keys, activeKeyId, audience: required(env, "WEBCLIP_AUDIENCE"), nonceStore: new PostgresTokenNonceStore(db), production: true });
+  const tokens = new WebClipTokenService({ keys, activeKeyId, audience: required(env, "WEBCLIP_AUDIENCE"), nonceStore: new PostgresTokenNonceStore(db), exchangeKey: exchangeKey(env), production: true });
   const makeCsv = async () => {
     const adapter = new ImportedDeviceMapAdapter(); const path = required(env, "ICLASS_DEVICE_MAP_CSV_PATH");
     const text = dependencies.readCsv ? await dependencies.readCsv(path) : await readFile(path, "utf8"); await adapter.replaceFromCsv(text); return adapter;

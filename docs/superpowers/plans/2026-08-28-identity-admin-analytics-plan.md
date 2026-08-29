@@ -191,7 +191,7 @@ git add apps/server/src/identity
 git commit -m "feat: add iclass web clip identity adapter"
 ```
 
-實作決策：Web Clip 網址只含不透明的一次性 `jti`，不含姓名、班別、學號、裝置名稱或外部裝置 id。伺服器先驗證簽署及查閱未使用 nonce，iClass API／CSV 成功解析後才取得短效 reservation lease；身份寫入成功後才由 reservation owner 原子 commit `usedAt`。可捕捉失敗會 release，處理程序崩潰後可在 lease 過期再試；同時請求只有一個可進入身份寫入，其餘回傳 `in-progress` 且不建立訪客。API 5xx、逾時或 circuit open 不保留或消耗 nonce，可在五分鐘內重試。API 404 及短暫錯誤在 `api-csv-fallback` 模式會查 CSV；未知裝置在兩個來源都不存在時會消耗 token，但仍建立受限流保護的訪客身份。`/start` 與 `/api/identity` 共用信任 IP、user-agent、雙層建立限流及容量處理，並立即 303 轉到乾淨 `/`。正式環境必須明確設定 `ICLASS_MODE=api|csv|api-csv-fallback|guest-only-explicit`；啟用模式必須有簽署密鑰、audience 及 PostgreSQL nonce store，訪客模式在 health 明確顯示 `disabled`。過期 nonce 以有界 batch 定期刪除，不屬永久保留紀錄；Caddy 必須跳過 `/start` access log，避免記錄 `t` query。
+實作決策：Web Clip 網址只含不透明的一次性 `jti`，不含姓名、班別、學號、裝置名稱或外部裝置 id。`/start` 先簽發不超過 token 壽命的 HttpOnly、SameSite Strict attempt cookie，再以獨立 exchange key 對 `jti + NUL + attempt` 作 HMAC-SHA256，產生不可由 URL 推導的 deterministic identity cookie。adapter lookup 在短交易外完成；PostgreSQL exchange 在單一交易內鎖定 nonce，完成 live identity upsert、可驗證訪客合併、session rotation 及 nonce commit。交易回滾時 token 仍可重試；如 HTTP 回應遺失，同一 attempt 可冪等取回同一 cookie 和 session，不同 attempt 則視為 replay，不建立訪客或寫入 cookie。API 5xx、逾時或 circuit open 不消耗 nonce，可在五分鐘內重試；API 404 及短暫錯誤在 `api-csv-fallback` 模式會查 CSV。失敗的 `/start` 只 303 轉到乾淨 `/`，訪客 bootstrap 由首頁後續獨立完成。正式環境必須明確設定 `ICLASS_MODE`、簽署密鑰、獨立 exchange key、audience 及 PostgreSQL nonce store。過期 nonce 以有界 batch 定期刪除，不屬永久保留紀錄；Caddy 必須跳過 `/start` access log，避免記錄 `t` query。
 
 ### 任務 4：教師登入及權限守衛
 
