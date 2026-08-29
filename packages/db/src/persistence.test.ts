@@ -104,5 +104,9 @@ describe("authoritative persistence builders", () => {
       ...input,
       battleResult: { ...input.battleResult, modelVersion: " " },
     })).toThrow();
+    expect(() => buildRoundRow({
+      ...input,
+      battleResult: { ...input.battleResult, seed: 1.5 },
+    })).toThrow();
   });
 });

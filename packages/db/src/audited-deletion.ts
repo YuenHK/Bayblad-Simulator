@@ -12,16 +12,24 @@ const auditedDeletionSchema = z.object({
   deletedMatchCount: z.number().int().nonnegative(),
 }).strict();
 
+const deletionCountsSchema = z.object({
+  deletedIdentityCount: z.number().int().nonnegative(),
+  deletedDesignCount: z.number().int().nonnegative(),
+  deletedMatchCount: z.number().int().nonnegative(),
+}).strict();
+
+export type DeletionCounts = z.infer<typeof deletionCountsSchema>;
+
 export type AuditedDeletionInput = z.input<typeof auditedDeletionSchema>;
 
 export type AuditedDeletionTransaction = Pick<TransactionSql, "unsafe">;
 
 /** Must be called inside one database transaction; rollback preserves all-or-nothing semantics. */
-export async function withAuditedDeletion<T>(
+export async function withAuditedDeletion(
   transaction: AuditedDeletionTransaction,
   input: AuditedDeletionInput,
-  deleteOperation: () => Promise<T>,
-): Promise<string> {
+  deleteOperation: () => Promise<DeletionCounts>,
+): Promise<Readonly<{ auditId: string; counts: DeletionCounts }>> {
   const parsed = auditedDeletionSchema.parse(input);
   await transaction.unsafe(
     `insert into deletion_audit (
@@ -36,6 +44,19 @@ export async function withAuditedDeletion<T>(
     "select set_config('steam_top.deletion_audit_id', $1, true)",
     [parsed.auditId],
   );
-  await deleteOperation();
-  return parsed.auditId;
+  try {
+    const counts = deletionCountsSchema.parse(await deleteOperation());
+    if (
+      counts.deletedIdentityCount !== parsed.deletedIdentityCount ||
+      counts.deletedDesignCount !== parsed.deletedDesignCount ||
+      counts.deletedMatchCount !== parsed.deletedMatchCount
+    ) {
+      throw new Error("Actual deletion counts do not match the deletion audit");
+    }
+    return Object.freeze({ auditId: parsed.auditId, counts: Object.freeze(counts) });
+  } finally {
+    await transaction.unsafe(
+      "select set_config('steam_top.deletion_audit_id', '', true)",
+    );
+  }
 }
