@@ -1556,7 +1556,9 @@ export class RealtimeGateway {
     const expectedRevision = (this.#rooms.get(roomId)?.revision ?? 0) + 1;
     const payload = { phase, firstBattleAt: this.#matches.get(roomId)?.startedAt.toISOString() ?? null, closedAt: null } as const;
     let prepared: Awaited<ReturnType<RoomProjectionCoordinator["prepareProjection"]>> | undefined;
-    if (this.#roomRecordRepository && this.#roomProjections.usesDurableStore) {
+    const databaseAuthoritative = Boolean(this.#roomRecordRepository?.transitionPhaseWithProjection && this.#roomProjections.usesDurableStore);
+    if (databaseAuthoritative) await this.#roomRecordRepository!.transitionPhaseWithProjection!(roomId, expectedRevision, payload, new Date(this.#now()));
+    else if (this.#roomRecordRepository && this.#roomProjections.usesDurableStore) {
       let lastError: unknown;
       for (let attempt = 0; attempt < 3 && !prepared; attempt += 1) { try { prepared = await this.#roomProjections.prepareProjection({ roomId, revision: expectedRevision, payload }); } catch (error) { lastError = error; if (attempt < 2) await new Promise<void>((resolve) => setTimeout(resolve, 0)); } }
       if (!prepared) throw lastError;

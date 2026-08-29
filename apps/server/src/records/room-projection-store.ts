@@ -137,7 +137,8 @@ export class MemoryRoomProjectionStore implements RoomProjectionStore {
   async pruneDead(now = this.#now(), limit = 1_000): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) throw new RangeError("invalid prune limit");
     let removed = 0; const cutoff = now.getTime() - 30 * 86_400_000;
-    for (const [id, entry] of this.#entries) if (removed < limit && entry.status === "dead" && entry.updatedAt.getTime() < cutoff) { this.#entries.delete(id); removed++; }
+    for (const entry of this.#entries.values()) if (entry.status === "prepared" && entry.updatedAt.getTime() < now.getTime() - 300_000) { entry.status = "aborted"; entry.reservationToken = null; entry.updatedAt = now; }
+    for (const [id, entry] of this.#entries) if (removed < limit && ["dead", "aborted"].includes(entry.status) && entry.updatedAt.getTime() < cutoff) { this.#entries.delete(id); removed++; }
     return removed;
   }
 
@@ -256,7 +257,8 @@ export class PostgresRoomProjectionStore implements RoomProjectionStore {
   }
   async pruneDead(now = new Date(), limit = 1_000): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) throw new RangeError("invalid prune limit");
-    const rows = await this.db.execute(sql`with expired as (select room_id from room_projection_jobs where status='dead' and updated_at < ${new Date(now.getTime() - 30 * 86_400_000)} order by updated_at limit ${limit} for update skip locked) delete from room_projection_jobs j using expired where j.room_id=expired.room_id and j.status='dead' returning j.room_id`);
+    await this.db.update(roomProjectionJobs).set({ status: "aborted", reservationToken: null, updatedAt: now }).where(and(eq(roomProjectionJobs.status, "prepared"), lte(roomProjectionJobs.updatedAt, new Date(now.getTime() - 300_000))));
+    const rows = await this.db.execute(sql`with expired as (select room_id from room_projection_jobs where status in ('dead','aborted') and updated_at < ${new Date(now.getTime() - 30 * 86_400_000)} order by updated_at limit ${limit} for update skip locked) delete from room_projection_jobs j using expired where j.room_id=expired.room_id and j.status in ('dead','aborted') returning j.room_id`);
     return rows.length;
   }
 }
