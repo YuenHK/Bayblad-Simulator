@@ -63,6 +63,12 @@ jobs:
       - name: Attest protected deployment authorization from the approved default-branch workflow
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: { subject-path: deployment-authorization.json }
+      - name: Preserve the attested authorization for crash reconciliation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deployment-authorization-${{ env.DEPLOYMENT_ID }}
+          path: deployment-authorization.json
+          retention-days: 30
       - name: Verify subject, deploy through protected host, and smoke
         env:
           GH_TOKEN: "${{ github.token }}"
@@ -106,6 +112,24 @@ jobs:
           GH_TOKEN: "${{ github.token }}"
           SSH_HOST: "${{ secrets.SSH_HOST }}"
           SSH_USER: "${{ secrets.SSH_USER }}"
+          PROTECTED_STATE_ALLOWED_SIGNERS: "${{ secrets.PROTECTED_STATE_ALLOWED_SIGNERS }}"
+        run: |
+          set -euo pipefail
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0] | (.id|tostring)+"|"+.payload.nonce+"|"+.payload.manifestSha256')
+          expected=$(node -e 'const d=require("./pending-deployment.json");process.stdout.write(`${process.env.DEPLOYMENT_ID}|${d.payload.nonce}|${d.payload.manifestSha256}`)')
+          [[ "$latest" == "$expected" ]]
+          scp -q deployment-authorization.json "$SSH_USER@$SSH_HOST:/tmp/deployment-authorization-activate.json"
+          ssh "$SSH_USER@$SSH_HOST" "set -eu;trap 'rm -f /tmp/deployment-authorization-activate.json' EXIT;sudo /opt/steam-top-bootstrap/activate-production-state.sh /tmp/deployment-authorization-activate.json" > activation.frame
+          node scripts/parse-host-receipt-frame.mjs activation.frame "$DEPLOYMENT_NONCE" activation-receipt.json activation-receipt.json.sig
+          printf '%s\n' "$PROTECTED_STATE_ALLOWED_SIGNERS" > state-allowed-signers
+          ssh-keygen -Y verify -q -f state-allowed-signers -I state -n steam-top-production-activation -s activation-receipt.json.sig < activation-receipt.json
+          node -e 'const a=require("./activation-receipt.json");if(a.schemaVersion!==1||a.purpose!=="production-activation-receipt"||a.deploymentId!==process.env.DEPLOYMENT_ID||a.nonce!==process.env.DEPLOYMENT_NONCE||!/^[a-f0-9]{64}$/.test(a.stateDigest))process.exit(1)'
+      - name: Attest protected host activation receipt
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with: { subject-path: activation-receipt.json }
+      - name: Publish success only after protected host activation
+        env:
+          GH_TOKEN: "${{ github.token }}"
         run: |
           set -euo pipefail
           latest=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0] | (.id|tostring)+"|"+.payload.nonce+"|"+.payload.manifestSha256')
@@ -114,8 +138,6 @@ jobs:
           node scripts/create-deployment-status.mjs "$DEPLOYMENT_ID" deployment-status.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" --input deployment-status.json
           after=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=1" --jq '.[0] | (.id|tostring)+"|"+.payload.nonce+"|"+.payload.manifestSha256');[[ "$after" == "$expected" ]]
-          scp -q deployment-authorization.json "$SSH_USER@$SSH_HOST:/tmp/deployment-authorization-activate.json"
-          ssh "$SSH_USER@$SSH_HOST" "set -eu;trap 'rm -f /tmp/deployment-authorization-activate.json' EXIT;sudo /opt/steam-top-bootstrap/activate-production-state.sh /tmp/deployment-authorization-activate.json"
       - name: Mark interrupted or failed deployment
         if: failure() && env.DEPLOYMENT_ID != ''
         env: { GH_TOKEN: "${{ github.token }}" }
