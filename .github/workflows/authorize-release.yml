@@ -1,0 +1,16 @@
+name: Authorize release candidate
+on:
+  workflow_run:
+    workflows: [CI quality and release gates]
+    types: [completed]
+permissions: { contents: read }
+jobs:
+  authorize:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')
+    permissions: { contents: read, actions: read, deployments: write, packages: read, id-token: write, attestations: write }
+    uses: ./.github/workflows/ci.yml
+    with:
+      candidate_run_id: "${{ github.event.workflow_run.id }}"
+      candidate_commit: "${{ github.event.workflow_run.head_sha }}"
+      candidate_ref: "refs/tags/${{ github.event.workflow_run.head_branch }}"
+    secrets: inherit

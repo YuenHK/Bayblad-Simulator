@@ -81,12 +81,13 @@ describe("release CI contract", () => {
 
   it("gates approved tag artifacts on the isolated complete host core", () => {
     expect(workflow).toContain("release-host-core-integration:");
-    expect(workflow).toContain("needs: release-images");
+    expect(workflow).toContain("github.event_name == 'workflow_call'");
+    expect(read(".github/workflows/authorize-release.yml")).toContain("workflow_run:");
     expect(workflow).toContain("environment=release-host-integration");
     expect(workflow).toContain("DEPLOYMENT_AUTHORIZATION_PURPOSE=release-integration");
     expect(workflow).toContain("sudo -u steam-top-integration sudo");
     expect(workflow).toContain("host-deploy-and-receipt.sh");
-    expect(workflow).toContain("approved-release-${{ github.sha }}");
+    expect(workflow).toContain("approved-release-${{ inputs.candidate_commit }}");
     expect(workflow).toContain("down -v --remove-orphans");
     const record=read(".github/workflows/record-deployment.yml");
     expect(record).toContain("approved-release-[a-f0-9]{40}");
