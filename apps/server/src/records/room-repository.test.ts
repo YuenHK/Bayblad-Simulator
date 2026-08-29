@@ -37,9 +37,10 @@ describe("MemoryRoomRecordRepository authoritative transitions", () => {
     const staged = new Promise<void>((resolve) => { entered = resolve; });
     const first = projections.transaction(async () => { await projections.enqueue({ roomId: "room-1", revision: 0, payload: { phase: "launch", firstBattleAt: null, closedAt: null } }); entered(); await barrier; throw new Error("rollback"); });
     const second = projections.transaction(async () => projections.enqueue({ roomId: "room-2", revision: 0, payload: { phase: "launch", firstBattleAt: null, closedAt: null } }));
-    await staged; expect(await projections.claimDue(10, new Date("2099-01-01"))).toHaveLength(0);
+    await staged; let claimSettled = false; const claim = projections.claimDue(10, new Date("2099-01-01")).finally(() => { claimSettled = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0)); expect(claimSettled).toBe(false);
     release(); await expect(first).rejects.toThrow("rollback"); await expect(second).resolves.toBe("created");
-    const claimed = await projections.claimDue(10, new Date("2099-01-01"));
+    const claimed = await claim;
     expect(claimed.map(({ roomId }) => roomId)).toEqual(["room-2"]);
   });
 });

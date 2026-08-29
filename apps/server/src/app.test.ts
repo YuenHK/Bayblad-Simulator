@@ -11,6 +11,7 @@ import { DesignRegistry } from "./design-registry";
 import { AdminAuthService, InMemoryAdminStore } from "./auth/admin-auth";
 import { MemoryMatchRepository } from "./records/match-repository";
 import type { RoomRecordRepository } from "./records/room-repository";
+import { MemoryRoomProjectionStore } from "./records/room-projection-store";
 
 const uuid = () => crypto.randomUUID();
 const command = (type: string, fields: Record<string, unknown> = {}) => ({
@@ -98,6 +99,11 @@ class FailFirstCreateRoomProjection extends FailWaitingRoomProjection {
   readonly started = new Promise<void>((resolve) => { this.#started = resolve; });
   override async create() { this.createCalls += 1; if (this.createCalls === 1) { this.#started(); await new Promise<void>((resolve) => { this.release = resolve; }); throw new Error("offline"); } }
 }
+class RejectingClaimProjectionStore extends MemoryRoomProjectionStore {
+  reject!: (error: Error) => void; started!: () => void;
+  readonly claimStarted = new Promise<void>((resolve) => { this.started = resolve; });
+  override async claimDue(): Promise<never> { this.started(); return new Promise<never>((_resolve, reject) => { this.reject = reject; }); }
+}
 
 function nextEvent(socket: Socket, type: ServerEvent["type"] | "protocol.unsupported", timeoutMs = 3_000): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -161,6 +167,16 @@ describe("realtime app", () => {
     expect(app.realtimeGateway.debugCounts.terminalRecoveryTimers).toBe(0);
     await new Promise<void>((resolve) => setTimeout(resolve, 1_050));
     expect(rooms.get(room.roomId)?.revision).toBe(revision);
+  });
+  it("stops transport and clears state even when projection shutdown rejects", async () => {
+    const store = new RejectingClaimProjectionStore(); const repository = new FailWaitingRoomProjection();
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), roomRecordRepository: repository, roomProjectionStore: store, sweepIntervalMs: 0 });
+    const pumping = app.realtimeGateway.pump(); await store.claimStarted;
+    const closing = app.realtimeGateway.close(); store.reject(new Error("projection failed"));
+    await expect(pumping).rejects.toThrow("projection failed");
+    await expect(closing).rejects.toMatchObject({ definitivelyStopped: true });
+    expect(app.realtimeGateway.definitivelyStopped).toBe(true);
+    expect(app.realtimeGateway.debugCounts).toMatchObject({ sessions: 0, terminalRecoveryTimers: 0 });
   });
 
   it("serializes concurrent duplicate commands per session and shares their outcome", async () => {
