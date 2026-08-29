@@ -136,7 +136,7 @@ git add apps/server/src/identity
 git commit -m "feat: resolve cached and guest identities safely"
 ```
 
-實作決策：身份 Cookie 採 256-bit opaque token、資料庫只存 SHA-256 hash；每次有效使用把期限滾動至 180 日後，`Max-Age` 與 `Expires` 一致。IP／user-agent 僅是診斷欄位，直接連線只取 socket 位址且不信任未配置的 forwarded header。訪客代碼由資料庫 partial unique index 保證唯一；正式環境組裝必須注入持久 IdentityResolver，記憶體 adapter 只供明確測試使用。Socket.IO 將於 iClass adapter／即時整合任務改為由 HttpOnly Cookie resolver 供應 displayName，現階段不接受 client JSON 作 live 身份。
+實作決策：身份 Cookie 採 256-bit opaque token、資料庫只存 SHA-256 hash；每次有效使用把期限滾動至 180 日後，`Max-Age` 與 `Expires` 以整秒一致。回傳 `status` 表示本次辨識來源：即時可信身份為 `iclass`、已驗證身份的 Cookie 重播為 `cookie`（保留已驗證學生欄位）、匿名訪客及其 Cookie 重播為 `guest`；資料庫仍保留原始身份種類。未知、過期、撤銷或屬於另一已驗證身份的 token 即使同時帶 live 身份亦必須輪換，舊 token 永不可復活。IP／user-agent 僅是診斷欄位，直接連線只取 socket 位址且不信任未配置的 forwarded header。訪客代碼由資料庫 partial unique index 保證唯一；正式環境組裝必須注入帶內部 durable brand 的 Postgres IdentityResolver，記憶體 adapter 只供明確測試使用。Socket.IO 將於 iClass adapter／即時整合任務改為由 HttpOnly Cookie resolver 供應 displayName，現階段不接受 client JSON 作 live 身份。
 
 ### 任務 3：iClass Web Clip 整合接口
 
