@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lt, lte, ne, or } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, lte, ne, or, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 import { buildCompletedMatchRow, buildRoundRow } from "@steam-top/db/persistence";
@@ -69,6 +69,7 @@ export interface MatchRepository {
   claimDueJobs(now?: Date, limit?: number, leaseMs?: number): Promise<readonly ClaimedMatchRetryJob[]>;
   retryFailedMatch(matchId: string, options?: Readonly<{ manual?: boolean; claimToken?: string; generation?: number }>): Promise<"created" | "replayed">;
   markPersistenceFailure?(matchId: string, sanitizedCode: string): Promise<void>;
+  pruneRetention?(now?: Date, limit?: number): Promise<number>;
 }
 export type MatchRetryJob = Readonly<{ matchId: string; status: "pending" | "retrying" | "failed" | "completed"; attemptCount: number; nextRetryAt: Date; lastSanitizedCode: string | null; payload: CompletedMatchRecord }>;
 export type ClaimedMatchRetryJob = MatchRetryJob & Readonly<{ claimToken: string; generation: number }>;
@@ -102,7 +103,7 @@ export class MemoryMatchRepository implements MatchRepository {
   readonly #completedJobTtlMs: number;
   readonly #now: () => Date;
   constructor(options: Readonly<{ maxJobs?: number; completedJobTtlMs?: number; now?: () => Date }> = {}) {
-    this.#maxJobs = options.maxJobs ?? 2_000; this.#completedJobTtlMs = options.completedJobTtlMs ?? 300_000; this.#now = options.now ?? (() => new Date());
+    this.#maxJobs = options.maxJobs ?? 2_000; this.#completedJobTtlMs = options.completedJobTtlMs ?? 7 * 86_400_000; this.#now = options.now ?? (() => new Date());
   }
   #pruneJobs(now = this.#now()): void { for (const [id, job] of this.jobs) if (job.status === "completed" && job.completedAt && job.completedAt.getTime() + this.#completedJobTtlMs <= now.getTime()) { this.jobs.delete(id); this.#completionRounds.delete(id); } }
   #hydrateJob(job: MatchRetryJob & { claimToken?: string; generation?: number; completedAt?: Date }): typeof job {
@@ -188,8 +189,14 @@ export class MemoryMatchRepository implements MatchRepository {
     }
   }
   async markPersistenceFailure(matchId: string, sanitizedCode: string): Promise<void> {
-    const job = this.jobs.get(matchId); if (!job || job.status === "completed" || (job.status === "retrying" && job.nextRetryAt > new Date())) return;
+    const job = this.jobs.get(matchId); if (!job || job.status === "completed" || (job.status === "retrying" && job.nextRetryAt > this.#now())) return;
     this.jobs.set(matchId, { ...job, status: "failed", lastSanitizedCode: /^[A-Z0-9_]{1,128}$/.test(sanitizedCode) ? sanitizedCode : "PERSISTENCE_FAILED" });
+  }
+  async pruneRetention(now = this.#now(), limit = 1_000): Promise<number> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) throw new RangeError("invalid prune limit");
+    let removed = 0;
+    for (const [id, job] of this.jobs) if (removed < limit && job.status === "completed" && job.completedAt && job.completedAt.getTime() + this.#completedJobTtlMs <= now.getTime()) { this.jobs.delete(id); this.#completionRounds.delete(id); removed++; }
+    return removed;
   }
 }
 
@@ -333,6 +340,11 @@ export class PostgresMatchRepository implements MatchRepository {
       await tx.update(matches).set({ status: "persist_failed", persistFailureCode: code }).where(and(eq(matches.id, matchId), ne(matches.status, "completed")));
       await tx.update(matchPersistenceJobs).set({ status: "failed", claimToken: null, leaseUntil: null, lastSanitizedCode: code, updatedAt: new Date() }).where(and(eq(matchPersistenceJobs.matchId, matchId), ne(matchPersistenceJobs.status, "completed")));
     });
+  }
+  async pruneRetention(now = new Date(), limit = 1_000): Promise<number> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) throw new RangeError("invalid prune limit");
+    const rows = await this.db.execute(sql`with expired as (select match_id from match_persistence_jobs where status='completed' and completed_at < ${new Date(now.getTime() - 7 * 86_400_000)} order by completed_at limit ${limit} for update skip locked) delete from match_persistence_jobs j using expired where j.match_id=expired.match_id and j.status='completed' returning j.match_id`);
+    return rows.length;
   }
 
   async queueCompletion(input: CompletedMatchRecord): Promise<"created" | "replayed"> {

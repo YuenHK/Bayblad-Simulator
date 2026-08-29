@@ -1278,7 +1278,12 @@ export class BattleEngine {
       if (active.fingerprint !== fingerprint) throw new Error("Active battle correlation conflict");
       return active.promise;
     }
-    return this.#scheduleJob(key, fingerprint, canonical, claimHandle);
+    try {
+      return this.#scheduleJob(key, fingerprint, canonical, claimHandle);
+    } catch (error) {
+      if (claimHandle) await this.#releaseClaim(claimHandle);
+      throw error;
+    }
   }
 
   #scheduleJob(key: string, fingerprint: string, canonical: BattleInputs, claimHandle?: BattleClaimHandle): Promise<BattleResult> {

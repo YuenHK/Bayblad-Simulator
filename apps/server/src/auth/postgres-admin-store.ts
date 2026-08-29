@@ -1,7 +1,7 @@
 import { and, asc, eq, gt, isNull, lt, lte, sql } from "drizzle-orm";
 import type { DatabaseClient } from "@steam-top/db";
 import { adminAudit, adminAuditOutbox, adminLoginLimits, adminReauthGrants, adminSessions, adminUsers } from "@steam-top/db/schema";
-import type { AdminSession, AdminStore, AdminUser, AuditInput } from "./admin-auth";
+import { auditInputSchema, type AdminSession, type AdminStore, type AdminUser, type AuditInput } from "./admin-auth";
 import { ADMIN_IDLE_MS } from "./admin-session";
 
 type Db = DatabaseClient["db"];
@@ -10,7 +10,7 @@ const session = (row: typeof adminSessions.$inferSelect): AdminSession => ({ id:
 const auditValues = (input: AuditInput) => ({ adminUserId: input.adminUserId ?? null, adminSessionId: input.adminSessionId ?? null, action: input.action, outcome: input.outcome, requestIp: input.ip ?? null, userAgent: input.userAgent?.slice(0, 512) ?? null, details: input.details ?? {} });
 
 export class PostgresAdminStore implements AdminStore {
-  constructor(readonly db: Db) {}
+  constructor(readonly db: Db, readonly report: (event: Readonly<{ event: "admin_audit_dead"; outboxId: string }>) => void = () => undefined) {}
   async findUser(username: string) { const [row] = await this.db.select().from(adminUsers).where(sql`lower(${adminUsers.username}) = lower(${username.trim()})`).limit(1); return row ? user(row) : null; }
   async createUserIfAbsent(input: { username: string; passwordHash: string }) {
     return this.db.transaction(async (tx) => {
@@ -33,22 +33,24 @@ export class PostgresAdminStore implements AdminStore {
     });
   }
   async revokeSession(value: string, now: Date) { return this.db.transaction(async (tx) => { const [candidate] = await tx.select().from(adminSessions).where(eq(adminSessions.tokenHash, value)).limit(1); if (!candidate) return false; await tx.select({ id: adminUsers.id }).from(adminUsers).where(eq(adminUsers.id, candidate.adminUserId)).for("update").limit(1); const [locked] = await tx.select().from(adminSessions).where(eq(adminSessions.id, candidate.id)).for("update").limit(1); if (!locked || locked.revokedAt || locked.archivedAt) return false; const rows = await tx.update(adminSessions).set({ revokedAt: now, archivedAt: now, tokenHash: sql`encode(digest(${adminSessions.tokenHash} || ${now.toISOString()}, 'sha256'),'hex')`, csrfTokenHash: sql`encode(digest(${adminSessions.csrfTokenHash} || ${now.toISOString()}, 'sha256'),'hex')`, updatedAt: now }).where(eq(adminSessions.id, locked.id)).returning({ id: adminSessions.id }); return rows.length === 1; }); }
-  async audit(input: AuditInput) { await this.db.insert(adminAudit).values(auditValues(input)); }
-  async queueAudit(input: AuditInput) { await this.db.insert(adminAuditOutbox).values({ payload: structuredClone(input) }); }
+  async audit(input: AuditInput) { await this.db.insert(adminAudit).values(auditValues(auditInputSchema.parse(input) as AuditInput)); }
+  async queueAudit(input: AuditInput) { await this.db.insert(adminAuditOutbox).values({ payload: structuredClone(auditInputSchema.parse(input)) }); }
   async pumpAuditOutbox(now = new Date(), limit = 100): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new TypeError("INVALID_AUDIT_PUMP_LIMIT");
     return this.db.transaction(async (tx) => {
       const jobs = await tx.select().from(adminAuditOutbox).where(lte(adminAuditOutbox.nextAttemptAt, now)).orderBy(asc(adminAuditOutbox.nextAttemptAt), asc(adminAuditOutbox.createdAt)).limit(limit).for("update", { skipLocked: true });
       for (const job of jobs) {
         try {
-          const input = job.payload as AuditInput;
+          const input = auditInputSchema.parse(job.payload) as AuditInput;
           await tx.transaction(async (savepoint) => {
             await savepoint.insert(adminAudit).values({ ...auditValues(input), sourceOutboxId: job.id }).onConflictDoNothing();
             await savepoint.delete(adminAuditOutbox).where(eq(adminAuditOutbox.id, job.id));
           });
         } catch (error) {
           const attempt = job.attemptCount + 1;
-          await tx.update(adminAuditOutbox).set({ attemptCount: attempt, nextAttemptAt: new Date(now.getTime() + Math.min(300_000, 1_000 * 2 ** Math.min(8, attempt - 1))), lastError: "ADMIN_AUDIT_WRITE_FAILED" }).where(eq(adminAuditOutbox.id, job.id));
+          const exhausted = attempt >= 10;
+          await tx.update(adminAuditOutbox).set({ attemptCount: attempt, nextAttemptAt: exhausted ? new Date(8_640_000_000_000_000) : new Date(now.getTime() + Math.min(300_000, 1_000 * 2 ** Math.min(8, attempt - 1))), lastError: exhausted ? "ADMIN_AUDIT_DEAD" : "ADMIN_AUDIT_WRITE_FAILED" }).where(eq(adminAuditOutbox.id, job.id));
+          if (exhausted) this.report({ event: "admin_audit_dead", outboxId: job.id });
         }
       }
       return jobs.length;

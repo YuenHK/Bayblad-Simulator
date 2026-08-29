@@ -382,7 +382,7 @@ export class RealtimeGateway {
     this.#newSessionGlobalLimiter.clear();
   }
 
-  pump(nowMs = this.#now()): void {
+  async pump(nowMs = this.#now()): Promise<void> {
     this.#pruneTerminalMatches(nowMs);
     this.#launch.finalizeExpired(nowMs);
     this.#pendingLimiter.pruneExpired();
@@ -390,7 +390,7 @@ export class RealtimeGateway {
     this.#newSessionByClientLimiter.pruneExpired();
     this.#newSessionGlobalLimiter.pruneExpired();
     this.#maintenance();
-    void this.#roomProjections.pump(new Date(nowMs)).catch(this.#logError);
+    await this.#roomProjections.pump(new Date(nowMs));
     for (const [roomId, match] of [...this.#matches]) {
       if (!this.#rooms.hasRoom(roomId)) {
         this.#cancelMatch(roomId, match);
@@ -399,6 +399,7 @@ export class RealtimeGateway {
       this.#flushLaunch(roomId, match);
     }
     const beforeSweep = new Map(this.#rooms.lobbySnapshot().rooms.map(({ id }) => [id, this.#rooms.get(id)!.revision]));
+    await Promise.all(this.#rooms.roomsDueForClosure().map(({ roomId, revision }) => this.#projectRoomClosure(roomId, revision, nowMs)));
     this.#rooms.sweep();
     for (const [roomId, match] of [...this.#matches]) {
       const room = this.#rooms.get(roomId);
@@ -414,7 +415,6 @@ export class RealtimeGateway {
       const nextRevision = afterSweep.get(roomId);
       if (nextRevision === undefined) {
         lobbyChanged = true;
-        this.#projectRoomClosure(roomId, revision + 1, nowMs);
         this.#departWholeRoom(roomId, "expired");
         this.#cleanupRoom(roomId);
       } else if (nextRevision !== revision) {
@@ -789,10 +789,15 @@ export class RealtimeGateway {
     } else if (event.type === "room.close") {
       const closingRevision = (this.#rooms.get(event.roomId)?.revision ?? 0) + 1;
       const checkpoint = this.#rooms.checkpoint(event.roomId);
+      if (this.#roomProjections.usesDurableStore) {
+        this.#rooms.close(event.roomId, session.id); // validate authority before admitting the durable close
+        this.#rooms.restore(checkpoint);
+        await this.#projectRoomClosure(event.roomId, closingRevision, this.#now());
+      }
       this.#rooms.close(event.roomId, session.id);
-      try { if (this.#roomRecordRepository) await this.#roomRecordRepository.close(event.roomId, new Date(this.#now())); }
+      try { if (this.#roomRecordRepository) await this.#roomRecordRepository.close(event.roomId, new Date(this.#now()), closingRevision); }
       catch (error) { this.#rooms.restore(checkpoint); this.#broadcastRoom(event.roomId); this.#broadcastLobby(); throw error; }
-      this.#projectRoomClosure(event.roomId, closingRevision, this.#now());
+      if (!this.#roomProjections.usesDurableStore) await this.#projectRoomClosure(event.roomId, closingRevision, this.#now());
       const match = this.#matches.get(event.roomId);
       if (match) this.#cancelMatch(event.roomId, match);
       this.#departWholeRoom(event.roomId, "closed");
@@ -804,6 +809,8 @@ export class RealtimeGateway {
       if (beforeLeave.phase !== "waiting" && beforeLeave.viewer.role !== "spectator") {
         throw Object.assign(new Error("ROOM_ACTIVE"), { code: "ROOM_ACTIVE" });
       }
+      const closesRoom = Number(beforeLeave.player1 !== null) + Number(beforeLeave.player2 !== null) + beforeLeave.spectators.length === 1;
+      if (closesRoom && this.#roomProjections.usesDurableStore) await this.#projectRoomClosure(event.roomId, closingRevision, this.#now());
       const participantId = this.#participantForSession(event.roomId, session.id);
       const checkpoint = this.#rooms.checkpoint(event.roomId);
       this.#rooms.leave(event.roomId, session.id);
@@ -836,7 +843,7 @@ export class RealtimeGateway {
           : undefined;
         if (nextOwnerSessionId) this.#sessionsById.get(nextOwnerSessionId)?.ownedRoomIds.add(event.roomId);
         this.#broadcastRoom(event.roomId);
-      } else { this.#projectRoomClosure(event.roomId, closingRevision, this.#now()); this.#cleanupRoom(event.roomId); }
+      } else { if (!this.#roomProjections.usesDurableStore) await this.#projectRoomClosure(event.roomId, closingRevision, this.#now()); this.#cleanupRoom(event.roomId); }
       this.#broadcastLobby();
     } else if (event.type === "clock.ping") {
       this.#pruneSessionOutcomes(session, receivedAtMs);
@@ -958,8 +965,8 @@ export class RealtimeGateway {
         });
       }
       this.#matches.set(roomId, match);
+      await this.#projectRoomPhase(roomId, "launch");
       this.#rooms.setPhase(roomId, "launch");
-      this.#projectRoomPhase(roomId, "launch");
       const initialSchedule = this.#scheduleRound(roomId, match, false);
       this.#broadcastRoom(roomId);
       this.#broadcastLobby();
@@ -972,7 +979,7 @@ export class RealtimeGateway {
         this.#designs.unpin(session2, room.player2.designId);
       }
       try { this.#rooms.cancelMatch(roomId); } catch (rollbackError) { this.#logError(rollbackError); }
-      this.#projectRoomPhase(roomId, "waiting");
+      await this.#projectRoomPhase(roomId, "waiting");
       this.#broadcastRoom(roomId);
       this.#broadcastLobby();
       throw error;
@@ -1032,7 +1039,7 @@ export class RealtimeGateway {
     const controller = new AbortController();
     match.controller = controller;
     try {
-      this.#projectRoomPhase(roomId, "battle");
+      await this.#projectRoomPhase(roomId, "battle");
       this.#rooms.setPhase(roomId, "battle");
       this.#broadcastRoom(roomId);
       this.#broadcastLobby();
@@ -1093,7 +1100,7 @@ export class RealtimeGateway {
       };
       match.latestRoundFinished = roundFinished;
       this.#emitToRoom(roomId, roundFinished);
-      this.#projectRoomPhase(roomId, "result");
+      await this.#projectRoomPhase(roomId, "result");
       this.#rooms.setPhase(roomId, "result");
       this.#broadcastRoom(roomId);
       this.#broadcastLobby();
@@ -1116,7 +1123,7 @@ export class RealtimeGateway {
           this.#rooms.finishMatch(roomId);
           this.#broadcastRoom(roomId);
           this.#broadcastLobby();
-          this.#projectRoomPhase(roomId, "waiting");
+          await this.#projectRoomPhase(roomId, "waiting");
         } finally {
           try { this.#launch.cleanupRound(roomId, roundId); } catch { /* already reclaimed */ }
           this.#battleEngine.cleanup(match.matchId, roundId);
@@ -1125,7 +1132,7 @@ export class RealtimeGateway {
         }
         return;
       }
-      this.#projectRoomPhase(roomId, "launch");
+      await this.#projectRoomPhase(roomId, "launch");
       this.#rooms.nextRound(roomId);
       this.#broadcastRoom(roomId);
       this.#broadcastLobby();
@@ -1215,7 +1222,7 @@ export class RealtimeGateway {
       protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId(),
     });
     try { this.#rooms.cancelMatch(roomId); } catch { /* room may already be gone */ }
-    this.#projectRoomPhase(roomId, "waiting");
+    await this.#projectRoomPhase(roomId, "waiting");
     try { this.#launch.cleanupRound(roomId, match.currentRoundId); } catch { /* already reclaimed */ }
     this.#battleEngine.cleanup(match.matchId, match.currentRoundId);
     this.#unpinMatchDesigns(match);
@@ -1237,7 +1244,7 @@ export class RealtimeGateway {
     try { await this.#matchRepository!.markPersistenceFailure?.(match.matchId, "ROUND_SAVE_FAILED"); } catch (error) { this.#logError(error); }
     this.#emitToRoom(roomId, { type: "match.persistence_failed", roomId, matchId: match.matchId, failureCode: "ROUND_SAVE_FAILED", retryable: false, protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() });
     try { this.#rooms.cancelMatch(roomId); } catch { /* room may have closed */ }
-    this.#projectRoomPhase(roomId, "waiting");
+    await this.#projectRoomPhase(roomId, "waiting");
     this.#cancelMatch(roomId, match);
     this.#broadcastRoom(roomId); this.#broadcastLobby();
     const terminal = new Error(lastError instanceof Error ? "ROUND_SAVE_FAILED" : "ROUND_SAVE_FAILED"); terminal.name = "RoundPersistenceTerminalError"; throw terminal;
@@ -1493,22 +1500,22 @@ export class RealtimeGateway {
     return { roles, ownerParticipantId: room.ownerParticipantId, ownerIdentityId };
   }
 
-  #projectRoomPhase(roomId: string, phase: "waiting" | "launch" | "battle" | "result"): void {
+  async #projectRoomPhase(roomId: string, phase: "waiting" | "launch" | "battle" | "result"): Promise<void> {
     if (!this.#roomRecordRepository) return;
-    const revision = this.#rooms.get(roomId)?.revision ?? Number.MAX_SAFE_INTEGER;
+    const revision = (this.#rooms.get(roomId)?.revision ?? (Number.MAX_SAFE_INTEGER - 1)) + 1;
     if (this.#roomProjections.usesDurableStore) {
-      void this.#roomProjections.enqueueProjection({
+      await this.#roomProjections.enqueueProjection({
         roomId, revision,
         payload: { phase, firstBattleAt: this.#matches.get(roomId)?.startedAt.toISOString() ?? null, closedAt: null },
-      }).catch(this.#logError);
+      });
     } else this.#roomProjections.enqueue(`${roomId}:phase`, revision, () => this.#roomRecordRepository!.updatePhase(roomId, phase));
   }
 
-  #projectRoomClosure(roomId: string, revision: number, closedAtMs: number): void {
+  async #projectRoomClosure(roomId: string, revision: number, closedAtMs: number): Promise<void> {
     if (!this.#roomRecordRepository) return;
     const closedAt = new Date(closedAtMs);
     if (this.#roomProjections.usesDurableStore) {
-      void this.#roomProjections.enqueueProjection({ roomId, revision, payload: { phase: "closed", firstBattleAt: null, closedAt: closedAt.toISOString() } }).catch(this.#logError);
+      await this.#roomProjections.enqueueProjection({ roomId, revision, payload: { phase: "closed", firstBattleAt: null, closedAt: closedAt.toISOString() } });
     } else this.#roomProjections.enqueue(`${roomId}:phase`, revision, () => this.#roomRecordRepository!.close(roomId, closedAt));
   }
 

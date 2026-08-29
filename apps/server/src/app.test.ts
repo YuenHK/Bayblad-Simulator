@@ -217,7 +217,7 @@ describe("realtime app", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(unexpected).not.toHaveBeenCalled();
     now += 120_001;
-    app.realtimeGateway.pump(now);
+    await app.realtimeGateway.pump(now);
   });
 
   it("回應 clock.ping 四時間戳，並在房主關房時通知全部成員", async () => {
@@ -261,7 +261,7 @@ describe("realtime app", () => {
     expect(await watcherDeparted).toMatchObject({ roomId: room.roomId, reason: "closed" });
     expect(app.realtimeGateway.debugCounts.pendingDepartures).toBe(2);
     now += 120_001;
-    app.realtimeGateway.pump(now);
+    await app.realtimeGateway.pump(now);
     expect(app.realtimeGateway.debugCounts.pendingDepartures).toBe(0);
   });
 
@@ -425,7 +425,7 @@ describe("realtime app", () => {
     first.socket.close(); second.socket.close();
     await new Promise<void>((resolve) => setTimeout(resolve, 2));
     now += 120_001;
-    app.realtimeGateway.pump(now);
+    await app.realtimeGateway.pump(now);
     expect(app.realtimeGateway.debugCounts).toMatchObject({ sessions: 0, connections: 0, newSessionClientBuckets: 0 });
   });
 
@@ -952,7 +952,7 @@ describe("realtime app", () => {
     p2Socket.close();
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     now = finishedAt + 120_001;
-    app.realtimeGateway.pump(now);
+    await app.realtimeGateway.pump(now);
     expect(app.realtimeGateway.debugCounts.terminalMatches).toBe(0);
     const expired = await connect(url, "P2", p2.token);
     p2Socket = expired.socket;
@@ -1151,7 +1151,7 @@ describe("realtime app", () => {
     now += 120_001;
     const removed = nextEvent(peer.socket, "room.delta");
     const sweptLobby = nextEvent(peer.socket, "lobby.snapshot");
-    app.realtimeGateway.pump(now);
+    await app.realtimeGateway.pump(now);
     const removalDelta = await removed;
     expect(removalDelta.patch.player1).toBeNull();
     expect(removalDelta.patch.ownerParticipantId).toBeDefined();
@@ -1212,7 +1212,7 @@ describe("realtime app", () => {
     owner.socket.close();
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     now += 120_001;
-    app.realtimeGateway.pump(now);
+    await app.realtimeGateway.pump(now);
     expect(app.realtimeGateway.debugCounts).toMatchObject({
       sessions: 0, bindings: 0, matches: 0, pendingBuckets: 0, sessionCommandBuckets: 0,
     });

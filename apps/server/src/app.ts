@@ -16,7 +16,7 @@ import { createValidatedLiveIdentityProvider, IdentityAdmissionError, IdentityCa
 import { PostgresIdentityStore } from "./identity/postgres-store";
 import type { IClassAdapter } from "./identity/iclass-adapter";
 import type { WebClipTokenService } from "./identity/webclip-token";
-import { authenticateAdminMutation, type AdminAuthService, registerAdminAuthRoutes } from "./auth/admin-auth";
+import { authenticateAdminMutation, durableAudit, type AdminAuthService, registerAdminAuthRoutes } from "./auth/admin-auth";
 import { PostgresAdminStore } from "./auth/postgres-admin-store";
 import { DesignPersistenceError, PostgresDesignRepository, type DesignRepository } from "./records/design-repository";
 import { PostgresMatchRepository, type MatchRepository } from "./records/match-repository";
@@ -217,13 +217,13 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     if (typeof id !== "string" || !/^[0-9a-f-]{36}$/iu.test(id)) return reply.code(400).send({ error: "INVALID_MATCH_ID" });
     try {
       await options.matchRepository!.retryFailedMatch(id, { manual: true });
-      try { const store = options.adminAuth!.store; await (store.queueAudit?.bind(store) ?? store.audit.bind(store))({ adminUserId: current.user.id, adminSessionId: current.session.id, action: "match.persistence.retry", outcome: "success", details: { matchId: id } }); }
+      try { await durableAudit(options.adminAuth!.store, { adminUserId: current.user.id, adminSessionId: current.session.id, action: "match.persistence.retry", outcome: "success", details: { matchId: id } }); }
       catch (auditError) { options.adminAuth!.report("match.persistence.retry.audit_pending", auditError, request.id); }
       return reply.code(204).send();
     } catch (error) {
       options.adminAuth!.report("match.persistence.retry", error, request.id);
       try {
-        await options.adminAuth!.store.audit({ adminUserId: current.user.id, adminSessionId: current.session.id, action: "match.persistence.retry", outcome: "failure", details: { matchId: id, code: "MATCH_RETRY_FAILED" } });
+        await durableAudit(options.adminAuth!.store, { adminUserId: current.user.id, adminSessionId: current.session.id, action: "match.persistence.retry", outcome: "failure", details: { matchId: id, code: "MATCH_RETRY_FAILED" } });
       } catch (auditError) { options.adminAuth!.report("match.persistence.retry.audit", auditError, request.id); }
       return reply.code(409).send({ error: "MATCH_RETRY_FAILED" });
     }
@@ -273,15 +273,19 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
         }
       : async () => null);
   const retryWorkers = new Map<string, Promise<void>>();
+  let retryClaimPump: Promise<void> | undefined;
+  let retryPumpClosing = false;
   const pumpRetryJobs = () => {
-    if (!options.matchRepository) return;
-    void options.matchRepository.claimDueJobs(new Date(), 25).then((jobs) => {
+    if (!options.matchRepository || retryPumpClosing || retryClaimPump) return;
+    const now = new Date();
+    const pump = Promise.resolve(options.matchRepository.pruneRetention?.(now, 1_000)).then(() => options.matchRepository!.claimDueJobs(now, 25)).then((jobs) => {
       for (const job of jobs) {
         if (retryWorkers.has(job.matchId)) continue;
         const operation = options.matchRepository!.retryFailedMatch(job.matchId, { claimToken: job.claimToken, generation: job.generation }).then(() => undefined).catch(reportBackgroundError).finally(() => retryWorkers.delete(job.matchId));
         retryWorkers.set(job.matchId, operation);
       }
-    }).catch(reportBackgroundError);
+    }).catch(reportBackgroundError).finally(() => { if (retryClaimPump === pump) retryClaimPump = undefined; });
+    retryClaimPump = pump;
   };
   const gateway = new RealtimeGateway(app.server, {
     rooms,
@@ -464,7 +468,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   });
 
   const intervalMs = config.sweepIntervalMs;
-  const timer = intervalMs > 0 ? setInterval(() => { gateway.pump(); }, intervalMs) : undefined;
+  const timer = intervalMs > 0 ? setInterval(() => { void gateway.pump().catch(reportBackgroundError); }, intervalMs) : undefined;
   const nonceTimer = intervalMs > 0 && options.webClipTokens ? setInterval(() => { void options.webClipTokens!.pruneExpired().catch(() => undefined); }, Math.max(60_000, intervalMs)) : undefined;
   const adminMaintenanceIntervalMs = options.adminMaintenanceIntervalMs ?? 60_000;
   if (!Number.isFinite(adminMaintenanceIntervalMs) || adminMaintenanceIntervalMs < 1) throw new TypeError("adminMaintenanceIntervalMs must be a finite positive number");
@@ -482,11 +486,13 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   adminMaintenanceTimer?.unref();
   if (options.webClipTokens) void options.webClipTokens.pruneExpired().catch(() => undefined);
   app.addHook("preClose", async () => {
+    retryPumpClosing = true;
     if (timer) clearInterval(timer);
     if (nonceTimer) clearInterval(nonceTimer);
     if (adminMaintenanceTimer) clearInterval(adminMaintenanceTimer);
     await adminMaintenance;
-    await Promise.allSettled(retryWorkers.values());
+    await retryClaimPump;
+    while (retryWorkers.size) await Promise.allSettled([...retryWorkers.values()]);
     await gateway.close();
     await battleEngine.shutdown?.();
   });
