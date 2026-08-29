@@ -8,7 +8,7 @@ import { usageAnalytics } from "./usage";
 import { parameterUsage } from "./parameter-usage";
 
 export function createProductionAnalytics(client: DatabaseClient): AnalyticsService {
-  const configuredSecret=process.env.ANALYTICS_CURSOR_SECRET;const cursorSecret=configuredSecret?Buffer.from(configuredSecret,"utf8"):undefined;
+  const configuredSecret=process.env.ANALYTICS_CURSOR_SECRET;const cursorSecret=configuredSecret?Buffer.from(configuredSecret,"base64url"):undefined;
   if(process.env.NODE_ENV==="production"&&(!cursorSecret||cursorSecret.length<32))throw new TypeError("ANALYTICS_CURSOR_SECRET must contain at least 32 bytes");
   const cache=new PostgresAnalyticsCache(client.sql);const snapshotDb=new AsyncLocalStorage<PostgresJsDatabase<typeof schema>>(); const current=()=>snapshotDb.getStore()??client.db;
   const consistent=<T>(operation:()=>Promise<T>)=>snapshotDb.run(drizzle(cache.currentExecutor() as never,{schema}),operation);
