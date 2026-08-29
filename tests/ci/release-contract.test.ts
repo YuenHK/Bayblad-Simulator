@@ -201,6 +201,8 @@ describe("rollback deletion monotonicity", () => {
     expect(canonical).toContain("expected activation B to be locked out");
     expect(canonical).toContain("promotion_audit");
     expect(canonical).toContain("runtime current mismatch");
+    expect(canonical).toContain("ledger-ci-old");
+    expect(canonical).toContain("old ledger signer removal unexpectedly accepted");
     expect(read("compose.canonical-app.yaml")).toContain("steam_top_app");
     expect(read(".github/workflows/ci.yml")).toContain("--force-recreate --wait server");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("promote-restored-target.sh");

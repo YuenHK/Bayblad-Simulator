@@ -342,7 +342,11 @@ jobs:
           node - "$RUNNER_TEMP/bootstrap-trust.json" <<'NODE'
           const fs=require("fs"),path=process.argv[2],x=require(path);x.evidenceAllowedSigners="/opt/steam-top/.release-integration/secrets/evidence-allowed-signers";x.evidenceSignerId="evidence-ci";fs.writeFileSync(path,JSON.stringify(x)+"\n",{mode:0o600});
           NODE
-          sudo env EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$BOOTSTRAP_ARCHIVE_SHA256" BOOTSTRAP_ALLOWED_SIGNERS_FILE="$RUNNER_TEMP/bootstrap-allowed-signers" /usr/local/sbin/install-steam-top-bootstrap bootstrap/bootstrap.tgz bootstrap/bootstrap.tgz.sig bootstrap "$RUNNER_TEMP/bootstrap-trust.json"
+          sudo install -d -o root -g root -m 0700 /run/steam-top-bootstrap-release
+          sudo install -o root -g root -m 0444 "$RUNNER_TEMP/bootstrap-allowed-signers" /run/steam-top-bootstrap-release/allowed
+          sudo install -o root -g root -m 0400 "$RUNNER_TEMP/bootstrap-trust.json" /run/steam-top-bootstrap-release/trust.json
+          sudo env EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$BOOTSTRAP_ARCHIVE_SHA256" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-release/allowed /usr/local/sbin/install-steam-top-bootstrap bootstrap/bootstrap.tgz bootstrap/bootstrap.tgz.sig bootstrap /run/steam-top-bootstrap-release/trust.json
+          sudo rm -rf /run/steam-top-bootstrap-release
       - name: Verify externally attested root runtime manifest
         env: { GH_TOKEN: "${{ github.token }}" }
         run: gh attestation verify candidate/runtime-files.sha256 --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
