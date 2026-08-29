@@ -46,7 +46,7 @@ services:
     <<: *service-hardening
     image: steam-top-server:${DEPLOYMENT_VERSION:-local}
     restart: "no"
-    command: [node, migrate-entry.mjs]
+    command: ["./scripts/migrate-and-start.sh", "--migrate-only"]
     environment:
       NODE_ENV: production
       DATABASE_URL_FILE: /run/secrets/database_url

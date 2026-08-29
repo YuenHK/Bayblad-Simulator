@@ -26,6 +26,7 @@ COPY --from=build --chown=node:node /production/server/ ./
 COPY --from=build --chown=node:node /workspace/apps/server/dist/production-entry.mjs ./production-entry.mjs
 COPY --from=build --chown=node:node /workspace/apps/server/dist/migrate-entry.mjs ./migrate-entry.mjs
 COPY --from=build --chown=node:node /workspace/drizzle ./drizzle
+COPY --from=build --chown=node:node --chmod=0555 /workspace/scripts/migrate-and-start.sh ./scripts/migrate-and-start.sh
 RUN install -d -m 0700 -o node -g node /var/lib/steam-top /var/lib/steam-top-state
 USER node
 EXPOSE 3000

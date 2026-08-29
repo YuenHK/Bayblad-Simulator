@@ -64,10 +64,12 @@ describe("public edge proxy contract", () => {
 
   it("defines fail-fast production security and Caddy validation commands", () => {
     const pkg = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as { scripts: Record<string, string> };
+    const validator = readFileSync(new URL("scripts/validate-caddy.sh", root), "utf8");
     expect(pkg.scripts["test:security"]).not.toContain("SECURITY_ALLOW_SKIP=1");
     expect(pkg.scripts["test:security:local"]).toContain("SECURITY_ALLOW_SKIP=1");
-    expect(pkg.scripts["validate:caddy"]).toContain("caddy validate");
-    expect(pkg.scripts["validate:caddy"]).toContain("caddy adapt");
+    expect(pkg.scripts["validate:caddy"]).toContain("validate-caddy.sh");
+    expect(validator).toContain("caddy validate");
+    expect(validator).toContain("caddy adapt");
     expect(securityPlaywright).toContain("SECURITY_HTTP_ORIGIN and SECURITY_HTTPS_ORIGIN are required");
   });
 });
