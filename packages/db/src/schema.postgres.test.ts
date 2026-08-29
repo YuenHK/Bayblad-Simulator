@@ -5,6 +5,7 @@ import postgres, { type TransactionSql } from "postgres";
 import { expect, it } from "vitest";
 
 import { battleAuthorityKeyHash } from "./authority";
+import { withAuditedDeletion } from "./audited-deletion";
 import { matchWithDetails } from "./queries";
 import * as schema from "./schema";
 
@@ -710,19 +711,25 @@ it.skipIf(testDatabaseUrl === undefined)(
           "insert into admin_users (id, username, password_hash) values ($1, 'admin', 'hash')",
           [adminId],
         );
-        await transaction.unsafe(
-          `insert into deletion_audit (
-            id, admin_user_id, scope, filter_hash, preview_count,
-            deleted_identity_count, deleted_design_count, deleted_match_count
-          ) values ($1, $2, 'all', $3, 2, 0, 1, 1)`,
-          [auditId, adminId, "8".repeat(64)],
+        await withAuditedDeletion(
+          transaction,
+          {
+            auditId, adminUserId: adminId, scope: "all",
+            filterHash: "8".repeat(64), previewCount: 1,
+            deletedIdentityCount: 0, deletedDesignCount: 0, deletedMatchCount: 1,
+          },
+          async () => {
+            const deleted = await transaction.unsafe(
+              "delete from matches where id = $1 returning id",
+              [matchId],
+            );
+            return {
+              deletedIdentityCount: 0,
+              deletedDesignCount: 0,
+              deletedMatchCount: deleted.length,
+            };
+          },
         );
-        await transaction.unsafe(
-          "select set_config('steam_top.deletion_audit_id', $1, true)",
-          [auditId],
-        );
-        await transaction.unsafe("delete from matches where id = $1", [matchId]);
-        await transaction.unsafe("delete from designs where id = $1", [designId]);
         const retainedAudit = await transaction.unsafe(
           "select id from deletion_audit where id = $1",
           [auditId],
@@ -731,6 +738,35 @@ it.skipIf(testDatabaseUrl === undefined)(
         throw rollbackSentinel;
       }),
     ).rejects.toBe(rollbackSentinel);
+
+    await expect(
+      inEmptyMigratedDatabase(async (transaction) => {
+        await insertCompletedFixture(transaction);
+        const adminId = "7c300000-0000-4000-8000-000000000000";
+        await transaction.unsafe(
+          "insert into admin_users (id, username, password_hash) values ($1, 'clear-admin', 'hash')",
+          [adminId],
+        );
+        await withAuditedDeletion(
+          transaction,
+          {
+            auditId: "7d300000-0000-4000-8000-000000000000",
+            adminUserId: adminId, scope: "all", filterHash: "e".repeat(64),
+            previewCount: 0, deletedIdentityCount: 0,
+            deletedDesignCount: 0, deletedMatchCount: 0,
+          },
+          async () => ({
+            deletedIdentityCount: 0,
+            deletedDesignCount: 0,
+            deletedMatchCount: 0,
+          }),
+        );
+        await transaction.unsafe("delete from matches where id = $1", [matchId]);
+      }),
+    ).rejects.toMatchObject({
+      code: "55000",
+      constraint_name: "completed_matches_are_immutable",
+    });
 
     await expect(
       inEmptyMigratedDatabase(async (transaction) => {
@@ -791,11 +827,56 @@ it.skipIf(testDatabaseUrl === undefined)(
 );
 
 it.skipIf(testDatabaseUrl === undefined)(
+  "rolls back an audit transaction on count mismatch or callback failure",
+  async () => {
+    for (const failure of ["mismatch", "callback"] as const) {
+      await expect(inEmptyMigratedDatabase(async (transaction) => {
+        const adminId = "83000000-0000-4000-8000-000000000000";
+        const designId = "84000000-0000-4000-8000-000000000000";
+        await transaction.unsafe(
+          "insert into admin_users (id, username, password_hash) values ($1, $2, 'hash')",
+          [adminId, `rollback-${failure}`],
+        );
+        await insertDesign(transaction, designId, false);
+        await withAuditedDeletion(
+          transaction,
+          {
+            auditId: failure === "mismatch"
+              ? "85000000-0000-4000-8000-000000000000"
+              : "85000000-0000-4000-8000-000000000001",
+            adminUserId: adminId, scope: "all", filterHash: "f".repeat(64),
+            previewCount: 1, deletedIdentityCount: 0,
+            deletedDesignCount: 1, deletedMatchCount: 0,
+          },
+          async () => {
+            if (failure === "callback") throw new Error("controlled delete failed");
+            await transaction.unsafe("delete from designs where id = $1", [designId]);
+            return {
+              deletedIdentityCount: 0,
+              deletedDesignCount: 0,
+              deletedMatchCount: 0,
+            };
+          },
+        );
+      })).rejects.toThrow(
+        failure === "mismatch"
+          ? "Actual deletion counts do not match"
+          : "controlled delete failed",
+      );
+    }
+  },
+  30_000,
+);
+
+it.skipIf(testDatabaseUrl === undefined)(
   "rejects empty or incomplete battle result JSON",
   async () => {
     for (const resultJson of [
       "{}",
       '{"modelVersion":"2.0.0","seed":1,"ticks":60,"frames":[],"outcome":{"winner":"player1"},"finalStats":{}}',
+      '{"modelVersion":"2.0.0","seed":2,"ticks":60,"frames":[],"outcome":{"winner":"player1","reason":"stopped"},"finalStats":{}}',
+      '{"modelVersion":"2.0.0","seed":1,"ticks":61,"frames":[],"outcome":{"winner":"player1","reason":"stopped"},"finalStats":{}}',
+      '{"modelVersion":"2.0.0","seed":1.5,"ticks":60,"frames":[],"outcome":{"winner":"player1","reason":"stopped"},"finalStats":{}}',
     ]) {
       await expect(inEmptyMigratedDatabase(async (transaction) => {
         const designId = "80000000-0000-4000-8000-000000000000";

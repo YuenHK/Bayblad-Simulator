@@ -345,6 +345,8 @@ describe("persistent PostgreSQL schema", () => {
     expect(sql).toContain("DEFERRABLE INITIALLY DEFERRED");
     expect(sql).toContain('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');
     expect(sql).toContain("rounds_authority_key_matches_correlation");
+    expect(sql).toMatch(/battle_result_json"->>'seed'\)::numeric = "rounds"\."seed"::numeric/);
+    expect(sql).toMatch(/battle_result_json"->>'ticks'\)::numeric = "rounds"\."ticks"::numeric/);
     expect(sql).toContain("steam_top.deletion_audit_id");
     expect(sql).toContain("txid_current()");
     expect(sql).toContain("deletion_audit_is_immutable");

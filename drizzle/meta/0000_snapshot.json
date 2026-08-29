@@ -1,5 +1,5 @@
 {
-  "id": "71eea392-2884-496a-bd3f-2a49ef1d0005",
+  "id": "cbbb9337-6a1c-4010-9270-93346d018fc7",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2678,7 +2678,7 @@
         },
         "rounds_battle_result_shape": {
           "name": "rounds_battle_result_shape",
-          "value": "jsonb_typeof(\"rounds\".\"battle_result_json\") = 'object' and \"rounds\".\"battle_result_json\" ?& array['modelVersion','seed','ticks','frames','outcome','finalStats'] and jsonb_typeof(\"rounds\".\"battle_result_json\"->'modelVersion') = 'string' and length(btrim(\"rounds\".\"battle_result_json\"->>'modelVersion')) > 0 and \"rounds\".\"battle_result_json\"->>'modelVersion' = \"rounds\".\"physics_model_version\" and jsonb_typeof(\"rounds\".\"battle_result_json\"->'seed') = 'number' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'ticks') = 'number' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'frames') = 'array' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'finalStats') = 'object' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'outcome') = 'object' and \"rounds\".\"battle_result_json\"->'outcome' ?& array['winner','reason'] and \"rounds\".\"battle_result_json\"->'outcome'->>'winner' = \"rounds\".\"outcome\"::text and \"rounds\".\"battle_result_json\"->'outcome'->>'reason' = \"rounds\".\"outcome_reason\"::text"
+          "value": "jsonb_typeof(\"rounds\".\"battle_result_json\") = 'object' and \"rounds\".\"battle_result_json\" ?& array['modelVersion','seed','ticks','frames','outcome','finalStats'] and jsonb_typeof(\"rounds\".\"battle_result_json\"->'modelVersion') = 'string' and length(btrim(\"rounds\".\"battle_result_json\"->>'modelVersion')) > 0 and \"rounds\".\"battle_result_json\"->>'modelVersion' = \"rounds\".\"physics_model_version\" and jsonb_typeof(\"rounds\".\"battle_result_json\"->'seed') = 'number' and (\"rounds\".\"battle_result_json\"->>'seed')::numeric = trunc((\"rounds\".\"battle_result_json\"->>'seed')::numeric) and (\"rounds\".\"battle_result_json\"->>'seed')::numeric between -9007199254740991 and 9007199254740991 and (\"rounds\".\"battle_result_json\"->>'seed')::numeric = \"rounds\".\"seed\"::numeric and jsonb_typeof(\"rounds\".\"battle_result_json\"->'ticks') = 'number' and (\"rounds\".\"battle_result_json\"->>'ticks')::numeric = trunc((\"rounds\".\"battle_result_json\"->>'ticks')::numeric) and (\"rounds\".\"battle_result_json\"->>'ticks')::numeric between 0 and 5400 and (\"rounds\".\"battle_result_json\"->>'ticks')::numeric = \"rounds\".\"ticks\"::numeric and jsonb_typeof(\"rounds\".\"battle_result_json\"->'frames') = 'array' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'finalStats') = 'object' and jsonb_typeof(\"rounds\".\"battle_result_json\"->'outcome') = 'object' and \"rounds\".\"battle_result_json\"->'outcome' ?& array['winner','reason'] and \"rounds\".\"battle_result_json\"->'outcome'->>'winner' = \"rounds\".\"outcome\"::text and \"rounds\".\"battle_result_json\"->'outcome'->>'reason' = \"rounds\".\"outcome_reason\"::text"
         }
       },
       "isRLSEnabled": false

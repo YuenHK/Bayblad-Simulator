@@ -30,3 +30,9 @@ SELECT set_config('steam_top.deletion_audit_id', '<audit UUID>', true);
 
 Application code must use `withAuditedDeletion`; a missing, invented or
 previous-transaction audit UUID cannot unlock deletion.
+
+The Task 8 repository must calculate actual counts from controlled
+`DELETE ... RETURNING` statements and return them to `withAuditedDeletion`.
+Callers must never self-report deletion counts. A mismatch or callback error
+must escape the transaction callback so PostgreSQL rolls back both the deleted
+rows and the audit row.
