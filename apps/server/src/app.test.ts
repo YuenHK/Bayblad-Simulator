@@ -274,8 +274,8 @@ describe("realtime app", () => {
   });
 
   it("回應 clock.ping 四時間戳，並在房主關房時通知全部成員", async () => {
-    let now = 6_025;
-    const app = buildApp({ battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0 });
+    let now = 6_025;const activity=vi.fn(async()=>undefined);
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), now: () => now, sweepIntervalMs: 0,testRecordIdentityActivity:activity });
     closers.push(() => app.close());
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
@@ -297,6 +297,8 @@ describe("realtime app", () => {
     const replayedPing = nextEvent(owner.socket, "error");
     owner.socket.emit("client.event", command("clock.ping", { pingId: "ping-1", clientSentAtMs: 9_999 }));
     expect((await replayedPing).code).toBe("CLOCK_PING_REPLAY");
+    expect(activity).toHaveBeenCalledTimes(0);
+    now+=300_001;const heartbeatPong=nextEvent(owner.socket,"clock.pong");owner.socket.emit("client.event",command("clock.ping",{pingId:"ping-2",clientSentAtMs:now}));await heartbeatPong;await vi.waitFor(()=>expect(activity).toHaveBeenCalledTimes(1));
     const unknownAck = nextEvent(owner.socket, "error");
     owner.socket.emit("client.event", command("clock.ack", { pingId: "never-issued" }));
     expect((await unknownAck).code).toBe("CLOCK_CHALLENGE_INVALID");

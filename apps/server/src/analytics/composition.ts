@@ -8,10 +8,9 @@ import { usageAnalytics } from "./usage";
 import { parameterUsage } from "./parameter-usage";
 
 export function createProductionAnalytics(client: DatabaseClient): AnalyticsService {
-  const snapshotDb=new AsyncLocalStorage<PostgresJsDatabase<typeof schema>>(); const current=()=>snapshotDb.getStore()??client.db;
-  const consistent=<T>(operation:()=>Promise<T>)=>client.sql.begin(async(transaction)=>{
-    await transaction`set transaction isolation level repeatable read, read only`;
-    return snapshotDb.run(drizzle(transaction as never,{schema}),operation);
-  }) as Promise<T>;
-  return new AnalyticsService(new PostgresAnalyticsCache(client.sql), (filters, period) => usageAnalytics(current(), filters, period), (filters,page) => parameterPerformance(current(), filters,page), (filters) => parameterUsage(current(), filters),undefined,undefined,consistent);
+  const configuredSecret=process.env.ANALYTICS_CURSOR_SECRET;const cursorSecret=configuredSecret?Buffer.from(configuredSecret,"utf8"):undefined;
+  if(process.env.NODE_ENV==="production"&&(!cursorSecret||cursorSecret.length<32))throw new TypeError("ANALYTICS_CURSOR_SECRET must contain at least 32 bytes");
+  const cache=new PostgresAnalyticsCache(client.sql);const snapshotDb=new AsyncLocalStorage<PostgresJsDatabase<typeof schema>>(); const current=()=>snapshotDb.getStore()??client.db;
+  const consistent=<T>(operation:()=>Promise<T>)=>snapshotDb.run(drizzle(cache.currentExecutor() as never,{schema}),operation);
+  return new AnalyticsService(cache, (filters, period) => usageAnalytics(current(), filters, period), (filters,page) => parameterPerformance(current(), filters,page), (filters) => parameterUsage(current(), filters),undefined,cursorSecret,consistent);
 }

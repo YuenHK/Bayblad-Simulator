@@ -27,6 +27,7 @@ export function canonicalFilterHash(filters: AnalyticsFilters): string {
 export class PostgresAnalyticsCache implements AnalyticsCache {
   readonly #transaction = new AsyncLocalStorage<DatabaseClient["sql"]>();
   constructor(private readonly sql: DatabaseClient["sql"]) {}
+  currentExecutor():DatabaseClient["sql"] { return this.#transaction.getStore()??this.sql; }
   async read(hash: string, maxAge: Date): Promise<AnalyticsSummary | null> {
     const executor = this.#transaction.getStore() ?? this.sql;
     const rows = await executor<readonly { filters_json: AnalyticsFilters; usage_json: readonly UsageDay[]; usage_periods_json: AnalyticsSummary["usagePeriods"]; parameter_usage_json: readonly unknown[]; parameters_json: readonly unknown[]; rankings_json:AnalyticsSummary["rankings"]; refreshed_at: Date }[]>`
@@ -46,17 +47,16 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
       (select summary_date,filter_hash from analytics_daily_summaries order by refreshed_at desc,summary_date desc,filter_hash offset 10000)`;
   }
   async exclusive<T>(hash: string, operation: () => Promise<T>): Promise<T> {
-    return this.sql.begin(async (transaction) => { await transaction`select pg_advisory_xact_lock(hashtextextended(${hash}, 1937002026))`; return this.#transaction.run(transaction as unknown as DatabaseClient["sql"], operation); }) as Promise<T>;
+    return this.sql.begin(async (transaction) => { await transaction`set transaction isolation level repeatable read`;await transaction`select pg_advisory_xact_lock(hashtextextended(${hash}, 1937002026))`; return this.#transaction.run(transaction as unknown as DatabaseClient["sql"], operation); }) as Promise<T>;
   }
 }
 
 type UsageQuery = (filters: AnalyticsFilters, period: UsagePeriod) => Promise<readonly UsageDay[]>;
-type ParameterQuery = (filters: AnalyticsFilters, page?: Readonly<{ limit?: number; offset?: number;order?:"stable"|"high"|"low" }>) => Promise<readonly unknown[]>;
+type ParameterQuery = (filters: AnalyticsFilters, page?: Readonly<{ limit?: number; offset?: number;order?:"stable"|"high"|"low";asOf?:string }>) => Promise<readonly unknown[]>;
 
 export class AnalyticsService {
   #refresh: Promise<AnalyticsSummary> | null = null;
   readonly #inflight = new Map<string, Promise<AnalyticsSummary>>();
-  readonly #pageSnapshots=new Map<string,Readonly<{filterHash:string;asOf:number;rows:readonly unknown[]}>>();
   readonly #cursorSecret:Buffer;
   constructor(private readonly cache: AnalyticsCache, private readonly usageQuery: UsageQuery, private readonly parameterQuery: ParameterQuery, private readonly parameterUsageQuery: ParameterQuery = async () => [], private readonly now = () => new Date(),cursorSecret:Buffer=randomBytes(32),private readonly consistent=<T>(operation:()=>Promise<T>)=>operation()) { if(cursorSecret.length<32)throw new TypeError("analytics cursor secret too short");this.#cursorSecret=cursorSecret; }
   async query(filters: AnalyticsFilters, maxAgeMs = 5 * 60_000): Promise<AnalyticsSummary> {
@@ -64,13 +64,12 @@ export class AnalyticsService {
     const inflightKey=`${hash}:${maxAgeMs}`; const existing = this.#inflight.get(inflightKey); if (existing) return existing;
     const compute = async () => {
       const now = this.now(); const cached = await this.cache.read(hash, new Date(now.getTime() - maxAgeMs)); if (cached) return cached;
-      const [daily, weekly, monthly, parameterRows, parameterUsage] = await this.consistent(()=>Promise.all([this.usageQuery(filters, "day"), this.usageQuery(filters, "week"), this.usageQuery(filters, "month"), this.parameterQuery(filters,{limit:5_000,order:"stable"}), this.parameterUsageQuery(filters)]));
+      const [daily, weekly, monthly, parameterRows, parameterUsage,topRows,bottomRows] = await this.consistent(()=>Promise.all([this.usageQuery(filters, "day"), this.usageQuery(filters, "week"), this.usageQuery(filters, "month"), this.parameterQuery(filters,{limit:100,order:"stable"}), this.parameterUsageQuery(filters),this.parameterQuery(filters,{limit:10,order:"high"}),this.parameterQuery(filters,{limit:10,order:"low"})]));
       const usagePeriods = Object.freeze({ daily, weekly, monthly });
-      const parameters=parameterRows as readonly JsonRow[]; const total=Number((parameters[0] as {totalGroups?:unknown}|undefined)?.totalGroups??parameters.length);
-      const tie=(row:JsonRow)=>JSON.stringify([row.performanceModelVersion,row.physicsModelVersion,row.dimension,row.value,row.launchGrade,row.opponentStrengthBand]);
-      const ranked=[...parameters].sort((a,b)=>Number(b.outcomeResidual)-Number(a.outcomeResidual)||Number(b.averageScore)-Number(a.averageScore)||Number(b.winRate)-Number(a.winRate)||tie(a).localeCompare(tie(b)));
-      const rankings=Object.freeze({top:Object.freeze(ranked.slice(0,10)),bottom:Object.freeze(ranked.slice(-10).reverse()),total,hasMore:total>parameters.length,snapshotCursor:Buffer.from(`${hash}:${now.toISOString()}`).toString("base64url")});
-      const summary = Object.freeze({ filters, filterApplicability: FILTER_APPLICABILITY, usage: daily, usagePeriods, parameters, parameterUsage:parameterUsage as readonly JsonRow[],rankings:rankings as AnalyticsSummary["rankings"], refreshedAt: now.toISOString() }); await this.cache.write(hash, summary); return summary;
+      const parameters=parameterRows as readonly JsonRow[]; const top=topRows as readonly JsonRow[],bottom=bottomRows as readonly JsonRow[];const total=Number((top[0] as {totalGroups?:unknown}|undefined)?.totalGroups??parameters.length);
+      const rankings=Object.freeze({top,bottom,total,hasMore:total>parameters.length,snapshotCursor:Buffer.from(`${hash}:${now.toISOString()}`).toString("base64url")});
+      const summary = Object.freeze({ filters, filterApplicability: FILTER_APPLICABILITY, usage: daily, usagePeriods, parameters, parameterUsage:parameterUsage as readonly JsonRow[],rankings:rankings as AnalyticsSummary["rankings"], refreshedAt: now.toISOString() });
+      if(Buffer.byteLength(JSON.stringify(summary),"utf8")>2_000_000)throw new Error("ANALYTICS_PAYLOAD_LIMIT");await this.cache.write(hash, summary); return summary;
     };
     const operation = (this.cache.exclusive ? this.cache.exclusive(hash, compute) : compute()).finally(() => { this.#inflight.delete(inflightKey); });
     this.#inflight.set(inflightKey, operation); return operation;
@@ -84,15 +83,13 @@ export class AnalyticsService {
     return this.#refresh;
   }
   #signCursor(payload:string){const body=Buffer.from(payload).toString("base64url");return `${body}.${createHmac("sha256",this.#cursorSecret).update(body).digest("base64url")}`;}
-  #readCursor(cursor:string){const [body,signature,...rest]=cursor.split(".");if(!body||!signature||rest.length)throw new RangeError("INVALID_ANALYTICS_CURSOR");const expected=createHmac("sha256",this.#cursorSecret).update(body).digest();const actual=Buffer.from(signature,"base64url");if(actual.length!==expected.length||!timingSafeEqual(actual,expected))throw new RangeError("INVALID_ANALYTICS_CURSOR");const value=JSON.parse(Buffer.from(body,"base64url").toString("utf8")) as {snapshotId:string;offset:number;filterHash:string};if(!Number.isSafeInteger(value.offset)||value.offset<0||typeof value.snapshotId!=="string"||typeof value.filterHash!=="string")throw new RangeError("INVALID_ANALYTICS_CURSOR");return value;}
+  #readCursor(cursor:string){try{if(cursor.length<20||cursor.length>1024)throw new Error();const [body,signature,...rest]=cursor.split(".");if(!body||!signature||rest.length||body.length>768||signature.length>128)throw new Error();const expected=createHmac("sha256",this.#cursorSecret).update(body).digest();const actual=Buffer.from(signature,"base64url");if(actual.length!==expected.length||!timingSafeEqual(actual,expected))throw new Error();const value=JSON.parse(Buffer.from(body,"base64url").toString("utf8")) as {asOf:string;offset:number;filterHash:string};if(!Number.isSafeInteger(value.offset)||value.offset<0||value.offset>10_000_000||typeof value.asOf!=="string"||typeof value.filterHash!=="string"||Object.keys(value).length!==3)throw new Error();const date=new Date(value.asOf);if(!Number.isFinite(date.getTime())||date.toISOString()!==value.asOf)throw new Error();return value;}catch{throw new RangeError("INVALID_ANALYTICS_CURSOR");}}
   async parameterPage(filters: AnalyticsFilters, pageSize: number, cursor?: string) {
     if (!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100) throw new RangeError("INVALID_ANALYTICS_PAGE");
-    const filterHash=canonicalFilterHash(filters), now=this.now().getTime(); for(const [id,snapshot] of this.#pageSnapshots)if(now-snapshot.asOf>300_000)this.#pageSnapshots.delete(id);
-    let snapshotId:string,offset=0,snapshot:Readonly<{filterHash:string;asOf:number;rows:readonly unknown[]}>|undefined;
-    if(cursor){const decoded=this.#readCursor(cursor);if(decoded.filterHash!==filterHash)throw new RangeError("INVALID_ANALYTICS_CURSOR");snapshotId=decoded.snapshotId;offset=decoded.offset;snapshot=this.#pageSnapshots.get(snapshotId);if(!snapshot)throw new RangeError("ANALYTICS_CURSOR_EXPIRED");}
-    else {snapshotId=randomBytes(16).toString("hex");const rows=await this.parameterQuery(filters,{limit:5_000,order:"stable"});snapshot=Object.freeze({filterHash,asOf:now,rows:Object.freeze([...rows])});this.#pageSnapshots.set(snapshotId,snapshot);while(this.#pageSnapshots.size>100)this.#pageSnapshots.delete(this.#pageSnapshots.keys().next().value!);}
-    const rows=snapshot.rows.slice(offset,offset+pageSize),nextOffset=offset+rows.length,hasMore=nextOffset<snapshot.rows.length;
-    const nextCursor=hasMore?this.#signCursor(JSON.stringify({snapshotId,offset:nextOffset,filterHash})):null;
-    return Object.freeze({rows:Object.freeze(rows),nextCursor,total:snapshot.rows.length,hasMore,snapshotCursor:this.#signCursor(JSON.stringify({snapshotId,offset:0,filterHash}))});
+    const filterHash=canonicalFilterHash(filters);let offset=0,asOf=this.now().toISOString();
+    if(cursor){const decoded=this.#readCursor(cursor);if(decoded.filterHash!==filterHash)throw new RangeError("INVALID_ANALYTICS_CURSOR");offset=decoded.offset;asOf=decoded.asOf;}
+    const queried=await this.parameterQuery(filters,{limit:pageSize+1,offset,order:"stable",asOf});const rows=queried.slice(0,pageSize),hasMore=queried.length>pageSize,nextOffset=offset+rows.length;
+    const total=Number((queried[0] as {totalGroups?:unknown}|undefined)?.totalGroups??offset+rows.length);const payload={asOf,offset:nextOffset,filterHash};
+    return Object.freeze({rows:Object.freeze(rows),nextCursor:hasMore?this.#signCursor(JSON.stringify(payload)):null,total,hasMore,snapshotCursor:this.#signCursor(JSON.stringify({asOf,offset:0,filterHash}))});
   }
 }
