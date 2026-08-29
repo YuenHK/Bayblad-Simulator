@@ -124,6 +124,7 @@ jobs:
           printf '%s\n' "$PROTECTED_STATE_ALLOWED_SIGNERS" > state-allowed-signers
           ssh-keygen -Y verify -q -f state-allowed-signers -I state -n steam-top-production-activation -s activation-receipt.json.sig < activation-receipt.json
           node -e 'const a=require("./activation-receipt.json");if(a.schemaVersion!==1||a.purpose!=="production-activation-receipt"||a.deploymentId!==process.env.DEPLOYMENT_ID||a.nonce!==process.env.DEPLOYMENT_NONCE||!/^[a-f0-9]{64}$/.test(a.stateDigest))process.exit(1)'
+          echo 'ACTIVATION_COMPLETE=true' >> "$GITHUB_ENV"
       - name: Attest protected host activation receipt
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: { subject-path: activation-receipt.json }
@@ -142,5 +143,6 @@ jobs:
         if: failure() && env.DEPLOYMENT_ID != ''
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          printf '{"state":"failure","environment":"production","description":"protected host deployment failed or was interrupted"}\n' > failed.json
+          state=failure;description='protected host deployment failed before activation';if [[ ${ACTIVATION_COMPLETE:-} == true ]];then state=error;description='host activated; GitHub status requires protected reconciliation';fi
+          printf '{"state":"%s","environment":"production","description":"%s"}\n' "$state" "$description" > failed.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" --input failed.json

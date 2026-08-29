@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $(id -u) -eq 0 && $# -eq 8 ]]||{ echo "bootstrap deploy requires root and eight bound arguments" >&2;exit 1;}
+[[ $(id -u) -eq 0 ]]||{ echo "bootstrap deploy requires root" >&2;exit 1;};prepared_argument=;if [[ ${1:-} == --prepared-authorization ]];then [[ $# -eq 10 ]]||exit 2;prepared_argument=$2;shift 2;else [[ $# -eq 8 ]]||exit 2;fi
 /opt/steam-top-bootstrap/verify-bootstrap.sh;artifact=$1;bundle=$2;pending=$3;manifest=$4;repository=$5;commit=$6;nonce=$7;expected_and_id=$8;expected=${expected_and_id%|*};deployment_id=${expected_and_id##*|};config=/etc/steam-top-bootstrap/trust.json
 mapfile -t paths < <(node - "$config" <<'NODE'
 const x=require(process.argv[2]),paths=["githubTokenFile","authorizationDir","productionEnvFile","hostReceiptSigningKey","adminSmokeSecretFile","hostReceiptOutbox","pgServiceFile","pgPassFile"];for(const k of paths)if(typeof x[k]!=="string"||!x[k].startsWith("/"))process.exit(1);if(!/^[A-Za-z0-9._-]+$/.test(x.pgServiceName))process.exit(1);for(const k of paths)console.log(x[k]);console.log(x.pgServiceName);
 NODE
 )
-prepared="${paths[1]}/$nonce.json";if [[ -f $prepared && ! -L $prepared ]];then node - "$prepared" "$deployment_id" "$nonce" "$manifest" <<'NODE'
+prepared="${paths[1]}/$nonce.json";if [[ -n $prepared_argument ]];then [[ $prepared_argument == "$prepared" && -f $prepared && ! -L $prepared ]]||exit 1;node - "$prepared" "$deployment_id" "$nonce" "$manifest" <<'NODE'
 const a=require(process.argv[2]);if(a.state!=="pending"||a.deploymentId!==process.argv[3]||a.nonce!==process.argv[4]||a.manifestSha256!==process.argv[5])process.exit(1);
 NODE
 else /opt/steam-top-bootstrap/prepare-release.sh "$artifact" "$bundle" "$pending" "${paths[0]}" "${paths[1]}";fi
