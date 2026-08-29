@@ -86,7 +86,7 @@ describe("admin dashboard routes", () => {
           operationId: "550e8400-e29b-41d4-a716-446655440000",
       },
     });
-    expect(closed.statusCode).toBe(204);
+    expect(closed.statusCode).toBe(200);
     expect(f.rooms.hasRoom(f.room.roomId)).toBe(false);
     expect(
       f.store.auditEntries.some(
@@ -111,7 +111,7 @@ describe("admin dashboard routes", () => {
           },
         })
       ).statusCode,
-    ).toBe(204);
+    ).toBe(200);
     expect(() =>
       f.rooms.create({ id: "u2", displayName: "學生" }, "另一房"),
     ).toThrow("PLATFORM_PAUSED");

@@ -858,6 +858,7 @@ export type ServerEvent = z.infer<typeof serverEventSchema>;
 export const playerServerEventSchema = z.discriminatedUnion("type", [
   protocolWelcomeEventSchema,
   lobbySnapshotEventSchema,
+  platformStatusEventSchema,
   roomSnapshotEventSchema,
   roomDeltaEventSchema,
   launchScheduleEventSchema,
@@ -880,6 +881,7 @@ export type PlayerServerEvent = z.infer<typeof playerServerEventSchema>;
 export const spectatorServerEventSchema = z.discriminatedUnion("type", [
   protocolWelcomeEventSchema,
   lobbySnapshotEventSchema,
+  platformStatusEventSchema,
   roomSnapshotEventSchema,
   roomDeltaEventSchema,
   launchScheduleEventSchema,

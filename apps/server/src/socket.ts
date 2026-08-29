@@ -345,7 +345,7 @@ export class RealtimeGateway {
 
   adminCloseRoom(roomId: string): Promise<void> {
     return this.#adminRoomTail(roomId, async () => {
-      const view = this.#rooms.get(roomId); if (!view) throw Object.assign(new Error("ROOM_NOT_FOUND"), { code: "ROOM_NOT_FOUND" });
+      const view = this.#rooms.get(roomId); if (!view) return;
       const revision = view.revision + 1, checkpoint = this.#rooms.checkpoint(roomId), closedAt = new Date(this.#now());
       if (this.#roomRecordRepository?.closeWithProjection) await this.#roomRecordRepository.closeWithProjection(roomId, closedAt, revision, { phase: "closed", firstBattleAt: null, closedAt: closedAt.toISOString() });
       this.#rooms.adminClose(roomId);
@@ -360,7 +360,7 @@ export class RealtimeGateway {
     return this.#adminRoomTail(roomId, async () => {
       const sessionId = this.#sessionIdsByParticipant.get(roomId)?.get(participantId);
       const participantExists = this.#rooms.adminRooms().find(room => room.roomId === roomId)?.players.concat(this.#rooms.adminRooms().find(room => room.roomId === roomId)?.spectators ?? []).some(participant => participant.id === participantId);
-      if (!participantExists) throw Object.assign(new Error("PARTICIPANT_NOT_FOUND"), { code: "PARTICIPANT_NOT_FOUND" });
+      if (!participantExists) return;
       const match = this.#matches.get(roomId);
       if (match) {
         this.#emitToRoom(roomId, { type: "match.cancelled", roomId, matchId: match.matchId, reason: "admin-removed", protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() });
