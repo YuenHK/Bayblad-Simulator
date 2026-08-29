@@ -246,6 +246,12 @@ jobs:
           INSTALLER_ALLOWED_SIGNERS: "${{ secrets.INSTALLER_ALLOWED_SIGNERS }}"
         run: |
           set -euo pipefail
+          default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          default_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/$default_branch" --jq .commit.sha)
+          ancestry=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$default_sha" --jq .status)
+          [[ "$ancestry" == ahead || "$ancestry" == identical ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BOOTSTRAP_RUN_ID" > "$RUNNER_TEMP/bootstrap-run.json"
+          node scripts/verify-bootstrap-source-run.mjs "$RUNNER_TEMP/bootstrap-run.json" "$BOOTSTRAP_RUN_ID" "$BOOTSTRAP_COMMIT" "$default_branch"
           [[ "$INSTALLER_URL" == https://* && "$INSTALLER_SIGNATURE_URL" == https://* && "$INSTALLER_SHA256" =~ ^[a-f0-9]{64}$ ]]
           curl --fail --proto '=https' --tlsv1.2 --output "$RUNNER_TEMP/install-bootstrap" "$INSTALLER_URL"
           curl --fail --proto '=https' --tlsv1.2 --output "$RUNNER_TEMP/install-bootstrap.sig" "$INSTALLER_SIGNATURE_URL"
