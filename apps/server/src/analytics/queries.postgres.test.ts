@@ -106,8 +106,11 @@ it.skipIf(!databaseUrl)("serializes two service instances on a single pooled con
 },30_000);
 
 it.skipIf(!databaseUrl)("releases the session advisory lock after an analytics failure",async()=>{
-  const cache=new PostgresAnalyticsCache(client.sql);await expect(cache.exclusive!("f".repeat(64),async()=>{throw new Error("fixture");})).rejects.toThrow("fixture");
-  const [lock]=await client.sql<{available:boolean}[]>`select pg_try_advisory_lock(hashtextextended(${'f'.repeat(64)},1937002026)) available`;expect(lock?.available).toBe(true);if(lock?.available)await client.sql`select pg_advisory_unlock(hashtextextended(${'f'.repeat(64)},1937002026))`;
+  const lockOwner=createDatabaseClient({url:databaseUrl!,ssl:false,allowInsecure:true,maxConnections:1}),observer=createDatabaseClient({url:databaseUrl!,ssl:false,allowInsecure:true,maxConnections:1});let ownerPid=0;const cache=new PostgresAnalyticsCache(lockOwner.sql,pid=>{ownerPid=pid;});
+  await expect(cache.exclusive!("f".repeat(64),async()=>{throw new Error("fixture");})).rejects.toThrow("fixture");
+  const [observerBackend]=await observer.sql<{pid:number}[]>`select pg_backend_pid() pid`;expect(observerBackend!.pid).not.toBe(ownerPid);
+  const [lock]=await observer.sql<{available:boolean}[]>`select pg_try_advisory_lock(hashtextextended(${'f'.repeat(64)},1937002026)) available`;expect(lock?.available).toBe(true);if(lock?.available)await observer.sql`select pg_advisory_unlock(hashtextextended(${'f'.repeat(64)},1937002026))`;
+  await Promise.all([lockOwner.close(),observer.close()]);
 },30_000);
 
 it.skipIf(!databaseUrl)("fences a stale cache writer",async()=>{
