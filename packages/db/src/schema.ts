@@ -324,9 +324,10 @@ export const designs = pgTable(
   },
   (table) => [
     uniqueIndex("designs_logical_version_uidx").on(
+      table.ownerIdentityId,
       table.logicalDesignId,
       table.version,
-    ),
+    ).where(sql`${table.ownerIdentityId} is not null`),
     index("designs_owner_created_at_idx").on(
       table.ownerIdentityId,
       table.createdAt,
@@ -770,6 +771,53 @@ export const rounds = pgTable(
       "rounds_battle_result_shape",
       sql`jsonb_typeof(${table.battleResultJson}) = 'object' and ${table.battleResultJson} ?& array['modelVersion','seed','ticks','frames','outcome','finalStats'] and jsonb_typeof(${table.battleResultJson}->'modelVersion') = 'string' and length(btrim(${table.battleResultJson}->>'modelVersion')) > 0 and ${table.battleResultJson}->>'modelVersion' = ${table.physicsModelVersion} and jsonb_typeof(${table.battleResultJson}->'seed') = 'number' and (${table.battleResultJson}->>'seed')::numeric = trunc((${table.battleResultJson}->>'seed')::numeric) and (${table.battleResultJson}->>'seed')::numeric between -9007199254740991 and 9007199254740991 and (${table.battleResultJson}->>'seed')::numeric = ${table.seed}::numeric and jsonb_typeof(${table.battleResultJson}->'ticks') = 'number' and (${table.battleResultJson}->>'ticks')::numeric = trunc((${table.battleResultJson}->>'ticks')::numeric) and (${table.battleResultJson}->>'ticks')::numeric between 0 and 5400 and (${table.battleResultJson}->>'ticks')::numeric = ${table.ticks}::numeric and jsonb_typeof(${table.battleResultJson}->'frames') = 'array' and jsonb_typeof(${table.battleResultJson}->'finalStats') = 'object' and jsonb_typeof(${table.battleResultJson}->'outcome') = 'object' and ${table.battleResultJson}->'outcome' ?& array['winner','reason'] and ${table.battleResultJson}->'outcome'->>'winner' = ${table.outcome}::text and ${table.battleResultJson}->'outcome'->>'reason' = ${table.outcomeReason}::text`,
     ),
+  ],
+);
+
+/** Durable authority for deterministic physics before a completed match exists. */
+export const battleResults = pgTable(
+  "battle_results",
+  {
+    authorityKeyHash: text("authority_key_hash").primaryKey(),
+    correlationKey: varchar("correlation_key", { length: 264 }).notNull(),
+    inputFingerprint: text("input_fingerprint").notNull(),
+    resultJson: jsonb("result_json").$type<BattleResultSnapshot>(),
+    resultBytes: integer("result_bytes"),
+    claimOwner: uuid("claim_owner"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("battle_results_correlation_key_uidx").on(table.correlationKey),
+    index("battle_results_lease_idx").on(table.leaseExpiresAt),
+    check("battle_results_authority_hash_format", sql`${table.authorityKeyHash} ~ '^[a-f0-9]{64}$'`),
+    check("battle_results_input_hash_format", sql`${table.inputFingerprint} ~ '^[a-f0-9]{64}$'`),
+    check("battle_results_size", sql`${table.resultBytes} is null or ${table.resultBytes} between 1 and 2097152`),
+    check("battle_results_state", sql`(${table.resultJson} is null and ${table.completedAt} is null and ${table.claimOwner} is not null and ${table.leaseExpiresAt} is not null) or (${table.resultJson} is not null and ${table.resultBytes} is not null and ${table.completedAt} is not null and ${table.claimOwner} is null and ${table.leaseExpiresAt} is null)`),
+  ],
+);
+
+export const matchPersistenceJobs = pgTable(
+  "match_persistence_jobs",
+  {
+    matchId: uuid("match_id").primaryKey().references(() => matches.id, { onDelete: "cascade" }),
+    inputFingerprint: text("input_fingerprint").notNull(),
+    completionPayload: jsonb("completion_payload").$type<Readonly<Record<string, unknown>>>().notNull(),
+    status: varchar("status", { length: 16 }).notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSanitizedCode: varchar("last_sanitized_code", { length: 128 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("match_persistence_jobs_due_idx").on(table.status, table.nextRetryAt),
+    check("match_persistence_jobs_fingerprint_format", sql`${table.inputFingerprint} ~ '^[a-f0-9]{64}$'`),
+    check("match_persistence_jobs_status", sql`${table.status} in ('pending','retrying','failed','completed')`),
+    check("match_persistence_jobs_attempts", sql`${table.attemptCount} >= 0`),
+    check("match_persistence_jobs_completion", sql`(${table.status} = 'completed' and ${table.completedAt} is not null and ${table.lastSanitizedCode} is null) or (${table.status} <> 'completed' and ${table.completedAt} is null)`),
   ],
 );
 

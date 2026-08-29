@@ -1,6 +1,6 @@
 {
-  "id": "f128fde4-ca98-4901-91f0-50aa014bce6a",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "e5d9f933-191f-4296-9a7f-1f0498c18f5f",
+  "prevId": "17efb6df-1382-4724-87c4-312426113022",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -669,6 +669,122 @@
       },
       "isRLSEnabled": false
     },
+    "public.battle_results": {
+      "name": "battle_results",
+      "schema": "",
+      "columns": {
+        "authority_key_hash": {
+          "name": "authority_key_hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "correlation_key": {
+          "name": "correlation_key",
+          "type": "varchar(264)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_fingerprint": {
+          "name": "input_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result_json": {
+          "name": "result_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_bytes": {
+          "name": "result_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claim_owner": {
+          "name": "claim_owner",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "battle_results_correlation_key_uidx": {
+          "name": "battle_results_correlation_key_uidx",
+          "columns": [
+            {
+              "expression": "correlation_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "battle_results_lease_idx": {
+          "name": "battle_results_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "battle_results_authority_hash_format": {
+          "name": "battle_results_authority_hash_format",
+          "value": "\"battle_results\".\"authority_key_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "battle_results_input_hash_format": {
+          "name": "battle_results_input_hash_format",
+          "value": "\"battle_results\".\"input_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        },
+        "battle_results_size": {
+          "name": "battle_results_size",
+          "value": "\"battle_results\".\"result_bytes\" is null or \"battle_results\".\"result_bytes\" between 1 and 2097152"
+        },
+        "battle_results_state": {
+          "name": "battle_results_state",
+          "value": "(\"battle_results\".\"result_json\" is null and \"battle_results\".\"completed_at\" is null and \"battle_results\".\"claim_owner\" is not null and \"battle_results\".\"lease_expires_at\" is not null) or (\"battle_results\".\"result_json\" is not null and \"battle_results\".\"result_bytes\" is not null and \"battle_results\".\"completed_at\" is not null and \"battle_results\".\"claim_owner\" is null and \"battle_results\".\"lease_expires_at\" is null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.deletion_audit": {
       "name": "deletion_audit",
       "schema": "",
@@ -1181,6 +1297,12 @@
           "name": "designs_logical_version_uidx",
           "columns": [
             {
+              "expression": "owner_identity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "logical_design_id",
               "isExpression": false,
               "asc": true,
@@ -1194,6 +1316,7 @@
             }
           ],
           "isUnique": true,
+          "where": "\"designs\".\"owner_identity_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1788,6 +1911,137 @@
         "identity_sessions_expiry_after_creation": {
           "name": "identity_sessions_expiry_after_creation",
           "value": "\"identity_sessions\".\"expires_at\" > \"identity_sessions\".\"created_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.match_persistence_jobs": {
+      "name": "match_persistence_jobs",
+      "schema": "",
+      "columns": {
+        "match_id": {
+          "name": "match_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "input_fingerprint": {
+          "name": "input_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completion_payload": {
+          "name": "completion_payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_retry_at": {
+          "name": "next_retry_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_sanitized_code": {
+          "name": "last_sanitized_code",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "match_persistence_jobs_due_idx": {
+          "name": "match_persistence_jobs_due_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_retry_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "match_persistence_jobs_match_id_matches_id_fk": {
+          "name": "match_persistence_jobs_match_id_matches_id_fk",
+          "tableFrom": "match_persistence_jobs",
+          "tableTo": "matches",
+          "columnsFrom": [
+            "match_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "match_persistence_jobs_fingerprint_format": {
+          "name": "match_persistence_jobs_fingerprint_format",
+          "value": "\"match_persistence_jobs\".\"input_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        },
+        "match_persistence_jobs_status": {
+          "name": "match_persistence_jobs_status",
+          "value": "\"match_persistence_jobs\".\"status\" in ('pending','retrying','failed','completed')"
+        },
+        "match_persistence_jobs_attempts": {
+          "name": "match_persistence_jobs_attempts",
+          "value": "\"match_persistence_jobs\".\"attempt_count\" >= 0"
+        },
+        "match_persistence_jobs_completion": {
+          "name": "match_persistence_jobs_completion",
+          "value": "(\"match_persistence_jobs\".\"status\" = 'completed' and \"match_persistence_jobs\".\"completed_at\" is not null and \"match_persistence_jobs\".\"last_sanitized_code\" is null) or (\"match_persistence_jobs\".\"status\" <> 'completed' and \"match_persistence_jobs\".\"completed_at\" is null)"
         }
       },
       "isRLSEnabled": false

@@ -1,0 +1,167 @@
+import { and, asc, eq } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
+import type { DatabaseClient } from "@steam-top/db";
+import { buildDesignSnapshotRows } from "@steam-top/db/persistence";
+import { designLayers, designs } from "@steam-top/db/schema";
+import {
+  designSchema,
+  predictDesignPerformance,
+  validateDesign,
+  type PerformancePrediction,
+  type TopDesign,
+} from "@steam-top/domain";
+
+export const DESIGN_SCHEMA_VERSION = "1.0.0" as const;
+
+export type PersistedDesign = Readonly<{
+  designId: string;
+  ownerIdentityId: string;
+  version: number;
+  design: TopDesign;
+  massG: number;
+  performance: PerformancePrediction;
+}>;
+
+export interface DesignRepository {
+  saveBattleEligible(ownerIdentityId: string, input: unknown): Promise<PersistedDesign>;
+  getOwned(ownerIdentityId: string, designId: string): Promise<PersistedDesign | undefined>;
+}
+
+export class DesignPersistenceError extends Error {
+  constructor(readonly code: "DESIGN_INVALID" | "DESIGN_NOT_OWNED") {
+    super(code);
+    this.name = "DesignPersistenceError";
+  }
+}
+
+const stable = (value: unknown): string => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stable(object[key])}`).join(",")}}`;
+};
+
+const canonical = (input: unknown): TopDesign => {
+  const parsed = designSchema.parse(input);
+  const validation = validateDesign(parsed);
+  if (!validation.valid) throw new DesignPersistenceError("DESIGN_INVALID");
+  return parsed;
+};
+
+const fingerprint = (identityId: string, design: TopDesign): string =>
+  createHash("sha256").update(identityId).update("\0").update(stable(design)).digest("hex");
+
+const materialize = (ownerIdentityId: string, designId: string, version: number, design: TopDesign): PersistedDesign => {
+  const validation = validateDesign(design);
+  if (!validation.valid) throw new DesignPersistenceError("DESIGN_INVALID");
+  return Object.freeze({
+    designId,
+    ownerIdentityId,
+    version,
+    design: structuredClone(design),
+    massG: validation.massProperties.totalMassG,
+    performance: predictDesignPerformance(design),
+  });
+};
+
+export class MemoryDesignRepository implements DesignRepository {
+  readonly #records = new Map<string, PersistedDesign>();
+  readonly #fingerprints = new Map<string, string>();
+  readonly #maxEntries: number;
+  constructor(options: Readonly<{ maxEntries?: number }> = {}) {
+    this.#maxEntries = options.maxEntries ?? 2_000;
+  }
+  async saveBattleEligible(ownerIdentityId: string, input: unknown): Promise<PersistedDesign> {
+    const design = canonical(input);
+    const key = fingerprint(ownerIdentityId, design);
+    const existingId = this.#fingerprints.get(key);
+    if (existingId) return structuredClone(this.#records.get(existingId)!);
+    const record = materialize(ownerIdentityId, randomUUID(), 1, design);
+    this.#records.set(record.designId, record);
+    this.#fingerprints.set(key, record.designId);
+    while (this.#records.size > this.#maxEntries) {
+      const oldest = this.#records.entries().next().value as [string, PersistedDesign] | undefined;
+      if (!oldest) break;
+      this.#records.delete(oldest[0]);
+      this.#fingerprints.delete(fingerprint(oldest[1].ownerIdentityId, oldest[1].design));
+    }
+    return structuredClone(record);
+  }
+  async getOwned(ownerIdentityId: string, designId: string): Promise<PersistedDesign | undefined> {
+    const record = this.#records.get(designId);
+    return record?.ownerIdentityId === ownerIdentityId ? structuredClone(record) : undefined;
+  }
+}
+
+type Db = DatabaseClient["db"];
+
+export class PostgresDesignRepository implements DesignRepository {
+  constructor(readonly db: Db) {}
+
+  async saveBattleEligible(ownerIdentityId: string, input: unknown): Promise<PersistedDesign> {
+    const design = canonical(input);
+    return this.db.transaction(async (tx) => {
+      // Serialises versions and exact-design reuse for one logical design owner.
+      await tx.execute(
+        // hashtext is only a lock namespace; identity UUID remains the authority.
+        // eslint-disable-next-line drizzle/enforce-delete-with-where
+        (await import("drizzle-orm")).sql`select pg_advisory_xact_lock(hashtext(${ownerIdentityId}))`,
+      );
+      const owned = await tx.select().from(designs)
+        .where(and(eq(designs.ownerIdentityId, ownerIdentityId), eq(designs.logicalDesignId, design.id)))
+        .orderBy(asc(designs.version));
+      for (const row of owned) {
+        const loaded = await this.#load(tx, ownerIdentityId, row.id);
+        if (loaded && stable(loaded.design) === stable(design)) return loaded;
+      }
+      const version = (owned.at(-1)?.version ?? 0) + 1;
+      const snapshotId = randomUUID();
+      const built = buildDesignSnapshotRows({
+        snapshotId,
+        ownerIdentityId,
+        version,
+        schemaVersion: DESIGN_SCHEMA_VERSION,
+        design: { ...design, id: design.id },
+      });
+      if (!built.activateBattleEligible) throw new DesignPersistenceError("DESIGN_INVALID");
+      await tx.insert(designs).values(built.design);
+      await tx.insert(designLayers).values([...built.layers]);
+      const activated = await tx.update(designs).set({ battleEligible: true })
+        .where(and(eq(designs.id, snapshotId), eq(designs.battleEligible, false))).returning({ id: designs.id });
+      if (activated.length !== 1) throw new Error("DESIGN_ACTIVATION_FAILED");
+      return materialize(ownerIdentityId, snapshotId, version, design);
+    });
+  }
+
+  async getOwned(ownerIdentityId: string, designId: string): Promise<PersistedDesign | undefined> {
+    return this.#load(this.db, ownerIdentityId, designId);
+  }
+
+  async #load(db: Pick<Db, "select">, ownerIdentityId: string, designId: string): Promise<PersistedDesign | undefined> {
+    const [row] = await db.select().from(designs).where(and(
+      eq(designs.id, designId),
+      eq(designs.ownerIdentityId, ownerIdentityId),
+      eq(designs.battleEligible, true),
+    )).limit(1);
+    if (!row) return undefined;
+    const layers = await db.select().from(designLayers).where(eq(designLayers.designId, row.id)).orderBy(asc(designLayers.layerOrder));
+    if (layers.length !== 3) return undefined;
+    const design = designSchema.parse({
+      id: row.logicalDesignId,
+      name: row.name,
+      layers: layers.map((layer) => ({
+        id: layer.sourceLayerId,
+        position: layer.position,
+        shape: layer.shape,
+        points: layer.points,
+        diameterMm: layer.diameterMm,
+        cornerRoundness: layer.cornerRoundness,
+        rotationDeg: layer.rotationDeg,
+        color: layer.color,
+      })),
+      screwLayout: { count: row.screwCount, radiusMm: row.screwRadiusMm, rotationDeg: row.screwRotationDeg },
+      metalDiscDiameterMm: row.metalDiscDiameterMm,
+    });
+    return materialize(ownerIdentityId, row.id, row.version, design);
+  }
+}

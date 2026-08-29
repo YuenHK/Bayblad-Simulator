@@ -9,6 +9,8 @@ import { scoreMatch } from "./battle/scoring";
 import { RoomService } from "./rooms/room-service";
 import { DesignRegistry } from "./design-registry";
 import { AdminAuthService, InMemoryAdminStore } from "./auth/admin-auth";
+import { MemoryMatchRepository } from "./records/match-repository";
+import type { RoomRecordRepository } from "./records/room-repository";
 
 const uuid = () => crypto.randomUUID();
 const command = (type: string, fields: Record<string, unknown> = {}) => ({
@@ -33,7 +35,7 @@ class FakeBattleEngine implements BattleEnginePort {
     return {
       modelVersion: "2.0.0",
       seed: inputs.seed,
-      ticks: 1,
+      ticks: this.frames.at(-1)?.tick ?? 0,
       frames: structuredClone(this.frames),
       outcome: { winner, reason: winner === "draw" ? "simultaneous" : "stopped" },
       finalStats: {
@@ -62,6 +64,23 @@ class FailFirstScheduleCoordinator extends LaunchCoordinator {
     const scheduled = super.schedule(input);
     if (!this.#failed) { this.#failed = true; throw new Error("injected schedule failure"); }
     return scheduled;
+  }
+}
+
+class FailTwiceMatchRepository extends MemoryMatchRepository {
+  saveCalls = 0;
+  override async saveCompletedMatch(input: Parameters<MemoryMatchRepository["saveCompletedMatch"]>[0]) {
+    this.saveCalls += 1;
+    if (this.saveCalls <= 2) throw new Error("injected persistence failure");
+    return super.saveCompletedMatch(input);
+  }
+}
+
+class FailWaitingRoomProjection implements RoomRecordRepository {
+  waitingFailures = 0;
+  async create() {} async join() {} async recordBattleStart() {} async updateOwner() {} async syncRoles() {} async leave() {} async leaveAndSync() {} async close() {}
+  async updatePhase(_roomId: string, phase: "waiting" | "launch" | "battle" | "result") {
+    if (phase === "waiting") { this.waitingFailures += 1; throw new Error("injected room projection failure"); }
   }
 }
 
@@ -681,8 +700,13 @@ describe("realtime app", () => {
   it("runs two players and 20 spectators with O(1) frame broadcasts through a private-launch match", async () => {
     let now = 1_000;
     const engine = new FakeBattleEngine();
+    const matchRepository = new FailTwiceMatchRepository();
+    const roomProjection = new FailWaitingRoomProjection();
     const app = buildApp({
       battleEngine: engine,
+      matchRepository,
+      roomRecordRepository: roomProjection,
+      persistenceRetryDelaysMs: [0, 0, 0],
       now: () => now,
       launch: new LaunchCoordinator({ now: () => now, leadTimeMs: 100 }),
       sweepIntervalMs: 0,
@@ -803,6 +827,14 @@ describe("realtime app", () => {
     expect(app.realtimeGateway.debugCounts.terminalMatches).toBe(1);
     expect(p1Events.some((event) => event.type === "launch.result.spectator")).toBe(false);
     expect(p1Events.filter((event) => event.type === "match.finished")).toHaveLength(1);
+    expect(p1Events.filter((event) => event.type === "error" && event.code === "BATTLE_FAILED")).toHaveLength(0);
+    await vi.waitFor(() => expect(roomProjection.waitingFailures).toBe(1));
+    expect(app.realtimeGateway.activeMatchCount).toBe(0);
+    expect(matchRepository.records.get(match.matchId)).toMatchObject({ spectatorCount: 20, roundWinners: ["player1", "player1"] });
+    expect(matchRepository.records.get(match.matchId)?.rounds).toHaveLength(2);
+    expect(matchRepository.saveCalls).toBe(3);
+    expect(p1Events.filter((event) => event.type === "match.persistence").map((event) => event.status)).toEqual(["saving", "retrying", "retrying"]);
+    expect(p1Events.findLastIndex((event) => event.type === "match.persistence")).toBeLessThan(p1Events.findIndex((event) => event.type === "match.finished"));
 
     const finishedAt = now;
     const reconnectingSpectator = spectators[0]!;

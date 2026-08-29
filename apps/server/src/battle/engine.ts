@@ -120,6 +120,11 @@ export type StoredBattleResult = Readonly<{
  */
 export interface ResultRepository {
   get(correlationKey: string): Promise<StoredBattleResult | undefined>;
+  /** Optional distributed lease. Production repositories use it to avoid duplicate simulations. */
+  claim?(correlationKey: string, fingerprint: string): Promise<"acquired" | StoredBattleResult>;
+  release?(correlationKey: string, fingerprint: string): Promise<void>;
+  renewLease?(correlationKey: string, fingerprint: string): Promise<boolean>;
+  readonly leaseRenewIntervalMs?: number;
   saveIfAbsent(correlationKey: string, value: StoredBattleResult): Promise<StoredBattleResult>;
 }
 
@@ -1245,6 +1250,14 @@ export class BattleEngine {
     const authoritative = await this.#getAuthoritative(key, fingerprint, () => pending.canceled);
     if (pending.canceled) throw abortError();
     if (authoritative !== undefined) return authoritative;
+    if (this.#resultRepository.claim) {
+      const claim = await this.#resultRepository.claim(key, fingerprint);
+      if (claim !== "acquired") {
+        const claimed = this.#resultFromStored(claim, fingerprint);
+        this.#storeCached(key, fingerprint, claimed);
+        return claimed;
+      }
+    }
     const active = this.#inFlight.get(key);
     if (active !== undefined) {
       if (active.fingerprint !== fingerprint) throw new Error("Active battle correlation conflict");
@@ -1322,6 +1335,13 @@ export class BattleEngine {
     job.state = "running";
     this.#runningCount += 1;
     this.#simulationCount += 1;
+    let renewing = false;
+    const renewTimer = this.#resultRepository.renewLease ? setInterval(() => {
+      if (renewing || job.controller.signal.aborted) return;
+      renewing = true;
+      void this.#resultRepository.renewLease!(job.key, job.fingerprint).then((renewed) => { if (!renewed) job.controller.abort(); }, () => job.controller.abort()).finally(() => { renewing = false; });
+    }, this.#resultRepository.leaseRenewIntervalMs ?? 5_000) : null;
+    renewTimer?.unref();
     void (async () => {
       try {
         const result = await simulateMatchRoundAsync(job.canonical.player1, job.canonical.player2, job.canonical, {
@@ -1335,8 +1355,12 @@ export class BattleEngine {
         if (!job.controller.signal.aborted) this.#storeCached(job.key, job.fingerprint, authoritative);
         job.resolve(authoritative);
       } catch (error) {
+        if (this.#resultRepository.release) {
+          try { await this.#resultRepository.release(job.key, job.fingerprint); } catch { /* preserve simulation error */ }
+        }
         job.reject(error);
       } finally {
+        if (renewTimer) clearInterval(renewTimer);
         job.state = "settled";
         this.#runningCount -= 1;
         this.#inFlight.delete(job.key);
