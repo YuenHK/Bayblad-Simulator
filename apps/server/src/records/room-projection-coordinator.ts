@@ -1,3 +1,5 @@
+import type { ClaimedRoomProjection, RoomProjectionInput, RoomProjectionStore } from "./room-projection-store";
+
 export type RoomProjectionOperation = () => Promise<void>;
 
 type Entry = { revision: number; attempt: number; operation: RoomProjectionOperation; timer: ReturnType<typeof setTimeout> | null; running: boolean };
@@ -7,23 +9,49 @@ export class RoomProjectionCoordinator {
   readonly #entries = new Map<string, Entry>();
   readonly #maxEntries: number;
   readonly #report: (error: unknown) => void;
+  readonly #store: RoomProjectionStore | null;
+  readonly #apply: ((job: ClaimedRoomProjection) => Promise<void>) | null;
+  readonly #runningClaims = new Set<Promise<void>>();
+  readonly #pendingEnqueues = new Set<Promise<"created" | "updated" | "stale">>();
   #closed = false;
-  constructor(options: Readonly<{ maxEntries?: number; report?: (error: unknown) => void }> = {}) {
+  constructor(options: Readonly<{ maxEntries?: number; report?: (error: unknown) => void; store?: RoomProjectionStore; apply?: (job: ClaimedRoomProjection) => Promise<void> }> = {}) {
     this.#maxEntries = options.maxEntries ?? 2_000; this.#report = options.report ?? (() => undefined);
+    this.#store = options.store ?? null;
+    this.#apply = options.apply ?? null;
+    if ((this.#store === null) !== (this.#apply === null)) throw new TypeError("room projection store and apply must be provided together");
+  }
+  async pump(now = new Date(), limit = 25): Promise<void> {
+    if (this.#closed || !this.#store || !this.#apply) return;
+    const claims = await this.#store.claimDue(limit, now);
+    const operations = claims.map((claim) => {
+      const operation = this.#apply!(claim)
+        .then(async () => { await this.#store!.complete(claim); })
+        .catch(async (error) => { this.#report(error); await this.#store!.fail(claim, "ROOM_PROJECTION_FAILED", now); })
+        .finally(() => this.#runningClaims.delete(operation));
+      this.#runningClaims.add(operation);
+      return operation;
+    });
+    await Promise.all(operations);
   }
   enqueue(key: string, revision: number, operation: RoomProjectionOperation): void {
     if (this.#closed) return;
     const current = this.#entries.get(key);
     if (current && current.revision > revision) return;
     if (!current && this.#entries.size >= this.#maxEntries) {
-      const oldest = this.#entries.keys().next().value as string | undefined;
-      if (oldest) { const evicted = this.#entries.get(oldest); if (evicted?.timer) clearTimeout(evicted.timer); this.#entries.delete(oldest); }
+      throw new Error("ROOM_PROJECTION_CAPACITY");
     }
     const next: Entry = { revision, attempt: current?.revision === revision ? current.attempt : 0, operation, timer: null, running: current?.running ?? false };
     if (current?.timer) clearTimeout(current.timer);
     this.#entries.set(key, next);
     if (!next.running) void this.#run(key, next);
   }
+  async enqueueProjection(input: RoomProjectionInput): Promise<"created" | "updated" | "stale"> {
+    if (this.#closed || !this.#store) throw new Error("ROOM_PROJECTION_COORDINATOR_CLOSED");
+    const operation = this.#store.enqueue(input).finally(() => this.#pendingEnqueues.delete(operation));
+    this.#pendingEnqueues.add(operation);
+    return operation;
+  }
+  get usesDurableStore(): boolean { return this.#store !== null; }
   async #run(key: string, entry: Entry): Promise<void> {
     if (this.#closed || this.#entries.get(key) !== entry) return;
     entry.running = true;
@@ -38,6 +66,6 @@ export class RoomProjectionCoordinator {
     const latest = this.#entries.get(key);
     if (latest && latest !== entry && latest.running) { latest.running = false; void this.#run(key, latest); }
   }
-  close(): void { this.#closed = true; for (const entry of this.#entries.values()) if (entry.timer) clearTimeout(entry.timer); this.#entries.clear(); }
+  async close(): Promise<void> { this.#closed = true; for (const entry of this.#entries.values()) if (entry.timer) clearTimeout(entry.timer); this.#entries.clear(); await Promise.allSettled([...this.#pendingEnqueues, ...this.#runningClaims]); }
   get size(): number { return this.#entries.size; }
 }

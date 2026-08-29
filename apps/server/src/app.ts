@@ -22,6 +22,7 @@ import { DesignPersistenceError, PostgresDesignRepository, type DesignRepository
 import { PostgresMatchRepository, type MatchRepository } from "./records/match-repository";
 import { PostgresBattleResultRepository } from "./records/battle-result-repository";
 import { PostgresRoomRecordRepository, type RoomRecordRepository } from "./records/room-repository";
+import { PostgresRoomProjectionStore, type RoomProjectionStore } from "./records/room-projection-store";
 
 export type ClientKeyResolver = (request: IncomingMessage) => string;
 
@@ -37,6 +38,7 @@ export type BuildAppOptions = Readonly<{
   designRepository?: DesignRepository;
   matchRepository?: MatchRepository;
   roomRecordRepository?: RoomRecordRepository;
+  roomProjectionStore?: RoomProjectionStore;
   battleEngine?: BattleEnginePort;
   resultRepository?: ResultRepository;
   launch?: LaunchCoordinator;
@@ -142,6 +144,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (process.env.NODE_ENV === "production" && !(options.matchRepository instanceof PostgresMatchRepository)) throw new TypeError("Production composition requires a persistent matchRepository");
   if (process.env.NODE_ENV === "production" && !(options.resultRepository instanceof PostgresBattleResultRepository)) throw new TypeError("Production composition requires a persistent resultRepository");
   if (process.env.NODE_ENV === "production" && !(options.roomRecordRepository instanceof PostgresRoomRecordRepository)) throw new TypeError("Production composition requires a persistent roomRecordRepository");
+  if (process.env.NODE_ENV === "production" && !(options.roomProjectionStore instanceof PostgresRoomProjectionStore)) throw new TypeError("Production composition requires a persistent roomProjectionStore");
   const config = {
     bodyLimit: requirePositive("bodyLimit", options.bodyLimit ?? 64 * 1_024),
     maxHttpBufferSize: requirePositive("maxHttpBufferSize", options.maxHttpBufferSize ?? 64 * 1_024),
@@ -267,10 +270,10 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   const retryWorkers = new Map<string, Promise<void>>();
   const pumpRetryJobs = () => {
     if (!options.matchRepository) return;
-    void options.matchRepository.listRetryable(new Date(), 25).then((jobs) => {
+    void options.matchRepository.claimDueJobs(new Date(), 25).then((jobs) => {
       for (const job of jobs) {
         if (retryWorkers.has(job.matchId)) continue;
-        const operation = options.matchRepository!.retryFailedMatch(job.matchId).then(() => undefined).catch((error) => options.logError?.(error)).finally(() => retryWorkers.delete(job.matchId));
+        const operation = options.matchRepository!.retryFailedMatch(job.matchId, { claimToken: job.claimToken, generation: job.generation }).then(() => undefined).catch((error) => options.logError?.(error)).finally(() => retryWorkers.delete(job.matchId));
         retryWorkers.set(job.matchId, operation);
       }
     }).catch((error) => options.logError?.(error));
@@ -281,6 +284,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     ...(options.designRepository ? { designRepository: options.designRepository } : {}),
     ...(options.matchRepository ? { matchRepository: options.matchRepository } : {}),
     ...(options.roomRecordRepository ? { roomRecordRepository: options.roomRecordRepository } : {}),
+    ...(options.roomProjectionStore ? { roomProjectionStore: options.roomProjectionStore } : {}),
     battleEngine,
     launch: options.launch ?? new LaunchCoordinator(options.now ? { now: options.now } : {}),
     ...(options.now ? { now: options.now } : {}),

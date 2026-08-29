@@ -612,3 +612,30 @@ CREATE TABLE "match_persistence_jobs" (
 ALTER TABLE "match_persistence_jobs" ADD CONSTRAINT "match_persistence_jobs_match_id_matches_id_fk" FOREIGN KEY ("match_id") REFERENCES "public"."matches"("id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
 CREATE INDEX "match_persistence_jobs_due_idx" ON "match_persistence_jobs" USING btree ("status","next_retry_at");
+CREATE TABLE "room_projection_jobs" (
+	"room_id" uuid PRIMARY KEY NOT NULL,
+	"revision" bigint NOT NULL,
+	"payload_hash" text NOT NULL,
+	"payload_json" jsonb NOT NULL,
+	"status" varchar(16) DEFAULT 'pending' NOT NULL,
+	"attempt_count" integer DEFAULT 0 NOT NULL,
+	"next_attempt_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"lease_token" uuid,
+	"generation" integer DEFAULT 0 NOT NULL,
+	"lease_until" timestamp with time zone,
+	"last_error" varchar(128),
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "room_projection_jobs_revision" CHECK ("room_projection_jobs"."revision" >= 0),
+	CONSTRAINT "room_projection_jobs_payload_hash" CHECK ("room_projection_jobs"."payload_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "room_projection_jobs_status" CHECK ("room_projection_jobs"."status" in ('pending','leased','dead')),
+	CONSTRAINT "room_projection_jobs_attempts" CHECK ("room_projection_jobs"."attempt_count" >= 0 and "room_projection_jobs"."generation" >= 0),
+	CONSTRAINT "room_projection_jobs_lease" CHECK (("room_projection_jobs"."status" = 'leased' and "room_projection_jobs"."lease_token" is not null and "room_projection_jobs"."lease_until" is not null) or ("room_projection_jobs"."status" <> 'leased' and "room_projection_jobs"."lease_token" is null and "room_projection_jobs"."lease_until" is null))
+);
+--> statement-breakpoint
+ALTER TABLE "room_projection_jobs" ADD CONSTRAINT "room_projection_jobs_room_id_rooms_id_fk" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "room_projection_jobs_due_idx" ON "room_projection_jobs" USING btree ("status","next_attempt_at","created_at");--> statement-breakpoint
+ALTER TABLE "match_persistence_jobs" ADD COLUMN "claim_token" uuid;--> statement-breakpoint
+ALTER TABLE "match_persistence_jobs" ADD COLUMN "generation" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "match_persistence_jobs" ADD COLUMN "lease_until" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "match_persistence_jobs" ADD CONSTRAINT "match_persistence_jobs_claim" CHECK (("match_persistence_jobs"."status" = 'retrying' and "match_persistence_jobs"."claim_token" is not null and "match_persistence_jobs"."lease_until" is not null) or ("match_persistence_jobs"."status" <> 'retrying' and "match_persistence_jobs"."claim_token" is null and "match_persistence_jobs"."lease_until" is null));--> statement-breakpoint

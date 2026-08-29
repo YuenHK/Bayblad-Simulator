@@ -29,7 +29,11 @@ async function stopServer(server) {
   });
 }
 async function connect(url, name) {
-  const socket = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: name } }), stream = collector(socket, name);
+  const identity = await fetch(`${url}/api/identity`, { headers: { "user-agent": `steam-top-load/${name}` } });
+  if (!identity.ok) throw new Error(`identity ${identity.status}: ${await identity.text()}`);
+  const cookie = identity.headers.getSetCookie().map((value) => value.split(";", 1)[0]).join("; ");
+  if (!cookie) throw new Error("identity response did not issue a cookie");
+  const socket = io(url, { transports: ["websocket"], reconnection: false, extraHeaders: { cookie } }), stream = collector(socket, name);
   await new Promise((resolve, reject) => { socket.once("connect", resolve); socket.once("connect_error", reject); });
   const welcome = stream.next((e) => e.type === "protocol.welcome"); socket.emit("client.event", { type: "protocol.hello", eventId: randomUUID(), supportedVersions: [1] });
   return { socket, stream, token: (await welcome).sessionToken, name };
