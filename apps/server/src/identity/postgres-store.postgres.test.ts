@@ -39,9 +39,12 @@ it.skipIf(!databaseUrl)("atomically exchanges a durable Web Clip nonce and recov
   const jtiHash = "a".repeat(64);
   await store.issue({ jtiHash, deviceId: "ipad-atomic", issuedAt, expiresAt });
   const now = new Date("2026-08-29T00:01:00Z"), attemptHash="b".repeat(64);
+  expect(await store.preflight(jtiHash,attemptHash,now)).toEqual({status:"unused"});
   const identityStore=new PostgresIdentityStore(client.db); const persisted=await identityStore.createGuestSession({tokenHash:"c".repeat(64),displayName:"nonce-test",now,expiresAt:new Date(now.getTime()+86_400_000),diagnostics:{}});
   const created={identityId:persisted.identity.id,sessionId:persisted.id,tokenHash:persisted.tokenHash,committedAt:now};
   expect(await store.exchange({jtiHash,attemptHash,now},async()=>created)).toMatchObject({status:"committed"});
+  expect(await store.preflight(jtiHash,attemptHash,now)).toMatchObject({status:"recovered",result:{sessionId:persisted.id}});
+  expect(await store.preflight(jtiHash,"d".repeat(64),now)).toEqual({status:"replay"});
   expect(await store.exchange({jtiHash,attemptHash,now},async()=>{throw new Error("must not run");})).toMatchObject({status:"recovered"});
   expect(await store.exchange({jtiHash,attemptHash:"d".repeat(64),now},async()=>created)).toEqual({status:"replay"});
 });
