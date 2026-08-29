@@ -337,6 +337,42 @@ export class RealtimeGateway {
     this.io.on("connection", (socket) => { void this.#connect(socket); });
   }
 
+  setPlatformPaused(paused: boolean): void {
+    this.#rooms.setPlatformPaused(paused);
+    this.io.to("protocol:v1").emit("server.event", { type: "platform.status", paused, protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() });
+    this.#broadcastLobby();
+  }
+
+  adminCloseRoom(roomId: string): Promise<void> {
+    return this.#adminRoomTail(roomId, async () => {
+      const view = this.#rooms.get(roomId); if (!view) throw Object.assign(new Error("ROOM_NOT_FOUND"), { code: "ROOM_NOT_FOUND" });
+      const revision = view.revision + 1, checkpoint = this.#rooms.checkpoint(roomId), closedAt = new Date(this.#now());
+      if (this.#roomRecordRepository?.closeWithProjection) await this.#roomRecordRepository.closeWithProjection(roomId, closedAt, revision, { phase: "closed", firstBattleAt: null, closedAt: closedAt.toISOString() });
+      this.#rooms.adminClose(roomId);
+      try { if (this.#roomRecordRepository && !this.#roomRecordRepository.closeWithProjection) await this.#roomRecordRepository.close(roomId, closedAt, revision); }
+      catch (error) { this.#rooms.restore(checkpoint); throw error; }
+      const match = this.#matches.get(roomId); if (match) this.#cancelMatch(roomId, match);
+      this.#departWholeRoom(roomId, "closed"); this.#cleanupRoom(roomId); this.#broadcastLobby();
+    });
+  }
+
+  adminRemoveParticipant(roomId: string, participantId: string): Promise<void> {
+    return this.#adminRoomTail(roomId, async () => {
+      const sessionId = this.#sessionIdsByParticipant.get(roomId)?.get(participantId); if (!sessionId) throw Object.assign(new Error("PARTICIPANT_NOT_FOUND"), { code: "PARTICIPANT_NOT_FOUND" });
+      const checkpoint = this.#rooms.checkpoint(roomId); this.#rooms.adminRemove(roomId, participantId);
+      try { if (this.#roomRecordRepository) { const view = this.#rooms.get(roomId); if (view) { const projection = this.#roomRoleProjection(roomId); await this.#roomRecordRepository.leaveAndSync(roomId, participantId, new Date(this.#now()), projection.roles, projection.ownerParticipantId, projection.ownerIdentityId); } else await this.#roomRecordRepository.leave(roomId, participantId, new Date(this.#now())); } }
+      catch (error) { this.#rooms.restore(checkpoint); throw error; }
+      const session = this.#sessionsById.get(sessionId); if (session) { const event = { type: "room.departed", departureId: this.#createServerEventId(), roomId, reason: "removed", protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() } as const; this.#queueDeparture(session, event); for (const socketId of session.socketIds) { const socket = this.io.sockets.sockets.get(socketId); if (socket) this.#emit(socket, event); } session.roomIds.delete(roomId); session.ownedRoomIds.delete(roomId); }
+      this.#sessionIdsByParticipant.get(roomId)?.delete(participantId); this.#syncTransportRoles(roomId); if (this.#rooms.hasRoom(roomId)) this.#broadcastRoom(roomId); this.#broadcastLobby();
+    });
+  }
+
+  #adminRoomTail(roomId: string, operation: () => Promise<void>): Promise<void> {
+    const execution = (this.#roomCommandTails.get(roomId) ?? Promise.resolve()).then(operation);
+    const settled = execution.then(() => undefined, () => undefined).finally(() => { if (this.#roomCommandTails.get(roomId) === settled) this.#roomCommandTails.delete(roomId); });
+    this.#roomCommandTails.set(roomId, settled); return execution;
+  }
+
   get activeMatchCount(): number {
     return this.#matches.size;
   }
@@ -831,6 +867,7 @@ export class RealtimeGateway {
       this.#broadcastRoom(event.roomId);
       this.#broadcastLobby();
     } else if (event.type === "player.ready") {
+      if (this.#rooms.platformPaused) throw Object.assign(new Error("PLATFORM_PAUSED"), { code: "PLATFORM_PAUSED" });
       try {
         this.#designs.requireOwned(session.id, event.designId);
       } catch (error) {

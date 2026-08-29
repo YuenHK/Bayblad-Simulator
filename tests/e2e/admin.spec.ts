@@ -1,6 +1,44 @@
 import { expect, test, type Page } from "@playwright/test";
-const password=process.env.E2E_ADMIN_PASSWORD??"e2e-admin-only-password";
-async function fixtures(page:Page){let loggedIn=false,deleted=false;await page.route("**/api/admin/**",async route=>{const request=route.request(),url=new URL(request.url()),method=request.method();let body:unknown,status=200;if(url.pathname.endsWith("/login")){loggedIn=(request.postDataJSON() as {password:string}).password===password;status=loggedIn?204:401;body=loggedIn?"":{error:"INVALID_CREDENTIALS"};}else if(url.pathname.endsWith("/session")){status=loggedIn?200:401;body=loggedIn?{username:"admin",expiresAt:"2026-09-01T00:00:00Z",csrfToken:"csrf"}:{error:"UNAUTHORIZED"};}else if(!loggedIn){status=401;body={error:"UNAUTHORIZED"};}else if(url.pathname.endsWith("/rooms"))body={paused:false,rooms:[{roomId:"r1",roomCode:"ABC123",status:"waiting",players:[{id:"p1",displayName:"1A 陳同學"}],spectators:[]}]};else if(url.pathname.endsWith("/rooms/actions")){status=204;body="";}else if(url.pathname.endsWith("/analytics"))body={usagePeriods:{daily:[{period:"2026-08-29",activeDevices:5,matches:2}],weekly:[],monthly:[]},parameterUsage:[{dimension:"形狀",value:"圓形",count:12,ratio:.6}],rankings:{top:[{label:"圓形 50mm",averageScore:2.4,winRate:.6,sampleSize:12}],bottom:[],overallLaunchDistribution:{}},refreshedAt:"2026-08-29T00:00:00Z"};else if(url.pathname.endsWith("deletion-preview"))body={previewToken:"x".repeat(43),filterHash:"a".repeat(64),expiresAt:"2026-09-01T00:00:00Z",counts:{identities:1,designs:2,matches:3}};else if(url.pathname.endsWith("/records")&&method==="DELETE"){deleted=true;body={auditId:"a",counts:{identities:1,designs:2,matches:3}};}else if(url.pathname.endsWith("/records"))body={rows:deleted?[]:[{id:"m1",occurredAt:"2026-08-29T00:00:00Z",className:"1A",identity:"陳同學",deviceName:"iPad-01",parameters:"圓形 50mm",totalScore:2.5}],total:deleted?0:1,page:1,pageSize:25};else return route.abort();return route.fulfill({status,contentType:"application/json",body:typeof body==="string"?body:JSON.stringify(body)})})}
-async function login(page:Page){await fixtures(page);await page.goto("/admin");await expect(page.getByRole("heading",{name:"教師登入"})).toBeVisible();await page.getByLabel("密碼").fill(password);await page.getByRole("button",{name:"登入"}).press("Enter");await expect(page.getByRole("heading",{name:"教師控制台"})).toBeVisible();}
-test("教師登入、房間確認、篩選、統計及刪除流程不外洩密碼",async({page})=>{await login(page);expect(page.url()).not.toContain(password);expect(await page.evaluate(()=>JSON.stringify(localStorage))).not.toContain(password);await expect(page.getByText("ABC123")).toBeVisible();await page.getByRole("button",{name:"強制關房"}).click();await expect(page.getByRole("dialog")).toBeVisible();await page.getByRole("button",{name:"取消"}).click();await page.getByLabel("班別").fill("1A");await page.getByRole("button",{name:"套用篩選"}).click();await expect(page.getByRole("cell",{name:"圓形 50mm"})).toBeVisible();await page.getByRole("button",{name:"刪除紀錄"}).click();await page.getByRole("button",{name:"預覽刪除範圍"}).click();await expect(page.getByText(/1 個身份、2 個設計、3 場對戰/)).toBeVisible();await page.getByLabel("再次輸入管理員密碼").fill(password);await page.getByLabel("輸入 DELETE 確認").fill("DELETE");await page.getByRole("button",{name:"永久刪除"}).click();await expect(page.getByText("0 筆紀錄")).toBeVisible()});
-test.describe("iPad 與減少動態效果",()=>{test.use({viewport:{width:820,height:1180},hasTouch:true});test("可用鍵盤瀏覽後台",async({page})=>{await page.emulateMedia({reducedMotion:"reduce"});await login(page);await page.keyboard.press("Tab");await expect(page.locator(":focus")).toBeVisible()})});
+const password = process.env.E2E_ADMIN_PASSWORD ?? "e2e-admin-only-password";
+async function login(page: Page) {
+  await page.goto("/admin");
+  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
+  await page.getByLabel("密碼").fill(password);
+  await page.getByRole("button", { name: "登入" }).press("Enter");
+  await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
+}
+test("教師登入、房間確認、篩選、統計及刪除流程不外洩密碼", async ({ page }) => {
+  await login(page);
+  expect(page.url()).not.toContain(password);
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
+    password,
+  );
+  await expect(page.getByText("1 間房間")).toBeVisible();
+  await page.getByRole("button", { name: "強制關房" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("button", { name: "取消" }).click();
+  await page.getByLabel("班別").fill("1A");
+  await expect(page.getByText("iPad-01")).toBeVisible();
+  await page.getByRole("checkbox", { name: "選取 陳同學" }).check();
+  await page.getByRole("button", { name: "刪除紀錄" }).click();
+  await page.getByRole("button", { name: "預覽刪除範圍" }).click();
+  await expect(page.getByText(/1 個身份、2 個設計、3 場對戰/)).toBeVisible();
+  await page.getByLabel("再次輸入管理員密碼").fill(password);
+  await page.getByLabel("輸入 DELETE 確認").fill("DELETE");
+  await page.getByRole("button", { name: "永久刪除" }).click();
+  await expect(page.getByText("0 筆紀錄")).toBeVisible();
+  await page.getByRole("button", { name: "登出" }).click();
+  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
+  await page.getByLabel("密碼").fill(password);
+  await page.getByRole("button", { name: "登入" }).click();
+  await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
+});
+test.describe("iPad 與減少動態效果", () => {
+  test.use({ viewport: { width: 820, height: 1180 }, hasTouch: true });
+  test("可用鍵盤瀏覽後台", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await login(page);
+    await page.keyboard.press("Tab");
+    await expect(page.locator(":focus")).toBeVisible();
+  });
+});
