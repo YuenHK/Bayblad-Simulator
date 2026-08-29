@@ -1,5 +1,5 @@
 {
-  "id": "529eb854-4889-43b7-b24e-998de9422227",
+  "id": "f128fde4-ca98-4901-91f0-50aa014bce6a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -154,20 +154,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "admin_audit_admin_session_id_admin_sessions_id_fk": {
-          "name": "admin_audit_admin_session_id_admin_sessions_id_fk",
-          "tableFrom": "admin_audit",
-          "tableTo": "admin_sessions",
-          "columnsFrom": [
-            "admin_session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -175,6 +162,229 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.admin_login_limits": {
+      "name": "admin_login_limits",
+      "schema": "",
+      "columns": {
+        "scope": {
+          "name": "scope",
+          "type": "admin_login_scope",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_hash": {
+          "name": "key_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failure_count": {
+          "name": "failure_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "window_start": {
+          "name": "window_start",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "locked_until": {
+          "name": "locked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "admin_login_limits_updated_idx": {
+          "name": "admin_login_limits_updated_idx",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "admin_login_limits_scope_key_hash_pk": {
+          "name": "admin_login_limits_scope_key_hash_pk",
+          "columns": [
+            "scope",
+            "key_hash"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "admin_login_limits_hash_format": {
+          "name": "admin_login_limits_hash_format",
+          "value": "\"admin_login_limits\".\"key_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "admin_login_limits_count_nonnegative": {
+          "name": "admin_login_limits_count_nonnegative",
+          "value": "\"admin_login_limits\".\"failure_count\" >= 0"
+        },
+        "admin_login_limits_lock_order": {
+          "name": "admin_login_limits_lock_order",
+          "value": "\"admin_login_limits\".\"locked_until\" is null or \"admin_login_limits\".\"locked_until\" >= \"admin_login_limits\".\"window_start\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.admin_reauth_grants": {
+      "name": "admin_reauth_grants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "admin_user_id": {
+          "name": "admin_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "admin_session_id": {
+          "name": "admin_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "admin_reauth_grants_token_uidx": {
+          "name": "admin_reauth_grants_token_uidx",
+          "columns": [
+            {
+              "expression": "token_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "admin_reauth_grants_expiry_idx": {
+          "name": "admin_reauth_grants_expiry_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "admin_reauth_grants_admin_user_id_admin_users_id_fk": {
+          "name": "admin_reauth_grants_admin_user_id_admin_users_id_fk",
+          "tableFrom": "admin_reauth_grants",
+          "tableTo": "admin_users",
+          "columnsFrom": [
+            "admin_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "admin_reauth_grants_admin_session_id_admin_sessions_id_fk": {
+          "name": "admin_reauth_grants_admin_session_id_admin_sessions_id_fk",
+          "tableFrom": "admin_reauth_grants",
+          "tableTo": "admin_sessions",
+          "columnsFrom": [
+            "admin_session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "admin_reauth_grants_hash_format": {
+          "name": "admin_reauth_grants_hash_format",
+          "value": "\"admin_reauth_grants\".\"token_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "admin_reauth_grants_purpose_nonblank": {
+          "name": "admin_reauth_grants_purpose_nonblank",
+          "value": "length(btrim(\"admin_reauth_grants\".\"purpose\")) between 1 and 64"
+        },
+        "admin_reauth_grants_time_order": {
+          "name": "admin_reauth_grants_time_order",
+          "value": "\"admin_reauth_grants\".\"expires_at\" > \"admin_reauth_grants\".\"created_at\" and (\"admin_reauth_grants\".\"consumed_at\" is null or (\"admin_reauth_grants\".\"consumed_at\" >= \"admin_reauth_grants\".\"created_at\" and \"admin_reauth_grants\".\"consumed_at\" <= \"admin_reauth_grants\".\"expires_at\"))"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.admin_sessions": {
@@ -235,6 +445,12 @@
         },
         "revoked_at": {
           "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "archived_at": {
+          "name": "archived_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -303,6 +519,33 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "admin_sessions_active_idx": {
+          "name": "admin_sessions_active_idx",
+          "columns": [
+            {
+              "expression": "admin_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "archived_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -331,6 +574,10 @@
         "admin_sessions_expiry_after_creation": {
           "name": "admin_sessions_expiry_after_creation",
           "value": "\"admin_sessions\".\"expires_at\" > \"admin_sessions\".\"created_at\""
+        },
+        "admin_sessions_archive_requires_revoke": {
+          "name": "admin_sessions_archive_requires_revoke",
+          "value": "\"admin_sessions\".\"archived_at\" is null or \"admin_sessions\".\"revoked_at\" is not null"
         }
       },
       "isRLSEnabled": false
@@ -2835,6 +3082,15 @@
     }
   },
   "enums": {
+    "public.admin_login_scope": {
+      "name": "admin_login_scope",
+      "schema": "public",
+      "values": [
+        "account",
+        "client",
+        "global"
+      ]
+    },
     "public.audit_outcome": {
       "name": "audit_outcome",
       "schema": "public",
