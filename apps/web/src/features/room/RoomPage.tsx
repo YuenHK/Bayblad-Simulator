@@ -15,7 +15,7 @@ export type RoomBattleView = Readonly<{
   frames?: readonly ArenaFrame[] | undefined;
   roundWinner?: "player1" | "player2" | "draw" | undefined;
   matchFinished?: MatchFinishedEvent | undefined;
-  cancelledReason?: "attempt-limit" | "server-error" | undefined;
+  cancelledReason?: "attempt-limit" | "server-error" | "admin-removed" | undefined;
   clockReady?: boolean;
   clockSamples?: number;
   clockQuality?: "syncing" | "good" | "degraded";

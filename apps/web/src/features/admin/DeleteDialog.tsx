@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AdminModal } from "./AdminModal";
-import { jsonHeaders, requestJson } from "./api";
+import { AdminApiError, jsonHeaders, requestJson } from "./api";
 import type { AdminFilters } from "./RecordsTable";
 import type { Fetcher } from "./types";
 type Preview = {
@@ -14,21 +14,23 @@ export function DeleteDialog({
   fetcher,
   csrf,
   filters,
-  identityIds,
+  identities,
   onDeleted,
   onClose,
+  onUnauthorized,
 }: {
   fetcher: Fetcher;
   csrf: string;
   filters: AdminFilters;
-  identityIds: readonly string[];
+  identities: readonly Readonly<{ id: string; displayName: string; className: string | null; deviceName: string | null }>[];
   onDeleted: () => Promise<void>;
   onClose: () => void;
+  onUnauthorized: () => void;
 }) {
   const [scope, setScope] = useState<Scope>(
-      identityIds.length ? "identity" : "date_range",
+      identities.length ? "identity" : "date_range",
     ),
-    [identityId, setIdentityId] = useState(identityIds[0] ?? ""),
+    [identityId, setIdentityId] = useState(identities[0]?.id ?? ""),
     [password, setPassword] = useState(""),
     [confirmation, setConfirmation] = useState(""),
     [preview, setPreview] = useState<Preview | null>(null),
@@ -68,7 +70,7 @@ export function DeleteDialog({
               ? `：${filters.className}`
               : "（先在紀錄篩選選擇）"}
           </option>
-          <option value="identity" disabled={!identityIds.length}>
+          <option value="identity" disabled={!identities.length}>
             從紀錄選取的學生
           </option>
           <option value="all">全部紀錄</option>
@@ -81,9 +83,9 @@ export function DeleteDialog({
             value={identityId}
             onChange={(event) => setIdentityId(event.target.value)}
           >
-            {identityIds.map((id) => (
-              <option key={id} value={id}>
-                {id.slice(0, 8)}…
+            {identities.map((identity) => (
+              <option key={identity.id} value={identity.id}>
+                {identity.displayName}（{identity.className ?? "未有班別"}；{identity.deviceName ?? "未有裝置名稱"}）
               </option>
             ))}
           </select>
@@ -105,7 +107,8 @@ export function DeleteDialog({
                 },
               ),
             );
-          } catch {
+          } catch (reason) {
+            if (reason instanceof AdminApiError && reason.status === 401) onUnauthorized();
             setError("未能建立刪除預覽。");
           } finally {
             setBusy(false);
@@ -118,6 +121,7 @@ export function DeleteDialog({
       {preview ? (
         <>
           <p role="status">
+            範圍：{scope === "all" ? "全部紀錄" : scope === "class" ? `班別 ${filters.className}` : scope === "identity" ? `學生 ${identities.find((item) => item.id === identityId)?.displayName ?? "已選學生"}` : `${filters.from} 至 ${filters.to}`}。{" "}
             將刪除 {preview.counts.identities} 個身份、{preview.counts.designs}{" "}
             個設計、{preview.counts.matches} 場對戰。
           </p>
@@ -159,7 +163,8 @@ export function DeleteDialog({
                 setPreview(null);
                 await onDeleted();
                 onClose();
-              } catch {
+              } catch (reason) {
+                if (reason instanceof AdminApiError && reason.status === 401) onUnauthorized();
                 setPreview(null);
                 setError("刪除失敗；請重新預覽。");
               } finally {

@@ -65,6 +65,7 @@ export type RealtimeState = Readonly<{
   status: "offline" | "connecting" | "online" | "reconnecting";
   sessionStatus: "new" | "resumed" | "replaced" | null;
   lobbyRooms: readonly LobbyRoom[];
+  platformPaused: boolean;
   room: RoomSnapshotEvent | null;
   battleStarted: BattleStartedEvent | null;
   schedule: LaunchScheduleEvent | null;
@@ -73,7 +74,7 @@ export type RealtimeState = Readonly<{
   frames: readonly BattleFrameEvent[];
   roundFinished: RoundView | null;
   matchFinished: MatchFinishedEvent | null;
-  cancelledReason: "attempt-limit" | "server-error" | null;
+  cancelledReason: "attempt-limit" | "server-error" | "admin-removed" | null;
   attempt: number;
   currentRoundId: string | null;
   departurePending: boolean;
@@ -94,7 +95,7 @@ const designCacheSchema = z.object({
 }).strict();
 const initialState: RealtimeState = {
   identityStatus: "idle", identity: null,
-  status: "offline", sessionStatus: null, lobbyRooms: [], room: null,
+  status: "offline", sessionStatus: null, lobbyRooms: [], platformPaused: false, room: null,
   battleStarted: null, schedule: null, privateGrade: null, spectatorGrades: null,
   frames: [], roundFinished: null, matchFinished: null, cancelledReason: null,
   attempt: 0, currentRoundId: null, departurePending: false,
@@ -337,6 +338,7 @@ export class RealtimeClient {
         this.#clockTimer = setInterval(() => { this.#clockPingAttempts = 0; this.#sendClockPing(); }, 15_000);
         break;
       case "lobby.snapshot": this.#set({ lobbyRooms: event.rooms }); break;
+      case "platform.status": this.#set({ platformPaused: event.paused }); break;
       case "room.snapshot": {
         const changedRoom = this.#state.room !== null && this.#state.room.roomId !== event.roomId;
         this.#set({ room: event, departurePending: false, ...(changedRoom ? this.#clearedBattleState() : {}) }); break;

@@ -338,7 +338,7 @@ describe("persistent PostgreSQL schema", () => {
     const migrationFiles = readdirSync(migrationDirectory)
       .filter((name) => name.endsWith(".sql"))
       .sort();
-    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql"]);
+    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql", "0001_admin_control_state.sql"]);
     const sql = migrationFiles
       .map((name) => readFileSync(`${migrationDirectory}/${name}`, "utf8"))
       .join("\n");

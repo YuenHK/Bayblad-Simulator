@@ -68,13 +68,15 @@ const formalEngine = engineKind === "real" ? new BattleEngine({ resultRepository
 const engine = new ObservedEngine(formalEngine ?? new DeterministicBattleEngine());
 const rooms = new RoomService({ now });
 rooms.create({ id: "admin-e2e-owner", displayName: "1A 陳同學" }, "測試房");
+rooms.create({ id: "admin-e2e-owner-2", displayName: "1B 李同學" }, "管理操作房");
 const designs = new DesignRegistry({ now, ttlMs: 60_000 });
 const webOrigin = `http://127.0.0.1:${process.env.E2E_WEB_PORT ?? "4173"}`;
-const adminAuth = new AdminAuthService(new InMemoryAdminStore(), { allowedOrigins: [webOrigin], secureCookies: false });
+const adminStore = new InMemoryAdminStore();
+const adminAuth = new AdminAuthService(adminStore, { allowedOrigins: [webOrigin], secureCookies: false });
 const identityId = "550e8400-e29b-41d4-a716-446655440000";
 const deletionStore = new InMemoryDeletionStore([{ identityId, className: "1A", occurredAt: new Date("2026-08-29T00:00:00Z"), designs: 2, matches: 3 }]);
 const record: AdminRecordRow = { rowId:"m1:player1",matchId:"m1",slot:"player1",occurredAt:"2026-08-29T00:00:00.000Z",identityId,className:"1A",identity:"陳同學",deviceName:"iPad-01",design:{layers:["top","middle","bottom"].map((position,index)=>({position:position as "top"|"middle"|"bottom",shape:"circle",points:3,diameterMm:50-index,actualAreaMm2:1000,holeCount:2,rotationDeg:0,cornerRoundness:0})),totalMassG:25,metalDiscDiameterMm:20,centerOfMassOffsetMm:0,momentOfInertiaGmm2:5000},totalScore:2.5 };
-const recordsSource: AdminRecordsSource = { async query(filters) { const rows = deletionStore.remainingIdentities ? [record] : []; return { rows, total: rows.length, page: filters.page, pageSize: filters.pageSize }; } };
+const recordsSource: AdminRecordsSource = { async query(filters) { const rows = deletionStore.remainingIdentities && (!filters.className || filters.className === "1A") ? [record] : []; return { rows, total: rows.length, page: filters.page, pageSize: filters.pageSize }; }, async queryLeaderboard(filters) { const rows = deletionStore.remainingIdentities && (!filters.className || filters.className === "1A") ? [{ identityId, displayName: "陳同學", className: "1A", battleScore: 2, challengeScore: .5, totalScore: 2.5, matches: 1, rank: 1 }] : []; return { rows, total: rows.length, page: filters.page, pageSize: filters.pageSize }; } };
 const performance = { dimension:"layerShape",value:{shape:"circle"},launchGrade:"Perfect",opponentStrengthBand:"low",performanceModelVersion:"1",physicsModelVersion:"2",totalGroups:1,sampleSize:12,participantObservations:12,averageScore:2.4,winRate:.6,opponentAverageStrength:50,expectedWinRate:.5,outcomeResidual:.1,gradeOccurrenceCount:12 } as const;
 const analytics: AdminAnalyticsSummary = { filters:{from:"2026-08-01",to:"2026-08-29"},filterApplicability:{},usage:[],usagePeriods:{daily:[{date:"2026-08-29",activeDevices:5,designs:3,rooms:2,completedMatches:2,shapes:[]}],weekly:[],monthly:[]},parameterUsage:[{scope:"allEligibleDesigns",dimension:"layerShape",value:{position:"top",shape:"circle"},count:12,proportion:.6,performanceModelVersion:"1",totalGroups:1,truncated:false,population:20}],parameters:[],rankings:{top:[performance],bottom:[],total:1,hasMore:false,snapshotCursor:"cursor",overallLaunchDistribution:{Perfect:1,Great:2,Good:3,Miss:4,totalOccurrences:10}},refreshedAt:"2026-08-29T00:00:00.000Z" };
 const analyticsService = { query: async () => analytics, parameterPage: async () => ({ rows: [], total: 0, hasMore: false }) } as unknown as AnalyticsService;
@@ -145,6 +147,7 @@ app.get("/__test/stats", async (request, reply) => {
     physicsModelVersion: PHYSICS_MODEL_VERSION,
     simulationCount: engine.simulationCount,
     observedRounds: engine.rounds,
+    adminAudits: adminStore.auditEntries.map(entry => entry.action),
     rooms: rooms.lobbySnapshot().rooms.length,
     designs: designs.debugCounts(),
     repository: { records: resultStore.recordCount, fullResults: resultStore.fullResultCount },

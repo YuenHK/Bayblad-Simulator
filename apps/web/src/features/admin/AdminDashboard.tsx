@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   adminAnalyticsSummarySchema,
   adminRecordsPageSchema,
+  adminLeaderboardPageSchema,
 } from "@steam-top/protocol";
 import { AdminModal } from "./AdminModal";
 import { AdminApiError, jsonHeaders, requestJson } from "./api";
 import { AnalyticsCharts } from "./AnalyticsCharts";
 import { DeleteDialog } from "./DeleteDialog";
+import { LeaderboardTable } from "./LeaderboardTable";
 import { filterParams, RecordsTable, type AdminFilters } from "./RecordsTable";
 import { RoomsPanel } from "./RoomsPanel";
 import type {
@@ -14,6 +16,7 @@ import type {
   AnalyticsResponse,
   Fetcher,
   RecordsResponse,
+  LeaderboardResponse,
   RoomsResponse,
 } from "./types";
 const hkDate = (date: Date) =>
@@ -62,6 +65,7 @@ export function AdminDashboard({
       rooms: [],
     }),
     [records, setRecords] = useState<RecordsResponse>(emptyRecords),
+    [leaderboard, setLeaderboard] = useState<LeaderboardResponse>({ rows: [], total: 0, page: 1, pageSize: 25 }),
     [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null),
     [filters, setFilters] = useState(initialFilters),
     [selected, setSelected] = useState<Set<string>>(new Set()),
@@ -76,13 +80,21 @@ export function AdminDashboard({
     [deleteOpen, setDeleteOpen] = useState(false),
     [exportStatus, setExportStatus] = useState("");
   const exportController = useRef<AbortController | null>(null);
+  const queryController = useRef<AbortController | null>(null);
+  const queryGeneration = useRef(0);
   const guarded = useCallback(
     async <T,>(operation: () => Promise<T>) => {
       try {
         return await operation();
       } catch (reason) {
-        if (reason instanceof AdminApiError && reason.status === 401)
+        if (reason instanceof AdminApiError && reason.status === 401) {
+          queryController.current?.abort();
+          setRecords(emptyRecords);
+          setAnalytics(null);
+          setRooms({ paused: false, rooms: [] });
+          setSelected(new Set());
           onUnauthorized();
+        }
         throw reason;
       }
     },
@@ -90,36 +102,45 @@ export function AdminDashboard({
   );
   const query = useCallback(
     async (next: AdminFilters) => {
+      queryController.current?.abort();
+      const controller = new AbortController(), generation = ++queryGeneration.current;
+      queryController.current = controller;
       setError("");
       const params = filterParams(next),
         analyticsParams = new URLSearchParams({ from: next.from, to: next.to });
       if (next.className) analyticsParams.set("className", next.className);
       try {
-        const [roomPage, recordPage, summary] = await Promise.all([
+        const [roomPage, recordPage, leaderboardPage, summary] = await Promise.all([
           guarded(() =>
-            requestJson<RoomsResponse>(fetcher, "/api/admin/rooms"),
+            requestJson<RoomsResponse>(fetcher, "/api/admin/rooms", { signal: controller.signal }),
           ),
           guarded(() =>
             requestJson(
               fetcher,
               `/api/admin/records?${params}`,
-              undefined,
+              { signal: controller.signal },
               adminRecordsPageSchema,
             ),
+          ),
+          guarded(() =>
+            requestJson(fetcher, `/api/admin/leaderboard?${params}`, { signal: controller.signal }, adminLeaderboardPageSchema),
           ),
           guarded(() =>
             requestJson(
               fetcher,
               `/api/admin/analytics?${analyticsParams}`,
-              undefined,
+              { signal: controller.signal },
               adminAnalyticsSummarySchema,
             ),
           ),
         ]);
+        if (generation !== queryGeneration.current) return;
         setRooms(roomPage);
         setRecords(recordPage);
+        setLeaderboard(leaderboardPage);
         setAnalytics(summary);
       } catch (reason) {
+        if (generation !== queryGeneration.current || controller.signal.aborted) return;
         setError(
           reason instanceof AdminApiError &&
             reason.message === "INVALID_SERVER_RESPONSE"
@@ -131,7 +152,12 @@ export function AdminDashboard({
     [fetcher, guarded],
   );
   useEffect(() => {
-    void query(filters);
+    setRecords({ ...emptyRecords, pageSize: filters.pageSize });
+    setLeaderboard({ rows: [], total: 0, page: filters.page, pageSize: filters.pageSize });
+    setAnalytics(null);
+    setSelected(new Set());
+    const timer = window.setTimeout(() => void query(filters), 250);
+    return () => window.clearTimeout(timer);
   }, [filters, query]);
   useEffect(() => {
     const timer = window.setInterval(
@@ -145,7 +171,7 @@ export function AdminDashboard({
     );
     return () => window.clearInterval(timer);
   }, [fetcher, guarded]);
-  useEffect(() => () => exportController.current?.abort(), []);
+  useEffect(() => () => { exportController.current?.abort(); queryController.current?.abort(); }, []);
   const mutate = (action: string, payload: object, label: string) => {
     if (!mutationBusy) setConfirm({ action, payload, label });
   };
@@ -165,8 +191,8 @@ export function AdminDashboard({
           }),
         }),
       );
-      setConfirm(null);
       await query(filters);
+      setConfirm(null);
     } catch {
       setError("管理操作失敗，房間狀態未更改。");
     } finally {
@@ -213,12 +239,13 @@ export function AdminDashboard({
     if (mutationBusy) return;
     setMutationBusy(true);
     try {
-      await requestJson(fetcher, "/api/admin/logout", {
+      await guarded(() => requestJson(fetcher, "/api/admin/logout", {
         method: "POST",
         headers: jsonHeaders(session.csrfToken),
         body: "{}",
-      });
+      }));
       setRecords(emptyRecords);
+      setLeaderboard({ rows: [], total: 0, page: 1, pageSize: 25 });
       setAnalytics(null);
       setRooms({ paused: false, rooms: [] });
       setSelected(new Set());
@@ -308,6 +335,7 @@ export function AdminDashboard({
           })
         }
       />
+      <LeaderboardTable data={leaderboard} />
       {analytics ? (
         <AnalyticsCharts data={analytics} />
       ) : (
@@ -358,7 +386,7 @@ export function AdminDashboard({
           fetcher={fetcher}
           csrf={session.csrfToken}
           filters={filters}
-          identityIds={[...selected]}
+          identities={records.rows.flatMap((row, index, rows) => row.identityId && selected.has(row.identityId) && rows.findIndex((candidate) => candidate.identityId === row.identityId) === index ? [{ id: row.identityId, displayName: row.identity, className: row.className, deviceName: row.deviceName }] : [])}
           onDeleted={async () => {
             setRecords(emptyRecords);
             setAnalytics(null);
@@ -366,6 +394,7 @@ export function AdminDashboard({
             await query(filters);
           }}
           onClose={() => setDeleteOpen(false)}
+          onUnauthorized={onUnauthorized}
         />
       ) : null}
     </main>

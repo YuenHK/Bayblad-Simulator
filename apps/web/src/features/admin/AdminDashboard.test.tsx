@@ -121,6 +121,7 @@ function authenticated(
     )
       return json({ rows: [record], total: 1, page: 1, pageSize: 25 });
     if (url.pathname === "/api/admin/analytics") return json(analytics);
+    if (url.pathname === "/api/admin/leaderboard") return json({ rows: [], total: 0, page: 1, pageSize: 25 });
     throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
   });
 }
@@ -155,7 +156,7 @@ it("runtime-validates authoritative analytics and records DTOs", async () => {
     await screen.findByRole("heading", { name: "教師控制台" }),
   ).toBeInTheDocument();
   expect(await screen.findByText("iPad-01")).toBeInTheDocument();
-  expect((await screen.findAllByText(/shape: circle/)).length).toBeGreaterThan(0);
+  expect((await screen.findAllByText(/形狀：圓形/)).length).toBeGreaterThan(0);
   expect(localStorage.length).toBe(0);
 });
 it("shows an error instead of rendering invalid legacy analytics", async () => {

@@ -1,7 +1,11 @@
 import { defineConfig } from "@playwright/test";
 
-const webPort = Number(process.env.E2E_WEB_PORT ?? 4173);
-const realtimePort = Number(process.env.E2E_REALTIME_PORT ?? 4174);
+const workspaceHash = [...process.cwd()].reduce((hash, character) => (hash * 33 + character.codePointAt(0)!) % 10_000, 5381);
+const portBase = 30_000 + workspaceHash * 2;
+const webPort = Number(process.env.E2E_WEB_PORT ?? portBase);
+const realtimePort = Number(process.env.E2E_REALTIME_PORT ?? portBase + 1);
+process.env.E2E_WEB_PORT = String(webPort);
+process.env.E2E_REALTIME_PORT = String(realtimePort);
 const webUrl = `http://127.0.0.1:${webPort}`;
 const realtimeUrl = `http://127.0.0.1:${realtimePort}`;
 
@@ -29,7 +33,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `NODE_ENV=test BATTLE_ENGINE=deterministic TEST_REALTIME_PORT=${realtimePort} TEST_CONTROL_SECRET=steam-top-e2e-only pnpm --filter @steam-top/server exec tsx ../../tests/support/realtime-server.ts`,
+      command: `NODE_ENV=test BATTLE_ENGINE=deterministic E2E_WEB_PORT=${webPort} TEST_REALTIME_PORT=${realtimePort} TEST_CONTROL_SECRET=steam-top-e2e-only pnpm --filter @steam-top/server exec tsx ../../tests/support/realtime-server.ts`,
       url: `${realtimeUrl}/health`,
       reuseExistingServer: false,
       timeout: 120_000,
