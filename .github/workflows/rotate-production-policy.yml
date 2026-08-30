@@ -9,10 +9,13 @@ on:
 permissions: { contents: read }
 jobs:
   rotate-policy:
+    concurrency:
+      group: production-policy-rotation-authority
+      cancel-in-progress: false
     environment: production-release-policy-approval
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    permissions: { contents: read, actions: read, id-token: write, attestations: write }
+    permissions: { contents: read, actions: write, id-token: write, attestations: write }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with: { ref: "${{ github.workflow_sha }}", path: trusted, persist-credentials: false }
@@ -21,16 +24,23 @@ jobs:
       - name: Build protected rotation receipt
         env:
           REVIEWED_COMMIT: "${{ inputs.reviewed_commit }}"
-          EXTERNAL_LAUNCHER_SHA256: "${{ vars.PRODUCTION_POLICY_LAUNCHER_SHA256 }}"
           OLD_BUNDLE_SHA256: "${{ vars.PRODUCTION_POLICY_BUNDLE_SHA256 }}"
+          GH_TOKEN: "${{ secrets.PRODUCTION_POLICY_ADMIN_TOKEN }}"
         run: |
           set -euo pipefail
-          [[ $REVIEWED_COMMIT =~ ^[a-f0-9]{40}$ && $EXTERNAL_LAUNCHER_SHA256 =~ ^[a-f0-9]{64}$ && $OLD_BUNDLE_SHA256 =~ ^[a-f0-9]{64}$ ]]
+          [[ $REVIEWED_COMMIT =~ ^[a-f0-9]{40}$ && $OLD_BUNDLE_SHA256 =~ ^[a-f0-9]{64}$ && -n $GH_TOKEN ]]
           test "$(git -C trusted rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA";test "$(git -C reviewed rev-parse HEAD)" = "$REVIEWED_COMMIT"
-          launcher_sha=$(sha256sum trusted/scripts/production-policy-pin-launcher.sh|awk '{print $1}');test "$launcher_sha" = "$EXTERNAL_LAUNCHER_SHA256"
-          preview=$(trusted/scripts/production-policy-pin-launcher.sh "$GITHUB_WORKSPACE/reviewed" "$REVIEWED_COMMIT")
-          new_bundle=$(jq -er 'select(.schemaVersion==1 and .purpose=="production-policy-rotation-preview" and .authorized==false).bundleSha256' <<<"$preview")
-          jq -n --arg launcher "$launcher_sha" --arg old "$OLD_BUNDLE_SHA256" --arg new "$new_bundle" --arg oid "$REVIEWED_COMMIT" --arg ref "$GITHUB_WORKFLOW_REF" --arg sha "$GITHUB_WORKFLOW_SHA" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg at "$(date -u +%FT%TZ)" '{schemaVersion:1,purpose:"authorized-production-policy-rotation",launcherSha256:$launcher,oldBundleSha256:$old,newBundleSha256:$new,reviewedCommit:$oid,workflowRef:$ref,workflowSha:$sha,runId:($run|tonumber),runAttempt:($attempt|tonumber),createdAt:$at}' > "$RUNNER_TEMP/production-policy-rotation-receipt.json"
+          default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch);default_head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq .sha)
+          gh api "repos/$GITHUB_REPOSITORY/compare/$REVIEWED_COMMIT...$default_head" > "$RUNNER_TEMP/ancestry.json"
+          jq -e --arg base "$REVIEWED_COMMIT" --arg head "$default_head" '.base_commit.sha==$base and .merge_base_commit.sha==$base and (.status=="ahead" or (.status=="identical" and $base==$head))' "$RUNNER_TEMP/ancestry.json"
+          new_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/reviewed")
+          endpoint="repos/$GITHUB_REPOSITORY/environments/production-release-policy-approval/variables/PRODUCTION_POLICY_BUNDLE_SHA256"
+          api_old=$(gh api "$endpoint" --jq .value);test "$api_old" = "$OLD_BUNDLE_SHA256"
+          test "$(gh api "$endpoint" --jq .value)" = "$api_old"
+          gh api --method PATCH "$endpoint" -f name=PRODUCTION_POLICY_BUNDLE_SHA256 -f value="$new_bundle" >/dev/null
+          test "$(gh api "$endpoint" --jq .value)" = "$new_bundle"
+          verifier_sha=$(sha256sum trusted/scripts/verify-production-policy-bundle.mjs|awk '{print $1}')
+          jq -n --arg repo "$GITHUB_REPOSITORY" --arg env "production-release-policy-approval" --arg old "$api_old" --arg new "$new_bundle" --arg oid "$REVIEWED_COMMIT" --arg ref "$GITHUB_WORKFLOW_REF" --arg sha "$GITHUB_WORKFLOW_SHA" --arg verifier "$verifier_sha" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg at "$(date -u +%FT%TZ)" '{schemaVersion:1,purpose:"applied-production-policy-rotation",repository:$repo,environment:$env,reviewedCommit:$oid,trustedWorkflowRef:$ref,trustedWorkflowSha:$sha,verifierSha256:$verifier,oldBundleSha256:$old,newBundleSha256:$new,runId:($run|tonumber),runAttempt:($attempt|tonumber),appliedAt:$at}' > "$RUNNER_TEMP/production-policy-rotation-receipt.json"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: "${{ runner.temp }}/production-policy-rotation-receipt.json" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
