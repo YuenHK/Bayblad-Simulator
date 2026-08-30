@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [[ $(id -u) -eq 0 && $# -eq 1 ]]||exit 2
-installer=$(realpath "$1");root=/run/steam-top-installer-archive-test
+installer=$(realpath "$1");validator=$(dirname "$installer")/validate-bootstrap-tar.py;[[ -f $validator ]];root=/run/steam-top-installer-archive-test
 rm -rf "$root";install -d -o root -g root -m 0700 "$root"
 trap 'rm -rf "$root"' EXIT
 ssh-keygen -q -t ed25519 -N '' -f "$root/source-key";chmod 0400 "$root/source-key"
@@ -39,6 +39,8 @@ if attack=="truncated":
 PY
   ssh-keygen -Y sign -q -f "$root/source-key" -n steam-top-bootstrap-source "$root/$attack.tgz"
   digest=$(sha256sum "$root/$attack.tgz"|awk '{print $1}')
+  expected=;case $attack in gnu-longname)expected=GNU_LONGNAME;;pax|global-pax|huge-pax)expected=PAX;;sparse)expected=SPARSE;;truncated)expected=TRUNCATED;;oversized|bomb)expected=BOMB;;count)expected=HEADER;;esac
+  if [[ -n $expected ]];then if python3 "$validator" "$root/$attack.tgz" >"$root/$attack.parser.out" 2>"$root/$attack.parser.err";then echo "raw parser accepted: $attack" >&2;exit 1;fi;grep -qx "$expected" "$root/$attack.parser.err"||{ echo "wrong raw reason: $attack" >&2;cat "$root/$attack.parser.err" >&2;exit 1;};fi
   reason='unsafe or invalid signed archive';case $attack in oversized|bomb) reason='archive';;esac
   if EXPECTED_BOOTSTRAP_ARCHIVE_SHA256=$digest BOOTSTRAP_ALLOWED_SIGNERS_FILE="$root/allowed" "$installer" "$root/$attack.tgz" "$root/$attack.tgz.sig" source "$root/trust.json" --no-systemd-for-integration 2>"$root/$attack.err";then echo "malicious tar accepted: $attack" >&2;exit 1;fi
   grep -F "$reason" "$root/$attack.err" >/dev/null||{ echo "wrong rejection boundary: $attack" >&2;cat "$root/$attack.err" >&2;exit 1;}
