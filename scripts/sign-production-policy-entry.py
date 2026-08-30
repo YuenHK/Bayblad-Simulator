@@ -71,8 +71,8 @@ def verify_output_binding(signature_fd,expected_info):
         if identity(os.fstat(bound_fd))!=identity(expected_info) or identity(os.fstat(signature_fd))!=identity(expected_info):abort("verified signature output changed")
     finally:os.close(bound_fd)
 
-def swap_output_for_test():
-    if os.geteuid()==0 or os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_SWAP_OUTPUT_AFTER_VERIFY")!="1":return
+def swap_output_for_test(variable="STEAM_TOP_POLICY_SIGNER_TEST_SWAP_OUTPUT_AFTER_VERIFY"):
+    if os.geteuid()==0 or os.environ.get(variable)!="1":return
     os.unlink(output_name,dir_fd=parent_fd);fd=os.open(output_name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400,dir_fd=parent_fd)
     try:os.write(fd,b"foreign");os.fsync(fd)
     finally:os.close(fd)
@@ -101,7 +101,11 @@ def verify_recovery(stage,stage_info,entry,key_reference,key_handle,signer_id):
     if not safe(stage_info) or not safe(output_info) or stage_info.st_nlink!=2 or output_info.st_nlink!=2 or (stage_info.st_dev,stage_info.st_ino)!=(output_info.st_dev,output_info.st_ino):abort("unsafe signature recovery links")
     signature_fd=verify_signature(stage,stage_info,entry,key_reference,key_handle,signer_id)
     try:
-        os.fsync(parent_fd);verify_output_binding(signature_fd,stage_info);os.unlink(stage,dir_fd=parent_fd);os.fsync(parent_fd);return True
+        os.fsync(parent_fd);verify_output_binding(signature_fd,stage_info)
+        swap_output_for_test("STEAM_TOP_POLICY_SIGNER_TEST_SWAP_OUTPUT_BEFORE_STAGE_UNLINK");verify_output_binding(signature_fd,stage_info)
+        os.unlink(stage,dir_fd=parent_fd);final_info=os.fstat(signature_fd)
+        if not safe(final_info) or final_info.st_nlink!=1:abort("unsafe recovered signature output")
+        verify_output_binding(signature_fd,final_info);os.fsync(parent_fd);verify_output_binding(signature_fd,final_info);return True
     finally:os.close(signature_fd)
 
 def verify_output_only(entry,key_reference,key_handle,signer_id):
