@@ -64,6 +64,7 @@ jobs:
       POSTGRES_USER: steam_top
       POSTGRES_PASSWORD: ci-postgres-password
       APP_DATABASE_PASSWORD: ci-app-postgres-password
+      APP_DATABASE_URL: postgresql://steam_top_app:ci-app-postgres-password@db:5432/steam_top?sslmode=require
       DATABASE_URL: postgresql://steam_top:ci-postgres-password@db:5432/steam_top?sslmode=require
       COOKIE_SIGNING_KEY: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
       ADMIN_USERNAME: admin
@@ -99,16 +100,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          compose=(docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml)
+          compose=(docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml)
+          "${compose[@]}" config --format json > "$RUNNER_TEMP/compose.json"
+          node - "$RUNNER_TEMP/compose.json" <<'NODE'
+          const c=require(process.argv[2]),s=c.services.server.secrets.map(x=>typeof x==="string"?x:x.source);if(JSON.stringify(s)!==JSON.stringify(["steam_top_app_database_url"])||c.services.server.environment.DATABASE_URL_FILE!=="/run/secrets/steam_top_app_database_url"||!c.services.migration.secrets.some(x=>(typeof x==="string"?x:x.source)==="database_url"))process.exit(1)
+          NODE
           "${compose[@]}" up -d --wait db migration
-          "${compose[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v password="$APP_DATABASE_PASSWORD" <<'SQL'
-          select format('create role steam_top_app login password %L', :'password') where not exists(select 1 from pg_roles where rolname='steam_top_app') \gexec
-          grant connect on database steam_top to steam_top_app;
-          grant usage on schema public,restore_control to steam_top_app;
-          grant select,insert,update,delete on all tables in schema public,restore_control to steam_top_app;
-          grant usage,select,update on all sequences in schema public,restore_control to steam_top_app;
-          SQL
+          "${compose[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v app_password="$APP_DATABASE_PASSWORD" < scripts/provision-app-role.sql
           "${compose[@]}" up -d --wait server web caddy
+          test "$("${compose[@]}" exec -T server sh -c 'test -f /run/secrets/steam_top_app_database_url && test ! -e /run/secrets/database_url && printf ok')" = ok
       - name: Prove untrusted TLS fails, then install the exact Caddy root
         shell: bash
         run: |
@@ -313,7 +313,7 @@ jobs:
           sudo /opt/steam-top-bootstrap/verify-reaper-health.sh --require-active-runtime
           sudo /opt/steam-top-bootstrap/read-first-deploy-state.sh | grep -q "^consumed $PRODUCTION_E2E_NONCE "
           PGSERVICE=target PGSERVICEFILE=/run/steam-top-production-e2e/secrets/pg-service PGPASSFILE=/run/steam-top-production-e2e/secrets/pg-pass psql -X -qAt -v nonce="$PRODUCTION_E2E_NONCE" -c "select case when count(*)=1 then 1 else 1/0 end from restore_control.platform_installation where authorization_nonce=:'nonce' and generation=2" | grep -qx 1
-          PGSERVICE=target PGSERVICEFILE=/run/steam-top-production-e2e/secrets/pg-service PGPASSFILE=/run/steam-top-production-e2e/secrets/pg-pass psql -X -qAt -c "select (not rolsuper and not rolcreatedb and not rolcreaterole and not rolinherit and not rolreplication)::text from pg_roles where rolname='steam_top_app';select (has_database_privilege('steam_top_app',current_database(),'connect') and has_schema_privilege('steam_top_app','public','usage') and not pg_has_role('steam_top_app',(select datdba from pg_database where datname=current_database()),'member'))::text" | grep -c '^true$' | grep -qx 2
+          PGSERVICE=target PGSERVICEFILE=/run/steam-top-production-e2e/secrets/pg-service PGPASSFILE=/run/steam-top-production-e2e/secrets/pg-pass psql -X -qAt -c "select (not rolsuper and not rolcreatedb and not rolcreaterole and not rolinherit and not rolreplication)::text from pg_roles where rolname='steam_top_app';select (has_database_privilege('steam_top_app',current_database(),'connect') and has_schema_privilege('steam_top_app','public','usage') and not has_schema_privilege('steam_top_app','public','create') and not pg_has_role('steam_top_app',(select datdba from pg_database where datname=current_database()),'member'))::text;select (not has_table_privilege('steam_top_app','public.app_schema_migrations','select,insert,update,delete') and not has_table_privilege('steam_top_app','restore_control.finalize_outbox','select,insert,update,delete') and not has_table_privilege('steam_top_app','restore_control.promotion_audit','select,insert,update,delete') and not exists(select 1 from pg_auth_members m join pg_roles r on r.oid=m.member join pg_roles p on p.oid=m.roleid where r.rolname='steam_top_app' or p.rolname='steam_top_app'))::text" | grep -c '^true$' | grep -qx 3
           touch "$RUNNER_TEMP/production-e2e-passed"
       - name: Collect restricted production E2E diagnostics
         if: always()
@@ -347,6 +347,8 @@ jobs:
           set -euo pipefail;state=failure;description='canonical production first deployment failed'
           if [[ $PREVIOUS_OK == true && $CLEANUP_OK == true && -f $RUNNER_TEMP/production-e2e-passed ]];then state=success;description='canonical production first deployment passed and cleanup completed';fi
           node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:process.argv[2],environment:"production-first-deploy-e2e",description:process.argv[3]})+"\n")' "$RUNNER_TEMP/terminal-status.json" "$state" "$description"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses?per_page=100" > "$RUNNER_TEMP/existing-terminal.json"
+          if node -e 'const s=require(process.argv[1]).flat().find(x=>["success","failure","error","inactive"].includes(x.state));if(!s)process.exit(1);process.exit(s.state==="success"?0:2)' "$RUNNER_TEMP/existing-terminal.json";then exit 0;else code=$?;[[ $code == 1 ]]||exit "$code";fi
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses" --input "$RUNNER_TEMP/terminal-status.json"
           [[ $state == success ]]
   release-images:

@@ -11,7 +11,7 @@ jobs:
   terminal-reconcile:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions: { contents: read, actions: read, deployments: write }
+    permissions: { contents: read, actions: read, deployments: write, id-token: write, attestations: write }
     steps:
       - name: Mark only orphaned matching Deployments terminal error
         env:
@@ -20,19 +20,36 @@ jobs:
           SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           SOURCE_PATH: ${{ github.event.workflow_run.path }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
         run: |
           set -euo pipefail
-          [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_PATH == .github/workflows/authorize-release.yml ]]
+          [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_PATH == .github/workflows/authorize-release.yml && $SOURCE_EVENT == workflow_run && $SOURCE_HEAD_SHA =~ ^[a-f0-9]{40}$ ]]
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments?environment=production-first-deploy-e2e&per_page=100" > "$RUNNER_TEMP/deployments.json"
-          node - "$RUNNER_TEMP/deployments.json" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" > "$RUNNER_TEMP/ids" <<'NODE'
-          const fs=require("fs"),[path,run,attempt]=process.argv.slice(2),rows=JSON.parse(fs.readFileSync(path)).flat();for(const row of rows){const p=typeof row.payload==="string"?JSON.parse(row.payload):row.payload;if(p?.schemaVersion===4&&p.purpose==="production"&&String(p.authorizationRunId)===run&&String(p.authorizationRunAttempt)===attempt)console.log(row.id)}
+          node - "$RUNNER_TEMP/deployments.json" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_HEAD_SHA" > "$RUNNER_TEMP/ids" <<'NODE'
+          const fs=require("fs"),[path,run,attempt,head]=process.argv.slice(2),rows=JSON.parse(fs.readFileSync(path)).flat();for(const row of rows){const p=typeof row.payload==="string"?JSON.parse(row.payload):row.payload;if(p?.schemaVersion===4&&p.purpose==="production"&&String(p.authorizationRunId)===run&&String(p.authorizationRunAttempt)===attempt&&p.authorizationWorkflowSha===head&&p.authorizationWorkflowRef?.startsWith("refs/heads/")&&p.sourceWorkflow===`${process.env.GITHUB_REPOSITORY}/.github/workflows/ci.yml`&&p.sourceEvent==="push"&&/^[a-f0-9]{40}$/.test(p.sourceHeadSha)&&p.commit===p.sourceHeadSha&&/^[a-f0-9]{64}$/.test(p.manifestSha256)&&/^[a-f0-9]{64}$/.test(p.nonce)&&/^[1-9][0-9]*$/.test(String(p.runId)))console.log(`${row.id} ${p.runId} ${p.commit} ${p.manifestSha256} ${p.nonce}`)}
           NODE
-          while read -r id;do
-            [[ $id =~ ^[1-9][0-9]*$ ]]||exit 1
-            gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" > "$RUNNER_TEMP/statuses.json"
-            if node -e 'const s=require(process.argv[1]);process.exit(s.some(x=>["success","failure","error","inactive"].includes(x.state))?0:1)' "$RUNNER_TEMP/statuses.json";then continue;fi
+          : > "$RUNNER_TEMP/reconciliation-receipts.jsonl"
+          while read -r id candidate_run candidate_sha manifest_sha nonce;do
+            [[ $id =~ ^[1-9][0-9]*$ && $candidate_run =~ ^[1-9][0-9]*$ && $candidate_sha =~ ^[a-f0-9]{40}$ && $manifest_sha =~ ^[a-f0-9]{64}$ && $nonce =~ ^[a-f0-9]{64}$ ]]||exit 1
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$candidate_run" > "$RUNNER_TEMP/candidate-run.json"
+            node - "$RUNNER_TEMP/candidate-run.json" "$candidate_run" "$candidate_sha" <<'NODE'
+          const r=require(process.argv[2]);if(String(r.id)!==process.argv[3]||r.path!==".github/workflows/ci.yml"||r.head_sha!==process.argv[4]||r.event!=="push"||r.conclusion!=="success"||!String(r.head_branch).startsWith("v"))process.exit(1)
+          NODE
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" > "$RUNNER_TEMP/statuses.json"
+            if node -e 'const s=require(process.argv[1]).flat();process.exit(s.some(x=>["success","failure","error","inactive"].includes(x.state))?0:1)' "$RUNNER_TEMP/statuses.json";then continue;fi
             node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:"error",environment:"production-first-deploy-e2e",description:`orphaned authorization run ${process.argv[2]} attempt ${process.argv[3]} concluded ${process.argv[4]}`})+"\n")' "$RUNNER_TEMP/error.json" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_CONCLUSION"
             # Re-read immediately before the only write; workflow_run fires only after the source run ended.
-            gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" --jq 'map(select(.state=="success" or .state=="failure" or .state=="error" or .state=="inactive"))|length' | grep -qx 0
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" > "$RUNNER_TEMP/statuses-before.json"
+            node -e 'const s=require(process.argv[1]).flat();process.exit(s.some(x=>["success","failure","error","inactive"].includes(x.state))?1:0)' "$RUNNER_TEMP/statuses-before.json"
             gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input "$RUNNER_TEMP/error.json"
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" > "$RUNNER_TEMP/statuses-after.json"
+            if node -e 'const s=require(process.argv[1]).flat();process.exit(s.some(x=>x.state==="success")?0:1)' "$RUNNER_TEMP/statuses-after.json";then node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:"success",environment:"production-first-deploy-e2e",description:"preserved concurrently published verified success"})+"\n")' "$RUNNER_TEMP/success.json";gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input "$RUNNER_TEMP/success.json";fi
+            node -e 'const fs=require("fs"),[id,run,attempt,candidate,manifest,nonce,workflowSha,workflow]=process.argv.slice(1);fs.appendFileSync(process.env.RUNNER_TEMP+"/reconciliation-receipts.jsonl",JSON.stringify({schemaVersion:1,purpose:"production-e2e-reconciliation",deploymentId:id,authorizationRunId:run,authorizationRunAttempt:Number(attempt),authorizationWorkflowSha:workflowSha,authorizationWorkflow:workflow,candidateCommit:candidate,manifestSha256:manifest,nonce,observedTerminal:true})+"\n")' "$id" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$candidate_sha" "$manifest_sha" "$nonce" "$SOURCE_HEAD_SHA" "$SOURCE_PATH"
           done < "$RUNNER_TEMP/ids"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        if: always()
+        with: { subject-path: "${{ runner.temp }}/reconciliation-receipts.jsonl" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with: { name: "production-e2e-reconciliation-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}", path: "${{ runner.temp }}/reconciliation-receipts.jsonl", retention-days: 90, if-no-files-found: error }

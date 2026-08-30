@@ -2,7 +2,9 @@ services:
   server:
     environment:
       DATABASE_URL_FILE: /run/secrets/steam_top_app_database_url
-    secrets:
+    # Compose list merging appends by default.  !override is intentional: the
+    # application container must never retain the owner/control database_url.
+    secrets: !override
       - steam_top_app_database_url
 secrets:
   steam_top_app_database_url: { environment: APP_DATABASE_URL }
