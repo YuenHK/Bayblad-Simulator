@@ -8,9 +8,6 @@ on:
       commit: { required: true, type: string }
       signer_kind: { required: true, type: choice, options: [normal, rollback] }
 permissions: { contents: read }
-concurrency:
-  group: production-deployment
-  cancel-in-progress: false
 jobs:
   deploy-record:
     environment: production

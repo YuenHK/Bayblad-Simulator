@@ -4,9 +4,6 @@ on:
     workflows: [Authorize release candidate]
     types: [completed]
 permissions: { contents: read }
-concurrency:
-  group: production-deployment-status-authority
-  cancel-in-progress: false
 jobs:
   terminal-reconcile:
     runs-on: ubuntu-24.04
