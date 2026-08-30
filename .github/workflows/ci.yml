@@ -196,7 +196,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     environment: production-first-deploy-e2e
-    concurrency: { group: production-first-deploy-e2e, cancel-in-progress: false }
+    concurrency: { group: "production-e2e-status-${{ github.run_id }}-${{ github.run_attempt }}", cancel-in-progress: false }
     permissions: { contents: read, actions: read, deployments: write, packages: read, id-token: write, attestations: write }
     env:
       RELEASE_COMMIT: "${{ inputs.candidate_commit }}"
