@@ -26,6 +26,9 @@ jobs:
           REVIEWED_COMMIT: "${{ inputs.reviewed_commit }}"
           GH_TOKEN: "${{ github.token }}"
           ROOT_ALLOWED_SIGNERS: "${{ vars.PRODUCTION_POLICY_ROOT_ALLOWED_SIGNERS }}"
+          ROOT_KEY_SHA256: "${{ vars.PRODUCTION_POLICY_ROOT_KEY_SHA256 }}"
+          LEDGER_GENERATION: "${{ vars.PRODUCTION_POLICY_LEDGER_GENERATION }}"
+          LEDGER_RECEIPT_DIGEST: "${{ vars.PRODUCTION_POLICY_LEDGER_RECEIPT_DIGEST }}"
         run: |
           set -euo pipefail
           [[ $REVIEWED_COMMIT =~ ^[a-f0-9]{40}$ ]]
@@ -37,9 +40,9 @@ jobs:
           test "$REVIEWED_COMMIT" = "$default_head"
           new_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/reviewed")
           repo_id=$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)
-          if test -d reviewed/.production-policy-ledger;then latest=$(/usr/bin/node trusted/scripts/verify-production-policy-ledger.mjs reviewed "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head");generation=$(jq -r '.latest.generation+1' <<<"$latest");previous=$(jq -r .latestReceiptDigest <<<"$latest");else generation=1;previous=$(printf '0%.0s' {1..64});fi
+          if test -d reviewed/.production-policy-ledger;then latest=$(/usr/bin/node trusted/scripts/verify-production-policy-ledger.mjs reviewed "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head" "$new_bundle" "$ROOT_KEY_SHA256" "$LEDGER_GENERATION" "$LEDGER_RECEIPT_DIGEST");generation=$(jq -r '.latest.generation+1' <<<"$latest");previous=$(jq -r .latestReceiptDigest <<<"$latest");else generation=1;previous=$(printf '0%.0s' {1..64});fi
           verifier_sha=$(sha256sum trusted/scripts/verify-production-policy-bundle.mjs|awk '{print $1}')
-          jq -n --arg repo "$GITHUB_REPOSITORY" --argjson repoId "$repo_id" --arg bundle "$new_bundle" --arg oid "$REVIEWED_COMMIT" --arg previous "$previous" --arg ref "$GITHUB_WORKFLOW_REF" --arg sha "$GITHUB_WORKFLOW_SHA" --arg verifier "$verifier_sha" --argjson generation "$generation" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg at "$(date -u +%FT%TZ)" '{schemaVersion:1,purpose:"production-policy-rotation-intent",authorized:false,repositoryId:$repoId,repositoryName:$repo,defaultHead:$oid,nextGeneration:$generation,previousReceiptDigest:$previous,bundleSha256:$bundle,trustedWorkflowRef:$ref,trustedWorkflowSha:$sha,verifierSha256:$verifier,runId:($run|tonumber),runAttempt:($attempt|tonumber),createdAt:$at}' > "$RUNNER_TEMP/production-policy-rotation-receipt.json"
+          jq -n --arg repo "$GITHUB_REPOSITORY" --arg repoId "$repo_id" --arg bundle "$new_bundle" --arg oid "$REVIEWED_COMMIT" --arg previous "$previous" --arg ref "$GITHUB_WORKFLOW_REF" --arg sha "$GITHUB_WORKFLOW_SHA" --arg verifier "$verifier_sha" --argjson generation "$generation" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg at "$(date -u +%FT%TZ)" '{schemaVersion:1,purpose:"production-policy-rotation-intent",authorized:false,repositoryId:$repoId,repositoryName:$repo,policyCommit:$oid,nextGeneration:$generation,previousReceiptDigest:$previous,bundleSha256:$bundle,trustedWorkflowRef:$ref,trustedWorkflowSha:$sha,verifierSha256:$verifier,runId:($run|tonumber),runAttempt:($attempt|tonumber),createdAt:$at}' > "$RUNNER_TEMP/production-policy-rotation-receipt.json"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: "${{ runner.temp }}/production-policy-rotation-receipt.json" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

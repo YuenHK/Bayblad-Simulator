@@ -1,0 +1,3 @@
+import fs from "node:fs";
+const intent=JSON.parse(fs.readFileSync(process.argv[2],"utf8")),signerKeyId=process.argv[3];if(intent.schemaVersion!==1||intent.purpose!=="production-policy-rotation-intent"||intent.authorized!==false||!/^[-A-Za-z0-9_.]+$/.test(signerKeyId))throw new Error("invalid rotation intent");
+const entry={schemaVersion:1,purpose:"production-policy-root-rotation",generation:intent.nextGeneration,previousReceiptDigest:intent.previousReceiptDigest,repositoryId:String(intent.repositoryId),repositoryName:intent.repositoryName,policyCommit:intent.policyCommit??intent.defaultHead,policyTreeDigest:intent.bundleSha256,bundleSha256:intent.bundleSha256,createdAt:intent.createdAt,signerKeyId};process.stdout.write(JSON.stringify(entry)+"\n");
