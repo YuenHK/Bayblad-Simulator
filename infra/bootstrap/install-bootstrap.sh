@@ -10,7 +10,40 @@ bootstrap_preexisting=false;[[ -e /opt/steam-top-bootstrap/bootstrap-files.sha25
 trusted_parents(){ local directory owner mode;directory=$(dirname "$1");while [[ $directory != / ]];do [[ -d $directory && ! -L $directory ]]||return 1;read -r owner mode < <(stat -c '%u %a' "$directory");[[ $owner == 0 && $((8#$mode&022)) -eq 0 ]]||return 1;directory=$(dirname "$directory");done;};read -r ao am < <(stat -c '%u %a' "$BOOTSTRAP_ALLOWED_SIGNERS_FILE");read -r co cm < <(stat -c '%u %a' "$config");[[ $ao == 0 && $am == 444 && $co == 0 && $cm == 400 ]]&&trusted_parents "$BOOTSTRAP_ALLOWED_SIGNERS_FILE"&&trusted_parents "$config"||die "root external trust inputs"
 sha(){ if command -v sha256sum >/dev/null;then sha256sum "$1"|awk '{print $1}';else shasum -a 256 "$1"|awk '{print $1}';fi;};[[ $(sha "$archive") == "$EXPECTED_BOOTSTRAP_ARCHIVE_SHA256" ]]||die "external archive digest"
 ssh-keygen -Y verify -q -f "$BOOTSTRAP_ALLOWED_SIGNERS_FILE" -I "$signer" -n steam-top-bootstrap-source -s "$signature" <"$archive"||die "external archive signature"
-tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT;tar -xzf "$archive" -C "$tmp" --no-same-owner;[[ -f $tmp/bootstrap-files.sha256 ]]||die "manifest"
+tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT
+python3 - "$archive" "$tmp" "$0" <<'PY'||die "unsafe or invalid signed archive"
+import hashlib,os,re,sys,tarfile
+archive_path,target,installer=sys.argv[1:]
+with tarfile.open(archive_path,"r:gz") as tar:
+  members=tar.getmembers()
+  if not 1<=len(members)<=64: raise SystemExit("archive count")
+  by_name={}
+  for member in members:
+    if member.name in by_name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*",member.name) or not member.isfile() or member.uid!=0 or member.gid!=0 or member.size<0 or member.size>2_097_152: raise SystemExit("archive header")
+    by_name[member.name]=member
+  manifest_member=by_name.get("bootstrap-files.sha256")
+  if not manifest_member or manifest_member.mode!=0o644 or manifest_member.size>65_536: raise SystemExit("manifest header")
+  manifest=tar.extractfile(manifest_member).read().decode("ascii")
+  expected={}
+  for line in manifest.splitlines():
+    match=re.fullmatch(r"([a-f0-9]{64}) (0444|0555) ([A-Za-z0-9][A-Za-z0-9._-]*)",line)
+    if not match or match.group(3) in expected: raise SystemExit("manifest grammar")
+    expected[match.group(3)]=(match.group(1),int(match.group(2),8))
+  if set(by_name)!=(set(expected)|{"bootstrap-files.sha256"}) or "install-bootstrap.sh" not in expected or sum(m.size for m in members)>16_777_216: raise SystemExit("archive membership")
+  for name,(digest,mode) in expected.items():
+    member=by_name[name]
+    if member.mode!=mode: raise SystemExit("archive mode")
+    data=tar.extractfile(member).read()
+    if hashlib.sha256(data).hexdigest()!=digest: raise SystemExit("archive digest")
+    path=os.path.join(target,name)
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,mode)
+    with os.fdopen(fd,"wb") as output: output.write(data);output.flush();os.fsync(output.fileno())
+  manifest_path=os.path.join(target,"bootstrap-files.sha256")
+  fd=os.open(manifest_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o644)
+  with os.fdopen(fd,"wb") as output: output.write(manifest.encode("ascii"));output.flush();os.fsync(output.fileno())
+with open(installer,"rb") as running:
+  if hashlib.sha256(running.read()).hexdigest()!=expected["install-bootstrap.sh"][0]: raise SystemExit("installer digest")
+PY
 node "$tmp/verify-package-tree.mjs" "$tmp" "$0"||die "signed package tree"
 if [[ $deployment_purpose == production ]];then mapfile -t preflight_signing < <(node - "$config" <<'NODE'
 const c=require(process.argv[2]);for(const k of ["productionStateSigningKey","productionStateAllowedSigners","productionStateSignerId","cutoverPgService","cutoverPgServiceFile","cutoverPgPassFile","cutoverIncidentDir"]){if(typeof c[k]!=="string"||!c[k])process.exit(1);console.log(c[k])}

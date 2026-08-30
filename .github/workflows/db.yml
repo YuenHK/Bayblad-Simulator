@@ -83,6 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sudo ./infra/bootstrap/test-installer-archive-safety.sh ./infra/bootstrap/install-bootstrap.sh
           archive="$RUNNER_TEMP/bootstrap.tar.gz"
           ./infra/bootstrap/create-package.sh infra/bootstrap "$archive"
           mkdir "$RUNNER_TEMP/bootstrap-unpack"
