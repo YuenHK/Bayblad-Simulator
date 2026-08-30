@@ -444,7 +444,7 @@ jobs:
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$INTEGRATION_DEPLOYMENT_ID/statuses" --input integration-success.json
           printf '{"schemaVersion":1,"purpose":"approved-release","commit":"%s","manifestSha256":"%s","integrationDeploymentId":"%s"}\n' "$RELEASE_COMMIT" "$INTEGRATION_MANIFEST_SHA" "$INTEGRATION_DEPLOYMENT_ID" > candidate/APPROVED-RELEASE.json
       - name: Abort any provisional cutover after a failed public smoke
-        if: failure()
+        if: always()
         shell: bash
         run: |
           set +e
@@ -452,9 +452,11 @@ jobs:
           state=$(psql "$TEST_DATABASE_URL" -Atqc "select state from restore_control.finalize_outbox where nonce='$cutover_nonce'" 2>/dev/null)
           if [[ $state == connect-granted-pending-smoke || $state == smoke-observed ]];then
             sudo env PROMOTE_PGSERVICE=target PGSERVICEFILE=/opt/steam-top/.release-integration/secrets/pg-service PGPASSFILE=/opt/steam-top/.release-integration/secrets/pg-pass CUTOVER_ALLOWED_SIGNERS_FILE="$pending/cutover-signers" CUTOVER_SIGNER_ID=cutover@test PROMOTE_STATE_DIR="$pending" /opt/steam-top-bootstrap/abort-cutover-current.sh "$INTEGRATION_NONCE" "$cutover_nonce" "$pending/promotion-ready" "$pending/preflight.json" "$pending/preflight.json.sig"
-            if [[ $(psql "$TEST_DATABASE_URL" -Atqc "select state from restore_control.finalize_outbox where nonce='$cutover_nonce'") != aborted ]];then sudo touch /opt/steam-top/.release-integration/recovery-preserve;fi
+            post=$(psql "$TEST_DATABASE_URL" -Atqc "select state||'|'||(not has_database_privilege(app_role,current_database(),'connect'))||'|'||(not exists(select 1 from pg_stat_activity where datname=current_database() and usename=app_role)) from restore_control.finalize_outbox where nonce='$cutover_nonce'")
+            if [[ $post != aborted\|t\|t ]];then sudo touch /opt/steam-top/.release-integration/recovery-preserve;exit 1;fi
+          elif [[ -n $state && $state != verified && $state != aborted ]];then
+            sudo touch /opt/steam-top/.release-integration/recovery-preserve;exit 1
           fi
-          exit 1
       - name: Collect cutover recovery evidence
         if: failure()
         shell: bash
