@@ -23,4 +23,9 @@ esac
 node "$script_dir/authorize-production-deploy.mjs" "$snapshot/release-manifest.json" "$snapshot/production.env" "$snapshot/canonical.env" "$expected_repository" "$expected_commit"
 "${compose[@]}" config --quiet
 "${compose[@]}" pull
+if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production && -f /var/lib/steam-top-bootstrap/first-deploy.pending ]];then
+  [[ ! -L /var/lib/steam-top-bootstrap/first-deploy.pending && $(stat_pair /var/lib/steam-top-bootstrap/first-deploy.pending) == '0 400' ]]||die "first-deploy marker trust"
+  "${compose[@]}" up -d --wait db
+  "${compose[@]}" run --rm migration
+fi
 "${compose[@]}" up -d --wait

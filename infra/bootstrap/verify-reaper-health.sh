@@ -15,8 +15,8 @@ key_private_file "${values[1]}"||die "PGSERVICEFILE custody"
 key_private_file "${values[2]}"||die "PGPASSFILE custody"
 [[ -d ${values[3]} && ! -L ${values[3]} ]]||die "incident directory";read -r owner mode < <(stat -c '%u %a' "${values[3]}");[[ $owner == 0 && $mode == 700 ]]||die "incident directory custody"
 if [[ ! -e /opt/steam-top/current ]];then
-  [[ $require_runtime == false && ! -e ${values[4]}/current ]]||die "active runtime required"
+  marker=/var/lib/steam-top-bootstrap/first-deploy.pending;[[ $require_runtime == false && ! -e ${values[4]}/current && -f $marker && ! -L $marker && $(stat -c '%u %a' "$marker") == '0 400' ]]||die "active runtime or sealed first-deploy marker required"
   echo not-applicable-clean-host
-else /opt/steam-top-bootstrap/reconcile-cutover-pending.sh;fi
+else /opt/steam-top-bootstrap/reconcile-cutover-pending.sh;rm -f /var/lib/steam-top-bootstrap/first-deploy.pending;fi
 systemctl is-enabled --quiet steam-top-cutover-reaper.timer||die "timer disabled";systemctl is-active --quiet steam-top-cutover-reaper.timer||die "timer inactive"
 [[ $(systemctl show steam-top-cutover-reaper.service -p Result --value) == success ]]||die "service result";[[ $(systemctl show steam-top-cutover-reaper.service -p ExecMainStatus --value) == 0 ]]||die "service exit"

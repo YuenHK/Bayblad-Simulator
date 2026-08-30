@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 die(){ echo "cutover confirmation refused: $1" >&2;exit 1;}
+psql(){ command psql -q "$@";}
 [[ $(id -u) -eq 0 && ( $# -eq 4 || $# -eq 5 ) && ${CANONICAL_STATE_RESOLVED:-} == true ]]||die "canonical root wrapper required"
 ready=$1;preflight=$2;preflight_sig=$3;if [[ $# -eq 5 ]];then smoke_probe=$4;final=$5;else smoke_probe=;final=$4;fi;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);source "$script_dir/host-trust-guard.sh"
 for name in PROMOTE_PGSERVICE PGSERVICEFILE PGPASSFILE PROMOTE_STATE_DIR CUTOVER_SIGNING_KEY CUTOVER_ALLOWED_SIGNERS_FILE CUTOVER_SIGNER_ID;do [[ -n ${!name:-} ]]||die "$name required";done
