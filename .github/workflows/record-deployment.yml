@@ -102,10 +102,11 @@ jobs:
           install -m 700 -d "$HOME/.ssh"; printf '%s\n' "$SSH_HOST_KEY" > "$HOME/.ssh/known_hosts"; printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"; chmod 600 "$HOME/.ssh/id_ed25519"
           tar -C release -czf release.tgz .; scp -q release.tgz "$SSH_USER@$SSH_HOST:/tmp/steam-top-release-$GITHUB_RUN_ID.tgz"
           scp -q pending-deployment.json deployment-authorization.json "$SSH_USER@$SSH_HOST:/tmp/"
-          ssh "$SSH_USER@$SSH_HOST" "sudo /opt/steam-top-bootstrap/verify-reaper-health.sh --require-active-runtime"
+          ssh "$SSH_USER@$SSH_HOST" "sudo /opt/steam-top-bootstrap/verify-reaper-health.sh"
           ssh "$SSH_USER@$SSH_HOST" "set -eu; sudo systemctl is-enabled --quiet steam-top-cutover-reaper.timer; sudo systemctl is-active --quiet steam-top-cutover-reaper.timer; d=\$(mktemp -d /tmp/steam-top-release.XXXXXX); trap 'rm -rf \"\$d\" /tmp/steam-top-release-$GITHUB_RUN_ID.tgz /tmp/pending-deployment.json /tmp/deployment-authorization.json' EXIT; tar -xzf /tmp/steam-top-release-$GITHUB_RUN_ID.tgz -C \"\$d\"; sudo /opt/steam-top-bootstrap/deploy-release.sh \"\$d\" /tmp/deployment-authorization.json /tmp/pending-deployment.json '$MANIFEST_SHA' '$GITHUB_REPOSITORY' '$RELEASE_COMMIT' '$DEPLOYMENT_NONCE' '$EXPECTED_PRODUCTION_STATE|$DEPLOYMENT_ID'" > receipt.frame
           node scripts/parse-host-receipt-frame.mjs receipt.frame "$DEPLOYMENT_NONCE" deployment-receipt.json deployment-receipt.json.sig;printf '%s\n' "$HOST_RECEIPT_ALLOWED_SIGNERS" > host-allowed-signers;ssh-keygen -Y verify -q -f host-allowed-signers -I steam-top-production-host -n steam-top-production-deployment -s deployment-receipt.json.sig < deployment-receipt.json
           node -e 'const r=require("./deployment-receipt.json"),d=require("./pending-deployment.json"),u=new URL(r.publicOrigin);if(r.schemaVersion!==4||r.purpose!=="production"||r.nonce!==d.payload.nonce||r.manifestDigest!==d.payload.manifestSha256||r.commit!==d.ref||u.protocol!=="https:"||u.pathname!=="/"||r.smoke?.complete!==true)process.exit(1)'
+          ssh "$SSH_USER@$SSH_HOST" "sudo systemctl start steam-top-cutover-reaper.service && sudo /opt/steam-top-bootstrap/verify-reaper-health.sh --require-active-runtime"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with: { subject-path: deployment-receipt.json }
       - name: Advance protected state only after deploy and smoke
