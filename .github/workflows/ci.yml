@@ -246,7 +246,7 @@ jobs:
           set -euo pipefail
           manifest_sha=$(./scripts/portable-sha256.sh digest candidate/release-manifest.json);nonce=$(openssl rand -hex 32);source_ref=${AUTHORIZATION_WORKFLOW_REF##*@};[[ $source_ref == refs/heads/* ]]
           gh attestation verify candidate/APPROVED-RELEASE.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
-          DEPLOYMENT_PURPOSE=production node scripts/create-pending-deployment.mjs candidate/release-manifest.json "$RELEASE_RUN_ID" "approved-release-$RELEASE_COMMIT" "$manifest_sha" "$RELEASE_COMMIT" "$nonce" normal "$GITHUB_REPOSITORY/.github/workflows/ci.yml" "$AUTHORIZATION_WORKFLOW_SHA" "$source_ref" workflow_run none pending-production.json
+          DEPLOYMENT_PURPOSE=production node scripts/create-pending-deployment.mjs candidate/release-manifest.json "$RELEASE_RUN_ID" "approved-release-$RELEASE_COMMIT" "$manifest_sha" "$RELEASE_COMMIT" "$nonce" normal "$GITHUB_REPOSITORY/.github/workflows/ci.yml" "$RELEASE_COMMIT" "$RELEASE_REF" push none pending-production.json
           deployment_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input pending-production.json --jq .id)
           printf 'PRODUCTION_E2E_DEPLOYMENT_ID=%s\nPRODUCTION_E2E_NONCE=%s\nPRODUCTION_E2E_MANIFEST_SHA=%s\n' "$deployment_id" "$nonce" "$manifest_sha" >> "$GITHUB_ENV"
           node - "$RUNNER_TEMP/production-e2e-source-binding.json" "$deployment_id" "$manifest_sha" "$nonce" <<'NODE'
