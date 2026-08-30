@@ -65,6 +65,19 @@ def secure_key_reference(key_data):
     while offset<len(key_data):offset+=os.write(fd,key_data[offset:])
     os.lseek(fd,0,os.SEEK_SET);return fd,f"/proc/self/fd/{fd}"
 
+def verify_output_binding(signature_fd,expected_info):
+    bound_fd=os.open(output_name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent_fd)
+    try:
+        if identity(os.fstat(bound_fd))!=identity(expected_info) or identity(os.fstat(signature_fd))!=identity(expected_info):abort("verified signature output changed")
+    finally:os.close(bound_fd)
+
+def swap_output_for_test():
+    if os.geteuid()==0 or os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_SWAP_OUTPUT_AFTER_VERIFY")!="1":return
+    os.unlink(output_name,dir_fd=parent_fd);fd=os.open(output_name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400,dir_fd=parent_fd)
+    try:os.write(fd,b"foreign");os.fsync(fd)
+    finally:os.close(fd)
+    os.fsync(parent_fd)
+
 def verify_signature(name,expected_info,entry,key_reference,key_handle,signer_id):
     signature_fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent_fd);allowed_fd=None
     try:
@@ -75,9 +88,10 @@ def verify_signature(name,expected_info,entry,key_reference,key_handle,signer_id
         os.lseek(allowed_fd,0,os.SEEK_SET);os.set_inheritable(allowed_fd,True);os.set_inheritable(signature_fd,True)
         verified=subprocess.run(["/usr/bin/ssh-keygen","-Y","verify","-q","-f",f"/proc/self/fd/{allowed_fd}","-I",signer_id,"-n","steam-top-production-policy-root","-s",f"/proc/self/fd/{signature_fd}"],input=entry,capture_output=True,pass_fds=(allowed_fd,signature_fd))
         if verified.returncode:abort("existing signature does not bind current entry and key")
-        if identity(os.fstat(signature_fd))!=identity(expected_info):abort("signature recovery changed")
+        swap_output_for_test();verify_output_binding(signature_fd,expected_info);return signature_fd
+    except BaseException:
+        os.close(signature_fd);raise
     finally:
-        os.close(signature_fd)
         if allowed_fd is not None:os.close(allowed_fd)
 
 def verify_recovery(stage,stage_info,entry,key_reference,key_handle,signer_id):
@@ -85,14 +99,18 @@ def verify_recovery(stage,stage_info,entry,key_reference,key_handle,signer_id):
     except FileNotFoundError: return False
     safe=lambda info:stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o400
     if not safe(stage_info) or not safe(output_info) or stage_info.st_nlink!=2 or output_info.st_nlink!=2 or (stage_info.st_dev,stage_info.st_ino)!=(output_info.st_dev,output_info.st_ino):abort("unsafe signature recovery links")
-    verify_signature(stage,stage_info,entry,key_reference,key_handle,signer_id)
-    os.fsync(parent_fd);os.unlink(stage,dir_fd=parent_fd);os.fsync(parent_fd);return True
+    signature_fd=verify_signature(stage,stage_info,entry,key_reference,key_handle,signer_id)
+    try:
+        os.fsync(parent_fd);verify_output_binding(signature_fd,stage_info);os.unlink(stage,dir_fd=parent_fd);os.fsync(parent_fd);return True
+    finally:os.close(signature_fd)
 
 def verify_output_only(entry,key_reference,key_handle,signer_id):
     try: info=os.stat(output_name,dir_fd=parent_fd,follow_symlinks=False)
     except FileNotFoundError:return False
     if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o400 or info.st_nlink!=1:abort("unsafe existing signature output")
-    verify_signature(output_name,info,entry,key_reference,key_handle,signer_id);os.fsync(parent_fd);return True
+    signature_fd=verify_signature(output_name,info,entry,key_reference,key_handle,signer_id)
+    try:os.fsync(parent_fd);verify_output_binding(signature_fd,info);return True
+    finally:os.close(signature_fd)
 
 def scavenge_stages(entry,key_reference,key_handle,signer_id):
     prefix=f".steam-top-signature-stage-{hashlib.sha256(output_name.encode()).hexdigest()}-"
