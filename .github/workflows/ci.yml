@@ -337,7 +337,7 @@ jobs:
           tar -xOf bootstrap/bootstrap.tgz ./bootstrap-files.sha256 > "$RUNNER_TEMP/bootstrap-files.sha256"
           bootstrap_manifest_sha=$(sha256sum "$RUNNER_TEMP/bootstrap-files.sha256" | awk '{print $1}')
           node - "$RUNNER_TEMP/bootstrap-trust.json" "$bootstrap_manifest_sha" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF" <<'NODE'
-          const fs=require("fs"),[out,digest,repo,commit,ref]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256:digest,repository:repo,workflowIdentity:`${repo}/.github/workflows/authorize-release.yml`,workflowRef:ref,workflowSha:commit,deploymentPurpose:"release-integration",installer:{url:process.env.INSTALLER_URL,signatureUrl:process.env.INSTALLER_SIGNATURE_URL,sha256:process.env.INSTALLER_SHA256,allowedHosts:process.env.INSTALLER_ALLOWED_HOSTS.split(",")},githubTokenFile:"/opt/steam-top/.release-integration/secrets/github-token",authorizationDir:"/opt/steam-top/.release-integration/authorization",productionEnvFile:"/opt/steam-top/.release-integration/production.env",hostReceiptSigningKey:"/opt/steam-top/.release-integration/secrets/host-signing",hostReceiptAllowedSigners:"/opt/steam-top/.release-integration/secrets/host-allowed-signers",hostReceiptSignerId:"host-ci",ledgerSigningKey:"/opt/steam-top/.release-integration/secrets/ledger-signing",ledgerAllowedSigners:"/opt/steam-top/.release-integration/secrets/ledger-allowed-signers",ledgerSignerId:"ledger-ci",evidenceSigningKey:"/opt/steam-top/.release-integration/secrets/evidence-signing",productionStateDir:"/opt/steam-top/.release-integration/state",productionStateSigningKey:"/opt/steam-top/.release-integration/secrets/state-signing",productionStateAllowedSigners:"/opt/steam-top/.release-integration/secrets/state-allowed-signers",productionStateSignerId:"state-ci",adminSmokeSecretFile:"/opt/steam-top/.release-integration/secrets/admin-smoke.json",hostReceiptOutbox:"/opt/steam-top/.release-integration/outbox",pgServiceFile:"/opt/steam-top/.release-integration/secrets/pg-service",pgPassFile:"/opt/steam-top/.release-integration/secrets/pg-pass",pgServiceName:"target"})+"\n",{mode:0o600});
+          const fs=require("fs"),[out,digest,repo,commit,ref]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256:digest,repository:repo,workflowIdentity:`${repo}/.github/workflows/authorize-release.yml`,workflowRef:ref,workflowSha:commit,deploymentPurpose:"release-integration",installer:{url:process.env.INSTALLER_URL,signatureUrl:process.env.INSTALLER_SIGNATURE_URL,sha256:process.env.INSTALLER_SHA256,allowedHosts:process.env.INSTALLER_ALLOWED_HOSTS.split(",")},githubTokenFile:"/opt/steam-top/.release-integration/secrets/github-token",authorizationDir:"/opt/steam-top/.release-integration/authorization",productionEnvFile:"/opt/steam-top/.release-integration/production.env",hostReceiptSigningKey:"/opt/steam-top/.release-integration/secrets/host-signing",hostReceiptAllowedSigners:"/opt/steam-top/.release-integration/secrets/host-allowed-signers",hostReceiptSignerId:"host-ci",ledgerSigningKey:"/opt/steam-top/.release-integration/secrets/ledger-signing",ledgerAllowedSigners:"/opt/steam-top/.release-integration/secrets/ledger-allowed-signers",ledgerSignerId:"ledger-ci",evidenceSigningKey:"/opt/steam-top/.release-integration/secrets/evidence-signing",productionStateDir:"/opt/steam-top/.release-integration/state",productionStateSigningKey:"/opt/steam-top/.release-integration/secrets/state-signing",productionStateAllowedSigners:"/opt/steam-top/.release-integration/secrets/state-allowed-signers",productionStateSignerId:"state-ci",adminSmokeSecretFile:"/opt/steam-top/.release-integration/secrets/admin-smoke.json",hostReceiptOutbox:"/opt/steam-top/.release-integration/outbox",pgServiceFile:"/opt/steam-top/.release-integration/secrets/pg-service",pgPassFile:"/opt/steam-top/.release-integration/secrets/pg-pass",pgServiceName:"target",cutoverPgService:"target",cutoverPgServiceFile:"/opt/steam-top/.release-integration/secrets/pg-service",cutoverPgPassFile:"/opt/steam-top/.release-integration/secrets/pg-pass",cutoverIncidentDir:"/opt/steam-top/.release-integration/cutover-incidents"})+"\n",{mode:0o600});
           NODE
           node - "$RUNNER_TEMP/bootstrap-trust.json" <<'NODE'
           const fs=require("fs"),path=process.argv[2],x=require(path);x.evidenceAllowedSigners="/opt/steam-top/.release-integration/secrets/evidence-allowed-signers";x.evidenceSignerId="evidence-ci";fs.writeFileSync(path,JSON.stringify(x)+"\n",{mode:0o600});
@@ -422,6 +422,7 @@ jobs:
           SMOKE_INTEGRATION_MODE: "true"
         run: |
           set -euo pipefail
+          sudo /opt/steam-top-bootstrap/reconcile-cutover-pending.sh
           receipt_generation=$(readlink -f "/opt/steam-top/.release-integration/outbox/receipts/$INTEGRATION_NONCE/current")
           test -f "$receipt_generation/payload.json" -a -f "$receipt_generation/payload.json.sig"
           runtime_sha=$(node -p 'require("./deployment-authorization.json").runtimeManifestSha256')
@@ -433,6 +434,7 @@ jobs:
           test "$(psql "$TEST_DATABASE_URL" -Atqc "select state from restore_control.finalize_outbox where nonce='$(printf 3%.0s {1..64})'")" = verified
           test "$(psql "$TEST_DATABASE_URL" -Atqc "select has_table_privilege('steam_top_app','restore_control.deployment_probe','select,update')")" = t
           test "$(psql "$TEST_DATABASE_URL" -Atqc "select has_table_privilege('steam_top_app','restore_control.promotion_audit','select')")" = f
+          sudo /opt/steam-top-bootstrap/reconcile-cutover-pending.sh
       - name: Mark the release approved only after canonical cutover
         shell: bash
         env: { GH_TOKEN: "${{ github.token }}" }
@@ -446,11 +448,23 @@ jobs:
         shell: bash
         run: |
           set +e
-          pending=$(find /opt/steam-top/.release-integration/cutover -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null)
-          if [[ -n $pending ]];then
-            sudo env PROMOTE_PGSERVICE=target PGSERVICEFILE=/opt/steam-top/.release-integration/secrets/pg-service PGPASSFILE=/opt/steam-top/.release-integration/secrets/pg-pass CUTOVER_ALLOWED_SIGNERS_FILE="$pending/cutover-signers" CUTOVER_SIGNER_ID=cutover@test PROMOTE_STATE_DIR="$pending" /opt/steam-top-bootstrap/abort-cutover-current.sh "$INTEGRATION_NONCE" "$pending/promotion-ready" "$pending/preflight.json" "$pending/preflight.json.sig"
+          cutover_nonce=$(printf '3%.0s' {1..64});pending="/opt/steam-top/.release-integration/cutover/$cutover_nonce"
+          state=$(psql "$TEST_DATABASE_URL" -Atqc "select state from restore_control.finalize_outbox where nonce='$cutover_nonce'" 2>/dev/null)
+          if [[ $state == connect-granted-pending-smoke || $state == smoke-observed ]];then
+            sudo env PROMOTE_PGSERVICE=target PGSERVICEFILE=/opt/steam-top/.release-integration/secrets/pg-service PGPASSFILE=/opt/steam-top/.release-integration/secrets/pg-pass CUTOVER_ALLOWED_SIGNERS_FILE="$pending/cutover-signers" CUTOVER_SIGNER_ID=cutover@test PROMOTE_STATE_DIR="$pending" /opt/steam-top-bootstrap/abort-cutover-current.sh "$INTEGRATION_NONCE" "$cutover_nonce" "$pending/promotion-ready" "$pending/preflight.json" "$pending/preflight.json.sig"
+            if [[ $(psql "$TEST_DATABASE_URL" -Atqc "select state from restore_control.finalize_outbox where nonce='$cutover_nonce'") != aborted ]];then sudo touch /opt/steam-top/.release-integration/recovery-preserve;fi
           fi
           exit 1
+      - name: Collect cutover recovery evidence
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p recovery-evidence
+          sudo find /opt/steam-top/.release-integration/cutover -type f \( -name 'CUTOVER-ABORTED.*' -o -name 'preflight.json' -o -name 'promotion-ready' \) -exec cp {} recovery-evidence/ \; 2>/dev/null || true
+          sudo chown -R "$USER" recovery-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with: { name: "cutover-recovery-${{ inputs.candidate_commit }}-${{ github.run_id }}", path: recovery-evidence/, if-no-files-found: warn, retention-days: 90 }
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: candidate/APPROVED-RELEASE.json }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -463,10 +477,10 @@ jobs:
         run: |
           set +e
           failures=""
-          runtime=$(readlink -f /opt/steam-top/release-integration-current 2>/dev/null);if [[ -n $runtime ]];then sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" down -v --remove-orphans || failures="$failures compose";fi
+          runtime=$(readlink -f /opt/steam-top/release-integration-current 2>/dev/null);if [[ -n $runtime && ! -f /opt/steam-top/.release-integration/recovery-preserve ]];then sudo docker compose -p steam-top-release-integration --project-directory "$runtime" --env-file /opt/steam-top/.release-integration/production.env -f "$runtime/compose.yaml" -f "$runtime/compose.release-integration.yaml" down -v --remove-orphans || failures="$failures compose";elif [[ -f /opt/steam-top/.release-integration/recovery-preserve ]];then failures="$failures recovery-preserved";fi
           docker logout ghcr.io || failures="$failures registry-logout"
           sudo rm -f /etc/sudoers.d/steam-top-integration /usr/local/share/ca-certificates/steam-top-integration.crt /usr/local/sbin/install-steam-top-bootstrap /tmp/integration-root.crt /tmp/integration-images.env server.key server.crt || failures="$failures secrets"
           sudo update-ca-certificates || failures="$failures ca-trust"
           sudo userdel steam-top-integration || failures="$failures deploy-user"
-          sudo rm -rf /opt/steam-top /opt/steam-top-bootstrap /etc/steam-top-bootstrap || failures="$failures integration-root"
+          if [[ ! -f /opt/steam-top/.release-integration/recovery-preserve ]];then sudo rm -rf /opt/steam-top /opt/steam-top-bootstrap /etc/steam-top-bootstrap || failures="$failures integration-root";fi
           if [[ -n "$failures" ]];then echo "cleanup failures:$failures" >&2;exit 1;fi

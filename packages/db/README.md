@@ -5,6 +5,10 @@ migration for a database that has never been deployed. Do not apply it over an
 older schema. After the first deployment, every schema change must be a new,
 forward-only migration.
 
+`drizzle/0001_cutover_state_machine.sql` is the first such forward migration. It
+upgrades the deployment cutover outbox without dropping legacy committed rows;
+the PostgreSQL CI job exercises that upgrade path against the old table shape.
+
 Run the PostgreSQL integration contract with an empty disposable database:
 
 ```sh
