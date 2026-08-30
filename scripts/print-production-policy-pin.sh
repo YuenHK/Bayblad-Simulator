@@ -3,7 +3,7 @@ set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname "$0")/.."&&pwd -P)
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-policy-pin.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
-git clone --no-local --quiet "$root" "$temporary/repository"
+git clone --shared --quiet "$root" "$temporary/repository"
 digest=$(/usr/bin/env node "$temporary/repository/scripts/verify-production-policy-bundle.mjs" "$temporary/repository")
 commit=$(git -C "$temporary/repository" rev-parse HEAD)
 printf 'Reviewed clean checkout commit: %s\n' "$commit"
