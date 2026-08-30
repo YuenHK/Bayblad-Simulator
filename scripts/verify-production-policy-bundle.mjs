@@ -5,7 +5,7 @@ import {execFile} from "node:child_process";
 
 const GIT="/usr/bin/git";
 const root=fs.realpathSync(path.resolve(process.argv[2]??"."));
-const expected=process.argv[3],manifestOut=process.argv[4];
+const expected=process.argv[3]||undefined,manifestOut=process.argv[4];
 const temporary=fs.mkdtempSync("/tmp/steam-top-policy-verify-");
 let cleaning=false;
 let activeGitChild=null;
@@ -56,13 +56,13 @@ try{
     let decoded;try{decoded=decoder.decode(pathBytes)}catch{throw new Error("authority index path rejected: invalid UTF-8")}
     if(!Buffer.from(decoded,"utf8").equals(pathBytes)||decoded!==decoded.normalize("NFC")||/[\u0000-\u001f\u007f\\]/u.test(decoded)||decoded.startsWith("/")||decoded.split("/").some(part=>part===""||part==="."||part===".."))throw new Error("authority index path rejected: non-canonical path");
     if(match[1]==="120000")throw new Error(`authority closure rejects symlink: ${decoded}`);
-    entries.push({path:decoded,pathBytes,oid:match[2],mode:match[1]==="100755"?0o755:0o644});
+    if(!decoded.startsWith(".production-policy-ledger/"))entries.push({path:decoded,pathBytes,oid:match[2],mode:match[1]==="100755"?0o755:0o644});
   }
   entries.sort((a,b)=>a.pathBytes.compare(b.pathBytes));
   if(new Set(entries.map(entry=>entry.path)).size!==entries.length)throw new Error("duplicate authority path");
   const tracked=new Set(entries.map(entry=>entry.path));
   const trackedDirectories=new Set(entries.flatMap(entry=>{const parts=entry.path.split("/");return parts.slice(0,-1).map((_,index)=>parts.slice(0,index+1).join("/"))}));
-  const walk=(directory,relative="")=>{for(const item of fs.readdirSync(directory,{withFileTypes:true})){if(!relative&&item.name===".git")continue;const child=relative?`${relative}/${item.name}`:item.name;if(item.isDirectory()){if(!trackedDirectories.has(child))throw new Error(`clean HEAD required for production policy bundle: untracked directory ${child}`);walk(path.join(directory,item.name),child)}else if(!tracked.has(child))throw new Error(`clean HEAD required for production policy bundle: untracked path ${child}`)}};
+  const walk=(directory,relative="")=>{for(const item of fs.readdirSync(directory,{withFileTypes:true})){if(!relative&&(item.name===".git"||item.name===".production-policy-ledger"))continue;const child=relative?`${relative}/${item.name}`:item.name;if(item.isDirectory()){if(!trackedDirectories.has(child))throw new Error(`clean HEAD required for production policy bundle: untracked directory ${child}`);walk(path.join(directory,item.name),child)}else if(!tracked.has(child))throw new Error(`clean HEAD required for production policy bundle: untracked path ${child}`)}};
   walk(root);
   const hash=createHash("sha256"),manifest=[];
   for(const entry of entries){

@@ -26,7 +26,7 @@ jobs:
           SOURCE_EVENT: "${{ github.event.workflow_run.event }}"
           TRUSTED_WORKFLOW_SHA: "${{ github.workflow_sha }}"
           TRUSTED_WORKFLOW_REF: "${{ github.workflow_ref }}"
-          EXPECTED_POLICY_BUNDLE_SHA256: "${{ vars.PRODUCTION_POLICY_BUNDLE_SHA256 }}"
+          ROOT_ALLOWED_SIGNERS: "${{ vars.PRODUCTION_POLICY_ROOT_ALLOWED_SIGNERS }}"
         run: |
           set -euo pipefail
           [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_HEAD_SHA =~ ^[a-f0-9]{40}$ && $TRUSTED_WORKFLOW_SHA =~ ^[a-f0-9]{40}$ && $SOURCE_PATH == .github/workflows/ci.yml && $SOURCE_EVENT == push && $TRUSTED_WORKFLOW_REF == */.github/workflows/authorize-release.yml@refs/heads/* ]]
@@ -44,7 +44,11 @@ jobs:
           )
           "$GITHUB_WORKSPACE/trusted/scripts/fetch-github-tag-chain.sh" "$GITHUB_REPOSITORY" "$source_tag" "$RUNNER_TEMP/source-tag-chain.jsonl"
           /usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-github-tag-chain.mjs" "$RUNNER_TEMP/source-tag-chain.jsonl" "$SOURCE_HEAD_SHA"
-          trusted_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/trusted" "$EXPECTED_POLICY_BUNDLE_SHA256" "$RUNNER_TEMP/trusted-policy-manifest.json")
+          trusted_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/trusted" "" "$RUNNER_TEMP/trusted-policy-manifest.json")
+          test -n "$ROOT_ALLOWED_SIGNERS";printf '%s\n' "$ROOT_ALLOWED_SIGNERS" > "$RUNNER_TEMP/root-allowed-signers";chmod 0400 "$RUNNER_TEMP/root-allowed-signers"
+          repo_id=$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)
+          ledger=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-ledger.mjs" "$GITHUB_WORKSPACE/trusted" "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head")
+          test "$(jq -r .latest.bundleSha256 <<<"$ledger")" = "$trusted_bundle"
           candidate_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/candidate" "$trusted_bundle" "$RUNNER_TEMP/candidate-policy-manifest.json")
           /usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-deployment-permissions.mjs" "$GITHUB_WORKSPACE/candidate"
           verifier_sha=$(sha256sum trusted/scripts/verify-deployment-permissions.mjs|awk '{print $1}')
