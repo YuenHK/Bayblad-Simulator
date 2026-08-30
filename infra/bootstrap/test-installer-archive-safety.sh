@@ -41,10 +41,19 @@ PY
   ssh-keygen -Y sign -q -f "$root/source-key" -n steam-top-bootstrap-source "$root/$attack.tgz"
   digest=$(sha256sum "$root/$attack.tgz"|awk '{print $1}')
   expected=;case $attack in gnu-longname)expected=GNU_LONGNAME;;pax|global-pax|huge-pax)expected=PAX;;sparse)expected=SPARSE;;truncated)expected=TRUNCATED;;oversized|bomb)expected=BOMB;;count)expected=HEADER;;esac
-  if [[ -n $expected ]];then if python3 "$validator" "$root/$attack.tgz" >"$root/$attack.parser.out" 2>"$root/$attack.parser.err";then echo "raw parser accepted: $attack" >&2;exit 1;fi;grep -qx "$expected" "$root/$attack.parser.err"||{ echo "wrong raw reason: $attack" >&2;cat "$root/$attack.parser.err" >&2;exit 1;};fi
+  if [[ -n $expected ]];then if python3 "$validator" "$root/$attack.tgz" "$root/$attack.validated.tar" >"$root/$attack.parser.out" 2>"$root/$attack.parser.err";then echo "raw parser accepted: $attack" >&2;exit 1;fi;grep -qx "$expected" "$root/$attack.parser.err"||{ echo "wrong raw reason: $attack" >&2;cat "$root/$attack.parser.err" >&2;exit 1;};test ! -e "$root/$attack.validated.tar";fi
   reason='unsafe or invalid signed archive';case $attack in oversized|bomb) reason='archive';;esac
   if BOOTSTRAP_TAR_VALIDATOR="$validator" BOOTSTRAP_TAR_VALIDATOR_SHA256=$(sha256sum "$validator"|awk '{print $1}') EXPECTED_BOOTSTRAP_ARCHIVE_SHA256=$digest BOOTSTRAP_ALLOWED_SIGNERS_FILE="$root/allowed" "$installer" "$root/$attack.tgz" "$root/$attack.tgz.sig" source "$root/trust.json" --no-systemd-for-integration 2>"$root/$attack.err";then echo "malicious tar accepted: $attack" >&2;exit 1;fi
   grep -F "$reason" "$root/$attack.err" >/dev/null||{ echo "wrong rejection boundary: $attack" >&2;cat "$root/$attack.err" >&2;exit 1;}
   after=$( { find /opt/steam-top-bootstrap /etc/steam-top-bootstrap /var/lib/steam-top-bootstrap -maxdepth 3 -printf '%p|%y|%m|%s\n' 2>/dev/null || true; } | sort | sha256sum )
   [[ $before == "$after" ]]||{ echo "installer mutated state for $attack" >&2;exit 1;}
 done
+# Exercise the same fd-copy invariant used by the production gate: replacing
+# the original after the copy cannot alter the private snapshot, and an
+# unprivileged writer cannot replace it.
+printf original >"$root/original";python3 - "$root/original" "$root/snapshot" <<'PY'
+import os,sys
+i=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW);o=os.open(sys.argv[2],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o444);os.write(o,os.read(i,1024));os.fsync(o);os.close(o);os.close(i)
+PY
+printf replaced >"$root/original";[[ $(<"$root/snapshot") == original ]]||{ echo "original archive replacement changed the immutable snapshot" >&2;exit 1;}
+if command -v runuser >/dev/null&&runuser -u nobody -- sh -c 'printf attack >"$1"' sh "$root/snapshot" 2>/dev/null;then echo "unprivileged snapshot replacement succeeded" >&2;exit 1;fi

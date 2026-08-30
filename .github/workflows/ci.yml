@@ -206,6 +206,7 @@ jobs:
       BOOTSTRAP_ARCHIVE_SHA256: "${{ vars.BOOTSTRAP_ARCHIVE_SHA256 }}"
       AUTHORIZATION_WORKFLOW_SHA: "${{ github.workflow_sha }}"
       AUTHORIZATION_WORKFLOW_REF: "${{ github.workflow_ref }}"
+      DEPLOYMENT_ENVIRONMENT: "production-first-deploy-e2e-${{ github.run_id }}-${{ github.run_attempt }}"
       PUBLIC_ORIGIN: https://steam-top.production-e2e.test
       POSTGRES_DB: steam_top
       POSTGRES_USER: steam_top
@@ -249,7 +250,7 @@ jobs:
           deployment_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input pending-production.json --jq .id)
           printf 'PRODUCTION_E2E_DEPLOYMENT_ID=%s\nPRODUCTION_E2E_NONCE=%s\nPRODUCTION_E2E_MANIFEST_SHA=%s\n' "$deployment_id" "$nonce" "$manifest_sha" >> "$GITHUB_ENV"
           node - "$RUNNER_TEMP/production-e2e-source-binding.json" "$deployment_id" "$manifest_sha" "$nonce" <<'NODE'
-          const fs=require("fs"),[out,deploymentId,manifestSha256,nonce]=process.argv.slice(2);if(!/^[1-9][0-9]*$/.test(deploymentId)||!/^[a-f0-9]{64}$/.test(manifestSha256)||!/^[a-f0-9]{64}$/.test(nonce))process.exit(1);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"production-e2e-source-binding",deploymentId,authorizationRunId:process.env.GITHUB_RUN_ID,authorizationRunAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),authorizationWorkflowRef:process.env.GITHUB_WORKFLOW_REF,authorizationWorkflowSha:process.env.GITHUB_WORKFLOW_SHA,environment:"production-first-deploy-e2e",deploymentPurpose:"production",manifestSha256,nonce})+"\n",{mode:0o600})
+          const fs=require("fs"),[out,deploymentId,manifestSha256,nonce]=process.argv.slice(2);if(!/^[1-9][0-9]*$/.test(deploymentId)||!/^[a-f0-9]{64}$/.test(manifestSha256)||!/^[a-f0-9]{64}$/.test(nonce)||!/^production-first-deploy-e2e-[1-9][0-9]*-[1-9][0-9]*$/.test(process.env.DEPLOYMENT_ENVIRONMENT))process.exit(1);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"production-e2e-source-binding",deploymentId,authorizationRunId:process.env.GITHUB_RUN_ID,authorizationRunAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),authorizationWorkflowRef:process.env.GITHUB_WORKFLOW_REF,authorizationWorkflowSha:process.env.GITHUB_WORKFLOW_SHA,environment:process.env.DEPLOYMENT_ENVIRONMENT,deploymentPurpose:"production",manifestSha256,nonce})+"\n",{mode:0o600})
           NODE
       - name: Attest the immutable production E2E source binding
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
@@ -378,9 +379,9 @@ jobs:
           set -euo pipefail;state=$(node -p 'require(process.argv[1]).desiredTerminal' "$RUNNER_TEMP/production-e2e-terminal.json");description='canonical production first deployment failed'
           [[ $PREVIOUS_OK == true ]]||state=failure
           description="terminal-receipt:$TERMINAL_RECEIPT_SHA"
-          node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:process.argv[2],environment:"production-first-deploy-e2e",description:process.argv[3]})+"\n")' "$RUNNER_TEMP/terminal-status.json" "$state" "$description"
+          node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:process.argv[2],environment:process.env.DEPLOYMENT_ENVIRONMENT,description:process.argv[3]})+"\n")' "$RUNNER_TEMP/terminal-status.json" "$state" "$description"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses?per_page=100" > "$RUNNER_TEMP/existing-terminal.json"
-          if node -e 'const s=require(process.argv[1]).flat().filter(x=>["success","failure","error","inactive"].includes(x.state)),want=process.argv[2],description=process.argv[3];if(!s.length)process.exit(1);process.exit(s.every(x=>x.state===want&&x.description===description)?0:2)' "$RUNNER_TEMP/existing-terminal.json" "$state" "$description";then exit 0;else code=$?;[[ $code == 1 ]]||exit "$code";fi
+          if node -e 'const s=require(process.argv[1]).flat().filter(x=>["success","failure","error","inactive"].includes(x.state)),want=process.argv[2],description=process.argv[3];if(!s.length)process.exit(1);process.exit(s.every(x=>x.state===want&&x.description===description)?0:2)' "$RUNNER_TEMP/existing-terminal.json" "$state" "$description";then [[ $state == success ]]&&exit 0;exit 1;else code=$?;[[ $code == 1 ]]||exit "$code";fi
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses" --input "$RUNNER_TEMP/terminal-status.json"
           [[ $state == success ]]
   release-images:

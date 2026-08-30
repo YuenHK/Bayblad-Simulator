@@ -8,10 +8,33 @@ deployment_purpose=$(node -p 'const x=require(process.argv[1]).deploymentPurpose
 bootstrap_preexisting=false;[[ -e /opt/steam-top-bootstrap/bootstrap-files.sha256 || -d /var/lib/steam-top-bootstrap/install-transaction || -d /var/lib/steam-top-bootstrap/install-receipts || -L /var/lib/steam-top-bootstrap/first-deploy/current || -e /opt/steam-top/current ]]&&bootstrap_preexisting=true
 [[ $deployment_purpose != production || $bootstrap_preexisting == true || -n $first_deploy_nonce ]]||die "clean production install requires explicit first-deploy initialization"
 trusted_parents(){ local directory owner mode;directory=$(dirname "$1");while [[ $directory != / ]];do [[ -d $directory && ! -L $directory ]]||return 1;read -r owner mode < <(stat -c '%u %a' "$directory");[[ $owner == 0 && $((8#$mode&022)) -eq 0 ]]||return 1;directory=$(dirname "$directory");done;};read -r ao am < <(stat -c '%u %a' "$BOOTSTRAP_ALLOWED_SIGNERS_FILE");read -r co cm < <(stat -c '%u %a' "$config");[[ $ao == 0 && $am == 444 && $co == 0 && $cm == 400 ]]&&trusted_parents "$BOOTSTRAP_ALLOWED_SIGNERS_FILE"&&trusted_parents "$config"||die "root external trust inputs"
-sha(){ if command -v sha256sum >/dev/null;then sha256sum "$1"|awk '{print $1}';else shasum -a 256 "$1"|awk '{print $1}';fi;};[[ $(sha "$archive") == "$EXPECTED_BOOTSTRAP_ARCHIVE_SHA256" ]]||die "external archive digest"
+sha(){ if command -v sha256sum >/dev/null;then sha256sum "$1"|awk '{print $1}';else shasum -a 256 "$1"|awk '{print $1}';fi;}
+tmp=$(mktemp -d);chmod 0700 "$tmp";trap 'rm -rf "$tmp"' EXIT
+# Copy each untrusted runner path exactly once through a no-follow fd.  Every
+# later verifier consumes only these root-private bootstrap-input-snapshot files.
+python3 - "$archive" "$signature" "$tmp" <<'PY'||die "bootstrap input snapshot"
+import os,stat,sys
+sources=sys.argv[1:3];target=sys.argv[3]
+for source,name in zip(sources,("archive.tgz","archive.tgz.sig")):
+ fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  meta=os.fstat(fd)
+  if not stat.S_ISREG(meta.st_mode):raise SystemExit(1)
+  out=os.open(os.path.join(target,name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o444)
+  try:
+   while True:
+    chunk=os.read(fd,65536)
+    if not chunk:break
+    os.write(out,chunk)
+   os.fchmod(out,0o444);os.fsync(out)
+  finally:os.close(out)
+ finally:os.close(fd)
+directory=os.open(target,os.O_RDONLY|os.O_DIRECTORY);os.fsync(directory);os.close(directory)
+PY
+archive="$tmp/archive.tgz";signature="$tmp/archive.tgz.sig"
+[[ $(sha "$archive") == "$EXPECTED_BOOTSTRAP_ARCHIVE_SHA256" ]]||die "external archive digest"
 archive_size=$(stat -c %s "$archive");[[ $archive_size =~ ^[0-9]+$ && $archive_size -ge 1 && $archive_size -le 8388608 ]]||die "compressed archive size"
 ssh-keygen -Y verify -q -f "$BOOTSTRAP_ALLOWED_SIGNERS_FILE" -I "$signer" -n steam-top-bootstrap-source -s "$signature" <"$archive"||die "external archive signature"
-tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT
 validator=${BOOTSTRAP_TAR_VALIDATOR:?};validator_sha=${BOOTSTRAP_TAR_VALIDATOR_SHA256:?};[[ $validator == /* && -f $validator && ! -L $validator && $validator_sha =~ ^[a-f0-9]{64}$ && $(stat -c '%u %a' "$validator") == '0 444' && $(sha "$validator") == "$validator_sha" ]]&&trusted_parents "$validator"||die "pretrusted tar validator"
 validator_result=$(python3 "$validator" "$archive" "$tmp/.validated.tar")||die "unsafe or invalid signed archive";[[ $validator_result =~ ^OK\ [1-9][0-9]*$ && -f $tmp/.validated.tar && ! -L $tmp/.validated.tar && $(stat -c '%a' "$tmp/.validated.tar") == 400 ]]||die "tar validator token"
 python3 - "$archive" "$tmp" "$0" <<'PY'||die "unsafe or invalid signed archive"
