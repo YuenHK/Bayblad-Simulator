@@ -7,6 +7,7 @@ describe("student credential", () => {
     const service=new StudentCredentialService({keys:{old:Buffer.alloc(32,1),current:Buffer.alloc(32,2)},activeKeyId:"current",origin,now:()=>now});
     const credential=service.issue(token);expect(service.verify(credential,origin)).toBe(token);expect(service.verify(credential,"https://evil.example")).toBeUndefined();
     const tampered=`${credential.slice(0,-1)}${credential.endsWith("a")?"b":"a"}`;expect(service.verify(tampered,origin)).toBeUndefined();
+    expect(service.verify(`${Buffer.from("null").toString("base64url")}.${"a".repeat(43)}`,origin)).toBeUndefined();
     now+=43_200_001;expect(service.verify(credential,origin)).toBeUndefined();
   });
 });

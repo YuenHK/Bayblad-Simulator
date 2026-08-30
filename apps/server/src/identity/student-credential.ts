@@ -17,7 +17,7 @@ export class StudentCredentialService {
   }
   verify(value: string, origin: string): string | undefined {
     const [payload,signature,...extra]=value.split(".");if(!payload||!signature||extra.length||signature.length!==43)return undefined;
-    let claims:Claims;try{claims=JSON.parse(Buffer.from(payload,"base64url").toString("utf8"));}catch{return undefined;}
+    let claims:Claims;try{const decoded:unknown=JSON.parse(Buffer.from(payload,"base64url").toString("utf8"));if(!decoded||typeof decoded!=="object"||Array.isArray(decoded))return undefined;claims=decoded as Claims;}catch{return undefined;}
     const key=this.#keys[claims.kid];if(!key)return undefined;const expected=createHmac("sha256",key).update(payload).digest("base64url");
     if(expected.length!==signature.length||!timingSafeEqual(Buffer.from(expected),Buffer.from(signature)))return undefined;
     const now=Math.floor(this.#now()/1000);return claims.v===1&&claims.aud==="steam-top-student"&&claims.origin===this.#origin&&origin===this.#origin&&Number.isSafeInteger(claims.iat)&&Number.isSafeInteger(claims.exp)&&claims.iat<=now+60&&claims.exp>now&&claims.exp-claims.iat<=43_200&&/^[A-Za-z0-9_-]{43}$/u.test(claims.identityToken)?claims.identityToken:undefined;
