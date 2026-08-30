@@ -233,14 +233,14 @@ describe("rollback deletion monotonicity", () => {
     expect(read(".github/workflows/db.yml")).toContain("5433:5432");
     const cutoverMigration=read("drizzle/0001_cutover_state_machine.sql");
     for(const state of ["legacy-committed","preflight-recorded","connect-granted-pending-smoke","smoke-observed","verified","aborted"])expect(cutoverMigration).toContain(state);
-    expect(cutoverMigration).toContain("pg_get_constraintdef");
-    expect(cutoverMigration).not.toContain("contype='c' LOOP");
-    expect(read("infra/backup/import-legacy-cutover.sh")).toContain("state='legacy-committed' for update");
+    expect(cutoverMigration).toContain("pg_get_expr");expect(cutoverMigration).toContain("legacy.conkey[1]=state_attnum");
+    const legacyImport=read("infra/backup/import-legacy-cutover.sh");expect(legacyImport).toContain("CANONICAL_STATE_RESOLVED");expect(legacyImport).toContain("state='legacy-committed'");expect(legacyImport).toContain("final_receipt_signature_b64");
+    expect(read("infra/bootstrap/import-legacy-cutover-current.sh")).toContain("verify-runtime-install.sh");
     for(const column of ["deadline_at","lease_owner","lease_generation","ledger_hash","ready_sha256","preflight_sha256","smoke_evidence_payload_b64","smoke_evidence_sha256","final_receipt_sha256","final_receipt_payload_b64"])expect(cutoverMigration).toContain(column);
     expect(cutoverMigration).toContain("deletion_audit_sha256");
     expect(read(".github/workflows/db.yml")).toContain("test-cutover-migration.sh");
     const reaper=read("infra/backup/reconcile-cutover-pending.sh");expect(reaper).toContain("deadline_at < clock_timestamp()");expect(reaper).toContain("'smoke-observed'");expect(reaper).toContain("state='aborted'");expect(read("infra/systemd/steam-top-cutover-reaper.timer")).toContain("OnUnitActiveSec");
-    const installer=read("infra/bootstrap/install-bootstrap.sh");expect(installer).toContain("--install-systemd");expect(installer).toContain("systemd-analyze verify");expect(installer).toContain("systemctl enable --now steam-top-cutover-reaper.timer");
+    const installer=read("infra/bootstrap/install-bootstrap.sh");expect(installer).toContain("--install-systemd");expect(installer).toContain("--no-systemd-for-integration");expect(installer).toContain("production requires systemd");expect(installer).toContain("systemd-analyze verify");expect(installer).toContain("systemctl enable --now steam-top-cutover-reaper.timer");
     expect(read(".github/workflows/record-deployment.yml")).toContain("systemctl is-active --quiet steam-top-cutover-reaper.timer");
     const confirmCutover=read("infra/backup/confirm-cutover.sh");expect(confirmCutover).toContain("smoke_evidence_payload_b64");expect(confirmCutover).toContain("final_receipt_payload_b64");expect(confirmCutover).toContain("existing_state == verified");
     expect(read("infra/backup/test-promotion-full.sh")).toContain("wait_advisory 2");
