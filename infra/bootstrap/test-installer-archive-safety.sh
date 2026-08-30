@@ -9,14 +9,15 @@ printf 'source %s\n' "$(ssh-keygen -y -f "$root/source-key")" > "$root/allowed";
 printf '{"deploymentPurpose":"release-integration"}\n' > "$root/trust.json";chmod 0400 "$root/trust.json"
 before=$( { find /opt/steam-top-bootstrap /etc/steam-top-bootstrap /var/lib/steam-top-bootstrap -maxdepth 3 -printf '%p|%y|%m|%s\n' 2>/dev/null || true; } | sort | sha256sum )
 for attack in traversal absolute symlink hardlink fifo oversized duplicate count pax global-pax huge-pax gnu-longname sparse bomb truncated;do
-  python3 - "$root/$attack.tgz" "$attack" <<'PY'
-import io,sys,tarfile
-out,attack=sys.argv[1:]
+  python3 - "$root/$attack.tgz" "$attack" "$installer" <<'PY'
+import hashlib,io,sys,tarfile
+out,attack,installer=sys.argv[1:];installer_bytes=open(installer,"rb").read()
 kwargs={"format":tarfile.PAX_FORMAT if attack in {"pax","global-pax","huge-pax"} else tarfile.GNU_FORMAT}
 if attack in {"global-pax","huge-pax"}:kwargs["pax_headers"]={"comment":"x"*(100_000 if attack=="huge-pax" else 1)}
 with tarfile.open(out,"w:gz",**kwargs) as tar:
-  manifest=b"0"*64+b" 0555 install-bootstrap.sh\n"
+  manifest=hashlib.sha256(installer_bytes).hexdigest().encode()+b" 0555 install-bootstrap.sh\n"
   info=tarfile.TarInfo("bootstrap-files.sha256");info.size=len(manifest);info.mode=0o644;info.uid=info.gid=0;tar.addfile(info,io.BytesIO(manifest))
+  canonical=tarfile.TarInfo("install-bootstrap.sh");canonical.size=len(installer_bytes);canonical.mode=0o555;canonical.uid=canonical.gid=0;tar.addfile(canonical,io.BytesIO(installer_bytes))
   if attack=="count":
     for index in range(65):
       item=tarfile.TarInfo(f"entry{index}");item.size=1;item.mode=0o444;item.uid=item.gid=0;tar.addfile(item,io.BytesIO(b"x"))
@@ -38,7 +39,9 @@ if attack=="truncated":
 PY
   ssh-keygen -Y sign -q -f "$root/source-key" -n steam-top-bootstrap-source "$root/$attack.tgz"
   digest=$(sha256sum "$root/$attack.tgz"|awk '{print $1}')
-  if EXPECTED_BOOTSTRAP_ARCHIVE_SHA256=$digest BOOTSTRAP_ALLOWED_SIGNERS_FILE="$root/allowed" "$installer" "$root/$attack.tgz" "$root/$attack.tgz.sig" source "$root/trust.json" --no-systemd-for-integration;then echo "malicious tar accepted: $attack" >&2;exit 1;fi
+  reason='unsafe or invalid signed archive';case $attack in oversized|bomb) reason='archive';;esac
+  if EXPECTED_BOOTSTRAP_ARCHIVE_SHA256=$digest BOOTSTRAP_ALLOWED_SIGNERS_FILE="$root/allowed" "$installer" "$root/$attack.tgz" "$root/$attack.tgz.sig" source "$root/trust.json" --no-systemd-for-integration 2>"$root/$attack.err";then echo "malicious tar accepted: $attack" >&2;exit 1;fi
+  grep -F "$reason" "$root/$attack.err" >/dev/null||{ echo "wrong rejection boundary: $attack" >&2;cat "$root/$attack.err" >&2;exit 1;}
   after=$( { find /opt/steam-top-bootstrap /etc/steam-top-bootstrap /var/lib/steam-top-bootstrap -maxdepth 3 -printf '%p|%y|%m|%s\n' 2>/dev/null || true; } | sort | sha256sum )
   [[ $before == "$after" ]]||{ echo "installer mutated state for $attack" >&2;exit 1;}
 done
