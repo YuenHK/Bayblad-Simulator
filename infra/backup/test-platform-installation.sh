@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-: "${TEST_DATABASE_URL:?}";root=$(CDPATH= cd -- "$(dirname "$0")/../.."&&pwd -P);db="install_claim_${RANDOM}_$$";service=$(mktemp);trap 'rm -f "$service";dropdb --if-exists --force --maintenance-db="$TEST_DATABASE_URL" "$db" >/dev/null 2>&1||true' EXIT;createdb --maintenance-db="$TEST_DATABASE_URL" "$db";url=${TEST_DATABASE_URL%/*}/$db;for migration in "$root"/drizzle/000{0,1,2}_*.sql;do psql "$url" -v ON_ERROR_STOP=1 -f "$migration" >/dev/null;done
+: "${TEST_DATABASE_URL:?}";root=$(CDPATH= cd -- "$(dirname "$0")/../.."&&pwd -P);db="install_claim_${RANDOM}_$$";service=$(mktemp);trap 'rm -f "$service";dropdb --if-exists --force --maintenance-db="$TEST_DATABASE_URL" "$db" >/dev/null 2>&1||true' EXIT;createdb --maintenance-db="$TEST_DATABASE_URL" "$db";url=${TEST_DATABASE_URL%/*}/$db;for migration in "$root"/drizzle/000{0,1,2}_*.sql;do psql "$url" -v ON_ERROR_STOP=1 -f "$migration" >/dev/null;done;psql "$url" -v ON_ERROR_STOP=1 -c "create table app_schema_migrations(id text primary key,sha256 char(64) not null,applied_at timestamptz not null default now());insert into app_schema_migrations(id,sha256) values ('0000_steam_top_pre_first_deploy','48386c47be2562e241cb520f17cd2cd6d00ca221be6e84860ccebc4ac52c2be8'),('0001_cutover_state_machine','ca26cdef9195ae550a0fd4eb4db66fe02c2915e646a71e51182b4b4cf8a40571'),('0002_platform_installation','cb3dc38371bfaa56d14feb2f286be8dbeafc3dfe206dd0941d862973d7b60c62')" >/dev/null
 node - "$url" "$service" <<'NODE'
 const fs=require("fs"),u=new URL(process.argv[2]);fs.writeFileSync(process.argv[3],`[claim]\nhost=${u.hostname}\nport=${u.port||5432}\ndbname=${u.pathname.slice(1)}\nuser=${decodeURIComponent(u.username)}\npassword=${decodeURIComponent(u.password)}\n`)
 NODE
@@ -12,3 +12,4 @@ started=$(date +%s);claim "$a" "$b" "$c";elapsed=$(( $(date +%s)-started ));wait
 claim "$a" "$b" "$c";[[ $(psql "$url" -Atqc 'select count(*) from restore_control.platform_installation') == 1 ]];if claim "$a" "$b" "$(printf d%.0s {1..64})";then exit 1;fi
 psql "$url" -c "delete from restore_control.platform_installation;insert into identities(status,display_name) values('active','x')" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
 psql "$url" -c "delete from identities;create table unexpected_durable_state(id bigint)" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
+psql "$url" -c "drop table unexpected_durable_state;create table restore_control.unexpected_authority(id bigint)" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
