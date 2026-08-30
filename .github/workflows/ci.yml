@@ -401,6 +401,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24.13.0, cache: pnpm }
       - run: pnpm install --frozen-lockfile && pnpm build
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with: { platforms: arm64 }
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Authenticate only for immutable GHCR publication
         shell: bash
         run: printf '%s' '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
@@ -410,9 +413,15 @@ jobs:
           set -euo pipefail
           mkdir -p release
           repository="ghcr.io/${GITHUB_REPOSITORY,,}/steam-top"
-          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file release/server.json --tag "$repository/server:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST -f Dockerfile.server .
-          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file release/web.json --tag "$repository/web:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST --build-arg CADDY_IMAGE_REPOSITORY --build-arg CADDY_IMAGE_DIGEST -f Dockerfile.web .
-          docker buildx build --provenance=mode=max --sbom=true --push --metadata-file release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
+          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --push --metadata-file release/server.json --tag "$repository/server:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST -f Dockerfile.server .
+          docker buildx imagetools inspect --raw "$repository/server:${GITHUB_SHA}" > release/server-index.json
+          node scripts/verify-multiarch-image.mjs release/server-index.json
+          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --push --metadata-file release/web.json --tag "$repository/web:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST --build-arg CADDY_IMAGE_REPOSITORY --build-arg CADDY_IMAGE_DIGEST -f Dockerfile.web .
+          docker buildx imagetools inspect --raw "$repository/web:${GITHUB_SHA}" > release/web-index.json
+          node scripts/verify-multiarch-image.mjs release/web-index.json
+          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --push --metadata-file release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
+          docker buildx imagetools inspect --raw "$repository/database:${GITHUB_SHA}" > release/database-index.json
+          node scripts/verify-multiarch-image.mjs release/database-index.json
           node scripts/create-release-manifest.mjs "$GITHUB_SHA" "$repository" release/server.json release/web.json release/database.json release/release-manifest.json
           node scripts/create-runtime-files-manifest.mjs . release/runtime-files.sha256
           node scripts/stage-runtime-files.mjs . release/runtime-files.sha256 release/runtime
