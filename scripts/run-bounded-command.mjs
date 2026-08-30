@@ -12,7 +12,8 @@ if (timeoutFlag !== 2 || separator !== 4 || !Number.isSafeInteger(timeoutMs) || 
 const [command, ...args] = process.argv.slice(separator + 1);
 const grouped = process.platform !== "win32";
 const child = spawn(command, args, { detached: grouped, stdio: "inherit" });
-let finishing = false;
+let outcome = null;
+let forceTimer = null;
 
 const terminate = (signal) => {
   if (!child.pid) return;
@@ -24,21 +25,37 @@ const terminate = (signal) => {
   }
 };
 
+const groupAlive = () => {
+  if (!child.pid) return false;
+  try {
+    if (grouped) process.kill(-child.pid, 0);
+    else process.kill(child.pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+};
+
+const beginTermination = (code, signal, diagnostic) => {
+  if (outcome) return;
+  outcome = { code, signal };
+  clearTimeout(timer);
+  if (diagnostic) console.error(diagnostic);
+  terminate(signal);
+  forceTimer = setTimeout(() => {
+    if (groupAlive()) terminate("SIGKILL");
+    setTimeout(() => process.exit(outcome.code), 25);
+  }, 750);
+};
+
 const timer = setTimeout(() => {
-  finishing = true;
-  console.error(`command exceeded ${timeoutMs}ms; terminating process group`);
-  terminate("SIGTERM");
-  const force = setTimeout(() => terminate("SIGKILL"), 750);
-  force.unref();
+  beginTermination(124, "SIGTERM", `command exceeded ${timeoutMs}ms; terminating process group`);
 }, timeoutMs);
 
 for (const [signal, number] of [["SIGHUP", 1], ["SIGINT", 2], ["SIGTERM", 15]]) {
   process.once(signal, () => {
-    finishing = true;
-    clearTimeout(timer);
-    terminate(signal);
-    setTimeout(() => terminate("SIGKILL"), 750).unref();
-    child.once("close", () => process.exit(128 + number));
+    beginTermination(128 + number, signal);
   });
 }
 
@@ -50,7 +67,13 @@ child.once("error", (error) => {
 
 child.once("close", (code, signal) => {
   clearTimeout(timer);
-  if (finishing) process.exit(124);
+  if (outcome) {
+    if (!groupAlive()) {
+      clearTimeout(forceTimer);
+      process.exit(outcome.code);
+    }
+    return;
+  }
   if (signal) process.exit(1);
   process.exit(code ?? 1);
 });
