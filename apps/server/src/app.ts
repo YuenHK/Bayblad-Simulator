@@ -16,6 +16,7 @@ import { createValidatedLiveIdentityProvider, IdentityAdmissionError, IdentityCa
 import { PostgresIdentityStore } from "./identity/postgres-store";
 import type { IClassAdapter } from "./identity/iclass-adapter";
 import type { WebClipTokenService } from "./identity/webclip-token";
+import type { StudentCredentialService } from "./identity/student-credential";
 import { authenticateAdminMutation, durableAudit, type AdminAuthService, registerAdminAuthRoutes } from "./auth/admin-auth";
 import { PostgresAdminStore } from "./auth/postgres-admin-store";
 import { DesignPersistenceError, PostgresDesignRepository, type DesignRepository } from "./records/design-repository";
@@ -65,6 +66,7 @@ export type BuildAppOptions = Readonly<{
   scoreMatch?: MatchScorer;
   allowedOrigins?: readonly string[];
   studentOrigin?: string;
+  studentCredentials?: StudentCredentialService;
   allowMissingOrigin?: boolean;
   bodyLimit?: number;
   maxHttpBufferSize?: number;
@@ -151,6 +153,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   if (process.env.NODE_ENV === "production" && !options.allowedOrigins?.length) {
     throw new TypeError("Production composition requires allowedOrigins");
   }
+  if (Boolean(options.studentOrigin) !== Boolean(options.studentCredentials)) throw new TypeError("Student origin and credential service must be composed together");
   if (process.env.NODE_ENV === "production" && options.behindProxy && !options.clientKeyResolver) {
     throw new TypeError("Production behindProxy composition requires clientKeyResolver");
   }
@@ -295,7 +298,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   };
   const authenticateIdentity = options.identityResolver
       ? async (request: IncomingMessage, auth?: Record<string, unknown>) => {
-        const credential = typeof auth?.studentCredential === "string" && /^[A-Za-z0-9_-]{43}$/u.test(auth.studentCredential) ? auth.studentCredential : undefined;
+        const credential = typeof auth?.studentCredential === "string" ? options.studentCredentials?.verify(auth.studentCredential, request.headers.origin ?? "") : undefined;
         const cookie=credential ?? cookieFromRequest(request); const identity = await options.identityResolver!.authenticate(cookie);
         if(identity) await options.identityResolver!.recordActivity(cookie);
         return identity ? { identityId: identity.id, displayName: identity.displayName, identitySource: identity.status, ...(identity.deviceName ? { deviceName: identity.deviceName } : {}) } : null;
@@ -389,8 +392,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     };
     const bearerFrom = (headers: Record<string, string | string[] | undefined>) => {
       const authorization = headers.authorization;
-      const match = typeof authorization === "string" ? /^Bearer ([A-Za-z0-9_-]{43})$/u.exec(authorization) : null;
-      return match?.[1];
+      const match = typeof authorization === "string" ? /^Bearer ([A-Za-z0-9_.-]{80,2048})$/u.exec(authorization) : null;
+      return match?.[1] && typeof headers.origin === "string" ? options.studentCredentials?.verify(match[1], headers.origin) : undefined;
     };
     const identityIp = (request: IncomingMessage): string | undefined => {
       const candidate = options.identityIpResolver?.(request) ?? request.socket.remoteAddress;
@@ -421,6 +424,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       if (!allowIdentityRequest(request.headers)) return reply.code(403).send({ error: "IDENTITY_ORIGIN_REJECTED" });
       const crossOrigin = typeof options.studentOrigin === "string" && request.headers.origin === options.studentOrigin;
       if (crossOrigin) reply.header("Access-Control-Allow-Origin", options.studentOrigin!).header("Vary", "Origin").header("Access-Control-Allow-Credentials", "false");
+      if (request.headers.authorization && !bearerFrom(request.headers)) return reply.code(401).send({ error: "STUDENT_CREDENTIAL_INVALID" });
       if (request.headers["content-length"] && request.headers["content-length"] !== "0") return reply.code(413).send({ error: "IDENTITY_BODY_FORBIDDEN" });
       let resolved;
       try {
@@ -431,7 +435,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
         throw error;
       }
       if (!crossOrigin) setIdentityCookie(reply, resolved);
-      return { id: resolved.identity.id, status: resolved.identity.status, displayName: resolved.identity.displayName, ...(crossOrigin ? { studentCredential: resolved.cookieToken } : {}) };
+      return { id: resolved.identity.id, status: resolved.identity.status, displayName: resolved.identity.displayName, ...(crossOrigin ? { studentCredential: options.studentCredentials!.issue(resolved.cookieToken) } : {}) };
     });
     app.get("/start", async (request, reply) => {
       reply.header("Referrer-Policy", "no-referrer").header("Cache-Control", "no-store");
@@ -487,6 +491,11 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       return reply.code(204).send();
     });
   }
+  app.options("/api/designs", async (request, reply) => {
+    if (request.headers.origin !== options.studentOrigin || request.headers["access-control-request-method"] !== "POST") return reply.code(403).send();
+    return reply.header("Access-Control-Allow-Origin", options.studentOrigin).header("Vary", "Origin").header("Access-Control-Allow-Methods", "POST").header("Access-Control-Allow-Headers", "Authorization, Content-Type").code(204).send();
+  });
+  app.addHook("onSend", async (request, reply, payload) => { if (request.url.startsWith("/api/designs") && request.headers.origin === options.studentOrigin) reply.header("Access-Control-Allow-Origin", options.studentOrigin!).header("Vary", "Origin"); return payload; });
   app.post("/api/designs", { onRequest: async (request, reply) => {
     const authorization = request.headers.authorization;
     const session = gateway.sessionForBearer(authorization);

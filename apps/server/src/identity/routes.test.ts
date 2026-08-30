@@ -14,6 +14,7 @@ import { PostgresAdminCommandStore } from "../admin/command-operations";
 import { hashIdentityToken } from "./cookie";
 import { ApiIClassAdapter, FallbackIClassAdapter, ImportedDeviceMapAdapter } from "./iclass-adapter";
 import { InMemoryTokenNonceStore, WebClipTokenService } from "./webclip-token";
+import { StudentCredentialService } from "./student-credential";
 
 const battleEngine: BattleEnginePort = { simulationCount: 0, simulateOnceAsync: async () => { throw new Error("unused"); }, cleanup: () => false };
 const apps: ReturnType<typeof buildApp>[] = [];
@@ -137,17 +138,22 @@ describe("identity routes", () => {
 
   it("issues and resumes an opaque credential only for the exact student origin", async () => {
     const studentOrigin = "https://school.github.io";
-    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), allowedOrigins: ["https://api.example", studentOrigin], studentOrigin, sweepIntervalMs: 0 }); apps.push(app);
+    const studentCredentials = new StudentCredentialService({ keys: { primary: Buffer.alloc(32, 7) }, activeKeyId: "primary", origin: studentOrigin });
+    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), allowedOrigins: ["https://api.example", studentOrigin], studentOrigin, studentCredentials, sweepIntervalMs: 0 }); apps.push(app);
     const first = await app.inject({ method: "GET", url: "/api/identity", headers: { origin: studentOrigin, "sec-fetch-site": "cross-site" } });
     expect(first.statusCode).toBe(200);
     expect(first.headers["access-control-allow-origin"]).toBe(studentOrigin);
     expect(first.headers.vary).toContain("Origin");
-    expect(first.json()).toMatchObject({ status: "guest", studentCredential: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u) });
+    expect(first.json()).toMatchObject({ status: "guest", studentCredential: expect.stringMatching(/^[A-Za-z0-9_.-]{80,2048}$/u) });
     expect(first.cookies).toHaveLength(0);
     const credential = first.json().studentCredential as string;
     const resumed = await app.inject({ method: "GET", url: "/api/identity", headers: { origin: studentOrigin, "sec-fetch-site": "cross-site", authorization: `Bearer ${credential}` } });
     expect(resumed.json()).toMatchObject({ id: first.json().id, studentCredential: credential });
     expect((await app.inject({ method: "GET", url: "/api/identity", headers: { origin: "https://evil.example", "sec-fetch-site": "cross-site", authorization: `Bearer ${credential}` } })).statusCode).toBe(403);
+    const preflight = await app.inject({ method: "OPTIONS", url: "/api/designs", headers: { origin: studentOrigin, "access-control-request-method": "POST", "access-control-request-headers": "authorization,content-type" } });
+    expect(preflight).toMatchObject({ statusCode: 204, headers: { "access-control-allow-origin": studentOrigin, "access-control-allow-methods": "POST", "access-control-allow-headers": "Authorization, Content-Type" } });
+    const unauthorizedDesign = await app.inject({ method: "POST", url: "/api/designs", headers: { origin: studentOrigin, "content-type": "application/json", authorization: `Bearer ${credential}` }, payload: {} });
+    expect(unauthorizedDesign.headers["access-control-allow-origin"]).toBe(studentOrigin);
   });
 
   it("revokes and clears the current cookie", async () => {

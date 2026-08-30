@@ -8,6 +8,7 @@ import { PostgresIdentityStore } from "./identity/postgres-store";
 import { IdentityResolver } from "./identity/resolver";
 import { startProductionServer } from "./production-bootstrap";
 import { safeLogErrorDetails } from "./safe-logging";
+import { StudentCredentialService } from "./identity/student-credential";
 
 function forwardedAddress(request: IncomingMessage): string {
   const raw = request.headers["x-forwarded-for"];
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
       cookieSigningKey: config.cookieSigningKey,
       allowedOrigins: [config.publicOrigin, config.studentOrigin],
       studentOrigin: config.studentOrigin,
+      studentCredentials: new StudentCredentialService({ keys: { primary: Buffer.from(config.studentCredentialKey, "base64url") }, activeKeyId: "primary", origin: config.studentOrigin }),
       behindProxy: true,
       clientKeyResolver: address,
       identityIpResolver: address,
