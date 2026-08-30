@@ -13,7 +13,7 @@ jobs:
     permissions: { contents: read, actions: read, id-token: write, attestations: write }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with: { ref: "${{ github.workflow_sha }}", path: trusted, fetch-depth: 0, persist-credentials: false }
+        with: { ref: "${{ github.workflow_sha }}", path: trusted, persist-credentials: false }
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with: { ref: "${{ github.event.workflow_run.head_sha }}", path: candidate, persist-credentials: false }
       - name: Verify candidate with the protected default-branch policy
@@ -32,21 +32,27 @@ jobs:
           [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_HEAD_SHA =~ ^[a-f0-9]{40}$ && $TRUSTED_WORKFLOW_SHA =~ ^[a-f0-9]{40}$ && $SOURCE_PATH == .github/workflows/ci.yml && $SOURCE_EVENT == push && $TRUSTED_WORKFLOW_REF == */.github/workflows/authorize-release.yml@refs/heads/* ]]
           test "$(git -C trusted rev-parse HEAD)" = "$TRUSTED_WORKFLOW_SHA";test "$(git -C candidate rev-parse HEAD)" = "$SOURCE_HEAD_SHA"
           default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch);[[ $TRUSTED_WORKFLOW_REF == */.github/workflows/authorize-release.yml@refs/heads/$default_branch ]]
-          git -C trusted fetch --no-tags origin "refs/heads/$default_branch:refs/remotes/origin/$default_branch"
-          git -C trusted merge-base --is-ancestor "$TRUSTED_WORKFLOW_SHA" "refs/remotes/origin/$default_branch"
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_RUN_ATTEMPT" > "$RUNNER_TEMP/source-run.json"
-          node - "$RUNNER_TEMP/source-run.json" "$SOURCE_HEAD_SHA" <<'NODE'
-          const r=require(process.argv[2]);if(r.path!==".github/workflows/ci.yml"||r.head_sha!==process.argv[3]||r.event!=="push"||r.conclusion!=="success"||!String(r.head_branch).startsWith("v"))process.exit(1)
+          default_head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq .sha);[[ $default_head =~ ^[a-f0-9]{40}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/compare/$TRUSTED_WORKFLOW_SHA...$default_head" > "$RUNNER_TEMP/default-ancestry.json"
+          node - "$RUNNER_TEMP/default-ancestry.json" "$TRUSTED_WORKFLOW_SHA" "$default_head" <<'NODE'
+          const c=require(process.argv[2]),[base,head]=process.argv.slice(3);if(c.base_commit?.sha!==base||c.merge_base_commit?.sha!==base||c.status!=="ahead"&&c.status!=="identical"||c.status==="identical"&&base!==head||c.status==="ahead"&&!(c.ahead_by>0))process.exit(1)
           NODE
-          trusted_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/trusted" "$EXPECTED_POLICY_BUNDLE_SHA256")
-          candidate_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/candidate" "$trusted_bundle")
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_RUN_ATTEMPT" > "$RUNNER_TEMP/source-run.json"
+          source_tag=$(node - "$RUNNER_TEMP/source-run.json" "$SOURCE_HEAD_SHA" <<'NODE'
+          const r=require(process.argv[2]);if(r.path!==".github/workflows/ci.yml"||r.head_sha!==process.argv[3]||r.event!=="push"||r.conclusion!=="success"||!/^v[A-Za-z0-9._-]+$/.test(String(r.head_branch)))process.exit(1);process.stdout.write(r.head_branch)
+          NODE
+          )
+          "$GITHUB_WORKSPACE/trusted/scripts/fetch-github-tag-chain.sh" "$GITHUB_REPOSITORY" "$source_tag" "$RUNNER_TEMP/source-tag-chain.jsonl"
+          /usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-github-tag-chain.mjs" "$RUNNER_TEMP/source-tag-chain.jsonl" "$SOURCE_HEAD_SHA"
+          trusted_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/trusted" "$EXPECTED_POLICY_BUNDLE_SHA256" "$RUNNER_TEMP/trusted-policy-manifest.json")
+          candidate_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/candidate" "$trusted_bundle" "$RUNNER_TEMP/candidate-policy-manifest.json")
           /usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-deployment-permissions.mjs" "$GITHUB_WORKSPACE/candidate"
           verifier_sha=$(sha256sum trusted/scripts/verify-deployment-permissions.mjs|awk '{print $1}')
           printf '{"schemaVersion":1,"purpose":"trusted-deployment-policy-verification","trustedWorkflowSha":"%s","trustedWorkflowRef":"%s","candidateSha":"%s","sourceRunId":%s,"sourceRunAttempt":%s,"verifierSha256":"%s","policySha256":"%s","policyBundleSha256":"%s"}\n' "$TRUSTED_WORKFLOW_SHA" "$TRUSTED_WORKFLOW_REF" "$SOURCE_HEAD_SHA" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$verifier_sha" "$verifier_sha" "$candidate_bundle" > "$RUNNER_TEMP/deployment-policy-evidence.json"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: "${{ runner.temp }}/deployment-policy-evidence.json" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with: { name: "trusted-deployment-policy-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}", path: "${{ runner.temp }}/deployment-policy-evidence.json", retention-days: 90, if-no-files-found: error }
+        with: { name: "trusted-deployment-policy-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}", path: "${{ runner.temp }}/*policy-*.json", retention-days: 90, if-no-files-found: error }
   authorize:
     needs: verify-candidate-policy
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')
