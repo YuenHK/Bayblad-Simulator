@@ -16,9 +16,14 @@ for lock in /var/lock/steam-top-generation-publish.lock /var/lock/steam-top-prod
 /opt/steam-top-bootstrap/verify-bootstrap.sh
 if [[ $systemd_policy == --install-systemd ]];then
   [[ $(uname -s) == Linux && -d /run/systemd/system ]]||die "systemd Linux host required"
+  node - "$config" <<'NODE'||die "production reaper config"
+const c=require(process.argv[2]);for(const k of ["cutoverPgService","cutoverPgServiceFile","cutoverPgPassFile","cutoverIncidentDir"]){if(typeof c[k]!=="string"||!c[k]||((k.endsWith("File")||k.endsWith("Dir"))&&!c[k].startsWith("/")))process.exit(1)}
+NODE
   systemd-analyze verify /opt/steam-top-bootstrap/steam-top-cutover-reaper.service /opt/steam-top-bootstrap/steam-top-cutover-reaper.timer||die "systemd units invalid"
   install -o root -g root -m 0644 /opt/steam-top-bootstrap/steam-top-cutover-reaper.service /etc/systemd/system/steam-top-cutover-reaper.service
   install -o root -g root -m 0644 /opt/steam-top-bootstrap/steam-top-cutover-reaper.timer /etc/systemd/system/steam-top-cutover-reaper.timer
-  systemctl daemon-reload&&systemctl enable --now steam-top-cutover-reaper.timer||die "cutover reaper activation"
-  systemctl is-enabled --quiet steam-top-cutover-reaper.timer&&systemctl is-active --quiet steam-top-cutover-reaper.timer||die "cutover reaper inactive"
+  systemd_failed=true;rollback_systemd(){ if [[ $systemd_failed == true ]];then systemctl disable --now steam-top-cutover-reaper.timer >/dev/null 2>&1||true;rm -f /etc/systemd/system/steam-top-cutover-reaper.service /etc/systemd/system/steam-top-cutover-reaper.timer;systemctl daemon-reload >/dev/null 2>&1||true;fi;};trap 'rollback_systemd;rm -rf "$tmp"' EXIT
+  systemctl daemon-reload&&systemctl enable --now steam-top-cutover-reaper.timer&&systemctl start steam-top-cutover-reaper.service||die "cutover reaper activation"
+  /opt/steam-top-bootstrap/verify-reaper-health.sh||die "cutover reaper health"
+  systemd_failed=false
 fi
