@@ -15,6 +15,13 @@
       "when": 1788060000000,
       "tag": "0001_cutover_state_machine",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788146400000,
+      "tag": "0002_platform_installation",
+      "breakpoints": true
     }
   ]
 }

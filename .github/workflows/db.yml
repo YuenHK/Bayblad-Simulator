@@ -55,6 +55,7 @@ jobs:
       - run: pnpm --filter @steam-top/db test:postgres
       - run: pnpm --filter @steam-top/server test:postgres
       - run: ./infra/backup/test-cutover-migration.sh
+      - run: ./infra/backup/test-platform-installation.sh
       - run: pnpm build
       - run: sha256sum -c infra/backup/trusted-ledger-cli.sha256
       - name: Install a root-owned functional fixture (not a production trust root)
