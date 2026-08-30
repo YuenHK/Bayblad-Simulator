@@ -27,6 +27,9 @@ jobs:
           TRUSTED_WORKFLOW_SHA: "${{ github.workflow_sha }}"
           TRUSTED_WORKFLOW_REF: "${{ github.workflow_ref }}"
           ROOT_ALLOWED_SIGNERS: "${{ vars.PRODUCTION_POLICY_ROOT_ALLOWED_SIGNERS }}"
+          ROOT_KEY_SHA256: "${{ vars.PRODUCTION_POLICY_ROOT_KEY_SHA256 }}"
+          LEDGER_GENERATION: "${{ vars.PRODUCTION_POLICY_LEDGER_GENERATION }}"
+          LEDGER_RECEIPT_DIGEST: "${{ vars.PRODUCTION_POLICY_LEDGER_RECEIPT_DIGEST }}"
         run: |
           set -euo pipefail
           [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_HEAD_SHA =~ ^[a-f0-9]{40}$ && $TRUSTED_WORKFLOW_SHA =~ ^[a-f0-9]{40}$ && $SOURCE_PATH == .github/workflows/ci.yml && $SOURCE_EVENT == push && $TRUSTED_WORKFLOW_REF == */.github/workflows/authorize-release.yml@refs/heads/* ]]
@@ -47,7 +50,7 @@ jobs:
           trusted_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/trusted" "" "$RUNNER_TEMP/trusted-policy-manifest.json")
           test -n "$ROOT_ALLOWED_SIGNERS";printf '%s\n' "$ROOT_ALLOWED_SIGNERS" > "$RUNNER_TEMP/root-allowed-signers";chmod 0400 "$RUNNER_TEMP/root-allowed-signers"
           repo_id=$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)
-          ledger=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-ledger.mjs" "$GITHUB_WORKSPACE/trusted" "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head")
+          ledger=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-ledger.mjs" "$GITHUB_WORKSPACE/trusted" "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head" "$trusted_bundle" "$ROOT_KEY_SHA256" "$LEDGER_GENERATION" "$LEDGER_RECEIPT_DIGEST")
           test "$(jq -r .latest.bundleSha256 <<<"$ledger")" = "$trusted_bundle"
           candidate_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/candidate" "$trusted_bundle" "$RUNNER_TEMP/candidate-policy-manifest.json")
           /usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-deployment-permissions.mjs" "$GITHUB_WORKSPACE/candidate"
