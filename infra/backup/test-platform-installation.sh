@@ -9,8 +9,11 @@ export PGSERVICE=claim PGSERVICEFILE=$service;a=$(printf a%.0s {1..64});b=$(prin
 psql "$url" -v ON_ERROR_STOP=1 -v app_password='test-app-password' -f "$root/scripts/provision-app-role.sql" >/dev/null
 [[ $(psql "$url" -Atqc "select has_database_privilege('steam_top_app',current_database(),'connect') and has_schema_privilege('steam_top_app','public','usage') and not has_schema_privilege('steam_top_app','public','create') and not has_schema_privilege('steam_top_app','restore_control','usage') and not has_table_privilege('steam_top_app','public.app_schema_migrations','select,insert,update,delete')") == t ]]
 psql "$url" -c 'grant pg_read_all_data to steam_top_app' >/dev/null
+psql "$url" -c "alter role steam_top_app in database \"$db\" set search_path=pg_catalog;grant select(id) on public.app_schema_migrations to steam_top_app" >/dev/null
 psql "$url" -v ON_ERROR_STOP=1 -v app_password='test-app-password' -f "$root/scripts/provision-app-role.sql" >/dev/null
 [[ $(psql "$url" -Atqc "select count(*) from pg_auth_members m join pg_roles r on r.oid=m.member join pg_roles p on p.oid=m.roleid where r.rolname='steam_top_app' or p.rolname='steam_top_app'") == 0 ]]
+[[ $(psql "$url" -Atqc "select count(*) from pg_db_role_setting s join pg_roles r on r.oid=s.setrole where r.rolname='steam_top_app' and s.setdatabase=(select oid from pg_database where datname=current_database())") == 0 ]]
+[[ $(psql "$url" -Atqc "select has_column_privilege('steam_top_app','public.app_schema_migrations','id','select')") == f ]]
 psql "$url" -c 'create schema unexpected_app_owned authorization steam_top_app' >/dev/null
 if psql "$url" -v ON_ERROR_STOP=1 -v app_password='test-app-password' -f "$root/scripts/provision-app-role.sql" >/dev/null 2>&1;then exit 1;fi
 psql "$url" -c 'alter schema unexpected_app_owned owner to current_user;drop schema unexpected_app_owned' >/dev/null
