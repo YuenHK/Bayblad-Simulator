@@ -5,6 +5,11 @@ node - "$url" "$service" <<'NODE'
 const fs=require("fs"),u=new URL(process.argv[2]);fs.writeFileSync(process.argv[3],`[claim]\nhost=${u.hostname}\nport=${u.port||5432}\ndbname=${u.pathname.slice(1)}\nuser=${decodeURIComponent(u.username)}\npassword=${decodeURIComponent(u.password)}\n`)
 NODE
 export PGSERVICE=claim PGSERVICEFILE=$service;a=$(printf a%.0s {1..64});b=$(printf b%.0s {1..64});c=$(printf c%.0s {1..64});claim(){ "$root/scripts/claim-first-installation.sh" "$@";}
+psql "$url" -v ON_ERROR_STOP=1 -v app_password='test-app-password' -f "$root/scripts/provision-app-role.sql" >/dev/null
+[[ $(psql "$url" -Atqc "select has_database_privilege('steam_top_app',current_database(),'connect') and has_schema_privilege('steam_top_app','public','usage') and not has_schema_privilege('steam_top_app','public','create') and not has_schema_privilege('steam_top_app','restore_control','usage') and not has_table_privilege('steam_top_app','public.app_schema_migrations','select,insert,update,delete')") == t ]]
+psql "$url" -c 'grant pg_read_all_data to steam_top_app' >/dev/null
+psql "$url" -v ON_ERROR_STOP=1 -v app_password='test-app-password' -f "$root/scripts/provision-app-role.sql" >/dev/null
+[[ $(psql "$url" -Atqc "select count(*) from pg_auth_members m join pg_roles r on r.oid=m.member join pg_roles p on p.oid=m.roleid where r.rolname='steam_top_app' or p.rolname='steam_top_app'") == 0 ]]
 [[ $(psql "$url" -Atqc "select count(*) from pg_tables where schemaname='restore_control' and tablename in ('promotion_outbox','promotion_audit','platform_installation')") == 3 ]]
 psql "$url" -qAtc 'begin;select pg_advisory_xact_lock(1937002751);select pg_sleep(2);commit' >/dev/null & holder=$!
 for _ in {1..40};do [[ $(psql "$url" -Atqc "select count(*) from pg_locks where locktype='advisory' and objid=1937002751 and granted") -gt 0 ]]&&break;sleep .05;done

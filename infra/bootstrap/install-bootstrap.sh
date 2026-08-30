@@ -9,18 +9,23 @@ bootstrap_preexisting=false;[[ -e /opt/steam-top-bootstrap/bootstrap-files.sha25
 [[ $deployment_purpose != production || $bootstrap_preexisting == true || -n $first_deploy_nonce ]]||die "clean production install requires explicit first-deploy initialization"
 trusted_parents(){ local directory owner mode;directory=$(dirname "$1");while [[ $directory != / ]];do [[ -d $directory && ! -L $directory ]]||return 1;read -r owner mode < <(stat -c '%u %a' "$directory");[[ $owner == 0 && $((8#$mode&022)) -eq 0 ]]||return 1;directory=$(dirname "$directory");done;};read -r ao am < <(stat -c '%u %a' "$BOOTSTRAP_ALLOWED_SIGNERS_FILE");read -r co cm < <(stat -c '%u %a' "$config");[[ $ao == 0 && $am == 444 && $co == 0 && $cm == 400 ]]&&trusted_parents "$BOOTSTRAP_ALLOWED_SIGNERS_FILE"&&trusted_parents "$config"||die "root external trust inputs"
 sha(){ if command -v sha256sum >/dev/null;then sha256sum "$1"|awk '{print $1}';else shasum -a 256 "$1"|awk '{print $1}';fi;};[[ $(sha "$archive") == "$EXPECTED_BOOTSTRAP_ARCHIVE_SHA256" ]]||die "external archive digest"
+archive_size=$(stat -c %s "$archive");[[ $archive_size =~ ^[0-9]+$ && $archive_size -ge 1 && $archive_size -le 8388608 ]]||die "compressed archive size"
 ssh-keygen -Y verify -q -f "$BOOTSTRAP_ALLOWED_SIGNERS_FILE" -I "$signer" -n steam-top-bootstrap-source -s "$signature" <"$archive"||die "external archive signature"
 tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT
 python3 - "$archive" "$tmp" "$0" <<'PY'||die "unsafe or invalid signed archive"
 import hashlib,os,re,sys,tarfile
 archive_path,target,installer=sys.argv[1:]
 with tarfile.open(archive_path,"r:gz") as tar:
-  members=tar.getmembers()
-  if not 1<=len(members)<=64: raise SystemExit("archive count")
-  by_name={}
-  for member in members:
-    if member.name in by_name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*",member.name) or not member.isfile() or member.uid!=0 or member.gid!=0 or member.size<0 or member.size>2_097_152: raise SystemExit("archive header")
+  if tar.pax_headers: raise SystemExit("global pax metadata")
+  by_name={};total=0
+  # Iterate directly: metadata allocation, member count and
+  # expanded bytes are bounded while the gzip stream is consumed.
+  for member in tar:
+    if len(by_name)>=64 or member.pax_headers or member.type!=tarfile.REGTYPE or member.sparse is not None or member.linkname or member.name in by_name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*",member.name) or member.uid!=0 or member.gid!=0 or member.size<0 or member.size>2_097_152: raise SystemExit("archive header")
+    total+=member.size
+    if total>16_777_216 or total>max(65_536,os.stat(archive_path).st_size*64): raise SystemExit("archive expansion")
     by_name[member.name]=member
+  if not by_name: raise SystemExit("archive count")
   manifest_member=by_name.get("bootstrap-files.sha256")
   if not manifest_member or manifest_member.mode!=0o644 or manifest_member.size>65_536: raise SystemExit("manifest header")
   manifest=tar.extractfile(manifest_member).read().decode("ascii")
@@ -29,7 +34,7 @@ with tarfile.open(archive_path,"r:gz") as tar:
     match=re.fullmatch(r"([a-f0-9]{64}) (0444|0555) ([A-Za-z0-9][A-Za-z0-9._-]*)",line)
     if not match or match.group(3) in expected: raise SystemExit("manifest grammar")
     expected[match.group(3)]=(match.group(1),int(match.group(2),8))
-  if set(by_name)!=(set(expected)|{"bootstrap-files.sha256"}) or "install-bootstrap.sh" not in expected or sum(m.size for m in members)>16_777_216: raise SystemExit("archive membership")
+  if set(by_name)!=(set(expected)|{"bootstrap-files.sha256"}) or "install-bootstrap.sh" not in expected: raise SystemExit("archive membership")
   for name,(digest,mode) in expected.items():
     member=by_name[name]
     if member.mode!=mode: raise SystemExit("archive mode")

@@ -39,14 +39,7 @@ if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production && $claim_ph
 fi
 if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production ]];then
   app_password=$(sed -n 's/^APP_DATABASE_PASSWORD=//p' "$snapshot/canonical.env");[[ -n $app_password ]]||die "app database password missing"
-  PGSERVICE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgService') PGSERVICEFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgServiceFile') PGPASSFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgPassFile') psql -X -v ON_ERROR_STOP=1 -q -v password="$app_password" <<'SQL' >/dev/null
-select format('create role steam_top_app login password %L', :'password') where not exists(select 1 from pg_roles where rolname='steam_top_app') \gexec
-alter role steam_top_app login password :'password' nosuperuser nocreatedb nocreaterole noinherit noreplication;
-select format('grant connect on database %I to steam_top_app',current_database()) \gexec
-grant usage on schema public to steam_top_app;
-grant select,insert,update,delete on all tables in schema public to steam_top_app;
-grant usage,select,update on all sequences in schema public to steam_top_app;
-SQL
+  PGSERVICE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgService') PGSERVICEFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgServiceFile') PGPASSFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgPassFile') psql -X -v ON_ERROR_STOP=1 -q -v app_password="$app_password" -f "$runtime/scripts/provision-app-role.sql" >/dev/null
   unset app_password
 fi
 "${compose[@]}" up -d --wait
