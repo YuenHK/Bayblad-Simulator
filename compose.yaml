@@ -25,6 +25,9 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 256
+    # Host-side migration/recovery authority scripts require a private libpq
+    # control path. It is loopback-only and never exposed on a LAN interface.
+    ports: ["127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432"]
     networks: [database]
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
