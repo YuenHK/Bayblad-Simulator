@@ -202,7 +202,10 @@ jobs:
       RELEASE_RUN_ID: "${{ inputs.candidate_run_id }}"
       RELEASE_REF: "${{ inputs.candidate_ref }}"
       BOOTSTRAP_RUN_ID: "${{ vars.BOOTSTRAP_RUN_ID }}"
+      BOOTSTRAP_COMMIT: "${{ vars.BOOTSTRAP_COMMIT }}"
       BOOTSTRAP_ARCHIVE_SHA256: "${{ vars.BOOTSTRAP_ARCHIVE_SHA256 }}"
+      AUTHORIZATION_WORKFLOW_SHA: "${{ github.workflow_sha }}"
+      AUTHORIZATION_WORKFLOW_REF: "${{ github.workflow_ref }}"
       PUBLIC_ORIGIN: https://steam-top.production-e2e.test
       POSTGRES_DB: steam_top
       POSTGRES_USER: steam_top
@@ -238,11 +241,11 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
-          manifest_sha=$(./scripts/portable-sha256.sh digest candidate/release-manifest.json);nonce=$(openssl rand -hex 32)
-          gh attestation verify candidate/APPROVED-RELEASE.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/authorize-release.yml"
-          DEPLOYMENT_PURPOSE=production node scripts/create-pending-deployment.mjs candidate/release-manifest.json "$RELEASE_RUN_ID" "approved-release-$RELEASE_COMMIT" "$manifest_sha" "$RELEASE_COMMIT" "$nonce" normal "$GITHUB_REPOSITORY/.github/workflows/authorize-release.yml" "$GITHUB_SHA" "$GITHUB_REF" workflow_run none pending-production.json
+          manifest_sha=$(./scripts/portable-sha256.sh digest candidate/release-manifest.json);nonce=$(openssl rand -hex 32);source_ref=${AUTHORIZATION_WORKFLOW_REF##*@};[[ $source_ref == refs/heads/* ]]
+          gh attestation verify candidate/APPROVED-RELEASE.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          DEPLOYMENT_PURPOSE=production node scripts/create-pending-deployment.mjs candidate/release-manifest.json "$RELEASE_RUN_ID" "approved-release-$RELEASE_COMMIT" "$manifest_sha" "$RELEASE_COMMIT" "$nonce" normal "$GITHUB_REPOSITORY/.github/workflows/ci.yml" "$AUTHORIZATION_WORKFLOW_SHA" "$source_ref" workflow_run none pending-production.json
           deployment_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input pending-production.json --jq .id)
-          node scripts/create-bootstrap-authorization.mjs pending-production.json candidate/release-manifest.json candidate/runtime-files.sha256 candidate/APPROVED-RELEASE.json "$GITHUB_REPOSITORY" normal "$GITHUB_REPOSITORY/.github/workflows/authorize-release.yml" "$deployment_id" production-authorization.json
+          node scripts/create-bootstrap-authorization.mjs pending-production.json candidate/release-manifest.json candidate/runtime-files.sha256 candidate/APPROVED-RELEASE.json "$GITHUB_REPOSITORY" normal "$GITHUB_REPOSITORY/.github/workflows/ci.yml" "$deployment_id" production-authorization.json
           printf 'PRODUCTION_E2E_DEPLOYMENT_ID=%s\nPRODUCTION_E2E_NONCE=%s\nPRODUCTION_E2E_MANIFEST_SHA=%s\n' "$deployment_id" "$nonce" "$manifest_sha" >> "$GITHUB_ENV"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: production-authorization.json }
@@ -257,8 +260,17 @@ jobs:
           INSTALLER_ALLOWED_SIGNERS: "${{ secrets.INSTALLER_ALLOWED_SIGNERS }}"
         run: |
           set -euo pipefail
+          source_ref=${AUTHORIZATION_WORKFLOW_REF##*@};[[ $source_ref == refs/heads/* ]]
           test "$(sha256sum bootstrap/bootstrap.tgz|awk '{print $1}')" = "$BOOTSTRAP_ARCHIVE_SHA256"
-          gh attestation verify bootstrap/bootstrap.tgz --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/bootstrap.yml"
+          default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch);default_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq .sha)
+          test "$default_sha" = "$BOOTSTRAP_COMMIT"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BOOTSTRAP_RUN_ID" > "$RUNNER_TEMP/bootstrap-run.json"
+          node scripts/verify-bootstrap-source-run.mjs "$RUNNER_TEMP/bootstrap-run.json" "$BOOTSTRAP_RUN_ID" "$BOOTSTRAP_COMMIT" "$default_branch"
+          gh attestation verify bootstrap/bootstrap.tgz --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/bootstrap.yml" --format json > "$RUNNER_TEMP/bootstrap-attestation.json"
+          node - "$RUNNER_TEMP/bootstrap-source-trust.json" "$GITHUB_REPOSITORY" "$default_branch" "$BOOTSTRAP_COMMIT" <<'NODE'
+          const fs=require("fs"),[out,repository,branch,sha]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({repository,workflowIdentity:`${repository}/.github/workflows/bootstrap.yml`,workflowRef:`refs/heads/${branch}`,workflowSha:sha})+"\n");
+          NODE
+          node infra/bootstrap/verify-attestation-identity.mjs "$RUNNER_TEMP/bootstrap-attestation.json" "$RUNNER_TEMP/bootstrap-source-trust.json" bootstrap/bootstrap.tgz
           for spec in "$INSTALLER_URL|install-bootstrap" "$INSTALLER_SIGNATURE_URL|install-bootstrap.sig";do url=${spec%|*};out=${spec#*|};node -e 'const u=new URL(process.argv[1]);if(u.protocol!=="https:"||u.username||u.password||u.port||!process.env.INSTALLER_ALLOWED_HOSTS.split(",").includes(u.hostname))process.exit(1)' "$url";curl --fail --proto '=https' --tlsv1.3 --max-redirs 0 -o "$RUNNER_TEMP/$out" "$url";done
           test "$(sha256sum "$RUNNER_TEMP/install-bootstrap"|awk '{print $1}')" = "$INSTALLER_SHA256"
           printf '%s\n' "$INSTALLER_ALLOWED_SIGNERS" > "$RUNNER_TEMP/installer-allowed";ssh-keygen -Y verify -q -f "$RUNNER_TEMP/installer-allowed" -I installer -n steam-top-bootstrap-installer -s "$RUNNER_TEMP/install-bootstrap.sig" < "$RUNNER_TEMP/install-bootstrap"
@@ -271,8 +283,8 @@ jobs:
           printf 'db:15432:steam_top:steam_top:production-e2e-postgres-password\n' | sudo tee /run/steam-top-production-e2e/secrets/pg-pass >/dev/null
           printf '%s' "$GH_TOKEN" | sudo tee /run/steam-top-production-e2e/secrets/github-token >/dev/null;printf '{"username":"admin","password":"production-e2e-admin-password"}\n' | sudo tee /run/steam-top-production-e2e/secrets/admin-smoke.json >/dev/null;sudo chmod 0400 /run/steam-top-production-e2e/secrets/{pg-service,pg-pass,github-token,admin-smoke.json}
           tar -xOf bootstrap/bootstrap.tgz ./bootstrap-files.sha256 > "$RUNNER_TEMP/bootstrap-files.sha256";bootstrap_sha=$(sha256sum "$RUNNER_TEMP/bootstrap-files.sha256"|awk '{print $1}')
-          node - "$RUNNER_TEMP/trust.json" "$bootstrap_sha" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF" <<'NODE'
-          const fs=require("fs"),[out,bootstrapSha256,repository,workflowSha,workflowRef]=process.argv.slice(2),r="/run/steam-top-production-e2e";fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256,repository,workflowIdentity:`${repository}/.github/workflows/authorize-release.yml`,workflowRef,workflowSha,deploymentPurpose:"production",githubTokenFile:`${r}/secrets/github-token`,authorizationDir:`${r}/authorization`,productionEnvFile:`${r}/production.env`,hostReceiptSigningKey:`${r}/secrets/host-key`,hostReceiptAllowedSigners:`${r}/secrets/host-allowed`,hostReceiptSignerId:"host-ci",ledgerSigningKey:`${r}/secrets/ledger-key`,ledgerAllowedSigners:`${r}/secrets/ledger-allowed`,ledgerSignerId:"ledger-ci",evidenceSigningKey:`${r}/secrets/evidence-key`,evidenceAllowedSigners:`${r}/secrets/evidence-allowed`,evidenceSignerId:"evidence-ci",productionStateDir:`${r}/state`,productionStateSigningKey:`${r}/secrets/state-key`,productionStateAllowedSigners:`${r}/secrets/state-allowed`,productionStateSignerId:"state-ci",adminSmokeSecretFile:`${r}/secrets/admin-smoke.json`,hostReceiptOutbox:`${r}/outbox`,pgServiceFile:`${r}/secrets/pg-service`,pgPassFile:`${r}/secrets/pg-pass`,pgServiceName:"target",cutoverPgService:"target",cutoverPgServiceFile:`${r}/secrets/pg-service`,cutoverPgPassFile:`${r}/secrets/pg-pass`,cutoverIncidentDir:`${r}/incident`})+"\n",{mode:0o600});
+          node - "$RUNNER_TEMP/trust.json" "$bootstrap_sha" "$GITHUB_REPOSITORY" "$AUTHORIZATION_WORKFLOW_SHA" "$source_ref" <<'NODE'
+          const fs=require("fs"),[out,bootstrapSha256,repository,workflowSha,workflowRef]=process.argv.slice(2),r="/run/steam-top-production-e2e";fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256,repository,workflowIdentity:`${repository}/.github/workflows/ci.yml`,workflowRef,workflowSha,deploymentPurpose:"production",githubTokenFile:`${r}/secrets/github-token`,authorizationDir:`${r}/authorization`,productionEnvFile:`${r}/production.env`,hostReceiptSigningKey:`${r}/secrets/host-key`,hostReceiptAllowedSigners:`${r}/secrets/host-allowed`,hostReceiptSignerId:"host-ci",ledgerSigningKey:`${r}/secrets/ledger-key`,ledgerAllowedSigners:`${r}/secrets/ledger-allowed`,ledgerSignerId:"ledger-ci",evidenceSigningKey:`${r}/secrets/evidence-key`,evidenceAllowedSigners:`${r}/secrets/evidence-allowed`,evidenceSignerId:"evidence-ci",productionStateDir:`${r}/state`,productionStateSigningKey:`${r}/secrets/state-key`,productionStateAllowedSigners:`${r}/secrets/state-allowed`,productionStateSignerId:"state-ci",adminSmokeSecretFile:`${r}/secrets/admin-smoke.json`,hostReceiptOutbox:`${r}/outbox`,pgServiceFile:`${r}/secrets/pg-service`,pgPassFile:`${r}/secrets/pg-pass`,pgServiceName:"target",cutoverPgService:"target",cutoverPgServiceFile:`${r}/secrets/pg-service`,cutoverPgPassFile:`${r}/secrets/pg-pass`,cutoverIncidentDir:`${r}/incident`})+"\n",{mode:0o600});
           NODE
           sudo install -o root -g root -m 0444 "$RUNNER_TEMP/bootstrap-allowed" /run/steam-top-production-e2e/bootstrap-allowed;sudo install -o root -g root -m 0400 "$RUNNER_TEMP/trust.json" /run/steam-top-production-e2e/trust.json
           sudo install -o root -g root -m 0555 "$RUNNER_TEMP/install-bootstrap" /usr/local/sbin/install-steam-top-bootstrap
@@ -299,23 +311,39 @@ jobs:
           sudo /opt/steam-top-bootstrap/verify-reaper-health.sh --require-active-runtime
           sudo /opt/steam-top-bootstrap/read-first-deploy-state.sh | grep -q "^consumed $PRODUCTION_E2E_NONCE "
           PGSERVICE=target PGSERVICEFILE=/run/steam-top-production-e2e/secrets/pg-service PGPASSFILE=/run/steam-top-production-e2e/secrets/pg-pass psql -X -qAt -v nonce="$PRODUCTION_E2E_NONCE" -c "select case when count(*)=1 then 1 else 1/0 end from restore_control.platform_installation where authorization_nonce=:'nonce' and generation=2" | grep -qx 1
-      - name: Publish successful production E2E status
-        env: { GH_TOKEN: "${{ github.token }}" }
-        run: printf '{"state":"success","environment":"production-first-deploy-e2e","description":"canonical production first deployment passed"}\n' | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses" --input -
-      - name: Publish failed production E2E status
-        if: failure() && env.PRODUCTION_E2E_DEPLOYMENT_ID != ''
-        env: { GH_TOKEN: "${{ github.token }}" }
-        run: printf '{"state":"failure","environment":"production-first-deploy-e2e","description":"canonical production first deployment failed"}\n' | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses" --input -
+          touch "$RUNNER_TEMP/production-e2e-passed"
+      - name: Collect restricted production E2E diagnostics
+        if: always()
+        run: |
+          set +e;mkdir -p "$RUNNER_TEMP/production-e2e-diagnostics"
+          docker ps --filter label=com.docker.compose.project=steam-top-simulator --format '{{.ID}} {{.Image}} {{.Status}} {{.Labels}}' > "$RUNNER_TEMP/production-e2e-diagnostics/containers.txt"
+          for container in $(docker ps -aq --filter label=com.docker.compose.project=steam-top-simulator);do docker logs "$container" > "$RUNNER_TEMP/production-e2e-diagnostics/container-$container.log" 2>&1||true;done
+          if [[ -f /run/steam-top-production-e2e/secrets/pg-service ]];then sudo env PGSERVICE=target PGSERVICEFILE=/run/steam-top-production-e2e/secrets/pg-service PGPASSFILE=/run/steam-top-production-e2e/secrets/pg-pass psql -X -qAt -c "select id,sha256 from app_schema_migrations order by id;select host_id,bootstrap_digest,authorization_nonce,generation from restore_control.platform_installation" > "$RUNNER_TEMP/production-e2e-diagnostics/database-authority.txt" 2>&1||true;sudo chown "$USER" "$RUNNER_TEMP/production-e2e-diagnostics/database-authority.txt";fi
+          sudo find /var/lib/steam-top-bootstrap/install-transaction /var/lib/steam-top-bootstrap/first-deploy -maxdepth 3 -type f -name 'payload.json' -exec cp --parents '{}' "$RUNNER_TEMP/production-e2e-diagnostics" \; 2>/dev/null||true
+          sudo chown -R "$USER" "$RUNNER_TEMP/production-e2e-diagnostics";sudo systemctl status steam-top-cutover-reaper.timer --no-pager > "$RUNNER_TEMP/production-e2e-diagnostics/systemd.txt" 2>&1||true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with: { name: production-first-deploy-e2e-diagnostics, path: "${{ runner.temp }}/production-e2e-diagnostics", retention-days: 90, if-no-files-found: error }
       - name: Cleanup production first-deploy E2E
+        id: production-cleanup
         if: always()
         shell: bash
         run: |
           set +e;failures=""
-          runtime=$(readlink -f /opt/steam-top/current 2>/dev/null);if [[ -n $runtime && -f /run/steam-top-production-e2e/production.env ]];then sudo docker compose --project-directory "$runtime" --env-file /run/steam-top-production-e2e/production.env -f "$runtime/compose.yaml" down -v --remove-orphans||failures="$failures compose";fi
+          runtime_sha=$(node -p '(()=>{try{return require("./production-authorization.json").runtimeManifestSha256}catch{return ""}})()' 2>/dev/null);runtime=/opt/steam-top/releases/$runtime_sha;if [[ $runtime_sha =~ ^[a-f0-9]{64}$ && -f $runtime/compose.yaml && -f /run/steam-top-production-e2e/production.env ]];then sudo docker compose -p steam-top-simulator --project-directory "$runtime" --env-file /run/steam-top-production-e2e/production.env -f "$runtime/compose.yaml" down -v --remove-orphans||failures="$failures compose";else docker ps -aq --filter label=com.docker.compose.project=steam-top-simulator|xargs -r docker rm -f||failures="$failures labeled-containers";docker volume ls -q --filter label=com.docker.compose.project=steam-top-simulator|xargs -r docker volume rm||failures="$failures labeled-volumes";fi
           docker rm -f steam-top-e2e-ca >/dev/null 2>&1||true;docker volume rm steam-top-simulator_caddy_data >/dev/null 2>&1||true;docker logout ghcr.io||failures="$failures logout"
           sudo systemctl disable --now steam-top-cutover-reaper.timer >/dev/null 2>&1||failures="$failures timer";sudo rm -f /etc/systemd/system/steam-top-cutover-reaper.{service,timer} /usr/local/share/ca-certificates/steam-top-production-e2e.crt /usr/local/sbin/install-steam-top-bootstrap;sudo systemctl daemon-reload;sudo update-ca-certificates
           sudo sed -i '/127\.0\.0\.1 steam-top\.production-e2e\.test/d' /etc/hosts;sudo rm -rf /opt/steam-top /opt/steam-top-bootstrap /etc/steam-top-bootstrap /var/lib/steam-top-bootstrap /run/steam-top-production-e2e;sudo rm -f /var/lock/steam-top-{production,generation-publish,release-integration}.lock
-          [[ -z $failures ]]||{ echo "cleanup failures:$failures" >&2;exit 1;}
+          if [[ -z $failures ]];then echo cleanup_ok=true >> "$GITHUB_OUTPUT";else echo "cleanup failures:$failures" >&2;echo cleanup_ok=false >> "$GITHUB_OUTPUT";fi
+      - name: Publish the single terminal production E2E status
+        if: always() && env.PRODUCTION_E2E_DEPLOYMENT_ID != ''
+        env: { GH_TOKEN: "${{ github.token }}", CLEANUP_OK: "${{ steps.production-cleanup.outputs.cleanup_ok }}", PREVIOUS_OK: "${{ success() }}" }
+        run: |
+          set -euo pipefail;state=failure;description='canonical production first deployment failed'
+          if [[ $PREVIOUS_OK == true && $CLEANUP_OK == true && -f $RUNNER_TEMP/production-e2e-passed ]];then state=success;description='canonical production first deployment passed and cleanup completed';fi
+          node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:process.argv[2],environment:"production-first-deploy-e2e",description:process.argv[3]})+"\n")' "$RUNNER_TEMP/terminal-status.json" "$state" "$description"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses" --input "$RUNNER_TEMP/terminal-status.json"
+          [[ $state == success ]]
   release-images:
     if: github.event_name != 'workflow_call' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04

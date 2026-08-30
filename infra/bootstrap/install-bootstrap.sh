@@ -11,6 +11,7 @@ trusted_parents(){ local directory owner mode;directory=$(dirname "$1");while [[
 sha(){ if command -v sha256sum >/dev/null;then sha256sum "$1"|awk '{print $1}';else shasum -a 256 "$1"|awk '{print $1}';fi;};[[ $(sha "$archive") == "$EXPECTED_BOOTSTRAP_ARCHIVE_SHA256" ]]||die "external archive digest"
 ssh-keygen -Y verify -q -f "$BOOTSTRAP_ALLOWED_SIGNERS_FILE" -I "$signer" -n steam-top-bootstrap-source -s "$signature" <"$archive"||die "external archive signature"
 tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT;tar -xzf "$archive" -C "$tmp" --no-same-owner;[[ -f $tmp/bootstrap-files.sha256 ]]||die "manifest"
+node "$tmp/verify-package-tree.mjs" "$tmp" "$0"||die "signed package tree"
 if [[ $deployment_purpose == production ]];then mapfile -t preflight_signing < <(node - "$config" <<'NODE'
 const c=require(process.argv[2]);for(const k of ["productionStateSigningKey","productionStateAllowedSigners","productionStateSignerId","cutoverPgService","cutoverPgServiceFile","cutoverPgPassFile","cutoverIncidentDir"]){if(typeof c[k]!=="string"||!c[k])process.exit(1);console.log(c[k])}
 NODE
