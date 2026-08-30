@@ -9,7 +9,8 @@ backup_reject_libpq_overrides PROMOTE_PGSERVICE||die "libpq overrides";backup_tr
 for file in "$ready" "$ready.sha256" "$preflight" "$preflight_sig";do [[ $file == /* && -f $file && ! -L $file ]]||die "unsafe input";backup_root_file_mode "$file" 400||die "input trust";done
 [[ $("$root/scripts/portable-sha256.sh" digest "$ready") == "$(<"$ready.sha256")" ]]||die "ready digest"
 ssh-keygen -Y verify -q -f "$CUTOVER_ALLOWED_SIGNERS_FILE" -I "$CUTOVER_SIGNER_ID" -n steam-top-cutover-preflight -s "$preflight_sig" <"$preflight"||die "preflight signature"
-if [[ -z $smoke_probe ]];then nonce_for_rebuild=$(node -p 'require(process.argv[1]).promotionNonce' "$ready");encoded=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -At -v nonce="$nonce_for_rebuild" -c "select smoke_evidence_payload_b64 from restore_control.finalize_outbox where nonce=:'nonce' and state in ('smoke-observed','verified')");[[ -n $encoded ]]||die "durable smoke evidence unavailable";smoke_probe=$(mktemp);trap 'rm -f "$smoke_probe"' EXIT;node -e 'require("fs").writeFileSync(process.argv[2],Buffer.from(process.argv[1],"base64"))' "$encoded" "$smoke_probe";chmod 400 "$smoke_probe";fi
+publish_tmp=$(mktemp -d "$final_dir/.confirm.XXXXXX");chmod 700 "$publish_tmp";smoke_probe_owned=false;cleanup_confirm(){ rm -rf "$publish_tmp";[[ $smoke_probe_owned == false ]]||rm -f "$smoke_probe";};trap cleanup_confirm EXIT
+if [[ -z $smoke_probe ]];then nonce_for_rebuild=$(node -p 'require(process.argv[1]).promotionNonce' "$ready");encoded=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -At -v nonce="$nonce_for_rebuild" -c "select smoke_evidence_payload_b64 from restore_control.finalize_outbox where nonce=:'nonce' and state in ('smoke-observed','verified')");[[ -n $encoded ]]||die "durable smoke evidence unavailable";smoke_probe=$(mktemp);smoke_probe_owned=true;node -e 'require("fs").writeFileSync(process.argv[2],Buffer.from(process.argv[1],"base64"))' "$encoded" "$smoke_probe";chmod 400 "$smoke_probe";fi
 [[ $smoke_probe == /* && -f $smoke_probe && ! -L $smoke_probe ]]&&backup_root_file_mode "$smoke_probe" 400||die "smoke evidence trust"
 values=$(node - "$ready" "$preflight" "$smoke_probe" <<'NODE'
 const r=require(process.argv[2]),p=require(process.argv[3]),s=require(process.argv[4]);if(p.purpose!=="production-cutover-preflight"||p.promotionNonce!==r.promotionNonce||s.nonce!==r.promotionNonce||s.restoreTargetId!==r.restoreTargetId||s.systemIdentifier!==r.systemIdentifier)process.exit(1);console.log([r.promotionNonce,r.appRole,r.restoreTargetId,r.ledgerRows].join("|"));
@@ -17,7 +18,7 @@ NODE
 )||die "public smoke binding";IFS='|' read -r nonce role target rows <<EOF
 $values
 EOF
-expected="$final_dir/.final.expected.$$";node - "$preflight" "$smoke_probe" "$expected" <<'NODE'
+expected="$publish_tmp/final.json";node - "$preflight" "$smoke_probe" "$expected" <<'NODE'
 const fs=require("fs"),crypto=require("crypto"),p=require(process.argv[2]),s=require(process.argv[3]);fs.writeFileSync(process.argv[4],JSON.stringify({schemaVersion:1,purpose:"production-cutover-verified",promotionNonce:p.promotionNonce,publicOrigin:p.publicOrigin,systemIdentifier:p.systemIdentifier,restoreTargetId:p.restoreTargetId,preflightSha256:crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex"),smokeProbe:s,verifiedAt:new Date(s.createdAt).toISOString()},null,2)+"\n",{flag:"wx",mode:0o400});
 NODE
 node -e 'const fs=require("fs"),fd=fs.openSync(process.argv[1],"r");fs.fsyncSync(fd);fs.closeSync(fd)' "$expected"
@@ -38,7 +39,7 @@ fi
 if [[ -f $final ]];then cmp -s "$expected" "$final"||die "final receipt conflict";payload_source=$final;else payload_source=$expected;fi
 if [[ $existing_state == verified ]];then
   [[ -n $existing_signature_b64 && $existing_signer == "$CUTOVER_SIGNER_ID" ]]||die "verified receipt has no durable signature"
-  signature_source="$final_dir/.final.signature.$$";node -e 'const fs=require("fs"),p=process.argv[2];fs.writeFileSync(p,Buffer.from(process.argv[1],"base64"),{flag:"wx",mode:0o400});const fd=fs.openSync(p,"r");fs.fsyncSync(fd);fs.closeSync(fd)' "$existing_signature_b64" "$signature_source";if [[ -f $final.sig ]];then cmp -s "$signature_source" "$final.sig"||die "stored signature conflict";rm -f "$signature_source";signature_source=$final.sig;fi
+  signature_source="$publish_tmp/final.json.sig";node -e 'const fs=require("fs"),p=process.argv[2];fs.writeFileSync(p,Buffer.from(process.argv[1],"base64"),{flag:"wx",mode:0o400});const fd=fs.openSync(p,"r");fs.fsyncSync(fd);fs.closeSync(fd)' "$existing_signature_b64" "$signature_source";if [[ -f $final.sig ]];then cmp -s "$signature_source" "$final.sig"||die "stored signature conflict";rm -f "$signature_source";signature_source=$final.sig;fi
 else
   if [[ -f $final.sig ]];then signature_source=$final.sig;else ssh-keygen -Y sign -q -f "$CUTOVER_SIGNING_KEY" -n steam-top-public-cutover-smoke "$payload_source";signature_source=$payload_source.sig;chmod 400 "$signature_source";fi
 fi

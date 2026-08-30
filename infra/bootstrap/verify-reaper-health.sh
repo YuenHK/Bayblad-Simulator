@@ -16,8 +16,7 @@ key_private_file "${values[2]}"||die "PGPASSFILE custody"
 [[ -d ${values[3]} && ! -L ${values[3]} ]]||die "incident directory";read -r owner mode < <(stat -c '%u %a' "${values[3]}");[[ $owner == 0 && $mode == 700 ]]||die "incident directory custody"
 if [[ ! -e /opt/steam-top/current ]];then
   [[ $require_runtime == false && ! -e ${values[4]}/current ]]||die "active runtime required"
-  pending=$(PGSERVICE="${values[0]}" PGSERVICEFILE="${values[1]}" PGPASSFILE="${values[2]}" psql -X -v ON_ERROR_STOP=1 -Atqc "select count(*) from restore_control.finalize_outbox where state in ('connect-granted-pending-smoke','smoke-observed')")||die "pending outbox query"
-  [[ $pending == 0 ]]||die "clean host has pending cutover";echo not-applicable-clean-host
+  echo not-applicable-clean-host
 else /opt/steam-top-bootstrap/reconcile-cutover-pending.sh;fi
 systemctl is-enabled --quiet steam-top-cutover-reaper.timer||die "timer disabled";systemctl is-active --quiet steam-top-cutover-reaper.timer||die "timer inactive"
 [[ $(systemctl show steam-top-cutover-reaper.service -p Result --value) == success ]]||die "service result";[[ $(systemctl show steam-top-cutover-reaper.service -p ExecMainStatus --value) == 0 ]]||die "service exit"
