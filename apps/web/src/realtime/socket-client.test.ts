@@ -44,6 +44,17 @@ describe("RealtimeClient", () => {
     expect(client.getState()).toMatchObject({ identityStatus: "ready", identity: { status: "guest", displayName: "訪客-ABCD" } });
     expect([...values.values()].join(" ")).not.toContain("訪客-ABCD");
   });
+  it("stores only the opaque student credential and sends it on HTTP and socket bootstrap", async () => {
+    const transport = new FakeTransport(); const values = new Map<string, string>();
+    const storage = createSafeStorage({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); }, removeItem: (key) => { values.delete(key); } });
+    const credential = "c".repeat(43);
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ id: crypto.randomUUID(), status: "guest", displayName: "訪客-ABCD", studentCredential: credential }), { status: 200, headers: { "content-type": "application/json" } }));
+    const client = new RealtimeClient({ transport, storage, fetcher, apiBase: "https://api.example", bootstrapIdentity: true }); client.start();
+    await vi.waitFor(() => expect(transport.connected).toBe(true));
+    expect(transport.auth.studentCredential).toBe(credential);
+    expect([...values.values()]).toEqual([credential]);
+    expect([...values.values()].join(" ")).not.toContain("訪客-ABCD");
+  });
   it("times out stalled identity fetch/body and retry aborts the previous bootstrap", async () => {
     vi.useFakeTimers();
     try {

@@ -88,6 +88,7 @@ export type RealtimeState = Readonly<{
 }>;
 
 const DESIGN_CACHE_KEY = "steam-top.design-cache";
+const STUDENT_CREDENTIAL_KEY = "steam-top.student-credential";
 const CLOCK_PING_TTL_MS = 30_000;
 const MAX_PENDING_PINGS = 8;
 const designCacheSchema = z.object({
@@ -185,6 +186,9 @@ export class RealtimeClient {
     if (!Number.isSafeInteger(this.#identityTimeoutMs) || this.#identityTimeoutMs < 100 || this.#identityTimeoutMs > 60_000) throw new TypeError("identityTimeoutMs is invalid");
     this.#token = null;
     delete this.#transport.auth.displayName;
+    const storedCredential = this.#storage.get(STUDENT_CREDENTIAL_KEY);
+    if (storedCredential && /^[A-Za-z0-9_-]{43}$/u.test(storedCredential)) this.#transport.auth.studentCredential = storedCredential;
+    else { this.#storage.remove(STUDENT_CREDENTIAL_KEY); delete this.#transport.auth.studentCredential; }
   }
 
   getState = (): RealtimeState => this.#state;
@@ -221,11 +225,14 @@ export class RealtimeClient {
     this.#identityController?.abort(); const controller = new AbortController(); this.#identityController = controller;
     const timeout = setTimeout(() => controller.abort(new DOMException("辨識裝置逾時", "TimeoutError")), this.#identityTimeoutMs);
     try {
-      const response = await awaitWithAbort(this.#fetch(`${this.#apiBase}/api/identity`, { method: "GET", credentials: "include", cache: "no-store", headers: { accept: "application/json" }, signal: controller.signal }), controller.signal);
+      const credential = typeof this.#transport.auth.studentCredential === "string" ? this.#transport.auth.studentCredential : undefined;
+      const response = await awaitWithAbort(this.#fetch(`${this.#apiBase}/api/identity`, { method: "GET", credentials: this.#apiBase.startsWith("http") ? "omit" : "include", cache: "no-store", headers: { accept: "application/json", ...(credential ? { authorization: `Bearer ${credential}` } : {}) }, signal: controller.signal }), controller.signal);
       if (!response.ok) throw new Error("IDENTITY_BOOTSTRAP_FAILED");
-      const schema = z.strictObject({ id: z.uuid(), status: z.enum(["iclass", "cookie", "guest"]), displayName: z.string().min(1).max(80) });
-      const identity = schema.parse(await awaitWithAbort(response.json() as Promise<unknown>, controller.signal));
+      const schema = z.strictObject({ id: z.uuid(), status: z.enum(["iclass", "cookie", "guest"]), displayName: z.string().min(1).max(80), studentCredential: z.string().regex(/^[A-Za-z0-9_-]{43}$/u).optional() });
+      const parsed = schema.parse(await awaitWithAbort(response.json() as Promise<unknown>, controller.signal));
+      const { studentCredential, ...identity } = parsed;
       if (!this.#started || generation !== this.#startGeneration) return;
+      if (studentCredential) { this.#storage.set(STUDENT_CREDENTIAL_KEY, studentCredential); this.#transport.auth.studentCredential = studentCredential; }
       this.#set({ identityStatus: "ready", identity });
       this.#transport.connect();
     } catch {

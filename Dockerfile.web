@@ -16,11 +16,11 @@ RUN pnpm fetch --frozen-lockfile
 FROM dependencies AS build
 COPY . .
 RUN pnpm install --offline --frozen-lockfile
-RUN pnpm --filter @steam-top/web build
+RUN pnpm --filter @steam-top/web build:admin
 
 FROM ${CADDY_IMAGE_REPOSITORY}@${CADDY_IMAGE_DIGEST} AS runtime
-COPY --from=build --chown=10001:10001 /workspace/apps/web/dist /srv
+COPY --from=build --chown=10001:10001 /workspace/apps/web/dist /srv/admin
 COPY --chown=10001:10001 infra/web.Caddyfile /etc/caddy/Caddyfile
 USER 10001:10001
 EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD wget -q -O /dev/null http://127.0.0.1:8080/
+HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD wget -q -O /dev/null http://127.0.0.1:8080/admin/

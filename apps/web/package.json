@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "pnpm build:student",
-    "build:student": "STEAM_TOP_WEB_TARGET=student STEAM_TOP_PAGES_BASE=/steam-top/ VITE_API_BASE_URL=https://api.example.invalid vite build",
+    "build": "pnpm build:admin",
+    "build:student": "STEAM_TOP_WEB_TARGET=student vite build",
     "build:admin": "STEAM_TOP_WEB_TARGET=admin vite build",
     "test": "node ../../scripts/run-bounded-command.mjs --timeout-ms 60000 -- pnpm exec vitest run --maxWorkers=1 --no-file-parallelism",
     "typecheck": "tsc --noEmit",

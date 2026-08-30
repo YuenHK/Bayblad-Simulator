@@ -6,6 +6,7 @@ const validEnvironment = (): NodeJS.ProcessEnv => ({
   NODE_ENV: "production",
   DATABASE_URL: "postgresql://steam_top:password@db:5432/steam_top",
   PUBLIC_ORIGIN: "https://tops.school.example",
+  STUDENT_ORIGIN: "https://school.github.io",
   COOKIE_SIGNING_KEY: secret("c"),
   ADMIN_USERNAME: "admin",
   ADMIN_INITIAL_PASSWORD: "fwft2026",
@@ -36,6 +37,8 @@ describe("production environment contract", () => {
     expect(() => loadConfig({ ...validEnvironment(), ADMIN_INITIAL_PASSWORD: "short" })).toThrow("ADMIN_INITIAL_PASSWORD");
     expect(() => loadConfig({ ...validEnvironment(), COOKIE_SIGNING_KEY: "!".repeat(48) })).toThrow("base64url");
     expect(() => loadConfig({ ...validEnvironment(), PUBLIC_ORIGIN: "https://tops.school.example:8443" })).toThrow("default HTTPS port");
+    expect(() => loadConfig({ ...validEnvironment(), STUDENT_ORIGIN: "http://school.github.io" })).toThrow("STUDENT_ORIGIN");
+    expect(() => loadConfig({ ...validEnvironment(), STUDENT_ORIGIN: "https://school.github.io/project/" })).toThrow("STUDENT_ORIGIN");
   });
 
   it("requires only the inputs selected by the explicit iClass mode", () => {
@@ -59,6 +62,7 @@ describe("production environment contract", () => {
     expect(publicConfig(config)).toEqual({
       nodeEnv: "production",
       publicOrigin: "https://tops.school.example",
+      studentOrigin: "https://school.github.io",
       host: "0.0.0.0",
       port: 3000,
       iClassMode: "guest-only-explicit",

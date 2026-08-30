@@ -135,6 +135,21 @@ describe("identity routes", () => {
     expect(second.json()).toEqual(first.json());
   });
 
+  it("issues and resumes an opaque credential only for the exact student origin", async () => {
+    const studentOrigin = "https://school.github.io";
+    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), allowedOrigins: ["https://api.example", studentOrigin], studentOrigin, sweepIntervalMs: 0 }); apps.push(app);
+    const first = await app.inject({ method: "GET", url: "/api/identity", headers: { origin: studentOrigin, "sec-fetch-site": "cross-site" } });
+    expect(first.statusCode).toBe(200);
+    expect(first.headers["access-control-allow-origin"]).toBe(studentOrigin);
+    expect(first.headers.vary).toContain("Origin");
+    expect(first.json()).toMatchObject({ status: "guest", studentCredential: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u) });
+    expect(first.cookies).toHaveLength(0);
+    const credential = first.json().studentCredential as string;
+    const resumed = await app.inject({ method: "GET", url: "/api/identity", headers: { origin: studentOrigin, "sec-fetch-site": "cross-site", authorization: `Bearer ${credential}` } });
+    expect(resumed.json()).toMatchObject({ id: first.json().id, studentCredential: credential });
+    expect((await app.inject({ method: "GET", url: "/api/identity", headers: { origin: "https://evil.example", "sec-fetch-site": "cross-site", authorization: `Bearer ${credential}` } })).statusCode).toBe(403);
+  });
+
   it("revokes and clears the current cookie", async () => {
     const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), sweepIntervalMs: 0 }); apps.push(app);
     const first = await app.inject({ method: "GET", url: "/api/identity" });

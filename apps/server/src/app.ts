@@ -64,6 +64,7 @@ export type BuildAppOptions = Readonly<{
   frameScheduler?: FrameScheduler;
   scoreMatch?: MatchScorer;
   allowedOrigins?: readonly string[];
+  studentOrigin?: string;
   allowMissingOrigin?: boolean;
   bodyLimit?: number;
   maxHttpBufferSize?: number;
@@ -293,8 +294,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     return undefined;
   };
   const authenticateIdentity = options.identityResolver
-      ? async (request: IncomingMessage) => {
-        const cookie=cookieFromRequest(request); const identity = await options.identityResolver!.authenticate(cookie);
+      ? async (request: IncomingMessage, auth?: Record<string, unknown>) => {
+        const credential = typeof auth?.studentCredential === "string" && /^[A-Za-z0-9_-]{43}$/u.test(auth.studentCredential) ? auth.studentCredential : undefined;
+        const cookie=credential ?? cookieFromRequest(request); const identity = await options.identityResolver!.authenticate(cookie);
         if(identity) await options.identityResolver!.recordActivity(cookie);
         return identity ? { identityId: identity.id, displayName: identity.displayName, identitySource: identity.status, ...(identity.deviceName ? { deviceName: identity.deviceName } : {}) } : null;
       }
@@ -381,9 +383,14 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     const identityResolver = options.identityResolver;
     const allowedIdentityOrigins = new Set(options.allowedOrigins ?? []);
     const allowIdentityRequest = (headers: Record<string, unknown>) => {
-      if (headers["sec-fetch-site"] === "cross-site") return false;
       const origin = headers.origin;
+      if (headers["sec-fetch-site"] === "cross-site") return typeof origin === "string" && origin === options.studentOrigin;
       return typeof origin !== "string" || allowedIdentityOrigins.has(origin);
+    };
+    const bearerFrom = (headers: Record<string, string | string[] | undefined>) => {
+      const authorization = headers.authorization;
+      const match = typeof authorization === "string" ? /^Bearer ([A-Za-z0-9_-]{43})$/u.exec(authorization) : null;
+      return match?.[1];
     };
     const identityIp = (request: IncomingMessage): string | undefined => {
       const candidate = options.identityIpResolver?.(request) ?? request.socket.remoteAddress;
@@ -396,7 +403,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       const clientKey = safeClientKey(request.raw);
       const ip = identityIp(request.raw);
       return identityResolver.resolve({
-        ...(request.cookies[COOKIE_NAME] ? { cookieToken: request.cookies[COOKIE_NAME] } : {}),
+        ...(bearerFrom(request.headers) ?? request.cookies[COOKIE_NAME] ? { cookieToken: bearerFrom(request.headers) ?? request.cookies[COOKIE_NAME] } : {}),
         ...(ip ? { ip } : {}),
         ...(typeof request.headers["user-agent"] === "string" ? { userAgent: request.headers["user-agent"] } : {}),
         admitCreation: () => identityCreationLimiter.consume(clientKey) && identityGlobalCreationLimiter.consume("global"),
@@ -406,8 +413,14 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
       maxAge: Math.max(0, Math.floor((resolved.expiresAt.getTime() - resolved.issuedAt.getTime()) / 1_000)), expires: resolved.expiresAt,
     });
+    app.options("/api/identity", async (request, reply) => {
+      if (request.headers.origin !== options.studentOrigin || request.headers["access-control-request-method"] !== "GET") return reply.code(403).send();
+      return reply.header("Access-Control-Allow-Origin", options.studentOrigin).header("Vary", "Origin").header("Access-Control-Allow-Methods", "GET").header("Access-Control-Allow-Headers", "Authorization").code(204).send();
+    });
     app.get("/api/identity", async (request, reply) => {
       if (!allowIdentityRequest(request.headers)) return reply.code(403).send({ error: "IDENTITY_ORIGIN_REJECTED" });
+      const crossOrigin = typeof options.studentOrigin === "string" && request.headers.origin === options.studentOrigin;
+      if (crossOrigin) reply.header("Access-Control-Allow-Origin", options.studentOrigin!).header("Vary", "Origin").header("Access-Control-Allow-Credentials", "false");
       if (request.headers["content-length"] && request.headers["content-length"] !== "0") return reply.code(413).send({ error: "IDENTITY_BODY_FORBIDDEN" });
       let resolved;
       try {
@@ -417,8 +430,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
         if (error instanceof IdentityCapacityError || error instanceof IdentityStoreUnavailableError) return reply.code(503).send({ error: error.message });
         throw error;
       }
-      setIdentityCookie(reply, resolved);
-      return { id: resolved.identity.id, status: resolved.identity.status, displayName: resolved.identity.displayName };
+      if (!crossOrigin) setIdentityCookie(reply, resolved);
+      return { id: resolved.identity.id, status: resolved.identity.status, displayName: resolved.identity.displayName, ...(crossOrigin ? { studentCredential: resolved.cookieToken } : {}) };
     });
     app.get("/start", async (request, reply) => {
       reply.header("Referrer-Policy", "no-referrer").header("Cache-Control", "no-store");
@@ -468,7 +481,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     app.post("/api/identity/logout", async (request, reply) => {
       if (!allowIdentityRequest(request.headers) || request.headers["x-steam-top-action"] !== "logout") return reply.code(403).send({ error: "IDENTITY_ACTION_REJECTED" });
       if (request.headers["content-length"] && request.headers["content-length"] !== "0") return reply.code(413).send({ error: "IDENTITY_BODY_FORBIDDEN" });
-      try { await identityResolver.revoke(request.cookies[COOKIE_NAME]); }
+      try { await identityResolver.revoke(bearerFrom(request.headers) ?? request.cookies[COOKIE_NAME]); }
       catch (error) { if (error instanceof IdentityStoreUnavailableError) return reply.code(503).send({ error: error.message }); throw error; }
       reply.clearCookie(COOKIE_NAME, { path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict" });
       return reply.code(204).send();
