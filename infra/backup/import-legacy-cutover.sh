@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 die(){ echo "legacy cutover import refused: $1" >&2;exit 1;}
-[[ $(id -u) -eq 0 && $# -eq 5 && $1 =~ ^[a-f0-9]{64}$ ]]||die "root nonce receipt signature allowed-signers signer-id required"
+[[ $(id -u) -eq 0 && $# -eq 5 && $1 =~ ^[a-f0-9]{64}$ && ${CANONICAL_STATE_RESOLVED:-} == true ]]||die "canonical root nonce receipt signature allowed-signers signer-id required"
 nonce=$1;receipt=$2;signature=$3;allowed=$4;signer=$5;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);source "$script_dir/host-trust-guard.sh"
-for name in PROMOTE_PGSERVICE PGSERVICEFILE PGPASSFILE;do [[ -n ${!name:-} ]]||die "$name required";done;backup_reject_libpq_overrides PROMOTE_PGSERVICE||die "libpq overrides"
-for file in "$receipt" "$signature" "$allowed";do [[ $file == /* && -f $file && ! -L $file ]]&&backup_root_file_mode "$file" 400||die "legacy evidence trust";done
+root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);source "$root/scripts/key-custody-guard.sh";for name in PROMOTE_PGSERVICE PGSERVICEFILE PGPASSFILE RUNTIME_INSTALL_MANIFEST_SHA256;do [[ -n ${!name:-} ]]||die "$name required";done;backup_reject_libpq_overrides PROMOTE_PGSERVICE||die "libpq overrides";backup_trusted_root_deployment "$root" "$script_dir" "$root/scripts"||die "runtime trust";"$root/scripts/verify-runtime-install.sh" "$root"||die "runtime seal"
+for file in "$receipt" "$signature";do [[ $file == /* && -f $file && ! -L $file ]]&&backup_root_file_mode "$file" 400||die "legacy evidence trust";done;key_allowed_signers_file "$allowed"||die "legacy signer trust"
 ssh-keygen -Y verify -q -f "$allowed" -I "$signer" -n steam-top-public-cutover-smoke -s "$signature" <"$receipt"||die "legacy receipt signature"
-node - "$receipt" "$nonce" <<'NODE'
-const r=require(process.argv[2]);if(r.schemaVersion!==1||r.purpose!=="production-cutover-verified"||r.promotionNonce!==process.argv[3]||!/^[a-f0-9]{64}$/.test(r.preflightSha256)||!Number.isFinite(Date.parse(r.verifiedAt)))process.exit(1);
+values=$(node - "$receipt" "$nonce" <<'NODE'
+const r=require(process.argv[2]);if(r.schemaVersion!==1||r.purpose!=="production-cutover-verified"||r.promotionNonce!==process.argv[3]||!/^[a-f0-9-]{36}$/.test(r.restoreTargetId)||!/^[0-9]+$/.test(String(r.systemIdentifier))||!/^[a-z_][a-z0-9_]{0,62}$/.test(r.appRole)||!Number.isInteger(r.ledgerRows)||!/^[a-f0-9]{64}$/.test(r.ledgerHash)||!/^[a-f0-9]{64}$/.test(r.preflightSha256)||!Number.isFinite(Date.parse(r.verifiedAt)))process.exit(1);console.log([r.restoreTargetId,r.systemIdentifier,r.appRole,r.ledgerRows,r.ledgerHash].join("|"));
 NODE
-PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v nonce="$nonce" <<'SQL'
-begin;select pg_advisory_xact_lock(1937002751);select case when exists(select 1 from restore_control.finalize_outbox where nonce=:'nonce' and state='legacy-committed' for update) then 1 else 1/0 end;update restore_control.finalize_outbox set state='verified',verified_at=coalesce(verified_at,clock_timestamp()) where nonce=:'nonce' and state='legacy-committed';commit;
+);IFS='|' read -r target system role rows ledger_hash <<EOF
+$values
+EOF
+payload=$(node -e 'process.stdout.write(require("fs").readFileSync(process.argv[1]).toString("base64"))' "$receipt");signature_b64=$(node -e 'process.stdout.write(require("fs").readFileSync(process.argv[1]).toString("base64"))' "$signature");digest=$("$root/scripts/portable-sha256.sh" digest "$receipt")
+PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v nonce="$nonce" -v target="$target" -v system="$system" -v role="$role" -v rows="$rows" -v ledger_hash="$ledger_hash" -v payload="$payload" -v signature="$signature_b64" -v digest="$digest" -v signer="$signer" <<'SQL'
+begin;select pg_advisory_xact_lock(1937002751);select case when exists(select 1 from restore_control.finalize_outbox where nonce=:'nonce' and state='legacy-committed' and restore_target_id=:'target'::uuid and app_role=:'role' and ledger_rows=:'rows'::bigint and (system_identifier is null or system_identifier=:'system') and (ledger_hash is null or ledger_hash=:'ledger_hash') for update) and (select system_identifier::text from pg_control_system())=:'system' and exists(select 1 from restore_control.deployment_environment where singleton and environment='production' and not restore_allowed and restore_target_id=:'target'::uuid) and (select count(*) from deletion_audit)=:'rows'::bigint and restore_control.deletion_audit_sha256()=:'ledger_hash' then 1 else 1/0 end;update restore_control.finalize_outbox set state='verified',system_identifier=:'system',ledger_hash=:'ledger_hash',verified_at=coalesce(verified_at,clock_timestamp()),final_receipt=convert_from(decode(:'payload','base64'),'UTF8')::jsonb,final_receipt_payload_b64=:'payload',final_receipt_sha256=:'digest',final_receipt_signature_b64=:'signature',final_receipt_signer_id=:'signer' where nonce=:'nonce' and state='legacy-committed';commit;
 SQL

@@ -11,15 +11,16 @@ CREATE TABLE IF NOT EXISTS restore_control.finalize_outbox (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 --> statement-breakpoint
-DO $$ DECLARE legacy_name text; BEGIN
-  SELECT conname INTO legacy_name
-    FROM pg_constraint
-   WHERE conrelid='restore_control.finalize_outbox'::regclass
-     AND contype='c'
-     AND regexp_replace(pg_get_constraintdef(oid),'\s+',' ','g') = 'CHECK ((state = ''committed''::text))';
-  IF legacy_name IS NOT NULL THEN
-    EXECUTE format('ALTER TABLE restore_control.finalize_outbox DROP CONSTRAINT %I',legacy_name);
-  END IF;
+DO $$ DECLARE legacy record; state_attnum smallint; expression text; BEGIN
+  SELECT attnum INTO state_attnum FROM pg_attribute WHERE attrelid='restore_control.finalize_outbox'::regclass AND attname='state' AND NOT attisdropped;
+  FOR legacy IN SELECT oid,conname,conbin,conrelid,conkey FROM pg_constraint WHERE conrelid='restore_control.finalize_outbox'::regclass AND contype='c' LOOP
+    expression:=pg_get_expr(legacy.conbin,legacy.conrelid);
+    IF array_length(legacy.conkey,1)=1 AND legacy.conkey[1]=state_attnum
+       AND position('committed' in expression)>0
+       AND expression !~ 'legacy-committed|preflight-recorded|connect-granted-pending-smoke|smoke-observed|verified|aborted' THEN
+      EXECUTE format('ALTER TABLE restore_control.finalize_outbox DROP CONSTRAINT %I',legacy.conname);
+    END IF;
+  END LOOP;
 END $$;
 --> statement-breakpoint
 ALTER TABLE restore_control.finalize_outbox
@@ -37,6 +38,8 @@ ALTER TABLE restore_control.finalize_outbox
   ADD COLUMN IF NOT EXISTS final_receipt jsonb,
   ADD COLUMN IF NOT EXISTS final_receipt_payload_b64 text,
   ADD COLUMN IF NOT EXISTS final_receipt_sha256 text,
+  ADD COLUMN IF NOT EXISTS final_receipt_signature_b64 text,
+  ADD COLUMN IF NOT EXISTS final_receipt_signer_id text,
   ADD COLUMN IF NOT EXISTS observed_at timestamptz,
   ADD COLUMN IF NOT EXISTS verified_at timestamptz,
   ADD COLUMN IF NOT EXISTS aborted_at timestamptz;
@@ -55,6 +58,6 @@ LANGUAGE sql STABLE AS $$
     'id',id,'adminUserId',admin_user_id,'scope',scope,'filterHash',filter_hash,
     'previewCount',preview_count,'deletedIdentityCount',deleted_identity_count,
     'deletedDesignCount',deleted_design_count,'deletedMatchCount',deleted_match_count,
-    'transactionId',transaction_id,'completedAt',completed_at
+    'transactionId',transaction_id,'completedAtMicros',floor(extract(epoch from completed_at)*1000000)::bigint
   )::text,E'\n' ORDER BY completed_at,id),''),'UTF8'),'sha256'),'hex') FROM public.deletion_audit;
 $$;

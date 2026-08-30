@@ -86,6 +86,8 @@ Promotion/cutover 的 commit authority 分別是 DB `promotion_outbox` 及 `fina
 
 舊版 `committed` cutover migration 後只會成為 `legacy-committed`，絕不等同 APPROVED。管理員須保留舊 root-owned 0400 final receipt、簽署及 signer allowlist，停止流量後以 canonical runtime 的 `import-legacy-cutover.sh` 匯入；腳本在 advisory lock 內只接受 `production-cutover-verified` 簽署及相同 nonce，才轉成 `verified`。欠缺舊簽署證據時必須保持 legacy 狀態。
 
+正式安裝 bootstrap 時 systemd 是強制 invariant：production 預設等同 `--install-systemd`，安裝器會驗證、複製及啟用 timer；只有 purpose 為 `release-integration` 才可明確使用 `--no-systemd-for-integration`。Legacy receipt 亦不得直接呼叫 raw script，只可經 `/opt/steam-top-bootstrap/import-legacy-cutover-current.sh`，由 sealed current generation 選取 exact runtime，再核對 receipt 的 nonce、target、system、app role、ledger rows/hash 與 live DB。
+
 Promotion 的受限 operator 必須是目標 database owner（供 `ALTER DATABASE`），並只額外取得 `pg_signal_backend` 及 restore schema/table/sequence 所需權限；不要求 superuser。Maintenance service 必須連同一 cluster 的另一 database，preflight 會比較 `system_identifier`，不同 cluster 一律拒絕。若 app role 經 parent role 繼承 `CONNECT`，direct revoke 後的 effective privilege 仍為 true，promotion 會在 transaction 內 fail closed；正式設定應使用不含任何 inherited `CONNECT` 的專用 app role。
 
 Canonical record-cutover wrapper 在 provisional grant 前必須驗簽 protected generation、對應 activation receipt及 host deployment receipt，並核對 activation 的 state digest/nonce/deployment/time。Preflight `createdAt` 來自 DB deployment-probe 的固定 `created_at`，retry 不得用 wall clock 重寫或產生第二種 receipt；public smoke 只可在 provisional grant及 server 以 app role 重連後執行。
