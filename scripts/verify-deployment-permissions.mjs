@@ -14,7 +14,7 @@ const allowed=new Map([
   ["ci.yml",new Set(["production-first-deploy-e2e","release-host-core-integration"])],
 ]);
 const exactWriterJobs=new Map([
-  ["authorize-release.yml:authorize","325a486e1ec78210110416f0fd192fd8a2102ecce160d512c363a76403e75bb7"],
+  ["authorize-release.yml:authorize","c95172180a7781847b3c5db632a8e9710452d37d710910551d6f500e2c991210"],
   ["ci.yml:production-first-deploy-e2e","ac52079c91da3521d1053ca0062f8e08cea4d67980c722f6b85444b1b1b65284"],
   ["ci.yml:release-host-core-integration","282193c5adf56ac9c70a01e8d8ca481574347a4500361f418d5a436602012518"],
   ["reconcile-deployment.yml:reconcile","ffeb899f90803b23a2944a7733a0d89ff3b6dfc75cd86ae9743be2ed0a647f5e"],
@@ -29,6 +29,7 @@ for(const name of fs.readdirSync(dir).filter(x=>/\.ya?ml$/.test(x)).sort()){
   try{doc=JSON.parse(execFileSync("ruby",["-e",ruby,file],{encoding:"utf8"}))}catch(error){throw new Error(`${name}: YAML parse failed: ${error.message}`)}
   if(!Object.hasOwn(doc,"permissions"))throw new Error(`${name}: explicit top-level permissions required`);
   const top=doc.permissions;if(top==="write-all")throw new Error(`${name}: write-all forbidden`);
+  if(JSON.stringify(doc.concurrency)===JSON.stringify(authority))throw new Error(`${name}: workflow-level deployment authority lock forbidden`);
   if(typeof top!=="string"&&(top===null||Array.isArray(top)||typeof top!=="object"))throw new Error(`${name}: invalid top-level permissions`);
   for(const [jobName,job] of Object.entries(doc.jobs??{})){
     if(!job||typeof job!=="object"||Array.isArray(job))throw new Error(`${name}:${jobName}: invalid job`);
@@ -38,11 +39,13 @@ for(const name of fs.readdirSync(dir).filter(x=>/\.ya?ml$/.test(x)).sort()){
     if(JSON.stringify(effective).includes("${{"))throw new Error(`${name}:${jobName}: dynamic permissions forbidden`);
     const writes=typeof effective==="object"&&effective.deployments==="write";
     if(writes&&!allowed.get(name)?.has(jobName))throw new Error(`${name}:${jobName}: unauthorized deployments:write`);
-    if(writes){
+    const reusableAuthorityCaller=name==="authorize-release.yml"&&jobName==="authorize";
+    if(writes&&!reusableAuthorityCaller){
       if(JSON.stringify(job.concurrency)!==JSON.stringify(authority))throw new Error(`${name}:${jobName}: deployment authority concurrency mismatch`);
-      const digest=createHash("sha256").update(JSON.stringify(job)).digest("hex"),expected=exactWriterJobs.get(`${name}:${jobName}`);
-      if(!expected||digest!==expected)throw new Error(`${name}:${jobName}: protected writer job shape mismatch`);
     }
+    if(reusableAuthorityCaller&&Object.hasOwn(job,"concurrency"))throw new Error(`${name}:${jobName}: reusable caller must not re-enter deployment authority lock`);
+    if(!writes&&JSON.stringify(job.concurrency)===JSON.stringify(authority))throw new Error(`${name}:${jobName}: non-writer deployment authority lock forbidden`);
+    if(writes){const digest=createHash("sha256").update(JSON.stringify(job)).digest("hex"),expected=exactWriterJobs.get(`${name}:${jobName}`);if(!expected||digest!==expected)throw new Error(`${name}:${jobName}: protected writer job shape mismatch`)}
     if(name==="ci.yml"&&typeof effective==="object"&&effective.deployments==="write"&&job.if!=="github.event_name == 'workflow_call'")throw new Error(`${name}:${jobName}: reusable deployment writer lacks exact workflow_call guard`);
     if(typeof job.uses==="string"&&job.uses.startsWith("./.github/workflows/")&&(name!=="authorize-release.yml"||jobName!=="authorize"||job.uses!=="./.github/workflows/ci.yml")){
       throw new Error(`${name}:${jobName}: unauthorized local reusable workflow caller`);
