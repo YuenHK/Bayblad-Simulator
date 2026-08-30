@@ -27,9 +27,11 @@ jobs:
           TRUSTED_WORKFLOW_SHA: "${{ github.workflow_sha }}"
           TRUSTED_WORKFLOW_REF: "${{ github.workflow_ref }}"
           EXPECTED_POLICY_BUNDLE_SHA256: "${{ vars.PRODUCTION_POLICY_BUNDLE_SHA256 }}"
+          EXPECTED_POLICY_LAUNCHER_SHA256: "${{ vars.PRODUCTION_POLICY_LAUNCHER_SHA256 }}"
         run: |
           set -euo pipefail
-          [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_HEAD_SHA =~ ^[a-f0-9]{40}$ && $TRUSTED_WORKFLOW_SHA =~ ^[a-f0-9]{40}$ && $SOURCE_PATH == .github/workflows/ci.yml && $SOURCE_EVENT == push && $TRUSTED_WORKFLOW_REF == */.github/workflows/authorize-release.yml@refs/heads/* ]]
+          [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_HEAD_SHA =~ ^[a-f0-9]{40}$ && $TRUSTED_WORKFLOW_SHA =~ ^[a-f0-9]{40}$ && $EXPECTED_POLICY_LAUNCHER_SHA256 =~ ^[a-f0-9]{64}$ && $SOURCE_PATH == .github/workflows/ci.yml && $SOURCE_EVENT == push && $TRUSTED_WORKFLOW_REF == */.github/workflows/authorize-release.yml@refs/heads/* ]]
+          launcher_sha=$(sha256sum trusted/scripts/production-policy-pin-launcher.sh|awk '{print $1}');test "$launcher_sha" = "$EXPECTED_POLICY_LAUNCHER_SHA256"
           test "$(git -C trusted rev-parse HEAD)" = "$TRUSTED_WORKFLOW_SHA";test "$(git -C candidate rev-parse HEAD)" = "$SOURCE_HEAD_SHA"
           default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch);[[ $TRUSTED_WORKFLOW_REF == */.github/workflows/authorize-release.yml@refs/heads/$default_branch ]]
           default_head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq .sha);[[ $default_head =~ ^[a-f0-9]{40}$ ]]
@@ -48,7 +50,7 @@ jobs:
           candidate_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/candidate" "$trusted_bundle" "$RUNNER_TEMP/candidate-policy-manifest.json")
           /usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-deployment-permissions.mjs" "$GITHUB_WORKSPACE/candidate"
           verifier_sha=$(sha256sum trusted/scripts/verify-deployment-permissions.mjs|awk '{print $1}')
-          printf '{"schemaVersion":1,"purpose":"trusted-deployment-policy-verification","trustedWorkflowSha":"%s","trustedWorkflowRef":"%s","candidateSha":"%s","sourceRunId":%s,"sourceRunAttempt":%s,"verifierSha256":"%s","policySha256":"%s","policyBundleSha256":"%s"}\n' "$TRUSTED_WORKFLOW_SHA" "$TRUSTED_WORKFLOW_REF" "$SOURCE_HEAD_SHA" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$verifier_sha" "$verifier_sha" "$candidate_bundle" > "$RUNNER_TEMP/deployment-policy-evidence.json"
+          printf '{"schemaVersion":1,"purpose":"trusted-deployment-policy-verification","trustedWorkflowSha":"%s","trustedWorkflowRef":"%s","candidateSha":"%s","sourceRunId":%s,"sourceRunAttempt":%s,"verifierSha256":"%s","policySha256":"%s","policyBundleSha256":"%s","policyLauncherSha256":"%s"}\n' "$TRUSTED_WORKFLOW_SHA" "$TRUSTED_WORKFLOW_REF" "$SOURCE_HEAD_SHA" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$verifier_sha" "$verifier_sha" "$candidate_bundle" "$launcher_sha" > "$RUNNER_TEMP/deployment-policy-evidence.json"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: "${{ runner.temp }}/deployment-policy-evidence.json" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

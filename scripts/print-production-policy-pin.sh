@@ -1,11 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 if (($#!=1))||! [[ $1 =~ ^[0-9A-Fa-f]{40}$ ]];then printf 'usage: %s <full-40-hex-sha1-commit-oid>\n' "$0" >&2;exit 64;fi
+[[ ${STEAM_TOP_POLICY_LAUNCHED:-} == 1 ]]||{ printf 'formal rotation requires the externally pinned launcher\n' >&2;exit 65; }
 source_commit=$(printf '%s' "$1"|/usr/bin/tr 'A-F' 'a-f')
 source_path=$0
 while [[ -L $source_path ]];do source_dir=$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "$source_path")"&&pwd);source_path=$(/usr/bin/readlink "$source_path");[[ $source_path = /* ]]||source_path="$source_dir/$source_path";done
 [[ -f $source_path && ! -L $source_path ]]||{ printf 'helper must be a regular non-symlink file\n' >&2;exit 65; }
-script_dir=$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "$source_path")"&&pwd);root=$(CDPATH= cd -P -- "$script_dir/.."&&pwd)
+script_dir=$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "$source_path")"&&pwd);root=$(CDPATH= cd -P -- "${STEAM_TOP_POLICY_REPOSITORY:?}"&&pwd)
 git_env=(/usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME=/var/empty XDG_CONFIG_HOME=/var/empty GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 /usr/bin/git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null)
 self_identity(){ if /usr/bin/stat -f '%d:%i:%z:%m:%c' "$source_path" >/dev/null 2>&1;then /usr/bin/stat -f '%d:%i:%z:%m:%c' "$source_path";else /usr/bin/stat -c '%d:%i:%s:%Y:%Z' "$source_path";fi; }
 self_before=$(self_identity)
@@ -16,8 +17,8 @@ self_before=$(self_identity)
 [[ $(self_identity) == "$self_before" ]]||{ printf 'running helper changed during verification\n' >&2;exit 65; }
 
 temporary=$(/usr/bin/mktemp -d "/tmp/steam-top-policy-pin.XXXXXX");active_pid=
-cleanup(){ /bin/rm -rf -- "$temporary"; }
-stop_group(){ local number=$1;if [[ -n $active_pid ]];then /bin/kill -TERM -- "-$active_pid" 2>/dev/null||/bin/kill -TERM "$active_pid" 2>/dev/null||true;for _ in {1..60};do /bin/kill -0 "$active_pid" 2>/dev/null||break;/bin/sleep 0.05;done;if /bin/kill -0 "$active_pid" 2>/dev/null;then /bin/kill -KILL -- "-$active_pid" 2>/dev/null||/bin/kill -KILL "$active_pid" 2>/dev/null||true;fi;wait "$active_pid" 2>/dev/null||true;fi;trap - EXIT;cleanup;exit $((128+number)); }
+cleanup(){ /bin/rm -rf -- "$temporary";[[ -z ${STEAM_TOP_POLICY_LAUNCHER_TEMP:-} ]]||/bin/rm -rf -- "$STEAM_TOP_POLICY_LAUNCHER_TEMP"; }
+stop_group(){ local number=$1;if [[ -n $active_pid ]];then /bin/kill -TERM -- "-$active_pid" 2>/dev/null||/bin/kill -TERM "$active_pid" 2>/dev/null||true;for _ in {1..60};do /bin/kill -0 -- "-$active_pid" 2>/dev/null||break;/bin/sleep 0.05;done;if /bin/kill -0 -- "-$active_pid" 2>/dev/null;then /bin/kill -KILL -- "-$active_pid" 2>/dev/null||true;fi;wait "$active_pid" 2>/dev/null||true;fi;trap - EXIT;cleanup;exit $((128+number)); }
 trap 'code=$?;cleanup;exit "$code"' EXIT;trap 'stop_group 1' HUP;trap 'stop_group 2' INT;trap 'stop_group 15' TERM
 /bin/mkdir -p "$temporary/home"
 runner="$temporary/group-runner.py"
@@ -27,14 +28,14 @@ if len(sys.argv)<2 or not os.path.isabs(sys.argv[1]): raise SystemExit(64)
 os.setsid();os.execve(sys.argv[1],sys.argv[1:],os.environ)
 PY
 /bin/chmod 0500 "$runner"
-run_group(){ /usr/bin/python3 "$runner" "$@" & active_pid=$!;set +e;wait "$active_pid";local code=$?;set -e;active_pid=;return "$code"; }
+run_group(){ /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME="$temporary/home" PYTHONNOUSERSITE=1 /usr/bin/python3 -I -E -S "$runner" "$@" & active_pid=$!;set +e;wait "$active_pid";local code=$?;set -e;active_pid=;return "$code"; }
 safe_git(){ run_group /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME="$temporary/home" XDG_CONFIG_HOME="$temporary/home" TMPDIR="$temporary" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 /usr/bin/git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null "$@"; }
 capture_git(){ local variable=$1;shift;safe_git "$@" >"$temporary/git-output";local value=;IFS= read -r value <"$temporary/git-output"||true;printf -v "$variable" '%s' "$value"; }
 
 trusted_node=
 for candidate in /usr/bin/node /usr/local/bin/node /opt/homebrew/bin/node /opt/hostedtoolcache/node/*/x64/bin/node;do [[ -e $candidate ]]||continue;resolved=$candidate;while [[ -L $resolved ]];do link_dir=$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "$resolved")"&&pwd);resolved=$(/usr/bin/readlink "$resolved");[[ $resolved = /* ]]||resolved="$link_dir/$resolved";done;[[ -f $resolved && -x $resolved ]]||continue;trusted_node=$resolved;break;done
 [[ -n $trusted_node ]]||{ printf 'trusted root-owned Node.js binary unavailable\n' >&2;exit 1; }
-/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 - "$trusted_node" "$temporary/trusted-node" <<'PY'
+/usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME="$temporary/home" PYTHONNOUSERSITE=1 /usr/bin/python3 -I -E -S - "$trusted_node" "$temporary/trusted-node" <<'PY'
 import os,stat,sys
 source,destination=sys.argv[1:]
 for parent in [source,*reversed(["/"+"/".join(source.strip("/").split("/")[:i]) for i in range(1,len(source.strip("/").split("/")))])]:
