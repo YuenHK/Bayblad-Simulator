@@ -6,7 +6,7 @@ export const EXPECTED_MIGRATION_SHA256 = "48386c47be2562e241cb520f17cd2cd6d00ca2
 export const EXPECTED_MIGRATIONS = Object.freeze([
   Object.freeze({ id: EXPECTED_MIGRATION_ID, sha256: EXPECTED_MIGRATION_SHA256 }),
   Object.freeze({ id: "0001_cutover_state_machine", sha256: "ca26cdef9195ae550a0fd4eb4db66fe02c2915e646a71e51182b4b4cf8a40571" }),
-  Object.freeze({ id: "0002_platform_installation", sha256: "cb3dc38371bfaa56d14feb2f286be8dbeafc3dfe206dd0941d862973d7b60c62" }),
+  Object.freeze({ id: "0002_platform_installation", sha256: "1135865894cd73de9c69649958fcaab0f663b64a4c97ae4d3b1c5d81e12f6e68" }),
 ]);
 
 type MigrationTransaction = Readonly<{

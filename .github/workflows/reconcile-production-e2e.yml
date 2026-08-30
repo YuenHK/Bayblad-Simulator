@@ -25,6 +25,15 @@ jobs:
         run: |
           set -euo pipefail
           [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_PATH == .github/workflows/authorize-release.yml && $SOURCE_EVENT == workflow_run && $SOURCE_HEAD_SHA =~ ^[a-f0-9]{40}$ ]]
+          desired=error;receipt_id=none
+          for attempt in 1 2 3 4 5 6;do if gh run download "$SOURCE_RUN_ID" -n "production-e2e-terminal-$SOURCE_RUN_ATTEMPT" -D "$RUNNER_TEMP/terminal" 2>/dev/null;then break;fi;sleep 5;done
+          if [[ -f $RUNNER_TEMP/terminal/production-e2e-terminal.json ]];then
+            gh attestation verify "$RUNNER_TEMP/terminal/production-e2e-terminal.json" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+            read -r desired receipt_id < <(node - "$RUNNER_TEMP/terminal/production-e2e-terminal.json" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_HEAD_SHA" <<'NODE'
+          const r=require(process.argv[2]);if(r.schemaVersion!==1||r.purpose!=="production-e2e-terminal"||!['success','failure'].includes(r.desiredTerminal)||String(r.authorizationRunId)!==process.argv[3]||String(r.authorizationRunAttempt)!==process.argv[4]||r.authorizationWorkflowSha!==process.argv[5]||!r.authorizationWorkflowRef?.includes('/.github/workflows/ci.yml@refs/heads/')||!/^[1-9][0-9]*$/.test(String(r.deploymentId))||!/^[a-f0-9]{64}$/.test(r.manifestSha256)||!/^[a-f0-9]{64}$/.test(r.nonce))process.exit(1);console.log(r.desiredTerminal,r.deploymentId)
+          NODE
+            )
+          fi
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments?environment=production-first-deploy-e2e&per_page=100" > "$RUNNER_TEMP/deployments.json"
           node - "$RUNNER_TEMP/deployments.json" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_HEAD_SHA" > "$RUNNER_TEMP/ids" <<'NODE'
           const fs=require("fs"),[path,run,attempt,head]=process.argv.slice(2),rows=JSON.parse(fs.readFileSync(path)).flat();for(const row of rows){const p=typeof row.payload==="string"?JSON.parse(row.payload):row.payload;if(p?.schemaVersion===4&&p.purpose==="production"&&String(p.authorizationRunId)===run&&String(p.authorizationRunAttempt)===attempt&&p.authorizationWorkflowSha===head&&p.authorizationWorkflowRef?.startsWith("refs/heads/")&&p.sourceWorkflow===`${process.env.GITHUB_REPOSITORY}/.github/workflows/ci.yml`&&p.sourceEvent==="push"&&/^[a-f0-9]{40}$/.test(p.sourceHeadSha)&&p.commit===p.sourceHeadSha&&/^[a-f0-9]{64}$/.test(p.manifestSha256)&&/^[a-f0-9]{64}$/.test(p.nonce)&&/^[1-9][0-9]*$/.test(String(p.runId)))console.log(`${row.id} ${p.runId} ${p.commit} ${p.manifestSha256} ${p.nonce}`)}
@@ -36,15 +45,24 @@ jobs:
             node - "$RUNNER_TEMP/candidate-run.json" "$candidate_run" "$candidate_sha" <<'NODE'
           const r=require(process.argv[2]);if(String(r.id)!==process.argv[3]||r.path!==".github/workflows/ci.yml"||r.head_sha!==process.argv[4]||r.event!=="push"||r.conclusion!=="success"||!String(r.head_branch).startsWith("v"))process.exit(1)
           NODE
+            [[ $receipt_id == none || $receipt_id == "$id" ]]||{ echo 'terminal receipt deployment mismatch' >&2;exit 1;}
+            if [[ $receipt_id != none ]];then node - "$RUNNER_TEMP/terminal/production-e2e-terminal.json" "$id" "$manifest_sha" "$nonce" <<'NODE'
+          const r=require(process.argv[2]);if(String(r.deploymentId)!==process.argv[3]||r.manifestSha256!==process.argv[4]||r.nonce!==process.argv[5])process.exit(1)
+          NODE
+            fi
+            terminal=error;[[ $desired != success ]]||terminal=success
             gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" > "$RUNNER_TEMP/statuses.json"
-            if node -e 'const s=require(process.argv[1]).flat();process.exit(s.some(x=>["success","failure","error","inactive"].includes(x.state))?0:1)' "$RUNNER_TEMP/statuses.json";then continue;fi
-            node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:"error",environment:"production-first-deploy-e2e",description:`orphaned authorization run ${process.argv[2]} attempt ${process.argv[3]} concluded ${process.argv[4]}`})+"\n")' "$RUNNER_TEMP/error.json" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_CONCLUSION"
+            if node - "$RUNNER_TEMP/statuses.json" "$terminal" <<'NODE'
+          const s=require(process.argv[2]).flat().filter(x=>["success","failure","error","inactive"].includes(x.state));if(!s.length)process.exit(1);process.exit(s.every(x=>x.state===process.argv[3]||(process.argv[3]==='error'&&x.state==='failure'))?0:2)
+          NODE
+            then continue;else code=$?;[[ $code == 1 ]]||{ echo 'terminal conflict requires manual review' >&2;exit "$code";};fi
+            node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:process.argv[2],environment:"production-first-deploy-e2e",description:`authoritative terminal for run ${process.argv[3]} attempt ${process.argv[4]}`})+"\n")' "$RUNNER_TEMP/error.json" "$terminal" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT"
             # Re-read immediately before the only write; workflow_run fires only after the source run ended.
             gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" > "$RUNNER_TEMP/statuses-before.json"
             node -e 'const s=require(process.argv[1]).flat();process.exit(s.some(x=>["success","failure","error","inactive"].includes(x.state))?1:0)' "$RUNNER_TEMP/statuses-before.json"
             gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input "$RUNNER_TEMP/error.json"
             gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" > "$RUNNER_TEMP/statuses-after.json"
-            conflict=false;if node -e 'const s=require(process.argv[1]).flat();process.exit(s.some(x=>x.state==="success")?0:1)' "$RUNNER_TEMP/statuses-after.json";then conflict=true;fi
+            conflict=false;if node -e 'const s=require(process.argv[1]).flat(),want=process.argv[2];process.exit(s.some(x=>["success","failure","error","inactive"].includes(x.state)&&x.state!==want&&!(want==="error"&&x.state==="failure"))?0:1)' "$RUNNER_TEMP/statuses-after.json" "$terminal";then conflict=true;fi
             node -e 'const fs=require("fs"),[id,run,attempt,candidate,manifest,nonce,workflowSha,workflow,conflict]=process.argv.slice(1);fs.appendFileSync(process.env.RUNNER_TEMP+"/reconciliation-receipts.jsonl",JSON.stringify({schemaVersion:1,purpose:"production-e2e-reconciliation",deploymentId:id,authorizationRunId:run,authorizationRunAttempt:Number(attempt),authorizationWorkflowSha:workflowSha,authorizationWorkflow:workflow,candidateCommit:candidate,manifestSha256:manifest,nonce,observedTerminal:true,conflict:conflict==="true"})+"\n")' "$id" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$candidate_sha" "$manifest_sha" "$nonce" "$SOURCE_HEAD_SHA" "$SOURCE_PATH" "$conflict"
             [[ $conflict == false ]]||{ echo "terminal status conflict requires manual review" >&2;exit 1;}
           done < "$RUNNER_TEMP/ids"

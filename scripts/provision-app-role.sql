@@ -2,7 +2,15 @@ BEGIN;
 SELECT pg_advisory_xact_lock(1937002751);
 SELECT format('CREATE ROLE steam_top_app LOGIN PASSWORD %L', :'app_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='steam_top_app') \gexec
-ALTER ROLE steam_top_app LOGIN PASSWORD :'app_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+DO $ownership$ BEGIN
+IF EXISTS(SELECT 1 FROM pg_database d JOIN pg_roles r ON r.oid=d.datdba WHERE r.rolname='steam_top_app')
+ OR EXISTS(SELECT 1 FROM pg_namespace n JOIN pg_roles r ON r.oid=n.nspowner WHERE r.rolname='steam_top_app')
+ OR EXISTS(SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid=c.relowner WHERE r.rolname='steam_top_app')
+ OR EXISTS(SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner WHERE r.rolname='steam_top_app')
+ OR EXISTS(SELECT 1 FROM pg_type t JOIN pg_roles r ON r.oid=t.typowner WHERE r.rolname='steam_top_app')
+THEN RAISE EXCEPTION 'steam_top_app owns database objects; audited ownership recovery required';END IF;END $ownership$;
+ALTER ROLE steam_top_app RESET ALL;
+ALTER ROLE steam_top_app LOGIN PASSWORD :'app_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1 VALID UNTIL 'infinity';
 SELECT format('REVOKE %I FROM steam_top_app',parent.rolname) FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles member ON member.oid=m.member WHERE member.rolname='steam_top_app' \gexec
 SELECT format('REVOKE steam_top_app FROM %I',member.rolname) FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles member ON member.oid=m.member WHERE parent.rolname='steam_top_app' \gexec
 SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM steam_top_app',current_database()) \gexec
@@ -23,7 +31,7 @@ SELECT format('GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.%I TO steam_top
 GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA public TO steam_top_app;
 DO $assert$ BEGIN
 IF EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member JOIN pg_roles p ON p.oid=m.roleid WHERE r.rolname='steam_top_app' OR p.rolname='steam_top_app')
- OR EXISTS(SELECT 1 FROM pg_roles WHERE rolname='steam_top_app' AND (NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit OR rolreplication OR rolbypassrls))
+ OR EXISTS(SELECT 1 FROM pg_roles WHERE rolname='steam_top_app' AND (NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit OR rolreplication OR rolbypassrls OR rolconnlimit<>-1 OR rolvaliduntil IS DISTINCT FROM 'infinity'::timestamptz OR rolconfig IS NOT NULL))
  OR has_database_privilege('steam_top_app',current_database(),'CREATE,TEMPORARY') OR has_schema_privilege('PUBLIC','public','CREATE') OR has_schema_privilege('steam_top_app','restore_control','USAGE')
  OR has_table_privilege('steam_top_app','public.app_schema_migrations','SELECT,INSERT,UPDATE,DELETE')
  OR EXISTS(SELECT 1 FROM pg_tables CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('DELETE')) required(privilege) WHERE schemaname='public' AND tablename<>'app_schema_migrations' AND NOT has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),required.privilege))

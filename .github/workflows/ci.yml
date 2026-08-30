@@ -340,12 +340,25 @@ jobs:
           sudo systemctl disable --now steam-top-cutover-reaper.timer >/dev/null 2>&1||failures="$failures timer";sudo rm -f /etc/systemd/system/steam-top-cutover-reaper.{service,timer} /usr/local/share/ca-certificates/steam-top-production-e2e.crt /usr/local/sbin/install-steam-top-bootstrap;sudo systemctl daemon-reload;sudo update-ca-certificates
           sudo sed -i '/127\.0\.0\.1 steam-top\.production-e2e\.test/d' /etc/hosts;sudo rm -rf /opt/steam-top /opt/steam-top-bootstrap /etc/steam-top-bootstrap /var/lib/steam-top-bootstrap /run/steam-top-production-e2e;sudo rm -f /var/lock/steam-top-{production,generation-publish,release-integration}.lock
           if [[ -z $failures ]];then echo cleanup_ok=true >> "$GITHUB_OUTPUT";else echo "cleanup failures:$failures" >&2;echo cleanup_ok=false >> "$GITHUB_OUTPUT";fi
+      - name: Prepare the authoritative terminal receipt
+        if: always() && env.PRODUCTION_E2E_DEPLOYMENT_ID != ''
+        env: { CLEANUP_OK: "${{ steps.production-cleanup.outputs.cleanup_ok }}", PREVIOUS_OK: "${{ success() }}" }
+        run: |
+          state=failure;if [[ $PREVIOUS_OK == true && $CLEANUP_OK == true && -f $RUNNER_TEMP/production-e2e-passed ]];then state=success;fi
+          node -e 'const fs=require("fs"),[out,state,id,run,attempt,ref,sha,manifest,nonce]=process.argv.slice(1);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"production-e2e-terminal",desiredTerminal:state,deploymentId:id,authorizationRunId:run,authorizationRunAttempt:Number(attempt),authorizationWorkflowRef:ref,authorizationWorkflowSha:sha,manifestSha256:manifest,nonce})+"\n")' "$RUNNER_TEMP/production-e2e-terminal.json" "$state" "$PRODUCTION_E2E_DEPLOYMENT_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_WORKFLOW_REF" "$GITHUB_WORKFLOW_SHA" "$PRODUCTION_E2E_MANIFEST_SHA" "$PRODUCTION_E2E_NONCE"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        if: always() && env.PRODUCTION_E2E_DEPLOYMENT_ID != ''
+        with: { subject-path: "${{ runner.temp }}/production-e2e-terminal.json" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && env.PRODUCTION_E2E_DEPLOYMENT_ID != ''
+        with: { name: "production-e2e-terminal-${{ github.run_attempt }}", path: "${{ runner.temp }}/production-e2e-terminal.json", retention-days: 90, if-no-files-found: error }
       - name: Publish the single terminal production E2E status
         if: always() && env.PRODUCTION_E2E_DEPLOYMENT_ID != ''
         env: { GH_TOKEN: "${{ github.token }}", CLEANUP_OK: "${{ steps.production-cleanup.outputs.cleanup_ok }}", PREVIOUS_OK: "${{ success() }}" }
         run: |
-          set -euo pipefail;state=failure;description='canonical production first deployment failed'
-          if [[ $PREVIOUS_OK == true && $CLEANUP_OK == true && -f $RUNNER_TEMP/production-e2e-passed ]];then state=success;description='canonical production first deployment passed and cleanup completed';fi
+          set -euo pipefail;state=$(node -p 'require(process.argv[1]).desiredTerminal' "$RUNNER_TEMP/production-e2e-terminal.json");description='canonical production first deployment failed'
+          [[ $PREVIOUS_OK == true ]]||state=failure
+          [[ $state != success ]]||description='canonical production first deployment passed and cleanup completed'
           node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:process.argv[2],environment:"production-first-deploy-e2e",description:process.argv[3]})+"\n")' "$RUNNER_TEMP/terminal-status.json" "$state" "$description"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses?per_page=100" > "$RUNNER_TEMP/existing-terminal.json"
           if node -e 'const s=require(process.argv[1]).flat().find(x=>["success","failure","error","inactive"].includes(x.state));if(!s)process.exit(1);process.exit(s.state==="success"?0:2)' "$RUNNER_TEMP/existing-terminal.json";then exit 0;else code=$?;[[ $code == 1 ]]||exit "$code";fi
