@@ -409,23 +409,39 @@ jobs:
         run: printf '%s' '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
       - name: Build and publish application images with provenance
         shell: bash
+        env:
+          BUILDX_GIT_INFO: "1"
+          BUILDX_GIT_LABELS: full
+          BUILDX_NO_DEFAULT_OCI_ARTIFACT: "0"
         run: |
           set -euo pipefail
           mkdir -p release
           repository="ghcr.io/${GITHUB_REPOSITORY,,}/steam-top"
+          collect_evidence() {
+            local component=$1 metadata="release/$1.json" root_digest immutable_ref index_file app_digest attestation_digest
+            root_digest=$(node -e 'const m=require("./"+process.argv[1]),d=m["containerimage.digest"];if(!/^sha256:[a-f0-9]{64}$/.test(d))process.exit(1);process.stdout.write(d)' "$metadata")
+            immutable_ref="$repository/$component@$root_digest"
+            index_file="release/$component-index.json"
+            docker buildx imagetools inspect --raw "$immutable_ref" > "$index_file"
+            for architecture in amd64 arm64; do
+              app_digest=$(node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1])),a=process.argv[2],d=x.manifests.filter(v=>v.platform?.os==="linux"&&v.platform?.architecture===a);if(d.length!==1)process.exit(1);process.stdout.write(d[0].digest)' "$index_file" "$architecture")
+              attestation_digest=$(node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1])),d=process.argv[2],a=x.manifests.filter(v=>v.platform?.os==="unknown"&&v.platform?.architecture==="unknown"&&v.annotations?.["vnd.docker.reference.type"]==="attestation-manifest"&&v.annotations?.["vnd.docker.reference.digest"]===d);if(a.length!==1)process.exit(1);process.stdout.write(a[0].digest)' "$index_file" "$app_digest")
+              docker buildx imagetools inspect --raw "$repository/$component@$attestation_digest" > "release/$component-$architecture-attestation.json"
+              docker buildx imagetools inspect "$immutable_ref" --format "{{ json (index .Provenance \"linux/$architecture\").SLSA }}" > "release/$component-$architecture-provenance.json"
+              docker buildx imagetools inspect "$immutable_ref" --format "{{ json (index .SBOM \"linux/$architecture\").SPDX }}" > "release/$component-$architecture-sbom.json"
+            done
+            node scripts/verify-multiarch-image.mjs "$metadata" "$index_file" "release/$component-amd64-attestation.json" "release/$component-amd64-provenance.json" "release/$component-amd64-sbom.json" "release/$component-arm64-attestation.json" "release/$component-arm64-provenance.json" "release/$component-arm64-sbom.json" "$GITHUB_SHA" "release/$component-evidence.json"
+          }
           docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --push --metadata-file release/server.json --tag "$repository/server:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST -f Dockerfile.server .
-          docker buildx imagetools inspect --raw "$repository/server:${GITHUB_SHA}" > release/server-index.json
-          node scripts/verify-multiarch-image.mjs release/server-index.json
+          collect_evidence server
           docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --push --metadata-file release/web.json --tag "$repository/web:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST --build-arg CADDY_IMAGE_REPOSITORY --build-arg CADDY_IMAGE_DIGEST -f Dockerfile.web .
-          docker buildx imagetools inspect --raw "$repository/web:${GITHUB_SHA}" > release/web-index.json
-          node scripts/verify-multiarch-image.mjs release/web-index.json
+          collect_evidence web
           docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --push --metadata-file release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
-          docker buildx imagetools inspect --raw "$repository/database:${GITHUB_SHA}" > release/database-index.json
-          node scripts/verify-multiarch-image.mjs release/database-index.json
+          collect_evidence database
           node scripts/create-release-manifest.mjs "$GITHUB_SHA" "$repository" release/server.json release/web.json release/database.json release/release-manifest.json
           node scripts/create-runtime-files-manifest.mjs . release/runtime-files.sha256
           node scripts/stage-runtime-files.mjs . release/runtime-files.sha256 release/runtime
-          ./scripts/portable-sha256.sh manifest release server.json web.json database.json release-manifest.json runtime-files.sha256 > release/SHA256SUMS
+          ./scripts/portable-sha256.sh manifest release server.json web.json database.json server-index.json server-amd64-attestation.json server-amd64-provenance.json server-amd64-sbom.json server-arm64-attestation.json server-arm64-provenance.json server-arm64-sbom.json server-evidence.json web-index.json web-amd64-attestation.json web-amd64-provenance.json web-amd64-sbom.json web-arm64-attestation.json web-arm64-provenance.json web-arm64-sbom.json web-evidence.json database-index.json database-amd64-attestation.json database-amd64-provenance.json database-amd64-sbom.json database-arm64-attestation.json database-arm64-provenance.json database-arm64-sbom.json database-evidence.json release-manifest.json runtime-files.sha256 > release/SHA256SUMS
       - name: Attest the release authorization manifest
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
@@ -434,6 +450,10 @@ jobs:
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: release/runtime-files.sha256
+      - name: Attest the verified per-platform release evidence
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: release/*-evidence.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-manifest-${{ github.sha }}
