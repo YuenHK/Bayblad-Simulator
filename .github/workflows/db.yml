@@ -92,14 +92,18 @@ jobs:
           ssh-keygen -Y sign -q -f "$RUNNER_TEMP/bootstrap-source" -n steam-top-bootstrap-source "$archive"
           printf 'bootstrap-ci %s\n' "$(cat "$RUNNER_TEMP/bootstrap-source.pub")" > "$RUNNER_TEMP/bootstrap-allowed"
           node - "$RUNNER_TEMP/bootstrap-trust.json" "$bootstrap_sha" "$GITHUB_REPOSITORY" "$GITHUB_SHA" <<'NODE'
-          const fs=require("fs"),[out,bootstrapSha256,repository,workflowSha]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256,repository,workflowIdentity:`${repository}/.github/workflows/db.yml`,workflowRef:"refs/heads/main",workflowSha,deploymentPurpose:"production",cutoverPgService:"cutover-ci",cutoverPgServiceFile:"/run/steam-top-ci/pg_service.conf",cutoverPgPassFile:"/run/steam-top-ci/pgpass",cutoverIncidentDir:"/run/steam-top-ci/incidents",githubTokenFile:"/run/steam-top-ci/github-token",hostReceiptOutbox:"/run/steam-top-ci/outbox",hostReceiptAllowedSigners:"/run/steam-top-ci/host-allowed",hostReceiptSignerId:"host-ci",ledgerAllowedSigners:"/run/steam-top-ci/ledger-allowed",ledgerSignerId:"ledger-ci",productionStateDir:"/run/steam-top-ci/state",productionStateSigningKey:"/run/steam-top-ci/state-key",productionStateAllowedSigners:"/run/steam-top-ci/state-allowed",productionStateSignerId:"state-ci"})+"\n",{mode:0o600});
+          const fs=require("fs"),[out,bootstrapSha256,repository,workflowSha]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256,repository,workflowIdentity:`${repository}/.github/workflows/db.yml`,workflowRef:"refs/heads/main",workflowSha,deploymentPurpose:"production",cutoverPgService:"cutover-ci",cutoverPgServiceFile:"/run/steam-top-ci/pg_service.conf",cutoverPgPassFile:"/run/steam-top-ci/pgpass",cutoverIncidentDir:"/run/steam-top-ci/incidents",githubTokenFile:"/run/steam-top-ci/github-token",hostReceiptOutbox:"/run/steam-top-ci/outbox",hostReceiptAllowedSigners:"/run/steam-top-ci/host-allowed",hostReceiptSignerId:"host-ci",ledgerAllowedSigners:"/run/steam-top-ci/ledger-allowed",ledgerSignerId:"ledger-ci",productionStateDir:"/run/steam-top-ci/state",productionStateSigningKey:"/run/steam-top-ci/state-key",productionStateAllowedSigners:"/run/steam-top-ci/state-allowed",productionStateSignerId:"state-ci",legacyCutoverAllowedSigners:"/run/steam-top-ci/legacy-allowed",legacyCutoverSignerId:"legacy-ci"})+"\n",{mode:0o600});
           NODE
           sudo install -d -o root -g root -m 0700 /run/steam-top-bootstrap-db
           sudo install -d -o root -g root -m 0700 /run/steam-top-ci /run/steam-top-ci/incidents
           ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/state-key"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/legacy-key"
           printf 'state-ci %s\n' "$(cat "$RUNNER_TEMP/state-key.pub")" > "$RUNNER_TEMP/state-allowed"
           sudo install -o root -g root -m 0400 "$RUNNER_TEMP/state-key" /run/steam-top-ci/state-key
           sudo install -o root -g root -m 0444 "$RUNNER_TEMP/state-allowed" /run/steam-top-ci/state-allowed
+          printf 'legacy-ci %s\n' "$(cat "$RUNNER_TEMP/legacy-key.pub")" > "$RUNNER_TEMP/legacy-allowed"
+          sudo install -o root -g root -m 0400 "$RUNNER_TEMP/legacy-key" /run/steam-top-ci/legacy-key
+          sudo install -o root -g root -m 0444 "$RUNNER_TEMP/legacy-allowed" /run/steam-top-ci/legacy-allowed
           printf '[cutover-ci]\nhost=127.0.0.1\nport=5432\ndbname=steam_top_test\nuser=steam_top_test\nsslmode=disable\n' | sudo tee /run/steam-top-ci/pg_service.conf >/dev/null
           printf '127.0.0.1:5432:steam_top_test:steam_top_test:steam_top_test\n' | sudo tee /run/steam-top-ci/pgpass >/dev/null
           sudo chown root:root /run/steam-top-ci/pg_service.conf /run/steam-top-ci/pgpass
@@ -114,6 +118,6 @@ jobs:
       - run: sudo chown root:root "$GITHUB_WORKSPACE" && sudo chown -R root:root infra/backup apps/server/dist && sudo find infra/backup apps/server/dist -type d -exec chmod go-w {} + && sudo chmod 0555 apps/server/dist/admin/deletion-ledger-cli.js && sudo chmod 0444 infra/backup/trusted-ledger-cli.sha256
       - run: CI=true ./infra/backup/test-backup-restore.sh
       - run: ./infra/backup/test-promotion-isolation.sh
-      - run: /opt/steam-top/infra/backup/test-promotion-full.sh
+      - run: /opt/steam-top/infra/backup/test-canonical-cutover-full.sh
       - name: Exercise packaged generation collision and runtime-tree fail-closed behavior
         run: sudo /opt/steam-top/scripts/test-deployment-atomicity.sh
