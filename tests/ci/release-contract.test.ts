@@ -53,9 +53,12 @@ describe("release CI contract", () => {
     expect(workflow.match(/--platform linux\/amd64,linux\/arm64/gu)).toHaveLength(3);
     expect(workflow).toContain("--provenance=mode=max");
     expect(workflow.match(/verify-multiarch-image\.mjs/gu)).toHaveLength(1);
-    expect(workflow).toContain('immutable_ref="$repository/$component@$root_digest"');
+    expect(workflow).toContain('fetch-ghcr-object.mjs "$registry_repository" "$root_digest" manifest');
     expect(workflow).not.toContain('imagetools inspect --raw "$repository/server:${GITHUB_SHA}"');
     expect(workflow).toContain('subject-path: release/*-evidence.json');
+    expect(workflow).toContain("subject-path: release/SHA256SUMS");
+    expect(workflow).toContain("version: v0.30.1");
+    expect(workflow).toMatch(/tonistiigi\/binfmt@sha256:[a-f0-9]{64}/u);
     expect(workflow).toContain("server-amd64-provenance.json");
     expect(workflow).toContain("database-arm64-sbom.json");
     expect(workflow).toContain("scripts/create-release-manifest.mjs");
