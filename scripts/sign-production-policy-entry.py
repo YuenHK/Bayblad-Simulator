@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-import datetime, hashlib, json, os, re, signal, stat, subprocess, sys, unicodedata
+import ctypes, datetime, fcntl, hashlib, json, os, re, signal, stat, subprocess, sys, time, unicodedata
 
 KEYS = ["schemaVersion","purpose","generation","previousReceiptDigest","repositoryId","repositoryName","policyCommit","policyTreeOid","bundleSha256","anchorSha256","anchorGeneration","createdAt","signerKeyId"]
 HEX = lambda n: re.compile(rf"^[a-f0-9]{{{n}}}$")
@@ -87,6 +87,19 @@ def swap_stage_for_test(name,variable):
     finally:os.close(fd)
     os.fsync(parent_fd)
 
+def quarantine_cleanup(name,fd,variable):
+    expected=os.fstat(fd);verify_path_binding(name,fd,expected)
+    swap_stage_for_test(name,variable);verify_path_binding(name,fd,expected)
+    swap_stage_for_test(name,f"{variable}_AFTER_LAST_BIND")
+    output_digest=hashlib.sha256(output_name.encode()).hexdigest();quarantine=f".steam-top-signature-quarantine-{output_digest}-{os.getpid()}-{os.urandom(8).hex()}"
+    libc=ctypes.CDLL(None,use_errno=True)
+    if libc.renameat2(parent_fd,name.encode(),parent_fd,quarantine.encode(),1)!=0:raise OSError(ctypes.get_errno(),"renameat2 no-clobber failed")
+    quarantine_fd=os.open(quarantine,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent_fd)
+    try:
+        if identity(os.fstat(quarantine_fd))!=identity(expected) or identity(os.fstat(fd))!=identity(expected):abort("quarantined stage identity mismatch")
+    finally:os.close(quarantine_fd)
+    os.unlink(quarantine,dir_fd=parent_fd);os.fsync(parent_fd)
+
 def verify_signature(name,expected_info,entry,key_reference,key_handle,signer_id):
     signature_fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent_fd);allowed_fd=None
     try:
@@ -135,9 +148,7 @@ def recover_journal(journal,entry,key_reference,key_handle,signer_id,stage_prefi
         swap_output_for_test("STEAM_TOP_POLICY_SIGNER_TEST_SWAP_OUTPUT_BEFORE_STAGE_UNLINK")
         verify_path_binding(output_name,signature_fd,current)
         for name,_,fd in stages:
-            current_stage=os.fstat(fd);verify_path_binding(name,fd,current_stage)
-            swap_stage_for_test(name,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_RECOVERY_STAGE_BEFORE_CLEANUP");verify_path_binding(name,fd,current_stage)
-            os.unlink(name,dir_fd=parent_fd)
+            quarantine_cleanup(name,fd,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_RECOVERY_STAGE_BEFORE_CLEANUP")
         current=os.fstat(signature_fd)
         if current.st_nlink!=2:abort("unsafe permanent signature journal")
         verify_path_binding(journal,signature_fd,current);verify_path_binding(output_name,signature_fd,current);os.fsync(parent_fd)
@@ -150,17 +161,36 @@ def path_exists(name):
     try:os.stat(name,dir_fd=parent_fd,follow_symlinks=False);return True
     except FileNotFoundError:return False
 
+def acquire_output_lock(output_digest):
+    name=f".steam-top-signature-lock-{output_digest}";fd=os.open(name,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=parent_fd);info=os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o600 or info.st_nlink!=1:os.close(fd);abort("unsafe signature publication lock")
+    fcntl.flock(fd,fcntl.LOCK_EX);verify_path_binding(name,fd,info)
+    if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_LOCK_READY"):
+        ready=os.environ["STEAM_TOP_POLICY_SIGNER_TEST_LOCK_READY"];go=os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_LOCK_CONTINUE","")
+        marker=os.open(ready,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);os.close(marker)
+        for _ in range(1000):
+            if go and os.path.exists(go):break
+            time.sleep(0.01)
+        else:os.close(fd);abort("test lock barrier timeout")
+    return fd
+
+def validate_namespace(output_digest,journal):
+    journal_prefix=f".steam-top-signature-journal-{output_digest}-";matching=[];quarantine_prefix=f".steam-top-signature-quarantine-{output_digest}-"
+    for name in os.listdir(parent_fd):
+        if name.startswith(journal_prefix):
+            if not re.fullmatch(re.escape(journal_prefix)+r"[a-f0-9]{64}",name):abort("malformed signature journal name")
+            info=os.stat(name,dir_fd=parent_fd,follow_symlinks=False)
+            if not safe_signature(info):abort("unsafe signature journal")
+            matching.append(name)
+        if name.startswith(quarantine_prefix):
+            if not re.fullmatch(re.escape(quarantine_prefix)+r"[1-9][0-9]*-[a-f0-9]{16}",name):abort("malformed signature quarantine")
+            abort("signature quarantine requires manual review")
+    if len(matching)>1 or matching and matching[0]!=journal:abort("stale or ambiguous signature journal")
+
 def prepare_recovery(entry,key_reference,key_handle,signer_id):
     output_digest=hashlib.sha256(output_name.encode()).hexdigest();entry_digest=hashlib.sha256(entry).hexdigest()
     stage_prefix=f".steam-top-signature-stage-{output_digest}-";journal_prefix=f".steam-top-signature-journal-{output_digest}-";journal=f"{journal_prefix}{entry_digest}"
-    matching=[]
-    for name in os.listdir(parent_fd):
-        if not name.startswith(journal_prefix):continue
-        if not re.fullmatch(re.escape(journal_prefix)+r"[a-f0-9]{64}",name):abort("malformed signature journal name")
-        info=os.stat(name,dir_fd=parent_fd,follow_symlinks=False)
-        if not safe_signature(info):abort("unsafe signature journal")
-        matching.append(name)
-    if len(matching)>1 or matching and matching[0]!=journal:abort("stale or ambiguous signature journal")
+    validate_namespace(output_digest,journal)
     if recover_journal(journal,entry,key_reference,key_handle,signer_id,stage_prefix):return stage_prefix,journal,True
     stages=[]
     for name in os.listdir(parent_fd):
@@ -178,8 +208,7 @@ def prepare_recovery(entry,key_reference,key_handle,signer_id):
     if stages:
         name,info,stage_handle=stages[0]
         if info.st_nlink==1 and not path_exists(output_name):
-            verify_path_binding(name,stage_handle,info);swap_stage_for_test(name,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_UNPUBLISHED_STAGE_BEFORE_CLEANUP");verify_path_binding(name,stage_handle,info)
-            os.unlink(name,dir_fd=parent_fd);os.fsync(parent_fd);os.close(stage_handle)
+            quarantine_cleanup(name,stage_handle,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_UNPUBLISHED_STAGE_BEFORE_CLEANUP");os.close(stage_handle)
         else:
             try:final_info=os.stat(output_name,dir_fd=parent_fd,follow_symlinks=False)
             except FileNotFoundError:abort("incomplete legacy signature publication")
@@ -219,10 +248,10 @@ def main():
     if sys.platform!="linux":abort("Linux production host required")
     if len(sys.argv)!=4: abort("usage: signer <key> <entry> <output>")
     key_fd,key_info=open_input(sys.argv[1],{0o600}); entry_fd,entry_info=open_input(sys.argv[2],{0o444,0o644}); parent_fd,output_name=open_parent(sys.argv[3])
-    key_handle=None
+    output_digest=hashlib.sha256(output_name.encode()).hexdigest();lock_handle=acquire_output_lock(output_digest);key_handle=None
     try:
         key_handle,key_reference=secure_key_reference(stable_read(key_fd,key_info));entry=validate(stable_read(entry_fd,entry_info));signer_id=json.loads(entry)["signerKeyId"];prefix,journal,recovered=prepare_recovery(entry,key_reference,key_handle,signer_id)
-        if recovered:return
+        if recovered:validate_namespace(output_digest,journal);return
         old_mask=signal.pthread_sigmask(signal.SIG_BLOCK,CAUGHT)
         try:
             child=subprocess.Popen(["/usr/bin/ssh-keygen","-Y","sign","-n","steam-top-production-policy-root","-f",key_reference],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,pass_fds=(() if key_handle is None else (key_handle,)))
@@ -240,6 +269,7 @@ def main():
             os.close(stage_fd);stage_fd=None;raise
         stage_info=os.fstat(stage_fd)
         if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_KILL_STAGE")=="1":os.kill(os.getpid(),signal.SIGKILL)
+        if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_FAIL_AFTER_STAGE")=="1":abort("test failure after stage")
         old_mask=signal.pthread_sigmask(signal.SIG_BLOCK,CAUGHT)
         try:
             swap_stage_for_test(stage_name,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_FRESH_STAGE_BEFORE_JOURNAL");verify_path_binding(stage_name,stage_fd,stage_info)
@@ -252,18 +282,17 @@ def main():
             if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_KILL_OUTPUT")=="1":os.kill(os.getpid(),signal.SIGKILL)
             if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_SIGNAL_OUTPUT")=="1":os.kill(os.getpid(),signal.SIGTERM)
         finally:signal.pthread_sigmask(signal.SIG_SETMASK,old_mask)
-        current=os.fstat(stage_fd);verify_path_binding(stage_name,stage_fd,current)
-        swap_stage_for_test(stage_name,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_FRESH_STAGE_BEFORE_CLEANUP");verify_path_binding(stage_name,stage_fd,current)
-        os.unlink(stage_name,dir_fd=parent_fd);stage_created=False
+        quarantine_cleanup(stage_name,stage_fd,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_FRESH_STAGE_BEFORE_CLEANUP");stage_created=False
         current=os.fstat(stage_fd)
         if current.st_nlink!=2:abort("unsafe fresh signature journal")
         verify_path_binding(journal,stage_fd,current);verify_path_binding(output_name,stage_fd,current)
         os.close(stage_fd);stage_fd=None
         if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_KILL_AFTER_UNLINK")=="1":os.kill(os.getpid(),signal.SIGKILL)
-        os.fsync(parent_fd)
+        os.fsync(parent_fd);validate_namespace(output_digest,journal)
     finally:
         os.close(key_fd); os.close(entry_fd)
         if key_handle is not None:os.close(key_handle)
+        verify_path_binding(f".steam-top-signature-lock-{output_digest}",lock_handle,os.fstat(lock_handle));os.close(lock_handle)
 
 if __name__=="__main__":
     for caught in CAUGHT: signal.signal(caught,on_signal)
@@ -273,9 +302,7 @@ if __name__=="__main__":
             try:
                 info=os.fstat(stage_fd)
                 if info.st_nlink==1:
-                    verify_path_binding(stage_name,stage_fd,info)
-                    swap_stage_for_test(stage_name,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_UNPUBLISHED_STAGE_BEFORE_CLEANUP");verify_path_binding(stage_name,stage_fd,info)
-                    os.unlink(stage_name,dir_fd=parent_fd);os.fsync(parent_fd)
+                    quarantine_cleanup(stage_name,stage_fd,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_UNPUBLISHED_STAGE_BEFORE_CLEANUP")
             except (FileNotFoundError,ValueError):pass
         if stage_fd is not None:os.close(stage_fd);stage_fd=None
         print(str(error),file=sys.stderr); sys.exit(1)
