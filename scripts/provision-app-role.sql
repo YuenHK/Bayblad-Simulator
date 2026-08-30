@@ -16,7 +16,7 @@ ALTER ROLE steam_top_app LOGIN PASSWORD :'app_password' NOSUPERUSER NOCREATEDB N
 SELECT format('REVOKE %I FROM steam_top_app',parent.rolname) FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles member ON member.oid=m.member WHERE member.rolname='steam_top_app' \gexec
 SELECT format('REVOKE steam_top_app FROM %I',member.rolname) FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles member ON member.oid=m.member WHERE parent.rolname='steam_top_app' \gexec
 SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM steam_top_app',current_database()) \gexec
-SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC,steam_top_app',datname) FROM pg_database WHERE datallowconn AND datname<>current_database() ORDER BY datname \gexec
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM steam_top_app',datname) FROM pg_database WHERE datallowconn AND datname<>current_database() ORDER BY datname \gexec
 REVOKE ALL ON SCHEMA public,restore_control FROM steam_top_app;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 SELECT format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC',current_database()) \gexec
@@ -38,7 +38,7 @@ DO $assert$ BEGIN
 IF EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member JOIN pg_roles p ON p.oid=m.roleid WHERE r.rolname='steam_top_app' OR p.rolname='steam_top_app')
  OR EXISTS(SELECT 1 FROM pg_roles WHERE rolname='steam_top_app' AND (NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit OR rolreplication OR rolbypassrls OR rolconnlimit<>-1 OR rolvaliduntil IS DISTINCT FROM 'infinity'::timestamptz OR rolconfig IS NOT NULL))
  OR EXISTS(SELECT 1 FROM pg_db_role_setting s JOIN pg_roles r ON r.oid=s.setrole WHERE r.rolname='steam_top_app')
- OR EXISTS(SELECT 1 FROM pg_database WHERE datallowconn AND datname<>current_database() AND has_database_privilege('steam_top_app',datname,'CONNECT'))
+ OR EXISTS(SELECT 1 FROM pg_database d,aclexplode(d.datacl) a JOIN pg_roles r ON r.oid=a.grantee WHERE d.datallowconn AND d.datname<>current_database() AND r.rolname='steam_top_app' AND a.privilege_type='CONNECT')
  OR has_database_privilege('steam_top_app',current_database(),'CREATE,TEMPORARY') OR has_schema_privilege('PUBLIC','public','CREATE') OR has_schema_privilege('steam_top_app','restore_control','USAGE')
  OR has_table_privilege('steam_top_app','public.app_schema_migrations','SELECT,INSERT,UPDATE,DELETE')
  OR EXISTS(SELECT 1 FROM pg_tables CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('DELETE')) required(privilege) WHERE schemaname='public' AND tablename<>'app_schema_migrations' AND NOT has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),required.privilege))

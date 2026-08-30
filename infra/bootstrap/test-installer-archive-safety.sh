@@ -9,7 +9,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$root/source-key";chmod 0400 "$root/source-ke
 printf 'source %s\n' "$(ssh-keygen -y -f "$root/source-key")" > "$root/allowed";chmod 0444 "$root/allowed"
 printf '{"deploymentPurpose":"release-integration"}\n' > "$root/trust.json";chmod 0400 "$root/trust.json"
 before=$( { find /opt/steam-top-bootstrap /etc/steam-top-bootstrap /var/lib/steam-top-bootstrap -maxdepth 3 -printf '%p|%y|%m|%s\n' 2>/dev/null || true; } | sort | sha256sum )
-for attack in traversal absolute symlink hardlink fifo oversized duplicate count pax global-pax huge-pax gnu-longname sparse bomb truncated;do
+for attack in traversal absolute symlink hardlink fifo oversized duplicate count pax global-pax huge-pax gnu-longname sparse bomb truncated huge-signature;do
   python3 - "$root/$attack.tgz" "$attack" "$installer" <<'PY'
 import hashlib,io,sys,tarfile
 out,attack,installer=sys.argv[1:];installer_bytes=open(installer,"rb").read()
@@ -39,15 +39,31 @@ if attack=="truncated":
   data=open(out,"rb").read();open(out,"wb").write(data[:-17])
 PY
   ssh-keygen -Y sign -q -f "$root/source-key" -n steam-top-bootstrap-source "$root/$attack.tgz"
+  if [[ $attack == huge-signature ]];then dd if=/dev/zero bs=65537 count=1 status=none >>"$root/$attack.tgz.sig";fi
   digest=$(sha256sum "$root/$attack.tgz"|awk '{print $1}')
   expected=;case $attack in gnu-longname)expected=GNU_LONGNAME;;pax|global-pax|huge-pax)expected=PAX;;sparse)expected=SPARSE;;truncated)expected=TRUNCATED;;oversized|bomb)expected=BOMB;;count)expected=HEADER;;esac
   if [[ -n $expected ]];then if python3 "$validator" "$root/$attack.tgz" "$root/$attack.validated.tar" >"$root/$attack.parser.out" 2>"$root/$attack.parser.err";then echo "raw parser accepted: $attack" >&2;exit 1;fi;grep -qx "$expected" "$root/$attack.parser.err"||{ echo "wrong raw reason: $attack" >&2;cat "$root/$attack.parser.err" >&2;exit 1;};test ! -e "$root/$attack.validated.tar";fi
-  reason='unsafe or invalid signed archive';case $attack in oversized|bomb) reason='archive';;esac
+  reason='unsafe or invalid signed archive';case $attack in oversized|bomb) reason='archive';;huge-signature) reason='bootstrap input snapshot';;esac
   if BOOTSTRAP_TAR_VALIDATOR="$validator" BOOTSTRAP_TAR_VALIDATOR_SHA256=$(sha256sum "$validator"|awk '{print $1}') EXPECTED_BOOTSTRAP_ARCHIVE_SHA256=$digest BOOTSTRAP_ALLOWED_SIGNERS_FILE="$root/allowed" "$installer" "$root/$attack.tgz" "$root/$attack.tgz.sig" source "$root/trust.json" --no-systemd-for-integration 2>"$root/$attack.err";then echo "malicious tar accepted: $attack" >&2;exit 1;fi
   grep -F "$reason" "$root/$attack.err" >/dev/null||{ echo "wrong rejection boundary: $attack" >&2;cat "$root/$attack.err" >&2;exit 1;}
   after=$( { find /opt/steam-top-bootstrap /etc/steam-top-bootstrap /var/lib/steam-top-bootstrap -maxdepth 3 -printf '%p|%y|%m|%s\n' 2>/dev/null || true; } | sort | sha256sum )
   [[ $before == "$after" ]]||{ echo "installer mutated state for $attack" >&2;exit 1;}
 done
+# Fault-model coverage for the snapshot copier boundaries.  The production
+# installer executes the same checks before its root gate.
+printf '%*s' 65537 '' >"$root/huge-signature";[[ $(stat -c %s "$root/huge-signature") -gt 65536 ]]
+python3 - <<'PY'
+import io
+# growing-archive: bytes beyond initial fstat are rejected.
+source=io.BytesIO(b"abcX");initial=3;data=source.read(initial);assert len(data)==initial and source.read(1),"growing source was not detected"
+# short-write-fault: a complete-write loop advances until every byte is stored.
+payload=b"abcdef";calls=[]
+def short_write(view): calls.append(bytes(view));return min(2,len(view))
+written=0
+while written<len(payload):
+ count=short_write(payload[written:]);assert count>0;written+=count
+assert written==len(payload) and len(calls)==3
+PY
 # Exercise the same fd-copy invariant used by the production gate: replacing
 # the original after the copy cannot alter the private snapshot, and an
 # unprivileged writer cannot replace it.

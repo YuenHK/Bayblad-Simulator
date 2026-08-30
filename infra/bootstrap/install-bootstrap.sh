@@ -15,17 +15,24 @@ tmp=$(mktemp -d);chmod 0700 "$tmp";trap 'rm -rf "$tmp"' EXIT
 python3 - "$archive" "$signature" "$tmp" <<'PY'||die "bootstrap input snapshot"
 import os,stat,sys
 sources=sys.argv[1:3];target=sys.argv[3]
-for source,name in zip(sources,("archive.tgz","archive.tgz.sig")):
+for source,name,minimum,maximum in zip(sources,("archive.tgz","archive.tgz.sig"),(1,1),(8_388_608,65_536)):
  fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
  try:
-  meta=os.fstat(fd)
-  if not stat.S_ISREG(meta.st_mode):raise SystemExit(1)
+  initial=os.fstat(fd);size=initial.st_size
+  if not stat.S_ISREG(initial.st_mode) or size<minimum or size>maximum:raise SystemExit(1)
   out=os.open(os.path.join(target,name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o444)
   try:
-   while True:
-    chunk=os.read(fd,65536)
+   copied=0
+   while copied<size:
+    chunk=os.read(fd,min(65536,size-copied))
     if not chunk:break
-    os.write(out,chunk)
+    written=0
+    while written<len(chunk):
+     count=os.write(out,chunk[written:])
+     if count<=0:raise SystemExit(1)
+     written+=count
+    copied+=len(chunk)
+   if copied!=size or os.read(fd,1) or os.fstat(fd).st_size!=size:raise SystemExit("snapshot source changed")
    os.fchmod(out,0o444);os.fsync(out)
   finally:os.close(out)
  finally:os.close(fd)
