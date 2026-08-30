@@ -6,9 +6,9 @@ const [rootArg, outputArg] = process.argv.slice(2);
 if (!rootArg || !outputArg) throw new Error("root and output required");
 const root = resolve(rootArg);
 const output = resolve(outputArg);
-const fixed = ["Caddyfile", "compose.yaml", "compose.release-integration.yaml"];
-const trees = ["scripts", "infra/backup", "apps/server/dist/admin"];
-const allowed = /\.(?:sh|mjs|js)$/u;
+const fixed = ["Caddyfile", "compose.yaml", "compose.canonical-app.yaml", "compose.release-integration.yaml"];
+const trees = ["scripts", "infra/backup", "apps/server/dist/admin", "drizzle"];
+const allowed = /\.(?:sh|mjs|js|sql)$/u;
 const files = [...fixed];
 for (const tree of trees) {
   const walk = (directory) => {

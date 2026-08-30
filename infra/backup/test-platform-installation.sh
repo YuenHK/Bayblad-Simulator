@@ -13,3 +13,8 @@ claim "$a" "$b" "$c";[[ $(psql "$url" -Atqc 'select count(*) from restore_contro
 psql "$url" -c "delete from restore_control.platform_installation;insert into identities(status,display_name) values('active','x')" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
 psql "$url" -c "delete from identities;create table unexpected_durable_state(id bigint)" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
 psql "$url" -c "drop table unexpected_durable_state;create table restore_control.unexpected_authority(id bigint)" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
+psql "$url" -c "drop table restore_control.unexpected_authority;alter table restore_control.platform_installation add column unexpected_column text" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
+psql "$url" -c "alter table restore_control.platform_installation drop column unexpected_column;create index unexpected_authority_idx on restore_control.platform_installation(host_id)" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
+psql "$url" -c "drop index restore_control.unexpected_authority_idx;create type restore_control.unexpected_type as enum('x')" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
+psql "$url" -c "drop type restore_control.unexpected_type;create or replace function restore_control.deletion_audit_sha256() returns text language sql stable as 'select ''wrong''::text'" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
+psql "$url" -v ON_ERROR_STOP=1 -f "$root/drizzle/0001_cutover_state_machine.sql" >/dev/null;psql "$url" -c "grant select on restore_control.platform_installation to public" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi

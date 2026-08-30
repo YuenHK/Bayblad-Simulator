@@ -7,6 +7,8 @@ if (!baseOnly) {
   for (const name of ["SERVER_IMAGE", "WEB_IMAGE", "DATABASE_IMAGE"]) {
     if (!/^[a-z0-9][a-z0-9._\/-]*@sha256:[a-f0-9]{64}$/u.test(values[name] ?? "")) throw new Error(`${name} must be repository@sha256:<64 lowercase hex>`);
   }
+  if(process.env.DEPLOYMENT_AUTHORIZATION_PURPOSE!=="release-integration") { const ownerUrl=new URL(values.DATABASE_URL??""),appUrl=new URL(values.APP_DATABASE_URL??"");
+  if(ownerUrl.username==="steam_top_app"||appUrl.username!=="steam_top_app"||decodeURIComponent(appUrl.password)!==values.APP_DATABASE_PASSWORD||appUrl.hostname!==ownerUrl.hostname||appUrl.pathname!==ownerUrl.pathname||appUrl.searchParams.get("sslmode")!=="require")throw new Error("owner migration and non-owner app database identities must be separate and exact"); }
 }
 for (const prefix of ["NODE", "POSTGRES", "CADDY"]) {
   const repository = values[`${prefix}_IMAGE_REPOSITORY`] ?? "";

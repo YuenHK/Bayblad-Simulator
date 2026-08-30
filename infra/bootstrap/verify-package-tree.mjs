@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 const [rootArg, installerArg] = process.argv.slice(2);
 if (!rootArg || !installerArg) process.exit(2);
 const root = resolve(rootArg);
@@ -23,4 +23,4 @@ for (const [name, item] of expected) {
   if (digest !== item.digest) throw new Error(`invalid bootstrap file digest: ${name}`);
 }
 const installerDigest = createHash("sha256").update(await readFile(resolve(installerArg))).digest("hex");
-if (installerDigest !== expected.get("install-bootstrap.sh").digest || basename(resolve(installerArg)) !== "install-bootstrap.sh") throw new Error("running installer is not the signed installer");
+if (installerDigest !== expected.get("install-bootstrap.sh").digest) throw new Error("running installer is not the signed installer");
