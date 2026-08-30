@@ -235,6 +235,7 @@ describe("rollback deletion monotonicity", () => {
     for(const state of ["legacy-committed","preflight-recorded","connect-granted-pending-smoke","smoke-observed","verified","aborted"])expect(cutoverMigration).toContain(state);
     expect(cutoverMigration).toContain("pg_get_constraintdef");
     expect(cutoverMigration).not.toContain("contype='c' LOOP");
+    expect(read("infra/backup/import-legacy-cutover.sh")).toContain("state='legacy-committed' for update");
     for(const column of ["deadline_at","lease_owner","lease_generation","ledger_hash","ready_sha256","preflight_sha256","smoke_evidence_payload_b64","smoke_evidence_sha256","final_receipt_sha256","final_receipt_payload_b64"])expect(cutoverMigration).toContain(column);
     expect(cutoverMigration).toContain("deletion_audit_sha256");
     expect(read(".github/workflows/db.yml")).toContain("test-cutover-migration.sh");
