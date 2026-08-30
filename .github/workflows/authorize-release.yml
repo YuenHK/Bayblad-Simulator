@@ -51,6 +51,9 @@ jobs:
           jq -r .rootAllowedSignersB64 <<<"$anchor"|base64 --decode > "$RUNNER_TEMP/root-allowed-signers";chmod 0400 "$RUNNER_TEMP/root-allowed-signers"
           ROOT_KEY_SHA256=$(jq -r .rootKeySha256 <<<"$anchor");LEDGER_GENERATION=$(jq -r .ledgerGeneration <<<"$anchor");LEDGER_RECEIPT_DIGEST=$(jq -r .ledgerReceiptDigest <<<"$anchor")
           repo_id=$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)
+          test "$(jq -r .rotationRepositoryId <<<"$anchor")" = "$repo_id";test "$(jq -r .rotationRepositoryName <<<"$anchor")" = "$GITHUB_REPOSITORY"
+          test "$(jq -r .rotationWorkflowRef <<<"$anchor")" = "$GITHUB_REPOSITORY/.github/workflows/rotate-production-policy.yml@refs/heads/$default_branch"
+          [[ $(jq -r .rotationWorkflowSha <<<"$anchor") =~ ^[a-f0-9]{40}$ ]]
           ledger=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-ledger.mjs" "$GITHUB_WORKSPACE/trusted" "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head" "$trusted_bundle" "$ROOT_KEY_SHA256" "$LEDGER_GENERATION" "$LEDGER_RECEIPT_DIGEST")
           test "$(jq -r .latest.bundleSha256 <<<"$ledger")" = "$trusted_bundle"
           candidate_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/candidate" "$trusted_bundle" "$RUNNER_TEMP/candidate-policy-manifest.json")
