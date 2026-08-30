@@ -48,8 +48,11 @@ describe("release CI contract", () => {
 
   it("publishes immutable application images and an auditable release manifest", () => {
     expect(workflow).toContain("release-images:");
+    expect(workflow).toContain("docker/setup-buildx-action@");
     expect(workflow).toContain("docker buildx build");
+    expect(workflow.match(/--platform linux\/amd64,linux\/arm64/gu)).toHaveLength(3);
     expect(workflow).toContain("--provenance=mode=max");
+    expect(workflow.match(/verify-multiarch-image\.mjs/gu)).toHaveLength(3);
     expect(workflow).toContain("scripts/create-release-manifest.mjs");
     expect(workflow).toContain("release-manifest");
     expect(workflow).toContain("actions/attest-build-provenance@");
