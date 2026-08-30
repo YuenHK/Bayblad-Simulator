@@ -16,6 +16,7 @@ jobs:
     environment: production
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    concurrency: { group: production-deployment-status-authority, cancel-in-progress: false }
     permissions: { contents: read, actions: read, deployments: write, id-token: write, attestations: write }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

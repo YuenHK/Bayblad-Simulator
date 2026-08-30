@@ -5,12 +5,13 @@ on:
     types: [completed]
 permissions: { contents: read }
 concurrency:
-  group: production-e2e-status-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  group: production-deployment-status-authority
   cancel-in-progress: false
 jobs:
   terminal-reconcile:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    concurrency: { group: production-deployment-status-authority, cancel-in-progress: false }
     permissions: { contents: read, actions: read, deployments: write, id-token: write, attestations: write }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
