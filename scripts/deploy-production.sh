@@ -39,7 +39,7 @@ if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production && $claim_ph
 fi
 if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production ]];then
   app_password=$(sed -n 's/^APP_DATABASE_PASSWORD=//p' "$snapshot/canonical.env");[[ -n $app_password ]]||die "app database password missing"
-  PGSERVICE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgService') PGSERVICEFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgServiceFile') PGPASSFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgPassFile') psql -X -v ON_ERROR_STOP=1 -q -v app_password="$app_password" -f "$runtime/scripts/provision-app-role.sql" >/dev/null
+  PGSERVICE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgService') PGSERVICEFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgServiceFile') PGPASSFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgPassFile') psql -X -v ON_ERROR_STOP=1 -q -v app_password="$app_password" -f "$root/scripts/provision-app-role.sql" >/dev/null
   unset app_password
 fi
 "${compose[@]}" up -d --wait

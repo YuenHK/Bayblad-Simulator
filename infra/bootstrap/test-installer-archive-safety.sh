@@ -8,11 +8,13 @@ ssh-keygen -q -t ed25519 -N '' -f "$root/source-key";chmod 0400 "$root/source-ke
 printf 'source %s\n' "$(ssh-keygen -y -f "$root/source-key")" > "$root/allowed";chmod 0444 "$root/allowed"
 printf '{"deploymentPurpose":"release-integration"}\n' > "$root/trust.json";chmod 0400 "$root/trust.json"
 before=$( { find /opt/steam-top-bootstrap /etc/steam-top-bootstrap /var/lib/steam-top-bootstrap -maxdepth 3 -printf '%p|%y|%m|%s\n' 2>/dev/null || true; } | sort | sha256sum )
-for attack in traversal absolute symlink hardlink fifo oversized duplicate count pax gnu-longname sparse bomb;do
+for attack in traversal absolute symlink hardlink fifo oversized duplicate count pax global-pax huge-pax gnu-longname sparse bomb truncated;do
   python3 - "$root/$attack.tgz" "$attack" <<'PY'
 import io,sys,tarfile
 out,attack=sys.argv[1:]
-with tarfile.open(out,"w:gz",format=tarfile.PAX_FORMAT if attack=="pax" else tarfile.GNU_FORMAT) as tar:
+kwargs={"format":tarfile.PAX_FORMAT if attack in {"pax","global-pax","huge-pax"} else tarfile.GNU_FORMAT}
+if attack in {"global-pax","huge-pax"}:kwargs["pax_headers"]={"comment":"x"*(100_000 if attack=="huge-pax" else 1)}
+with tarfile.open(out,"w:gz",**kwargs) as tar:
   manifest=b"0"*64+b" 0555 install-bootstrap.sh\n"
   info=tarfile.TarInfo("bootstrap-files.sha256");info.size=len(manifest);info.mode=0o644;info.uid=info.gid=0;tar.addfile(info,io.BytesIO(manifest))
   if attack=="count":
@@ -31,6 +33,8 @@ with tarfile.open(out,"w:gz",format=tarfile.PAX_FORMAT if attack=="pax" else tar
   else:info.size=1
   tar.addfile(info,None if attack in {"symlink","hardlink","fifo"} else io.BytesIO(b"x"*info.size))
   if attack=="duplicate":tar.addfile(info,io.BytesIO(b"x"))
+if attack=="truncated":
+  data=open(out,"rb").read();open(out,"wb").write(data[:-17])
 PY
   ssh-keygen -Y sign -q -f "$root/source-key" -n steam-top-bootstrap-source "$root/$attack.tgz"
   digest=$(sha256sum "$root/$attack.tgz"|awk '{print $1}')
