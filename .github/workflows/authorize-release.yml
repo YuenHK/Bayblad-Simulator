@@ -54,7 +54,7 @@ jobs:
           test "$(jq -r .rotationRepositoryId <<<"$anchor")" = "$repo_id";test "$(jq -r .rotationRepositoryName <<<"$anchor")" = "$GITHUB_REPOSITORY"
           test "$(jq -r .rotationWorkflowRef <<<"$anchor")" = "$GITHUB_REPOSITORY/.github/workflows/rotate-production-policy.yml@refs/heads/$default_branch"
           [[ $(jq -r .rotationWorkflowSha <<<"$anchor") =~ ^[a-f0-9]{40}$ ]]
-          ledger=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-ledger.mjs" "$GITHUB_WORKSPACE/trusted" "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head" "$trusted_bundle" "$ROOT_KEY_SHA256" "$LEDGER_GENERATION" "$LEDGER_RECEIPT_DIGEST")
+          ledger=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-ledger.mjs" "$GITHUB_WORKSPACE/trusted" "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head" "$trusted_bundle" "$ROOT_KEY_SHA256" "$LEDGER_GENERATION" "$LEDGER_RECEIPT_DIGEST" "$(jq -r .ledgerAnchorSha256 <<<"$anchor")" "$(jq -r .ledgerAnchorGeneration <<<"$anchor")")
           test "$(jq -r .latest.bundleSha256 <<<"$ledger")" = "$trusted_bundle"
           candidate_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/candidate" "$trusted_bundle" "$RUNNER_TEMP/candidate-policy-manifest.json")
           /usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-deployment-permissions.mjs" "$GITHUB_WORKSPACE/candidate"
