@@ -11,16 +11,18 @@ CREATE TABLE IF NOT EXISTS restore_control.finalize_outbox (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 --> statement-breakpoint
-DO $$ DECLARE legacy record; state_attnum smallint; expression text; BEGIN
+DO $$ DECLARE legacy record; normalized text; state_attnum smallint; BEGIN
   SELECT attnum INTO state_attnum FROM pg_attribute WHERE attrelid='restore_control.finalize_outbox'::regclass AND attname='state' AND NOT attisdropped;
-  FOR legacy IN SELECT oid,conname,conbin,conrelid,conkey FROM pg_constraint WHERE conrelid='restore_control.finalize_outbox'::regclass AND contype='c' LOOP
-    expression:=pg_get_expr(legacy.conbin,legacy.conrelid);
-    IF array_length(legacy.conkey,1)=1 AND legacy.conkey[1]=state_attnum
-       AND position('committed' in expression)>0
-       AND expression !~ 'legacy-committed|preflight-recorded|connect-granted-pending-smoke|smoke-observed|verified|aborted' THEN
-      EXECUTE format('ALTER TABLE restore_control.finalize_outbox DROP CONSTRAINT %I',legacy.conname);
+  SELECT oid,conbin,conrelid,conkey INTO legacy FROM pg_constraint
+    WHERE conrelid='restore_control.finalize_outbox'::regclass AND contype='c' AND conname='finalize_outbox_state_check';
+  IF FOUND THEN
+    normalized:=lower(regexp_replace(pg_get_expr(legacy.conbin,legacy.conrelid),'[[:space:]()]|::text|::character varying','','g'));
+    IF array_length(legacy.conkey,1)<>1 OR legacy.conkey[1]<>state_attnum
+       OR normalized NOT IN ('state=''committed''','state=any(array[''committed''])') THEN
+      RAISE EXCEPTION 'finalize_outbox_state_check is not the known committed-only legacy constraint';
     END IF;
-  END LOOP;
+    ALTER TABLE restore_control.finalize_outbox DROP CONSTRAINT finalize_outbox_state_check;
+  END IF;
 END $$;
 --> statement-breakpoint
 ALTER TABLE restore_control.finalize_outbox
