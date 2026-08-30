@@ -27,7 +27,7 @@ if [[ ! -e /opt/steam-top/current ]];then
   else echo not-applicable-clean-host;fi
 else
   /opt/steam-top-bootstrap/reconcile-cutover-pending.sh
-  if [[ -e $marker || -e $marker_sig ]];then verify_marker||die "first deploy marker invalid";mv "$marker" "$tombstone";mv "$marker_sig" "$tombstone.sig";fi
+  if [[ -e $marker || -e $marker_sig ]];then verify_marker||die "first deploy marker invalid";marker_nonce=$(node -p 'require(process.argv[1]).nonce' "$marker");/opt/steam-top-bootstrap/advance-first-deploy-state.sh consumed "$marker_nonce";mv "$marker" "$tombstone";mv "$marker_sig" "$tombstone.sig";PGSERVICE=${values[0]} PGSERVICEFILE=${values[1]} PGPASSFILE=${values[2]} psql -X -v ON_ERROR_STOP=1 -q -v nonce="$marker_nonce" -c "update restore_control.platform_installation set generation=generation+1 where singleton and authorization_nonce=:'nonce'" >/dev/null;fi
 fi
 systemctl is-enabled --quiet steam-top-cutover-reaper.timer||die "timer disabled";systemctl is-active --quiet steam-top-cutover-reaper.timer||die "timer inactive"
 [[ $(systemctl show steam-top-cutover-reaper.service -p Result --value) == success ]]||die "service result";[[ $(systemctl show steam-top-cutover-reaper.service -p ExecMainStatus --value) == 0 ]]||die "service exit"
