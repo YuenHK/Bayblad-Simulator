@@ -311,6 +311,8 @@ jobs:
           sudo install -o root -g root -m 0555 "$RUNNER_TEMP/install-bootstrap" /usr/local/sbin/install-steam-top-bootstrap
           sudo install -d -o root -g root -m 0555 /usr/local/libexec;sudo install -o root -g root -m 0444 "$RUNNER_TEMP/validate-bootstrap-tar.py" /usr/local/libexec/steam-top-validate-bootstrap-tar.py
           sudo env BOOTSTRAP_TAR_VALIDATOR=/usr/local/libexec/steam-top-validate-bootstrap-tar.py BOOTSTRAP_TAR_VALIDATOR_SHA256="$VALIDATOR_SHA256" EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$BOOTSTRAP_ARCHIVE_SHA256" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-production-e2e/bootstrap-allowed /usr/local/sbin/install-steam-top-bootstrap bootstrap/bootstrap.tgz bootstrap/bootstrap.tgz.sig bootstrap /run/steam-top-production-e2e/trust.json --install-systemd --initialize-first-deploy "$PRODUCTION_E2E_NONCE"
+          sudo /opt/steam-top-bootstrap/invoke-production-policy-signer.py --verify-install
+          sudo "$GITHUB_WORKSPACE/scripts/verify-and-create-production-policy-entry.sh" --verify-install
           sudo /opt/steam-top-bootstrap/prepare-release.sh "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/production-authorization.json" "$GITHUB_WORKSPACE/pending-production.json" /run/steam-top-production-e2e/secrets/github-token /run/steam-top-production-e2e/authorization
       - name: Deploy through the canonical production host core
         env: { GH_TOKEN: "${{ github.token }}" }
@@ -550,6 +552,8 @@ jobs:
           sudo install -o root -g root -m 0444 "$RUNNER_TEMP/bootstrap-allowed-signers" /run/steam-top-bootstrap-release/allowed
           sudo install -o root -g root -m 0400 "$RUNNER_TEMP/bootstrap-trust.json" /run/steam-top-bootstrap-release/trust.json
           sudo env BOOTSTRAP_TAR_VALIDATOR=/usr/local/libexec/steam-top-validate-bootstrap-tar.py BOOTSTRAP_TAR_VALIDATOR_SHA256="$VALIDATOR_SHA256" EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$BOOTSTRAP_ARCHIVE_SHA256" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-release/allowed /usr/local/sbin/install-steam-top-bootstrap bootstrap/bootstrap.tgz bootstrap/bootstrap.tgz.sig bootstrap /run/steam-top-bootstrap-release/trust.json --no-systemd-for-integration
+          sudo /opt/steam-top-bootstrap/invoke-production-policy-signer.py --verify-install
+          sudo "$GITHUB_WORKSPACE/scripts/verify-and-create-production-policy-entry.sh" --verify-install
           sudo rm -rf /run/steam-top-bootstrap-release
       - name: Verify externally attested root runtime manifest
         env: { GH_TOKEN: "${{ github.token }}" }

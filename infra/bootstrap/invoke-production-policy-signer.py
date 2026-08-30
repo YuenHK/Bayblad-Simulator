@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 import hashlib,json,os,re,stat,sys,time
 MANIFEST="/etc/steam-top-bootstrap/policy-signer-manifest.json";OWNER=0;TEST_ONLY=False
+if sys.platform!="linux" and not (os.geteuid()!=0 and len(sys.argv)>1 and sys.argv[1]=="--test-manifest"):raise SystemExit("Linux production host required")
 if os.geteuid()!=0 and len(sys.argv)>2 and sys.argv[1] in ("--test-manifest","--test-exec-manifest"):MANIFEST=sys.argv[2];OWNER=os.getuid();TEST_ONLY=sys.argv[1]=="--test-manifest";del sys.argv[1:3]
 if os.geteuid()==0 and len(sys.argv)>1 and sys.argv[1]=="--verify-install":TEST_ONLY=True;del sys.argv[1]
 KEYS=["schemaVersion","purpose","signerPath","signerSha256","pythonPath","pythonSha256","pythonStat"]

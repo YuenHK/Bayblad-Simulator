@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-import datetime, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, unicodedata
+import datetime, hashlib, json, os, re, signal, stat, subprocess, sys, unicodedata
 
 KEYS = ["schemaVersion","purpose","generation","previousReceiptDigest","repositoryId","repositoryName","policyCommit","policyTreeOid","bundleSha256","anchorSha256","anchorGeneration","createdAt","signerKeyId"]
 HEX = lambda n: re.compile(rf"^[a-f0-9]{{{n}}}$")
@@ -7,6 +7,8 @@ child = None
 parent_fd = None
 output_name = None
 output_created = False
+stage_name = None
+stage_created = False
 CAUGHT = (signal.SIGHUP,signal.SIGINT,signal.SIGTERM)
 
 def abort(message): raise ValueError(message)
@@ -57,24 +59,24 @@ def stable_read(fd, before):
     if identity(os.fstat(fd)) != identity(before): abort("input changed while reading")
     return b"".join(chunks)
 
-def secure_key_reference(key_data, key_path):
-    if hasattr(os,"memfd_create") and os.path.isdir("/proc/self/fd"):
-        fd=os.memfd_create("steam-top-policy-key",0);offset=0
-        while offset<len(key_data):offset+=os.write(fd,key_data[offset:])
-        os.lseek(fd,0,os.SEEK_SET);return fd,f"/proc/self/fd/{fd}",None
-    parent=os.path.dirname(os.path.abspath(key_path));prefix=".steam-top-policy-key."
-    for item in os.scandir(parent):
-        try:
-            info=item.stat(follow_symlinks=False)
-            if item.name.startswith(prefix) and stat.S_ISDIR(info.st_mode) and info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o700:shutil.rmtree(item.path)
-        except FileNotFoundError: pass
-    directory=tempfile.mkdtemp(prefix=prefix,dir=parent);path=os.path.join(directory,"key");fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400)
-    try:
-        offset=0
-        while offset<len(key_data):offset+=os.write(fd,key_data[offset:])
-        os.fsync(fd)
-    finally: os.close(fd)
-    return None,path,directory
+def secure_key_reference(key_data):
+    if not hasattr(os,"memfd_create") or not os.path.isdir("/proc/self/fd"):abort("Linux memfd signer required")
+    fd=os.memfd_create("steam-top-policy-key",0);offset=0
+    while offset<len(key_data):offset+=os.write(fd,key_data[offset:])
+    os.lseek(fd,0,os.SEEK_SET);return fd,f"/proc/self/fd/{fd}"
+
+def scavenge_stages():
+    prefix=f".steam-top-signature-stage-{hashlib.sha256(output_name.encode()).hexdigest()}-"
+    for name in os.listdir(parent_fd):
+        match=re.fullmatch(re.escape(prefix)+r"([1-9][0-9]*)-([a-f0-9]{16})",name)
+        if not match:continue
+        info=os.stat(name,dir_fd=parent_fd,follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o400:abort("unsafe signature stage")
+        try:os.kill(int(match.group(1)),0);continue
+        except ProcessLookupError:pass
+        except PermissionError:continue
+        os.unlink(name,dir_fd=parent_fd);os.fsync(parent_fd)
+    return prefix
 
 def validate(raw):
     try: text = raw.decode("utf-8"); value = json.loads(text)
@@ -95,12 +97,13 @@ def validate(raw):
     return raw
 
 def main():
-    global child,parent_fd,output_name,output_created
+    global child,parent_fd,output_name,output_created,stage_name,stage_created
+    if sys.platform!="linux":abort("Linux production host required")
     if len(sys.argv)!=4: abort("usage: signer <key> <entry> <output>")
     key_fd,key_info=open_input(sys.argv[1],{0o600}); entry_fd,entry_info=open_input(sys.argv[2],{0o444,0o644}); parent_fd,output_name=open_parent(sys.argv[3])
-    key_handle=None;key_directory=None
+    key_handle=None
     try:
-        key_handle,key_reference,key_directory=secure_key_reference(stable_read(key_fd,key_info),sys.argv[1])
+        key_handle,key_reference=secure_key_reference(stable_read(key_fd,key_info));prefix=scavenge_stages()
         entry=validate(stable_read(entry_fd,entry_info))
         old_mask=signal.pthread_sigmask(signal.SIG_BLOCK,CAUGHT)
         try:
@@ -110,21 +113,22 @@ def main():
         signature,error=child.communicate(entry)
         if child.returncode: raise RuntimeError(error.decode("utf-8","replace").strip() or "ssh-keygen failed")
         child=None
-        old_mask=signal.pthread_sigmask(signal.SIG_BLOCK,CAUGHT)
-        try:
-            fd=os.open(output_name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400,dir_fd=parent_fd); output_created=True
-            if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_SIGNAL_OUTPUT")=="1":os.kill(os.getpid(),signal.SIGTERM)
-        finally: signal.pthread_sigmask(signal.SIG_SETMASK,old_mask)
+        stage_name=f"{prefix}{os.getpid()}-{os.urandom(8).hex()}";fd=os.open(stage_name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400,dir_fd=parent_fd);stage_created=True
         try:
             offset=0
             while offset<len(signature): offset+=os.write(fd,signature[offset:])
             os.fsync(fd)
         finally: os.close(fd)
-        os.fsync(parent_fd); output_created=False
+        if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_KILL_STAGE")=="1":os.kill(os.getpid(),signal.SIGKILL)
+        old_mask=signal.pthread_sigmask(signal.SIG_BLOCK,CAUGHT)
+        try:
+            os.link(stage_name,output_name,src_dir_fd=parent_fd,dst_dir_fd=parent_fd,follow_symlinks=False);output_created=True
+            if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_SIGNAL_OUTPUT")=="1":os.kill(os.getpid(),signal.SIGTERM)
+        finally:signal.pthread_sigmask(signal.SIG_SETMASK,old_mask)
+        os.fsync(parent_fd);os.unlink(stage_name,dir_fd=parent_fd);stage_created=False;os.fsync(parent_fd);output_created=False
     finally:
         os.close(key_fd); os.close(entry_fd)
         if key_handle is not None:os.close(key_handle)
-        if key_directory is not None:shutil.rmtree(key_directory)
 
 if __name__=="__main__":
     for caught in CAUGHT: signal.signal(caught,on_signal)
@@ -133,6 +137,9 @@ if __name__=="__main__":
         if output_created and parent_fd is not None:
             try: os.unlink(output_name,dir_fd=parent_fd); os.fsync(parent_fd)
             except FileNotFoundError: pass
+        if stage_created and parent_fd is not None:
+            try:os.unlink(stage_name,dir_fd=parent_fd);os.fsync(parent_fd)
+            except FileNotFoundError:pass
         print(str(error),file=sys.stderr); sys.exit(1)
     finally:
         if parent_fd is not None: os.close(parent_fd)

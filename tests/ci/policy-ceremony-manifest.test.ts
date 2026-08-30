@@ -1,0 +1,12 @@
+import {execFileSync} from "node:child_process";
+import {createHash} from "node:crypto";
+import {chmodSync,mkdirSync,mkdtempSync,realpathSync,rmSync,writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {afterEach,expect,it} from "vitest";
+const roots:string[]=[];afterEach(()=>{while(roots.length){const root=roots.pop()!;execFileSync("chmod",["-R","u+w",root]);rmSync(root,{recursive:true,force:true})}});
+const names=[["verify-and-create-production-policy-entry.sh",0o555],["verify-production-policy-anchor.mjs",0o444],["create-production-policy-ledger-entry.mjs",0o444],["verify-attestation-identity.mjs",0o444]] as const;
+const fixture=()=>{const root=mkdtempSync(join(realpathSync(tmpdir()),"ceremony-manifest-"));roots.push(root);const files:Record<string,string>={};for(const [name] of names)files[name]=createHash("sha256").update(`${name}\n`).digest("hex");const digest=createHash("sha256").update(`${JSON.stringify({files})}\n`).digest("hex"),generation=join(root,digest);mkdirSync(generation,{mode:0o700});for(const [name,mode] of names)writeFileSync(join(generation,name),`${name}\n`,{mode});chmodSync(generation,0o555);const manifest=join(root,"manifest.json"),value={schemaVersion:1,purpose:"steam-top-production-policy-ceremony",generationDigest:digest,generationPath:generation,files};writeFileSync(manifest,`${JSON.stringify(value)}\n`,{mode:0o400});return{root,generation,manifest,value}};
+const verify=(x:ReturnType<typeof fixture>)=>execFileSync("/usr/bin/python3",["-I","-E","-S","infra/bootstrap/invoke-production-policy-ceremony.py","--test-manifest",x.manifest,x.root],{stdio:"pipe"});
+it("accepts the exact content-addressed ceremony generation",()=>{expect(()=>verify(fixture())).not.toThrow()});
+it("rejects digest, path, content and unsafe-mode collisions",()=>{for(const mutate of [(x:any)=>x.value.generationDigest="0".repeat(64),(x:any)=>x.value.generationPath=x.root,(x:any)=>{chmodSync(x.generation,0o755);const file=join(x.generation,"verify-production-policy-anchor.mjs");chmodSync(file,0o600);writeFileSync(file,"changed\n");chmodSync(file,0o444);chmodSync(x.generation,0o555)},(x:any)=>chmodSync(x.generation,0o755)]){const x:any=fixture();mutate(x);chmodSync(x.manifest,0o600);writeFileSync(x.manifest,`${JSON.stringify(x.value)}\n`);chmodSync(x.manifest,0o400);expect(()=>verify(x)).toThrow()}});
