@@ -18,31 +18,35 @@ jobs:
     permissions: { contents: read, id-token: write, attestations: write }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with: { ref: "${{ github.workflow_sha }}", path: trusted, persist-credentials: false }
+        with: { ref: "${{ github.workflow_sha }}", path: trusted, fetch-depth: 0, persist-credentials: false }
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with: { ref: "${{ inputs.reviewed_commit }}", path: reviewed, persist-credentials: false }
+        with: { ref: "${{ inputs.reviewed_commit }}", path: reviewed, fetch-depth: 0, persist-credentials: false }
       - name: Build protected rotation receipt
         env:
           REVIEWED_COMMIT: "${{ inputs.reviewed_commit }}"
           GH_TOKEN: "${{ github.token }}"
-          ROOT_ALLOWED_SIGNERS: "${{ vars.PRODUCTION_POLICY_ROOT_ALLOWED_SIGNERS }}"
-          ROOT_KEY_SHA256: "${{ vars.PRODUCTION_POLICY_ROOT_KEY_SHA256 }}"
-          LEDGER_GENERATION: "${{ vars.PRODUCTION_POLICY_LEDGER_GENERATION }}"
-          LEDGER_RECEIPT_DIGEST: "${{ vars.PRODUCTION_POLICY_LEDGER_RECEIPT_DIGEST }}"
+          ORG_VARIABLE_READER_TOKEN: "${{ secrets.PRODUCTION_POLICY_ORG_VARIABLE_READER_TOKEN }}"
         run: |
           set -euo pipefail
           [[ $REVIEWED_COMMIT =~ ^[a-f0-9]{40}$ ]]
-          test -n "$ROOT_ALLOWED_SIGNERS";printf '%s\n' "$ROOT_ALLOWED_SIGNERS" > "$RUNNER_TEMP/root-allowed-signers";chmod 0400 "$RUNNER_TEMP/root-allowed-signers"
+          test -n "$ORG_VARIABLE_READER_TOKEN";org=${GITHUB_REPOSITORY%%/*};test "$org" != "$GITHUB_REPOSITORY"
+          org_var(){ /usr/bin/curl --fail --silent --show-error -H "Authorization: Bearer $ORG_VARIABLE_READER_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/orgs/$org/actions/variables/$1"|jq -er .value; }
+          org_signers_b64=$(org_var STEAM_TOP_POLICY_ROOT_ALLOWED_SIGNERS_B64);ROOT_KEY_SHA256=$(org_var STEAM_TOP_POLICY_ROOT_KEY_SHA256);LEDGER_GENERATION=$(org_var STEAM_TOP_POLICY_LEDGER_GENERATION);LEDGER_RECEIPT_DIGEST=$(org_var STEAM_TOP_POLICY_LEDGER_RECEIPT_DIGEST)
+          printf '%s' "$org_signers_b64"|base64 --decode > "$RUNNER_TEMP/root-allowed-signers";chmod 0400 "$RUNNER_TEMP/root-allowed-signers"
           test "$(git -C trusted rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA";test "$(git -C reviewed rev-parse HEAD)" = "$REVIEWED_COMMIT"
           default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch);default_head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq .sha)
           gh api "repos/$GITHUB_REPOSITORY/compare/$REVIEWED_COMMIT...$default_head" > "$RUNNER_TEMP/ancestry.json"
           jq -e --arg base "$REVIEWED_COMMIT" --arg head "$default_head" '.base_commit.sha==$base and .merge_base_commit.sha==$base and (.status=="ahead" or (.status=="identical" and $base==$head))' "$RUNNER_TEMP/ancestry.json"
           test "$REVIEWED_COMMIT" = "$default_head"
           new_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/reviewed")
+          policy_index=$(mktemp "$RUNNER_TEMP/policy-tree.XXXXXX");rm -f "$policy_index"
+          GIT_INDEX_FILE="$policy_index" git -C reviewed read-tree "$REVIEWED_COMMIT"
+          GIT_INDEX_FILE="$policy_index" git -C reviewed rm -r --cached --ignore-unmatch .production-policy-ledger >/dev/null
+          policy_tree=$(GIT_INDEX_FILE="$policy_index" git -C reviewed write-tree);rm -f "$policy_index"
           repo_id=$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)
           if test -d reviewed/.production-policy-ledger;then latest=$(/usr/bin/node trusted/scripts/verify-production-policy-ledger.mjs reviewed "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head" "$new_bundle" "$ROOT_KEY_SHA256" "$LEDGER_GENERATION" "$LEDGER_RECEIPT_DIGEST");generation=$(jq -r '.latest.generation+1' <<<"$latest");previous=$(jq -r .latestReceiptDigest <<<"$latest");else generation=1;previous=$(printf '0%.0s' {1..64});fi
           verifier_sha=$(sha256sum trusted/scripts/verify-production-policy-bundle.mjs|awk '{print $1}')
-          jq -n --arg repo "$GITHUB_REPOSITORY" --arg repoId "$repo_id" --arg bundle "$new_bundle" --arg oid "$REVIEWED_COMMIT" --arg previous "$previous" --arg ref "$GITHUB_WORKFLOW_REF" --arg sha "$GITHUB_WORKFLOW_SHA" --arg verifier "$verifier_sha" --argjson generation "$generation" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg at "$(date -u +%FT%TZ)" '{schemaVersion:1,purpose:"production-policy-rotation-intent",authorized:false,repositoryId:$repoId,repositoryName:$repo,policyCommit:$oid,nextGeneration:$generation,previousReceiptDigest:$previous,bundleSha256:$bundle,trustedWorkflowRef:$ref,trustedWorkflowSha:$sha,verifierSha256:$verifier,runId:($run|tonumber),runAttempt:($attempt|tonumber),createdAt:$at}' > "$RUNNER_TEMP/production-policy-rotation-receipt.json"
+          jq -n --arg repo "$GITHUB_REPOSITORY" --arg repoId "$repo_id" --arg bundle "$new_bundle" --arg oid "$REVIEWED_COMMIT" --arg tree "$policy_tree" --arg previous "$previous" --arg ref "$GITHUB_WORKFLOW_REF" --arg sha "$GITHUB_WORKFLOW_SHA" --arg verifier "$verifier_sha" --argjson generation "$generation" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg at "$(date -u +%FT%TZ)" '{schemaVersion:1,purpose:"production-policy-rotation-intent",authorized:false,repositoryId:$repoId,repositoryName:$repo,policyCommit:$oid,policyTreeOid:$tree,nextGeneration:$generation,previousReceiptDigest:$previous,bundleSha256:$bundle,trustedWorkflowRef:$ref,trustedWorkflowSha:$sha,verifierSha256:$verifier,runId:($run|tonumber),runAttempt:($attempt|tonumber),createdAt:$at}' > "$RUNNER_TEMP/production-policy-rotation-receipt.json"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: "${{ runner.temp }}/production-policy-rotation-receipt.json" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -13,9 +13,9 @@ jobs:
     permissions: { contents: read, actions: read, id-token: write, attestations: write }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with: { ref: "${{ github.workflow_sha }}", path: trusted, persist-credentials: false }
+        with: { ref: "${{ github.workflow_sha }}", path: trusted, fetch-depth: 0, persist-credentials: false }
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with: { ref: "${{ github.event.workflow_run.head_sha }}", path: candidate, persist-credentials: false }
+        with: { ref: "${{ github.event.workflow_run.head_sha }}", path: candidate, fetch-depth: 0, persist-credentials: false }
       - name: Verify candidate with the protected default-branch policy
         env:
           GH_TOKEN: "${{ github.token }}"
@@ -26,10 +26,7 @@ jobs:
           SOURCE_EVENT: "${{ github.event.workflow_run.event }}"
           TRUSTED_WORKFLOW_SHA: "${{ github.workflow_sha }}"
           TRUSTED_WORKFLOW_REF: "${{ github.workflow_ref }}"
-          ROOT_ALLOWED_SIGNERS: "${{ vars.PRODUCTION_POLICY_ROOT_ALLOWED_SIGNERS }}"
-          ROOT_KEY_SHA256: "${{ vars.PRODUCTION_POLICY_ROOT_KEY_SHA256 }}"
-          LEDGER_GENERATION: "${{ vars.PRODUCTION_POLICY_LEDGER_GENERATION }}"
-          LEDGER_RECEIPT_DIGEST: "${{ vars.PRODUCTION_POLICY_LEDGER_RECEIPT_DIGEST }}"
+          ORG_VARIABLE_READER_TOKEN: "${{ secrets.PRODUCTION_POLICY_ORG_VARIABLE_READER_TOKEN }}"
         run: |
           set -euo pipefail
           [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_HEAD_SHA =~ ^[a-f0-9]{40}$ && $TRUSTED_WORKFLOW_SHA =~ ^[a-f0-9]{40}$ && $SOURCE_PATH == .github/workflows/ci.yml && $SOURCE_EVENT == push && $TRUSTED_WORKFLOW_REF == */.github/workflows/authorize-release.yml@refs/heads/* ]]
@@ -48,14 +45,17 @@ jobs:
           "$GITHUB_WORKSPACE/trusted/scripts/fetch-github-tag-chain.sh" "$GITHUB_REPOSITORY" "$source_tag" "$RUNNER_TEMP/source-tag-chain.jsonl"
           /usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-github-tag-chain.mjs" "$RUNNER_TEMP/source-tag-chain.jsonl" "$SOURCE_HEAD_SHA"
           trusted_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/trusted" "" "$RUNNER_TEMP/trusted-policy-manifest.json")
-          test -n "$ROOT_ALLOWED_SIGNERS";printf '%s\n' "$ROOT_ALLOWED_SIGNERS" > "$RUNNER_TEMP/root-allowed-signers";chmod 0400 "$RUNNER_TEMP/root-allowed-signers"
+          test -n "$ORG_VARIABLE_READER_TOKEN";org=${GITHUB_REPOSITORY%%/*};test "$org" != "$GITHUB_REPOSITORY"
+          org_var(){ /usr/bin/curl --fail --silent --show-error -H "Authorization: Bearer $ORG_VARIABLE_READER_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/orgs/$org/actions/variables/$1"|jq -er .value; }
+          org_signers_b64=$(org_var STEAM_TOP_POLICY_ROOT_ALLOWED_SIGNERS_B64);ROOT_KEY_SHA256=$(org_var STEAM_TOP_POLICY_ROOT_KEY_SHA256);LEDGER_GENERATION=$(org_var STEAM_TOP_POLICY_LEDGER_GENERATION);LEDGER_RECEIPT_DIGEST=$(org_var STEAM_TOP_POLICY_LEDGER_RECEIPT_DIGEST)
+          printf '%s' "$org_signers_b64"|base64 --decode > "$RUNNER_TEMP/root-allowed-signers";chmod 0400 "$RUNNER_TEMP/root-allowed-signers"
           repo_id=$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)
           ledger=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-ledger.mjs" "$GITHUB_WORKSPACE/trusted" "$RUNNER_TEMP/root-allowed-signers" "$repo_id" "$GITHUB_REPOSITORY" "$default_head" "$trusted_bundle" "$ROOT_KEY_SHA256" "$LEDGER_GENERATION" "$LEDGER_RECEIPT_DIGEST")
           test "$(jq -r .latest.bundleSha256 <<<"$ledger")" = "$trusted_bundle"
           candidate_bundle=$(/usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-production-policy-bundle.mjs" "$GITHUB_WORKSPACE/candidate" "$trusted_bundle" "$RUNNER_TEMP/candidate-policy-manifest.json")
           /usr/bin/node "$GITHUB_WORKSPACE/trusted/scripts/verify-deployment-permissions.mjs" "$GITHUB_WORKSPACE/candidate"
           verifier_sha=$(sha256sum trusted/scripts/verify-deployment-permissions.mjs|awk '{print $1}')
-          printf '{"schemaVersion":1,"purpose":"trusted-deployment-policy-verification","trustedWorkflowSha":"%s","trustedWorkflowRef":"%s","candidateSha":"%s","sourceRunId":%s,"sourceRunAttempt":%s,"verifierSha256":"%s","policySha256":"%s","policyBundleSha256":"%s"}\n' "$TRUSTED_WORKFLOW_SHA" "$TRUSTED_WORKFLOW_REF" "$SOURCE_HEAD_SHA" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$verifier_sha" "$verifier_sha" "$candidate_bundle" > "$RUNNER_TEMP/deployment-policy-evidence.json"
+          jq -n --arg trusted "$TRUSTED_WORKFLOW_SHA" --arg ref "$TRUSTED_WORKFLOW_REF" --arg candidate "$SOURCE_HEAD_SHA" --arg verifier "$verifier_sha" --arg bundle "$candidate_bundle" --argjson run "$SOURCE_RUN_ID" --argjson attempt "$SOURCE_RUN_ATTEMPT" --argjson ledger "$ledger" '{schemaVersion:1,purpose:"trusted-deployment-policy-verification",trustedWorkflowSha:$trusted,trustedWorkflowRef:$ref,candidateSha:$candidate,sourceRunId:$run,sourceRunAttempt:$attempt,verifierSha256:$verifier,policySha256:$verifier,policyBundleSha256:$bundle,policyAuthority:{repositoryId:$ledger.repositoryId,rootKeySha256:$ledger.rootKeySha256,ledgerGeneration:$ledger.ledgerGeneration,latestReceiptDigest:$ledger.latestReceiptDigest,signerKeyId:$ledger.signerKeyId,policyCommit:$ledger.policyCommit,policyTreeOid:$ledger.policyTreeOid,bundleSha256:$ledger.bundleSha256}}' > "$RUNNER_TEMP/deployment-policy-evidence.json"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with: { subject-path: "${{ runner.temp }}/deployment-policy-evidence.json" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
