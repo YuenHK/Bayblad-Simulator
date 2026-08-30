@@ -165,14 +165,18 @@ def acquire_output_lock(output_digest):
     name=f".steam-top-signature-lock-{output_digest}";fd=os.open(name,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=parent_fd);info=os.fstat(fd)
     if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o600 or info.st_nlink!=1:os.close(fd);abort("unsafe signature publication lock")
     fcntl.flock(fd,fcntl.LOCK_EX);verify_path_binding(name,fd,info)
-    if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_LOCK_READY"):
-        ready=os.environ["STEAM_TOP_POLICY_SIGNER_TEST_LOCK_READY"];go=os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_LOCK_CONTINUE","")
+    test_barrier("STEAM_TOP_POLICY_SIGNER_TEST_LOCK_READY","STEAM_TOP_POLICY_SIGNER_TEST_LOCK_CONTINUE")
+    verify_path_binding(name,fd,info)
+    return fd
+
+def test_barrier(ready_variable,continue_variable):
+    if os.geteuid()!=0 and os.environ.get(ready_variable):
+        ready=os.environ[ready_variable];go=os.environ.get(continue_variable,"")
         marker=os.open(ready,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);os.close(marker)
         for _ in range(1000):
             if go and os.path.exists(go):break
             time.sleep(0.01)
-        else:os.close(fd);abort("test lock barrier timeout")
-    return fd
+        else:abort("test barrier timeout")
 
 def validate_namespace(output_digest,journal):
     journal_prefix=f".steam-top-signature-journal-{output_digest}-";matching=[];quarantine_prefix=f".steam-top-signature-quarantine-{output_digest}-"
@@ -248,7 +252,7 @@ def main():
     if sys.platform!="linux":abort("Linux production host required")
     if len(sys.argv)!=4: abort("usage: signer <key> <entry> <output>")
     key_fd,key_info=open_input(sys.argv[1],{0o600}); entry_fd,entry_info=open_input(sys.argv[2],{0o444,0o644}); parent_fd,output_name=open_parent(sys.argv[3])
-    output_digest=hashlib.sha256(output_name.encode()).hexdigest();lock_handle=acquire_output_lock(output_digest);key_handle=None
+    fcntl.flock(parent_fd,fcntl.LOCK_EX);output_digest=hashlib.sha256(output_name.encode()).hexdigest();lock_handle=acquire_output_lock(output_digest);key_handle=None;journal=None
     try:
         key_handle,key_reference=secure_key_reference(stable_read(key_fd,key_info));entry=validate(stable_read(entry_fd,entry_info));signer_id=json.loads(entry)["signerKeyId"];prefix,journal,recovered=prepare_recovery(entry,key_reference,key_handle,signer_id)
         if recovered:validate_namespace(output_digest,journal);return
@@ -289,22 +293,27 @@ def main():
         os.close(stage_fd);stage_fd=None
         if os.geteuid()!=0 and os.environ.get("STEAM_TOP_POLICY_SIGNER_TEST_KILL_AFTER_UNLINK")=="1":os.kill(os.getpid(),signal.SIGKILL)
         os.fsync(parent_fd);validate_namespace(output_digest,journal)
+    except BaseException:
+        test_barrier("STEAM_TOP_POLICY_SIGNER_TEST_CLEANUP_READY","STEAM_TOP_POLICY_SIGNER_TEST_CLEANUP_CONTINUE")
+        if stage_created and stage_fd is not None:
+            info=os.fstat(stage_fd)
+            if info.st_nlink==1:
+                try:quarantine_cleanup(stage_name,stage_fd,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_UNPUBLISHED_STAGE_BEFORE_CLEANUP")
+                except (FileNotFoundError,ValueError):pass
+        if journal is not None:validate_namespace(output_digest,journal)
+        raise
     finally:
+        if stage_fd is not None:os.close(stage_fd);stage_fd=None
         os.close(key_fd); os.close(entry_fd)
         if key_handle is not None:os.close(key_handle)
-        verify_path_binding(f".steam-top-signature-lock-{output_digest}",lock_handle,os.fstat(lock_handle));os.close(lock_handle)
+        try:verify_path_binding(f".steam-top-signature-lock-{output_digest}",lock_handle,os.fstat(lock_handle))
+        finally:
+            os.close(lock_handle);fcntl.flock(parent_fd,fcntl.LOCK_UN)
 
 if __name__=="__main__":
     for caught in CAUGHT: signal.signal(caught,on_signal)
     try: main()
     except BaseException as error:
-        if stage_created and parent_fd is not None and stage_fd is not None:
-            try:
-                info=os.fstat(stage_fd)
-                if info.st_nlink==1:
-                    quarantine_cleanup(stage_name,stage_fd,"STEAM_TOP_POLICY_SIGNER_TEST_SWAP_UNPUBLISHED_STAGE_BEFORE_CLEANUP")
-            except (FileNotFoundError,ValueError):pass
-        if stage_fd is not None:os.close(stage_fd);stage_fd=None
         print(str(error),file=sys.stderr); sys.exit(1)
     finally:
         if parent_fd is not None: os.close(parent_fd)
