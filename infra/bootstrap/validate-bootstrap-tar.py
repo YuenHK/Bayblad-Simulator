@@ -2,10 +2,10 @@
 import gzip,os,sys,tempfile
 REASONS={"GNU_LONGNAME":41,"PAX":42,"SPARSE":43,"TRUNCATED":44,"BOMB":45,"HEADER":46}
 def fail(reason): print(reason,file=sys.stderr);raise SystemExit(REASONS[reason])
-if len(sys.argv)!=2:raise SystemExit(2)
-archive=sys.argv[1];compressed=os.stat(archive).st_size
+if len(sys.argv)!=3:raise SystemExit(2)
+archive,output=sys.argv[1:];compressed=os.stat(archive).st_size
 if compressed<1 or compressed>8_388_608:fail("BOMB")
-fd,path=tempfile.mkstemp(prefix="steam-top-tar-");expanded=0
+fd,path=tempfile.mkstemp(prefix=".steam-top-tar-",dir=os.path.dirname(os.path.realpath(output)));expanded=0
 try:
  with os.fdopen(fd,"wb") as out,gzip.open(archive,"rb") as source:
   while chunk:=source.read(65536):
@@ -31,8 +31,9 @@ try:
    if size<0 or size>2_097_152:fail("BOMB")
    offset+=512+((size+511)//512)*512
   if headers<1 or offset>expanded:fail("TRUNCATED")
- print("OK")
+ os.chmod(path,0o400);os.replace(path,output);path="";print("OK",expanded)
 except (EOFError,gzip.BadGzipFile,OSError):fail("TRUNCATED")
 finally:
- try:os.unlink(path)
+ try:
+  if path:os.unlink(path)
  except OSError:pass
