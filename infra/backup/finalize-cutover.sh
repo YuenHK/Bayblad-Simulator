@@ -35,7 +35,7 @@ select case when exists(select 1 from restore_control.finalize_outbox where nonc
 select format('grant connect on database %I to %I',current_database(),:'role') \gexec
 create table if not exists restore_control.promotion_audit(id bigserial primary key,restore_target_id uuid not null,app_role text not null,cutover_nonce text not null unique,ledger_rows bigint not null,finalized_at timestamptz);
 insert into restore_control.promotion_audit(restore_target_id,app_role,cutover_nonce,ledger_rows) values (:'target_id'::uuid,:'role',:'nonce',:'ledger_rows'::bigint) on conflict(cutover_nonce) do nothing;
-update restore_control.finalize_outbox set state='connect-granted-pending-smoke' where nonce=:'nonce' and state='preflight-recorded';
+update restore_control.finalize_outbox set state='connect-granted-pending-smoke',deadline_at=clock_timestamp()+interval '5 minutes',lease_owner=current_user,lease_generation=lease_generation+1 where nonce=:'nonce' and state='preflight-recorded';
 commit;
 SQL
 provisional="$cutover.provisional";if [[ ! -e $provisional ]];then node - "$cutover" "$provisional" <<'NODE'

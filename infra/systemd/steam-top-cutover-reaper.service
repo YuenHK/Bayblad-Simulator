@@ -1,0 +1,5 @@
+[Unit]
+Description=Fail-closed Steam Top pending cutover reaper
+[Service]
+Type=oneshot
+ExecStart=/opt/steam-top-bootstrap/reconcile-cutover-pending.sh

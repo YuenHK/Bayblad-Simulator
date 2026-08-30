@@ -231,6 +231,12 @@ describe("rollback deletion monotonicity", () => {
     expect(read("infra/backup/test-promotion-full.sh")).toContain("PROMOTE_MAINTENANCE_PGSERVICE=wrong-cluster");
     expect(read(".github/workflows/db.yml")).toContain("postgres-wrong-cluster:");
     expect(read(".github/workflows/db.yml")).toContain("5433:5432");
+    const cutoverMigration=read("drizzle/0001_cutover_state_machine.sql");
+    for(const state of ["preflight-recorded","connect-granted-pending-smoke","smoke-observed","verified","aborted"])expect(cutoverMigration).toContain(state);
+    for(const column of ["deadline_at","lease_owner","lease_generation","ready_sha256","preflight_sha256","smoke_evidence_sha256","final_receipt_sha256","final_receipt_payload_b64"])expect(cutoverMigration).toContain(column);
+    expect(read(".github/workflows/db.yml")).toContain("test-cutover-migration.sh");
+    const reaper=read("infra/backup/reconcile-cutover-pending.sh");expect(reaper).toContain("deadline_at < clock_timestamp()");expect(reaper).toContain("'smoke-observed'");expect(reaper).toContain("state='aborted'");expect(read("infra/systemd/steam-top-cutover-reaper.timer")).toContain("OnUnitActiveSec");
+    const confirmCutover=read("infra/backup/confirm-cutover.sh");expect(confirmCutover).toContain("final_receipt_payload_b64");expect(confirmCutover).toContain("existing_state == verified");
     expect(promotion).toContain("not has_database_privilege(:'app_role'");
     expect(promotion.indexOf("allow_connections false")).toBeLessThan(promotion.indexOf("pg_terminate_backend"));
     expect(promotion.indexOf("pg_terminate_backend")).toBeLessThan(promotion.indexOf("pg_advisory_xact_lock"));

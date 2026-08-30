@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 die(){ echo "cutover abort refused: $1" >&2;exit 1;}
-[[ $(id -u) -eq 0 && $# -eq 3 && ${CANONICAL_STATE_RESOLVED:-} == true ]]||die "canonical root wrapper required"
-ready=$1;preflight=$2;signature=$3;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);source "$script_dir/host-trust-guard.sh"
-for name in PROMOTE_PGSERVICE PGSERVICEFILE PGPASSFILE CUTOVER_ALLOWED_SIGNERS_FILE CUTOVER_SIGNER_ID PROMOTE_STATE_DIR;do [[ -n ${!name:-} ]]||die "$name required";done
-ssh-keygen -Y verify -q -f "$CUTOVER_ALLOWED_SIGNERS_FILE" -I "$CUTOVER_SIGNER_ID" -n steam-top-cutover-preflight -s "$signature" <"$preflight"||die "preflight signature";values=$(node -p 'const r=require(process.argv[1]);`${r.promotionNonce}|${r.appRole}`' "$ready");IFS='|' read -r nonce role <<EOF
-$values
+[[ $(id -u) -eq 0 && ( $# -eq 1 || $# -eq 4 ) && ${CANONICAL_STATE_RESOLVED:-} == true ]]||die "canonical root wrapper required"
+nonce=$1;shift;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);source "$script_dir/host-trust-guard.sh"
+for name in PROMOTE_PGSERVICE PGSERVICEFILE PGPASSFILE PROMOTE_STATE_DIR;do [[ -n ${!name:-} ]]||die "$name required";done;backup_reject_libpq_overrides PROMOTE_PGSERVICE||die "libpq overrides";[[ $nonce =~ ^[a-f0-9]{64}$ ]]||die "nonce"
+row=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -AtF '|' -v nonce="$nonce" -c "select app_role,restore_target_id,system_identifier,database_name,ledger_rows,ready_sha256,preflight_sha256 from restore_control.finalize_outbox where nonce=:'nonce' and state in ('connect-granted-pending-smoke','smoke-observed')");IFS='|' read -r role target system database rows ready_sha preflight_sha <<EOF
+$row
 EOF
-PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v nonce="$nonce" -v role="$role" <<'SQL'
-begin;select pg_advisory_xact_lock(1937002751);select format('revoke connect on database %I from %I',current_database(),:'role') \gexec
-select pg_terminate_backend(pid) from pg_stat_activity where datname=current_database() and usename=:'role' and pid<>pg_backend_pid();update restore_control.finalize_outbox set state='aborted' where nonce=:'nonce' and state='connect-granted-pending-smoke';commit;
+[[ $role =~ ^[a-z_][a-z0-9_]{0,62}$ && $database =~ ^[a-z_][a-z0-9_]{0,62}$ && $ready_sha =~ ^[a-f0-9]{64}$ && $preflight_sha =~ ^[a-f0-9]{64}$ ]]||die "authoritative abort capsule"
+if [[ $# -eq 3 ]];then ready=$1;preflight=$2;signature=$3;for file in "$ready" "$ready.sha256" "$preflight" "$signature";do [[ $file == /* && -f $file && ! -L $file ]]&&backup_root_file_mode "$file" 400||die "artifact trust";done;for name in CUTOVER_ALLOWED_SIGNERS_FILE CUTOVER_SIGNER_ID;do [[ -n ${!name:-} ]]||die "$name required";done;[[ $("$root/scripts/portable-sha256.sh" digest "$ready") == "$(<"$ready.sha256")" && $("$root/scripts/portable-sha256.sh" digest "$ready") == "$ready_sha" && $("$root/scripts/portable-sha256.sh" digest "$preflight") == "$preflight_sha" ]]||die "capsule artifact binding";ssh-keygen -Y verify -q -f "$CUTOVER_ALLOWED_SIGNERS_FILE" -I "$CUTOVER_SIGNER_ID" -n steam-top-cutover-preflight -s "$signature" <"$preflight"||die "preflight signature";fi
+result=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -At -v nonce="$nonce" -v role="$role" -v target="$target" -v system="$system" -v database="$database" -v rows="$rows" <<'SQL'
+begin;select pg_advisory_xact_lock(1937002751);select case when current_database()=:'database' and (select system_identifier::text from pg_control_system())=:'system' and exists(select 1 from restore_control.deployment_environment where singleton and environment='production' and not restore_allowed and restore_target_id=:'target'::uuid) and (select count(*) from deletion_audit)=:'rows'::bigint then 1 else 1/0 end;select format('revoke connect on database %I from %I',current_database(),:'role') \gexec
+select pg_terminate_backend(pid) from pg_stat_activity where datname=current_database() and usename=:'role' and pid<>pg_backend_pid();update restore_control.finalize_outbox set state='aborted',aborted_at=clock_timestamp(),deadline_at=null where nonce=:'nonce' and state in ('connect-granted-pending-smoke','smoke-observed') returning state;commit;
 SQL
-install -d -o root -g root -m 0700 "$PROMOTE_STATE_DIR";incident="$PROMOTE_STATE_DIR/CUTOVER-ABORTED.$nonce";printf 'nonce=%s\nstate=aborted\naction=investigate public smoke before retry\n' "$nonce" >"$incident";chmod 600 "$incident";exit 70
+);[[ $result == *aborted* ]]||die "abort transition";[[ $(PGSERVICE=$PROMOTE_PGSERVICE psql -X -Atqc "select (not has_database_privilege('$role',current_database(),'connect')) and not exists(select 1 from pg_stat_activity where datname=current_database() and usename='$role')") == t ]]||die "abort poststate";install -d -o root -g root -m 0700 "$PROMOTE_STATE_DIR";incident="$PROMOTE_STATE_DIR/CUTOVER-ABORTED.$nonce";printf 'nonce=%s\nstate=aborted\nready_sha256=%s\npreflight_sha256=%s\n' "$nonce" "$ready_sha" "$preflight_sha" >"$incident";chmod 600 "$incident"
