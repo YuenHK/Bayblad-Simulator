@@ -14,5 +14,12 @@ view=memoryview(data)
 while view: view=view[os.write(fd,view):]
 os.fsync(fd);os.fchmod(fd,0o555);os.fsync(fd);os.close(fd)' "$temporary/helper.pending" "$size"
 /bin/mv "$temporary/helper.pending" "$temporary/helper"
+supervisor_blob=$("${git[@]}" -C "$repository" rev-parse "$commit:scripts/supervise-process-group.py");supervisor_size=$("${git[@]}" -C "$repository" cat-file -s "$supervisor_blob")
+"${git[@]}" -C "$repository" cat-file blob "$supervisor_blob" | /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME="$temporary" PYTHONNOUSERSITE=1 /usr/bin/python3 -I -E -S -c 'import os,sys
+path,expected=sys.argv[1],int(sys.argv[2]);fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400);data=sys.stdin.buffer.read(expected+1)
+if len(data)!=expected: raise SystemExit("supervisor blob size mismatch")
+view=memoryview(data)
+while view: view=view[os.write(fd,view):]
+os.fsync(fd);os.fchmod(fd,0o555);os.fsync(fd);os.close(fd)' "$temporary/supervisor" "$supervisor_size"
 trap - EXIT HUP INT TERM
-exec /usr/bin/env STEAM_TOP_POLICY_REPOSITORY="$repository" STEAM_TOP_POLICY_LAUNCHER_TEMP="$temporary" /bin/bash "$temporary/helper" "$commit"
+exec /usr/bin/env STEAM_TOP_POLICY_REPOSITORY="$repository" STEAM_TOP_POLICY_LAUNCHER_TEMP="$temporary" STEAM_TOP_POLICY_SUPERVISOR="$temporary/supervisor" /bin/bash "$temporary/helper" "$commit"
