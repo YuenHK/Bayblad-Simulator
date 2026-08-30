@@ -1,7 +1,22 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { expect, it, vi } from "vitest";
 import { AdminApp } from "./AdminApp";
+vi.mock("recharts", () => {
+  const Container = ({ children }: { children?: ReactNode }) => children;
+  const Empty = () => null;
+  return {
+    Bar: Empty,
+    BarChart: Container,
+    CartesianGrid: Empty,
+    Legend: Empty,
+    ResponsiveContainer: Container,
+    Tooltip: Empty,
+    XAxis: Empty,
+    YAxis: Empty,
+  };
+});
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
