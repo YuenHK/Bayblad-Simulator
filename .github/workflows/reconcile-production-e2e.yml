@@ -25,6 +25,17 @@ jobs:
         run: |
           set -euo pipefail
           [[ $SOURCE_RUN_ID =~ ^[1-9][0-9]*$ && $SOURCE_RUN_ATTEMPT =~ ^[1-9][0-9]*$ && $SOURCE_PATH == .github/workflows/authorize-release.yml && $SOURCE_EVENT == workflow_run && $SOURCE_HEAD_SHA =~ ^[a-f0-9]{40}$ ]]
+          for attempt in 1 2 3 4 5 6;do if gh run download "$SOURCE_RUN_ID" -n "production-e2e-source-binding-$SOURCE_RUN_ATTEMPT" -D "$RUNNER_TEMP/source" 2>/dev/null;then break;fi;sleep 5;done
+          binding="$RUNNER_TEMP/source/production-e2e-source-binding.json";[[ -f $binding ]]
+          gh attestation verify "$binding" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          read -r bound_id bound_manifest bound_nonce < <(node - "$binding" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_HEAD_SHA" <<'NODE'
+          const b=require(process.argv[2]),keys=Object.keys(b).sort(),expected=["authorizationRunAttempt","authorizationRunId","authorizationWorkflowRef","authorizationWorkflowSha","deploymentId","deploymentPurpose","environment","manifestSha256","nonce","purpose","schemaVersion"].sort();if(JSON.stringify(keys)!==JSON.stringify(expected)||b.schemaVersion!==1||b.purpose!=="production-e2e-source-binding"||b.deploymentPurpose!=="production"||b.environment!=="production-first-deploy-e2e"||String(b.authorizationRunId)!==process.argv[3]||String(b.authorizationRunAttempt)!==process.argv[4]||b.authorizationWorkflowSha!==process.argv[5]||!b.authorizationWorkflowRef?.includes('/.github/workflows/ci.yml@refs/heads/')||!/^[1-9][0-9]*$/.test(String(b.deploymentId))||!/^[a-f0-9]{64}$/.test(b.manifestSha256)||!/^[a-f0-9]{64}$/.test(b.nonce))process.exit(1);console.log(b.deploymentId,b.manifestSha256,b.nonce)
+          NODE
+          )
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$bound_id" > "$RUNNER_TEMP/deployment.json"
+          node - "$RUNNER_TEMP/deployment.json" "$bound_id" "$bound_manifest" "$bound_nonce" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_HEAD_SHA" > "$RUNNER_TEMP/ids" <<'NODE'
+          const d=require(process.argv[2]),[id,manifest,nonce,run,attempt,head]=process.argv.slice(3),p=typeof d.payload==="string"?JSON.parse(d.payload):d.payload;if(String(d.id)!==id||d.environment!=="production-first-deploy-e2e"||p?.schemaVersion!==4||p.purpose!=="production"||String(p.authorizationRunId)!==run||String(p.authorizationRunAttempt)!==attempt||p.authorizationWorkflowSha!==head||!p.authorizationWorkflowRef?.startsWith("refs/heads/")||p.sourceWorkflow!==`${process.env.GITHUB_REPOSITORY}/.github/workflows/ci.yml`||p.sourceEvent!=="push"||p.manifestSha256!==manifest||p.nonce!==nonce||!/^[1-9][0-9]*$/.test(String(p.runId))||!/^[a-f0-9]{40}$/.test(p.commit)||p.commit!==p.sourceHeadSha)process.exit(1);console.log(`${id} ${p.runId} ${p.commit} ${manifest} ${nonce}`)
+          NODE
           desired=error;receipt_id=none;receipt_sha=none
           for attempt in 1 2 3 4 5 6;do if gh run download "$SOURCE_RUN_ID" -n "production-e2e-terminal-$SOURCE_RUN_ATTEMPT" -D "$RUNNER_TEMP/terminal" 2>/dev/null;then break;fi;sleep 5;done
           if [[ -f $RUNNER_TEMP/terminal/production-e2e-terminal.json ]];then
@@ -35,10 +46,6 @@ jobs:
             )
             receipt_sha=$(sha256sum "$RUNNER_TEMP/terminal/production-e2e-terminal.json"|awk '{print $1}')
           fi
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments?environment=production-first-deploy-e2e&per_page=100" > "$RUNNER_TEMP/deployments.json"
-          node - "$RUNNER_TEMP/deployments.json" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_HEAD_SHA" > "$RUNNER_TEMP/ids" <<'NODE'
-          const fs=require("fs"),[path,run,attempt,head]=process.argv.slice(2),rows=JSON.parse(fs.readFileSync(path)).flat();for(const row of rows){const p=typeof row.payload==="string"?JSON.parse(row.payload):row.payload;if(p?.schemaVersion===4&&p.purpose==="production"&&String(p.authorizationRunId)===run&&String(p.authorizationRunAttempt)===attempt&&p.authorizationWorkflowSha===head&&p.authorizationWorkflowRef?.startsWith("refs/heads/")&&p.sourceWorkflow===`${process.env.GITHUB_REPOSITORY}/.github/workflows/ci.yml`&&p.sourceEvent==="push"&&/^[a-f0-9]{40}$/.test(p.sourceHeadSha)&&p.commit===p.sourceHeadSha&&/^[a-f0-9]{64}$/.test(p.manifestSha256)&&/^[a-f0-9]{64}$/.test(p.nonce)&&/^[1-9][0-9]*$/.test(String(p.runId)))console.log(`${row.id} ${p.runId} ${p.commit} ${p.manifestSha256} ${p.nonce}`)}
-          NODE
           : > "$RUNNER_TEMP/reconciliation-receipts.jsonl"
           while read -r id candidate_run candidate_sha manifest_sha nonce;do
             [[ $id =~ ^[1-9][0-9]*$ && $candidate_run =~ ^[1-9][0-9]*$ && $candidate_sha =~ ^[a-f0-9]{40}$ && $manifest_sha =~ ^[a-f0-9]{64}$ && $nonce =~ ^[a-f0-9]{64}$ ]]||exit 1

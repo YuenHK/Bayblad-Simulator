@@ -12,33 +12,12 @@ sha(){ if command -v sha256sum >/dev/null;then sha256sum "$1"|awk '{print $1}';e
 archive_size=$(stat -c %s "$archive");[[ $archive_size =~ ^[0-9]+$ && $archive_size -ge 1 && $archive_size -le 8388608 ]]||die "compressed archive size"
 ssh-keygen -Y verify -q -f "$BOOTSTRAP_ALLOWED_SIGNERS_FILE" -I "$signer" -n steam-top-bootstrap-source -s "$signature" <"$archive"||die "external archive signature"
 tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT
+validator=${BOOTSTRAP_TAR_VALIDATOR:?};validator_sha=${BOOTSTRAP_TAR_VALIDATOR_SHA256:?};[[ $validator == /* && -f $validator && ! -L $validator && $validator_sha =~ ^[a-f0-9]{64}$ && $(stat -c '%u %a' "$validator") == '0 444' && $(sha "$validator") == "$validator_sha" ]]&&trusted_parents "$validator"||die "pretrusted tar validator"
+validator_result=$(python3 "$validator" "$archive" "$tmp/.validated.tar")||die "unsafe or invalid signed archive";[[ $validator_result =~ ^OK\ [1-9][0-9]*$ && -f $tmp/.validated.tar && ! -L $tmp/.validated.tar && $(stat -c '%a' "$tmp/.validated.tar") == 400 ]]||die "tar validator token"
 python3 - "$archive" "$tmp" "$0" <<'PY'||die "unsafe or invalid signed archive"
-import gzip,hashlib,os,re,sys,tarfile
+import hashlib,os,re,sys,tarfile
 archive_path,target,installer=sys.argv[1:]
 raw_path=os.path.join(target,".validated.tar")
-expanded=0
-with gzip.open(archive_path,"rb") as source,open(raw_path,"xb") as raw:
-  while True:
-    chunk=source.read(65536)
-    if not chunk:break
-    expanded+=len(chunk)
-    if expanded>16_777_216 or expanded>max(65_536,os.stat(archive_path).st_size*64):raise SystemExit("archive expansion")
-    raw.write(chunk)
-with open(raw_path,"rb") as raw:
-  offset=0;headers=0
-  while offset<expanded:
-    raw.seek(offset);header=raw.read(512)
-    if len(header)!=512:raise SystemExit("truncated tar header")
-    if header==bytes(512):
-      if raw.read(512)!=bytes(512) or any(raw.read()):raise SystemExit("invalid tar terminator")
-      break
-    headers+=1
-    if headers>65 or header[156:157] in (b"L",b"K",b"x",b"g",b"S"):raise SystemExit("extended tar metadata")
-    try:size=int(header[124:136].rstrip(b"\0 ") or b"0",8)
-    except ValueError:raise SystemExit("invalid tar size")
-    if size<0 or size>2_097_152:raise SystemExit("tar member size")
-    offset+=512+((size+511)//512)*512
-  if headers<1 or offset>expanded:raise SystemExit("truncated tar payload")
 with tarfile.open(raw_path,"r:") as tar:
   if tar.pax_headers: raise SystemExit("global pax metadata")
   by_name={};total=0

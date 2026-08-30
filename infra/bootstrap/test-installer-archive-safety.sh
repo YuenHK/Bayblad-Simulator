@@ -4,6 +4,7 @@ set -euo pipefail
 installer=$(realpath "$1");validator=$(dirname "$installer")/validate-bootstrap-tar.py;[[ -f $validator ]];root=/run/steam-top-installer-archive-test
 rm -rf "$root";install -d -o root -g root -m 0700 "$root"
 trap 'rm -rf "$root"' EXIT
+install -o root -g root -m 0444 "$validator" "$root/validate-bootstrap-tar.py";validator="$root/validate-bootstrap-tar.py"
 ssh-keygen -q -t ed25519 -N '' -f "$root/source-key";chmod 0400 "$root/source-key"
 printf 'source %s\n' "$(ssh-keygen -y -f "$root/source-key")" > "$root/allowed";chmod 0444 "$root/allowed"
 printf '{"deploymentPurpose":"release-integration"}\n' > "$root/trust.json";chmod 0400 "$root/trust.json"
@@ -42,7 +43,7 @@ PY
   expected=;case $attack in gnu-longname)expected=GNU_LONGNAME;;pax|global-pax|huge-pax)expected=PAX;;sparse)expected=SPARSE;;truncated)expected=TRUNCATED;;oversized|bomb)expected=BOMB;;count)expected=HEADER;;esac
   if [[ -n $expected ]];then if python3 "$validator" "$root/$attack.tgz" >"$root/$attack.parser.out" 2>"$root/$attack.parser.err";then echo "raw parser accepted: $attack" >&2;exit 1;fi;grep -qx "$expected" "$root/$attack.parser.err"||{ echo "wrong raw reason: $attack" >&2;cat "$root/$attack.parser.err" >&2;exit 1;};fi
   reason='unsafe or invalid signed archive';case $attack in oversized|bomb) reason='archive';;esac
-  if EXPECTED_BOOTSTRAP_ARCHIVE_SHA256=$digest BOOTSTRAP_ALLOWED_SIGNERS_FILE="$root/allowed" "$installer" "$root/$attack.tgz" "$root/$attack.tgz.sig" source "$root/trust.json" --no-systemd-for-integration 2>"$root/$attack.err";then echo "malicious tar accepted: $attack" >&2;exit 1;fi
+  if BOOTSTRAP_TAR_VALIDATOR="$validator" BOOTSTRAP_TAR_VALIDATOR_SHA256=$(sha256sum "$validator"|awk '{print $1}') EXPECTED_BOOTSTRAP_ARCHIVE_SHA256=$digest BOOTSTRAP_ALLOWED_SIGNERS_FILE="$root/allowed" "$installer" "$root/$attack.tgz" "$root/$attack.tgz.sig" source "$root/trust.json" --no-systemd-for-integration 2>"$root/$attack.err";then echo "malicious tar accepted: $attack" >&2;exit 1;fi
   grep -F "$reason" "$root/$attack.err" >/dev/null||{ echo "wrong rejection boundary: $attack" >&2;cat "$root/$attack.err" >&2;exit 1;}
   after=$( { find /opt/steam-top-bootstrap /etc/steam-top-bootstrap /var/lib/steam-top-bootstrap -maxdepth 3 -printf '%p|%y|%m|%s\n' 2>/dev/null || true; } | sort | sha256sum )
   [[ $before == "$after" ]]||{ echo "installer mutated state for $attack" >&2;exit 1;}
