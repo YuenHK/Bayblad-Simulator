@@ -1,7 +1,7 @@
 import { createDatabaseClient } from "@steam-top/db";
 import { readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
-import { applyBaselineMigration, createPostgresMigrationExecutor } from "./migration-runner";
+import { applyMigrations, createPostgresMigrationExecutor } from "./migration-runner";
 
 const requiredFile = (name: string): string => {
   const path = process.env[`${name}_FILE`];
@@ -17,8 +17,8 @@ async function main() {
   const client = createDatabaseClient({ url, ssl: "require", applicationName: "steam-top-migration", maxConnections: 1 }, { runtimeEnvironment: "production" });
   const executor = createPostgresMigrationExecutor(client);
   try {
-    const source = readFileSync("/app/drizzle/0000_steam_top_pre_first_deploy.sql", "utf8");
-    const outcome = await applyBaselineMigration(executor, source);
+    const sources = ["0000_steam_top_pre_first_deploy.sql", "0001_cutover_state_machine.sql", "0002_platform_installation.sql"].map((name) => readFileSync(`/app/drizzle/${name}`, "utf8"));
+    const outcome = await applyMigrations(executor, sources);
     const markerRows = await client.sql.unsafe("select restore_target_id from restore_control.deployment_environment where singleton=true") as readonly Record<string, unknown>[];
     const marker = String(markerRows[0]?.restore_target_id ?? "");
     if (!/^[0-9a-f-]{36}$/iu.test(marker)) throw new Error("RESTORE_TARGET_ID_MISSING");

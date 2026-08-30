@@ -3,6 +3,11 @@ import type { DatabaseClient } from "@steam-top/db";
 
 export const EXPECTED_MIGRATION_ID = "0000_steam_top_pre_first_deploy";
 export const EXPECTED_MIGRATION_SHA256 = "48386c47be2562e241cb520f17cd2cd6d00ca221be6e84860ccebc4ac52c2be8";
+export const EXPECTED_MIGRATIONS = Object.freeze([
+  Object.freeze({ id: EXPECTED_MIGRATION_ID, sha256: EXPECTED_MIGRATION_SHA256 }),
+  Object.freeze({ id: "0001_cutover_state_machine", sha256: "ca26cdef9195ae550a0fd4eb4db66fe02c2915e646a71e51182b4b4cf8a40571" }),
+  Object.freeze({ id: "0002_platform_installation", sha256: "5d33b8d074afc8a037f88be7d4416b1041398be0f847e16b3ec433cd5447dec7" }),
+]);
 
 type MigrationTransaction = Readonly<{
   prepareLedger(): Promise<void>;
@@ -34,20 +39,34 @@ export function verifyMigrationSource(source: string) {
 }
 
 export async function applyBaselineMigration(executor: MigrationExecutor, source: string): Promise<"applied" | "already-applied"> {
-  const manifest = verifyMigrationSource(source);
+  return (await applyPinnedMigrations(executor, [source], EXPECTED_MIGRATIONS.slice(0, 1)))[0]!;
+}
+
+async function applyPinnedMigrations(executor: MigrationExecutor, sources: readonly string[], manifests: readonly Readonly<{ id: string; sha256: string }>[]) {
+  if (sources.length !== manifests.length) throw new Error("MIGRATION_SET_INCOMPLETE");
+  for (let index = 0; index < sources.length; index += 1) if (createHash("sha256").update(sources[index]!).digest("hex") !== manifests[index]!.sha256) throw new Error("MIGRATION_SOURCE_HASH_MISMATCH");
   return executor.transaction(async (tx) => {
     await tx.lock();
     await tx.prepareLedger();
-    const current = await tx.queryMigration(manifest.id);
-    if (current) {
-      if (current.sha256 !== manifest.sha256) throw new Error("MIGRATION_HASH_MISMATCH");
-      return "already-applied";
+    const outcomes: ("applied" | "already-applied")[] = [];
+    for (let index = 0; index < manifests.length; index += 1) {
+      const manifest = manifests[index]!, source = sources[index]!, current = await tx.queryMigration(manifest.id);
+      if (current) {
+        if (current.sha256 !== manifest.sha256) throw new Error("MIGRATION_HASH_MISMATCH");
+        outcomes.push("already-applied");
+        continue;
+      }
+      if (index === 0 && await tx.hasApplicationSchema()) throw new Error("MIGRATION_PARTIAL_OR_UNTRACKED_STATE");
+      const statements = source.split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean);
+      if (statements.length === 0) throw new Error("MIGRATION_SOURCE_EMPTY");
+      for (const statement of statements) await tx.execute(statement);
+      await tx.insertMigration(manifest.id, manifest.sha256);
+      outcomes.push("applied");
     }
-    if (await tx.hasApplicationSchema()) throw new Error("MIGRATION_PARTIAL_OR_UNTRACKED_STATE");
-    const statements = source.split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean);
-    if (statements.length === 0) throw new Error("MIGRATION_SOURCE_EMPTY");
-    for (const statement of statements) await tx.execute(statement);
-    await tx.insertMigration(manifest.id, manifest.sha256);
-    return "applied";
+    return outcomes;
   });
+}
+
+export async function applyMigrations(executor: MigrationExecutor, sources: readonly string[]) {
+  return applyPinnedMigrations(executor, sources, EXPECTED_MIGRATIONS);
 }
