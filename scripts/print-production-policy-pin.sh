@@ -20,14 +20,8 @@ cleanup(){ /bin/rm -rf -- "$temporary";[[ -z ${STEAM_TOP_POLICY_LAUNCHER_TEMP:-}
 stop_group(){ local number=$1;if [[ -n $active_pid ]];then /bin/kill -TERM -- "-$active_pid" 2>/dev/null||/bin/kill -TERM "$active_pid" 2>/dev/null||true;for _ in {1..60};do /bin/kill -0 -- "-$active_pid" 2>/dev/null||break;/bin/sleep 0.05;done;if /bin/kill -0 -- "-$active_pid" 2>/dev/null;then /bin/kill -KILL -- "-$active_pid" 2>/dev/null||true;fi;wait "$active_pid" 2>/dev/null||true;fi;trap - EXIT;cleanup;exit $((128+number)); }
 trap 'code=$?;cleanup;exit "$code"' EXIT;trap 'stop_group 1' HUP;trap 'stop_group 2' INT;trap 'stop_group 15' TERM
 /bin/mkdir -p "$temporary/home"
-runner="$temporary/group-runner.py"
-/bin/cat >"$runner" <<'PY'
-import os,sys
-if len(sys.argv)<2 or not os.path.isabs(sys.argv[1]): raise SystemExit(64)
-os.setsid();os.execve(sys.argv[1],sys.argv[1:],os.environ)
-PY
-/bin/chmod 0500 "$runner"
-run_group(){ /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME="$temporary/home" PYTHONNOUSERSITE=1 /usr/bin/python3 -I -E -S "$runner" "$@" & active_pid=$!;set +e;wait "$active_pid";local code=$?;set -e;active_pid=;return "$code"; }
+supervisor=${STEAM_TOP_POLICY_SUPERVISOR:?};[[ -f $supervisor && ! -L $supervisor ]]||exit 1
+run_group(){ /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME="$temporary/home" PYTHONNOUSERSITE=1 /usr/bin/python3 -I -E -S "$supervisor" "$@" & active_pid=$!;set +e;wait "$active_pid";local code=$?;set -e;active_pid=;return "$code"; }
 safe_git(){ run_group /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME="$temporary/home" XDG_CONFIG_HOME="$temporary/home" TMPDIR="$temporary" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 /usr/bin/git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null "$@"; }
 capture_git(){ local variable=$1;shift;safe_git "$@" >"$temporary/git-output";local value=;IFS= read -r value <"$temporary/git-output"||true;printf -v "$variable" '%s' "$value"; }
 
