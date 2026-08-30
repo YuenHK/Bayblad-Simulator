@@ -402,8 +402,11 @@ jobs:
         with: { node-version: 24.13.0, cache: pnpm }
       - run: pnpm install --frozen-lockfile && pnpm build
       - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
-        with: { platforms: arm64 }
+        with:
+          platforms: arm64
+          image: docker.io/tonistiigi/binfmt@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with: { version: v0.30.1 }
       - name: Authenticate only for immutable GHCR publication
         shell: bash
         run: printf '%s' '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
@@ -413,30 +416,33 @@ jobs:
           BUILDX_GIT_INFO: "1"
           BUILDX_GIT_LABELS: full
           BUILDX_NO_DEFAULT_OCI_ARTIFACT: "0"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p release
           repository="ghcr.io/${GITHUB_REPOSITORY,,}/steam-top"
           collect_evidence() {
-            local component=$1 metadata="release/$1.json" root_digest immutable_ref index_file app_digest attestation_digest
+            local component=$1 metadata="release/$1.json" root_digest registry_repository index_file app_digest attestation_digest provenance_digest sbom_digest
             root_digest=$(node -e 'const m=require("./"+process.argv[1]),d=m["containerimage.digest"];if(!/^sha256:[a-f0-9]{64}$/.test(d))process.exit(1);process.stdout.write(d)' "$metadata")
-            immutable_ref="$repository/$component@$root_digest"
+            registry_repository="${repository#ghcr.io/}/$component"
             index_file="release/$component-index.json"
-            docker buildx imagetools inspect --raw "$immutable_ref" > "$index_file"
+            node scripts/fetch-ghcr-object.mjs "$registry_repository" "$root_digest" manifest "$index_file"
             for architecture in amd64 arm64; do
               app_digest=$(node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1])),a=process.argv[2],d=x.manifests.filter(v=>v.platform?.os==="linux"&&v.platform?.architecture===a);if(d.length!==1)process.exit(1);process.stdout.write(d[0].digest)' "$index_file" "$architecture")
               attestation_digest=$(node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1])),d=process.argv[2],a=x.manifests.filter(v=>v.platform?.os==="unknown"&&v.platform?.architecture==="unknown"&&v.annotations?.["vnd.docker.reference.type"]==="attestation-manifest"&&v.annotations?.["vnd.docker.reference.digest"]===d);if(a.length!==1)process.exit(1);process.stdout.write(a[0].digest)' "$index_file" "$app_digest")
-              docker buildx imagetools inspect --raw "$repository/$component@$attestation_digest" > "release/$component-$architecture-attestation.json"
-              docker buildx imagetools inspect "$immutable_ref" --format "{{ json (index .Provenance \"linux/$architecture\").SLSA }}" > "release/$component-$architecture-provenance.json"
-              docker buildx imagetools inspect "$immutable_ref" --format "{{ json (index .SBOM \"linux/$architecture\").SPDX }}" > "release/$component-$architecture-sbom.json"
+              node scripts/fetch-ghcr-object.mjs "$registry_repository" "$attestation_digest" manifest "release/$component-$architecture-attestation.json"
+              provenance_digest=$(node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1])),p="https://slsa.dev/provenance/v0.2",d=x.layers.filter(v=>v.annotations?.["in-toto.io/predicate-type"]===p);if(d.length!==1)process.exit(1);process.stdout.write(d[0].digest)' "release/$component-$architecture-attestation.json")
+              sbom_digest=$(node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1])),p="https://spdx.dev/Document",d=x.layers.filter(v=>v.annotations?.["in-toto.io/predicate-type"]===p);if(d.length!==1)process.exit(1);process.stdout.write(d[0].digest)' "release/$component-$architecture-attestation.json")
+              node scripts/fetch-ghcr-object.mjs "$registry_repository" "$provenance_digest" blob "release/$component-$architecture-provenance.json"
+              node scripts/fetch-ghcr-object.mjs "$registry_repository" "$sbom_digest" blob "release/$component-$architecture-sbom.json"
             done
-            node scripts/verify-multiarch-image.mjs "$metadata" "$index_file" "release/$component-amd64-attestation.json" "release/$component-amd64-provenance.json" "release/$component-amd64-sbom.json" "release/$component-arm64-attestation.json" "release/$component-arm64-provenance.json" "release/$component-arm64-sbom.json" "$GITHUB_SHA" "release/$component-evidence.json"
+            node scripts/verify-multiarch-image.mjs "$metadata" "$index_file" "release/$component-amd64-attestation.json" "release/$component-amd64-provenance.json" "release/$component-amd64-sbom.json" "release/$component-arm64-attestation.json" "release/$component-arm64-provenance.json" "release/$component-arm64-sbom.json" "$GITHUB_SHA" "$GITHUB_REPOSITORY" "release/$component-evidence.json"
           }
-          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --push --metadata-file release/server.json --tag "$repository/server:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST -f Dockerfile.server .
+          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max,version=v0.2 --sbom=true --push --metadata-file release/server.json --tag "$repository/server:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST -f Dockerfile.server .
           collect_evidence server
-          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --push --metadata-file release/web.json --tag "$repository/web:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST --build-arg CADDY_IMAGE_REPOSITORY --build-arg CADDY_IMAGE_DIGEST -f Dockerfile.web .
+          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max,version=v0.2 --sbom=true --push --metadata-file release/web.json --tag "$repository/web:${GITHUB_SHA}" --build-arg NODE_IMAGE_REPOSITORY --build-arg NODE_IMAGE_DIGEST --build-arg CADDY_IMAGE_REPOSITORY --build-arg CADDY_IMAGE_DIGEST -f Dockerfile.web .
           collect_evidence web
-          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max --sbom=true --push --metadata-file release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
+          docker buildx build --platform linux/amd64,linux/arm64 --provenance=mode=max,version=v0.2 --sbom=true --push --metadata-file release/database.json --tag "$repository/database:${GITHUB_SHA}" --build-arg POSTGRES_IMAGE_REPOSITORY --build-arg POSTGRES_IMAGE_DIGEST -f Dockerfile.db .
           collect_evidence database
           node scripts/create-release-manifest.mjs "$GITHUB_SHA" "$repository" release/server.json release/web.json release/database.json release/release-manifest.json
           node scripts/create-runtime-files-manifest.mjs . release/runtime-files.sha256
@@ -454,6 +460,10 @@ jobs:
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: release/*-evidence.json
+      - name: Attest the complete release checksum closure
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: release/SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-manifest-${{ github.sha }}
@@ -517,6 +527,7 @@ jobs:
           test "$(node -p 'require("./candidate/release-manifest.json").commit')" = "$RELEASE_COMMIT"
           gh attestation verify candidate/release-manifest.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
           gh attestation verify candidate/runtime-files.sha256 --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          gh attestation verify candidate/SHA256SUMS --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
           latest=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=release-host-integration&per_page=1" --jq 'if length==0 then "none" else (.[0].id|tostring)+"|"+.[0].payload.manifestSha256 end')
           DEPLOYMENT_PURPOSE=release-integration node scripts/create-pending-deployment.mjs candidate/release-manifest.json "$RELEASE_RUN_ID" "release-manifest-$RELEASE_COMMIT" "$manifest_sha" "$RELEASE_COMMIT" "$nonce" integration "$GITHUB_REPOSITORY/.github/workflows/authorize-release.yml" "$GITHUB_SHA" "$GITHUB_REF" workflow_run "$latest" pending.json
           deployment_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input pending.json --jq .id)
@@ -586,7 +597,9 @@ jobs:
           sudo rm -rf /run/steam-top-bootstrap-release
       - name: Verify externally attested root runtime manifest
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh attestation verify candidate/runtime-files.sha256 --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+        run: |
+          gh attestation verify candidate/runtime-files.sha256 --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          gh attestation verify candidate/SHA256SUMS --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
       - name: Authenticate to GHCR for immutable candidate pulls
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
         env: { GH_TOKEN: "${{ github.token }}" }
