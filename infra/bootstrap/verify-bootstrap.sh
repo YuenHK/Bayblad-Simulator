@@ -3,6 +3,7 @@ set -euo pipefail
 die(){ echo "bootstrap trust refused: $1" >&2;return 1;}
 [[ $(id -u) -eq 0 ]]||die "root required"||exit 1
 root=/opt/steam-top-bootstrap;config=/etc/steam-top-bootstrap/trust.json;manifest="$root/bootstrap-files.sha256"
+shopt -s nullglob;ceremony_stages=(/opt/steam-top-policy-ceremony/.stage.*);shopt -u nullglob;[[ ${#ceremony_stages[@]} -eq 0 ]]||die "unexpected ceremony stage"||exit 1
 for dir in "$root" /etc/steam-top-bootstrap;do [[ -d $dir && ! -L $dir ]]||die "canonical directory"||exit 1;read -r owner mode < <(stat -c '%u %a' "$dir");[[ $owner == 0 && $mode == 555 ]]||die "root directory exact mode"||exit 1;done
 for file in "$config" "$manifest" /etc/steam-top-bootstrap/policy-signer-manifest.json /etc/steam-top-bootstrap/policy-ceremony-manifest.json;do [[ -f $file && ! -L $file ]]||die "sealed file"||exit 1;read -r owner mode < <(stat -c '%u %a' "$file");[[ $owner == 0 && $mode == 400 ]]||die "sealed root-owned exact mode"||exit 1;done
 sha(){ if command -v sha256sum >/dev/null;then sha256sum "$1"|awk '{print $1}';else shasum -a 256 "$1"|awk '{print $1}';fi;}
