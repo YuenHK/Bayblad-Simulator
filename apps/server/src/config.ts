@@ -15,6 +15,7 @@ type SecretName = (typeof secretNames)[number];
 const environmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PUBLIC_ORIGIN: z.url(),
+  STUDENT_ORIGIN: z.url(),
   ADMIN_USERNAME: z.string().trim().min(1).max(64).default("admin"),
   ADMIN_CSRF_KEY_ID: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/u),
   ICLASS_MODE: z.enum(["api", "csv", "api-csv-fallback", "guest-only-explicit"]),
@@ -32,6 +33,7 @@ export type ProductionConfig = Readonly<{
   databaseUrl: string;
   databaseTls: boolean;
   publicOrigin: string;
+  studentOrigin: string;
   cookieSigningKey: string;
   adminUsername: string;
   adminInitialPassword: string;
@@ -79,9 +81,12 @@ export function loadConfig(
   }
   z.string().min(8, "ADMIN_INITIAL_PASSWORD must contain at least 8 characters").parse(secrets.ADMIN_INITIAL_PASSWORD);
   const publicOrigin = new URL(parsed.PUBLIC_ORIGIN);
+  const studentOrigin = new URL(parsed.STUDENT_ORIGIN);
   if (publicOrigin.pathname !== "/" || publicOrigin.search || publicOrigin.hash || publicOrigin.username || publicOrigin.password) throw new Error("PUBLIC_ORIGIN must contain only scheme and authority");
   if (parsed.NODE_ENV === "production" && publicOrigin.protocol !== "https:") throw new Error("PUBLIC_ORIGIN must use HTTPS in production");
   if (parsed.NODE_ENV === "production" && publicOrigin.port) throw new Error("PUBLIC_ORIGIN must use the default HTTPS port");
+  if (studentOrigin.pathname !== "/" || studentOrigin.search || studentOrigin.hash || studentOrigin.username || studentOrigin.password || (parsed.NODE_ENV === "production" && (studentOrigin.protocol !== "https:" || studentOrigin.port))) throw new Error("STUDENT_ORIGIN must be a default-port HTTPS origin without a path");
+  if (studentOrigin.origin === publicOrigin.origin) throw new Error("STUDENT_ORIGIN must differ from PUBLIC_ORIGIN");
   if (parsed.NODE_ENV === "production" && parsed.DATABASE_TLS !== "require") throw new Error("DATABASE_TLS must be require in production");
   if (new Set([secrets.COOKIE_SIGNING_KEY, secrets.ADMIN_CSRF_SECRET, secrets.WEBCLIP_SIGNING_KEY, secrets.WEBCLIP_EXCHANGE_KEY, secrets.ANALYTICS_CURSOR_SECRET]).size !== 5) throw new Error("Production secrets must be distinct");
   const apiEnabled = parsed.ICLASS_MODE === "api" || parsed.ICLASS_MODE === "api-csv-fallback";
@@ -96,6 +101,7 @@ export function loadConfig(
     databaseUrl: secrets.DATABASE_URL,
     databaseTls: parsed.DATABASE_TLS === "require",
     publicOrigin: publicOrigin.origin,
+    studentOrigin: studentOrigin.origin,
     cookieSigningKey: secrets.COOKIE_SIGNING_KEY,
     adminUsername: parsed.ADMIN_USERNAME,
     adminInitialPassword: secrets.ADMIN_INITIAL_PASSWORD,
@@ -119,6 +125,7 @@ export function publicConfig(config: ProductionConfig) {
   return Object.freeze({
     nodeEnv: config.nodeEnv,
     publicOrigin: config.publicOrigin,
+    studentOrigin: config.studentOrigin,
     host: config.host,
     port: config.port,
     iClassMode: config.iClassMode,

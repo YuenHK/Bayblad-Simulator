@@ -49,7 +49,8 @@ async function main(): Promise<void> {
     const address = (request: IncomingMessage) => forwardedAddress(request);
     app = await startProductionServer(client, {
       cookieSigningKey: config.cookieSigningKey,
-      allowedOrigins: [config.publicOrigin],
+      allowedOrigins: [config.publicOrigin, config.studentOrigin],
+      studentOrigin: config.studentOrigin,
       behindProxy: true,
       clientKeyResolver: address,
       identityIpResolver: address,

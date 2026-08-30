@@ -68,6 +68,7 @@ services:
       HOST: 0.0.0.0
       PORT: 3000
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      STUDENT_ORIGIN: ${STUDENT_ORIGIN:?STUDENT_ORIGIN is required}
       DATABASE_TLS: ${DATABASE_TLS:-require}
       DATABASE_URL_FILE: /run/secrets/database_url
       COOKIE_SIGNING_KEY_FILE: /run/secrets/cookie_signing_key
@@ -144,6 +145,7 @@ services:
     pids_limit: 128
     environment:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      STUDENT_ORIGIN: ${STUDENT_ORIGIN:?STUDENT_ORIGIN is required}
     ports: ["80:80", "443:443", "443:443/udp"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
