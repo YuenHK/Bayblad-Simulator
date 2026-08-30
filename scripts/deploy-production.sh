@@ -23,12 +23,9 @@ esac
 node "$script_dir/authorize-production-deploy.mjs" "$snapshot/release-manifest.json" "$snapshot/production.env" "$snapshot/canonical.env" "$expected_repository" "$expected_commit"
 "${compose[@]}" config --quiet
 "${compose[@]}" pull
-if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production && -f /var/lib/steam-top-bootstrap/first-deploy.pending ]];then
-  [[ ! -L /var/lib/steam-top-bootstrap/first-deploy.pending && $(stat_pair /var/lib/steam-top-bootstrap/first-deploy.pending) == '0 400' ]]||die "first-deploy marker trust"
+if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production ]]&&read -r claim_phase claim_nonce claim_host claim_digest _ < <(/opt/steam-top-bootstrap/read-first-deploy-state.sh)&&[[ $claim_phase == pending ]];then
   "${compose[@]}" up -d --wait db
   "${compose[@]}" run --rm migration
-  marker=/var/lib/steam-top-bootstrap/first-deploy.pending
-  read -r claim_host claim_digest claim_nonce < <(node -e 'const x=require(process.argv[1]);console.log(x.hostIdSha256,x.installDigest,x.nonce)' "$marker")
   [[ -n ${DEPLOYMENT_NONCE:-} && $claim_nonce == "$DEPLOYMENT_NONCE" ]]||die "first-deploy authorization nonce mismatch"
   PGSERVICE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgService' ) PGSERVICEFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgServiceFile') PGPASSFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgPassFile') "$script_dir/claim-first-installation.sh" "$claim_host" "$claim_digest" "$claim_nonce"
   /opt/steam-top-bootstrap/advance-first-deploy-state.sh db-claimed "$claim_nonce"
