@@ -31,7 +31,7 @@ actual=$(psql -X -v ON_ERROR_STOP=1 -v target_id="$target_id" -v role="$role" -v
 psql -X -v ON_ERROR_STOP=1 -v role="$role" -v target_id="$target_id" -v nonce="$nonce" -v ledger_rows="$ledger_rows" <<'SQL'
 begin;
 select pg_advisory_xact_lock(1937002751);
-select case when exists(select 1 from restore_control.finalize_outbox where nonce=:'nonce' and state='preflight-recorded' and restore_target_id=:'target_id'::uuid and app_role=:'role' and ledger_rows=:'ledger_rows'::bigint) then 1 else 1/0 end;
+select case when exists(select 1 from restore_control.finalize_outbox where nonce=:'nonce' and state='preflight-recorded' and restore_target_id=:'target_id'::uuid and app_role=:'role' and ledger_rows=:'ledger_rows'::bigint and ledger_hash=restore_control.deletion_audit_sha256() for update) then 1 else 1/0 end;
 select format('grant connect on database %I to %I',current_database(),:'role') \gexec
 create table if not exists restore_control.promotion_audit(id bigserial primary key,restore_target_id uuid not null,app_role text not null,cutover_nonce text not null unique,ledger_rows bigint not null,finalized_at timestamptz);
 insert into restore_control.promotion_audit(restore_target_id,app_role,cutover_nonce,ledger_rows) values (:'target_id'::uuid,:'role',:'nonce',:'ledger_rows'::bigint) on conflict(cutover_nonce) do nothing;

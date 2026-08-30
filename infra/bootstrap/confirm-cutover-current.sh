@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source /opt/steam-top-bootstrap/key-custody-guard.sh
-[[ $(id -u) -eq 0 && $# -eq 6 && $1 =~ ^[a-f0-9]{64}$ ]]||exit 2
+[[ $(id -u) -eq 0 && ( $# -eq 5 || $# -eq 6 ) && $1 =~ ^[a-f0-9]{64}$ ]]||exit 2
 nonce=$1;shift;tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT;purpose=$(node -p 'const x=require("/etc/steam-top-bootstrap/trust.json").deploymentPurpose??"production";if(!["production","release-integration"].includes(x))process.exit(1);x');lock=/var/lock/steam-top-production.lock;[[ $purpose == release-integration ]]&&lock=/var/lock/steam-top-release-integration.lock;[[ -f $lock && ! -L $lock ]]||exit 1;read -r owner mode < <(stat -c '%u %a' "$lock");[[ $owner == 0 && $mode == 600 ]]||exit 1;exec 9<>"$lock";flock -n 9||exit 75
 /opt/steam-top-bootstrap/resolve-production-state.sh "$nonce" >"$tmp/frame";runtime=$(awk '/^STATE-BEGIN /{print $5;exit}' "$tmp/frame")
 [[ $runtime == /opt/steam-top/releases/* && -d $runtime && ! -L $runtime ]]||exit 1
