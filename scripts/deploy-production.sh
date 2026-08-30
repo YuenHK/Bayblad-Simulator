@@ -27,5 +27,6 @@ if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production && -f /var/l
   [[ ! -L /var/lib/steam-top-bootstrap/first-deploy.pending && $(stat_pair /var/lib/steam-top-bootstrap/first-deploy.pending) == '0 400' ]]||die "first-deploy marker trust"
   "${compose[@]}" up -d --wait db
   "${compose[@]}" run --rm migration
+  /opt/steam-top-bootstrap/verify-reaper-health.sh --post-migration-first-deploy
 fi
 "${compose[@]}" up -d --wait
