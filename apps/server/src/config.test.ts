@@ -15,6 +15,7 @@ const validEnvironment = (): NodeJS.ProcessEnv => ({
   WEBCLIP_SIGNING_KEY: secret("w"),
   WEBCLIP_EXCHANGE_KEY: secret("x"),
   ANALYTICS_CURSOR_SECRET: secret("q"),
+  STUDENT_CREDENTIAL_KEY: secret("s"),
   ICLASS_MODE: "guest-only-explicit",
   DELETION_LEDGER_FILE: "/var/lib/steam-top/deletion-ledger.log",
   DELETION_SOURCE_INSTANCE_ID: "90000000-0000-4000-8000-000000000001",

@@ -110,6 +110,11 @@ function defaultStorage(): StorageAdapter {
   try { candidate = localStorage; } catch { /* unavailable */ }
   return createSafeStorage(candidate);
 }
+function defaultCredentialStorage(): StorageAdapter {
+  let candidate: Storage | null = null;
+  try { candidate = sessionStorage; } catch { /* unavailable */ }
+  return createSafeStorage(candidate);
+}
 
 function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException("操作已取消", "AbortError"));
@@ -149,6 +154,7 @@ export type CommandInput =
 export class RealtimeClient {
   readonly #transport: RealtimeTransport;
   readonly #storage: StorageAdapter;
+  readonly #credentialStorage: StorageAdapter;
   readonly #apiBase: string;
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
@@ -175,9 +181,10 @@ export class RealtimeClient {
   #startGeneration = 0;
   #identityController: AbortController | null = null;
 
-  constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number; bootstrapIdentity?: boolean; identityTimeoutMs?: number }>) {
+  constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; credentialStorage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number; bootstrapIdentity?: boolean; identityTimeoutMs?: number }>) {
     this.#transport = options.transport;
     this.#storage = options.storage ?? defaultStorage();
+    this.#credentialStorage = options.credentialStorage ?? options.storage ?? defaultCredentialStorage();
     this.#apiBase = (options.apiBase ?? "").replace(/\/$/u, "");
     this.#fetch = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? Date.now;
@@ -186,9 +193,9 @@ export class RealtimeClient {
     if (!Number.isSafeInteger(this.#identityTimeoutMs) || this.#identityTimeoutMs < 100 || this.#identityTimeoutMs > 60_000) throw new TypeError("identityTimeoutMs is invalid");
     this.#token = null;
     delete this.#transport.auth.displayName;
-    const storedCredential = this.#storage.get(STUDENT_CREDENTIAL_KEY);
-    if (storedCredential && /^[A-Za-z0-9_-]{43}$/u.test(storedCredential)) this.#transport.auth.studentCredential = storedCredential;
-    else { this.#storage.remove(STUDENT_CREDENTIAL_KEY); delete this.#transport.auth.studentCredential; }
+    const storedCredential = this.#credentialStorage.get(STUDENT_CREDENTIAL_KEY);
+    if (storedCredential && /^[A-Za-z0-9_.-]{80,2048}$/u.test(storedCredential)) this.#transport.auth.studentCredential = storedCredential;
+    else { this.#credentialStorage.remove(STUDENT_CREDENTIAL_KEY); delete this.#transport.auth.studentCredential; }
   }
 
   getState = (): RealtimeState => this.#state;
@@ -220,19 +227,20 @@ export class RealtimeClient {
     void this.#bootstrap(generation);
   }
 
-  async #bootstrap(generation: number): Promise<void> {
+  async #bootstrap(generation: number, retried = false): Promise<void> {
     this.#set({ identityStatus: "loading" });
     this.#identityController?.abort(); const controller = new AbortController(); this.#identityController = controller;
     const timeout = setTimeout(() => controller.abort(new DOMException("辨識裝置逾時", "TimeoutError")), this.#identityTimeoutMs);
     try {
       const credential = typeof this.#transport.auth.studentCredential === "string" ? this.#transport.auth.studentCredential : undefined;
       const response = await awaitWithAbort(this.#fetch(`${this.#apiBase}/api/identity`, { method: "GET", credentials: this.#apiBase.startsWith("http") ? "omit" : "include", cache: "no-store", headers: { accept: "application/json", ...(credential ? { authorization: `Bearer ${credential}` } : {}) }, signal: controller.signal }), controller.signal);
+      if (response.status === 401 && credential && !retried) { this.#credentialStorage.remove(STUDENT_CREDENTIAL_KEY); delete this.#transport.auth.studentCredential; await this.#bootstrap(generation, true); return; }
       if (!response.ok) throw new Error("IDENTITY_BOOTSTRAP_FAILED");
-      const schema = z.strictObject({ id: z.uuid(), status: z.enum(["iclass", "cookie", "guest"]), displayName: z.string().min(1).max(80), studentCredential: z.string().regex(/^[A-Za-z0-9_-]{43}$/u).optional() });
+      const schema = z.strictObject({ id: z.uuid(), status: z.enum(["iclass", "cookie", "guest"]), displayName: z.string().min(1).max(80), studentCredential: z.string().regex(/^[A-Za-z0-9_.-]{80,2048}$/u).optional() });
       const parsed = schema.parse(await awaitWithAbort(response.json() as Promise<unknown>, controller.signal));
       const { studentCredential, ...identity } = parsed;
       if (!this.#started || generation !== this.#startGeneration) return;
-      if (studentCredential) { this.#storage.set(STUDENT_CREDENTIAL_KEY, studentCredential); this.#transport.auth.studentCredential = studentCredential; }
+      if (studentCredential) { this.#credentialStorage.set(STUDENT_CREDENTIAL_KEY, studentCredential); this.#transport.auth.studentCredential = studentCredential; }
       this.#set({ identityStatus: "ready", identity });
       this.#transport.connect();
     } catch {
@@ -310,6 +318,7 @@ export class RealtimeClient {
       return parsed.data.designId;
     } catch (error) {
       if (timedOut) throw new Error("上載設計逾時，請重試。");
+      if (error instanceof Error && error.message === "連線已更新") throw error;
       if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) throw new DOMException("操作已取消", "AbortError");
       throw error;
     } finally {

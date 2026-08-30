@@ -9,6 +9,7 @@ const secretNames = [
   "WEBCLIP_SIGNING_KEY",
   "WEBCLIP_EXCHANGE_KEY",
   "ANALYTICS_CURSOR_SECRET",
+  "STUDENT_CREDENTIAL_KEY",
 ] as const;
 type SecretName = (typeof secretNames)[number];
 
@@ -42,6 +43,7 @@ export type ProductionConfig = Readonly<{
   webclipSigningKey: string;
   webclipExchangeKey: string;
   analyticsCursorSecret: string;
+  studentCredentialKey: string;
   iClassMode: "api" | "csv" | "api-csv-fallback" | "guest-only-explicit";
   iClassApiUrl?: string;
   iClassApiBearerToken?: string;
@@ -76,7 +78,7 @@ export function loadConfig(
   const deletionSourceInstanceId = secretValue(environment, "DELETION_SOURCE_INSTANCE_ID", readSecret);
   z.uuid().parse(deletionSourceInstanceId);
   z.url().refine((value) => value.startsWith("postgresql://") || value.startsWith("postgres://"), "must be a PostgreSQL URL").parse(secrets.DATABASE_URL);
-  for (const name of ["COOKIE_SIGNING_KEY", "ADMIN_CSRF_SECRET", "WEBCLIP_SIGNING_KEY", "WEBCLIP_EXCHANGE_KEY", "ANALYTICS_CURSOR_SECRET"] as const) {
+  for (const name of ["COOKIE_SIGNING_KEY", "ADMIN_CSRF_SECRET", "WEBCLIP_SIGNING_KEY", "WEBCLIP_EXCHANGE_KEY", "ANALYTICS_CURSOR_SECRET", "STUDENT_CREDENTIAL_KEY"] as const) {
     canonicalSecret(secrets[name], name);
   }
   z.string().min(8, "ADMIN_INITIAL_PASSWORD must contain at least 8 characters").parse(secrets.ADMIN_INITIAL_PASSWORD);
@@ -88,7 +90,7 @@ export function loadConfig(
   if (studentOrigin.pathname !== "/" || studentOrigin.search || studentOrigin.hash || studentOrigin.username || studentOrigin.password || (parsed.NODE_ENV === "production" && (studentOrigin.protocol !== "https:" || studentOrigin.port))) throw new Error("STUDENT_ORIGIN must be a default-port HTTPS origin without a path");
   if (studentOrigin.origin === publicOrigin.origin) throw new Error("STUDENT_ORIGIN must differ from PUBLIC_ORIGIN");
   if (parsed.NODE_ENV === "production" && parsed.DATABASE_TLS !== "require") throw new Error("DATABASE_TLS must be require in production");
-  if (new Set([secrets.COOKIE_SIGNING_KEY, secrets.ADMIN_CSRF_SECRET, secrets.WEBCLIP_SIGNING_KEY, secrets.WEBCLIP_EXCHANGE_KEY, secrets.ANALYTICS_CURSOR_SECRET]).size !== 5) throw new Error("Production secrets must be distinct");
+  if (new Set([secrets.COOKIE_SIGNING_KEY, secrets.ADMIN_CSRF_SECRET, secrets.WEBCLIP_SIGNING_KEY, secrets.WEBCLIP_EXCHANGE_KEY, secrets.ANALYTICS_CURSOR_SECRET, secrets.STUDENT_CREDENTIAL_KEY]).size !== 6) throw new Error("Production secrets must be distinct");
   const apiEnabled = parsed.ICLASS_MODE === "api" || parsed.ICLASS_MODE === "api-csv-fallback";
   const csvEnabled = parsed.ICLASS_MODE === "csv" || parsed.ICLASS_MODE === "api-csv-fallback";
   const iClassApiUrl = parsed.ICLASS_API_URL?.trim();
@@ -110,6 +112,7 @@ export function loadConfig(
     webclipSigningKey: secrets.WEBCLIP_SIGNING_KEY,
     webclipExchangeKey: secrets.WEBCLIP_EXCHANGE_KEY,
     analyticsCursorSecret: secrets.ANALYTICS_CURSOR_SECRET,
+    studentCredentialKey: secrets.STUDENT_CREDENTIAL_KEY,
     iClassMode: parsed.ICLASS_MODE,
     ...(iClassApiUrl ? { iClassApiUrl } : {}),
     ...(iClassApiBearerToken ? { iClassApiBearerToken } : {}),

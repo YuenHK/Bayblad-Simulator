@@ -47,13 +47,20 @@ describe("RealtimeClient", () => {
   it("stores only the opaque student credential and sends it on HTTP and socket bootstrap", async () => {
     const transport = new FakeTransport(); const values = new Map<string, string>();
     const storage = createSafeStorage({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); }, removeItem: (key) => { values.delete(key); } });
-    const credential = "c".repeat(43);
+    const credential = "c".repeat(100);
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ id: crypto.randomUUID(), status: "guest", displayName: "訪客-ABCD", studentCredential: credential }), { status: 200, headers: { "content-type": "application/json" } }));
     const client = new RealtimeClient({ transport, storage, fetcher, apiBase: "https://api.example", bootstrapIdentity: true }); client.start();
     await vi.waitFor(() => expect(transport.connected).toBe(true));
     expect(transport.auth.studentCredential).toBe(credential);
     expect([...values.values()]).toEqual([credential]);
     expect([...values.values()].join(" ")).not.toContain("訪客-ABCD");
+  });
+  it("clears a rejected credential and retries identity bootstrap exactly once", async () => {
+    const transport=new FakeTransport(),values=new Map([["steam-top.student-credential","x".repeat(100)]]);
+    const storage=createSafeStorage({getItem:key=>values.get(key)??null,setItem:(key,value)=>{values.set(key,value);},removeItem:key=>{values.delete(key);}});
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null,{status:401})).mockResolvedValueOnce(new Response(JSON.stringify({id:crypto.randomUUID(),status:"guest",displayName:"訪客-NEW",studentCredential:"n".repeat(100)}),{status:200,headers:{"content-type":"application/json"}}));
+    const client=new RealtimeClient({transport,storage,fetcher,apiBase:"https://api.example",bootstrapIdentity:true});client.start();
+    await vi.waitFor(()=>expect(transport.connected).toBe(true));expect(fetcher).toHaveBeenCalledTimes(2);expect((fetcher.mock.calls[0]?.[1]?.headers as Record<string,string>).authorization).toContain("Bearer");expect((fetcher.mock.calls[1]?.[1]?.headers as Record<string,string>).authorization).toBeUndefined();expect(values.get("steam-top.student-credential")).toBe("n".repeat(100));
   });
   it("times out stalled identity fetch/body and retry aborts the previous bootstrap", async () => {
     vi.useFakeTimers();

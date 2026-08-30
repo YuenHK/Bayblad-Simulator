@@ -80,6 +80,7 @@ services:
       WEBCLIP_EXCHANGE_KEY_FILE: /run/secrets/webclip_exchange_key
       WEBCLIP_AUDIENCE: ${WEBCLIP_AUDIENCE:-steam-top}
       ANALYTICS_CURSOR_SECRET_FILE: /run/secrets/analytics_cursor_secret
+      STUDENT_CREDENTIAL_KEY_FILE: /run/secrets/student_credential_key
       ICLASS_MODE: ${ICLASS_MODE:-guest-only-explicit}
       ICLASS_API_URL: ${ICLASS_API_URL:-}
       ICLASS_API_BEARER_TOKEN_FILE: /run/secrets/iclass_api_bearer_token
@@ -96,6 +97,7 @@ services:
       - webclip_signing_key
       - webclip_exchange_key
       - analytics_cursor_secret
+      - student_credential_key
       - iclass_api_bearer_token
     volumes:
       - "deletion_ledger:/var/lib/steam-top"
@@ -125,7 +127,7 @@ services:
       - /data:size=16m,nosuid,nodev
     networks: [edge]
     healthcheck:
-      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/"]
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/admin/"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -192,4 +194,5 @@ secrets:
   webclip_signing_key: { environment: WEBCLIP_SIGNING_KEY }
   webclip_exchange_key: { environment: WEBCLIP_EXCHANGE_KEY }
   analytics_cursor_secret: { environment: ANALYTICS_CURSOR_SECRET }
+  student_credential_key: { environment: STUDENT_CREDENTIAL_KEY }
   iclass_api_bearer_token: { environment: ICLASS_API_BEARER_TOKEN }
