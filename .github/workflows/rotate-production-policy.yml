@@ -1,0 +1,37 @@
+name: Rotate production policy pin
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit:
+        description: Full reviewed SHA-1 commit OID
+        required: true
+        type: string
+permissions: { contents: read }
+jobs:
+  rotate-policy:
+    environment: production-release-policy-approval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions: { contents: read, actions: read, id-token: write, attestations: write }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { ref: "${{ github.workflow_sha }}", path: trusted, persist-credentials: false }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { ref: "${{ inputs.reviewed_commit }}", path: reviewed, persist-credentials: false }
+      - name: Build protected rotation receipt
+        env:
+          REVIEWED_COMMIT: "${{ inputs.reviewed_commit }}"
+          EXTERNAL_LAUNCHER_SHA256: "${{ vars.PRODUCTION_POLICY_LAUNCHER_SHA256 }}"
+          OLD_BUNDLE_SHA256: "${{ vars.PRODUCTION_POLICY_BUNDLE_SHA256 }}"
+        run: |
+          set -euo pipefail
+          [[ $REVIEWED_COMMIT =~ ^[a-f0-9]{40}$ && $EXTERNAL_LAUNCHER_SHA256 =~ ^[a-f0-9]{64}$ && $OLD_BUNDLE_SHA256 =~ ^[a-f0-9]{64}$ ]]
+          test "$(git -C trusted rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA";test "$(git -C reviewed rev-parse HEAD)" = "$REVIEWED_COMMIT"
+          launcher_sha=$(sha256sum trusted/scripts/production-policy-pin-launcher.sh|awk '{print $1}');test "$launcher_sha" = "$EXTERNAL_LAUNCHER_SHA256"
+          preview=$(trusted/scripts/production-policy-pin-launcher.sh "$GITHUB_WORKSPACE/reviewed" "$REVIEWED_COMMIT")
+          new_bundle=$(jq -er 'select(.schemaVersion==1 and .purpose=="production-policy-rotation-preview" and .authorized==false).bundleSha256' <<<"$preview")
+          jq -n --arg launcher "$launcher_sha" --arg old "$OLD_BUNDLE_SHA256" --arg new "$new_bundle" --arg oid "$REVIEWED_COMMIT" --arg ref "$GITHUB_WORKFLOW_REF" --arg sha "$GITHUB_WORKFLOW_SHA" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg at "$(date -u +%FT%TZ)" '{schemaVersion:1,purpose:"authorized-production-policy-rotation",launcherSha256:$launcher,oldBundleSha256:$old,newBundleSha256:$new,reviewedCommit:$oid,workflowRef:$ref,workflowSha:$sha,runId:($run|tonumber),runAttempt:($attempt|tonumber),createdAt:$at}' > "$RUNNER_TEMP/production-policy-rotation-receipt.json"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with: { subject-path: "${{ runner.temp }}/production-policy-rotation-receipt.json" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: { name: "production-policy-rotation-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/production-policy-rotation-receipt.json", retention-days: 30, if-no-files-found: error }

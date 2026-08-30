@@ -1,7 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 if (($#!=1))||! [[ $1 =~ ^[0-9A-Fa-f]{40}$ ]];then printf 'usage: %s <full-40-hex-sha1-commit-oid>\n' "$0" >&2;exit 64;fi
-[[ ${STEAM_TOP_POLICY_LAUNCHED:-} == 1 ]]||{ printf 'formal rotation requires the externally pinned launcher\n' >&2;exit 65; }
 source_commit=$(printf '%s' "$1"|/usr/bin/tr 'A-F' 'a-f')
 source_path=$0
 while [[ -L $source_path ]];do source_dir=$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "$source_path")"&&pwd);source_path=$(/usr/bin/readlink "$source_path");[[ $source_path = /* ]]||source_path="$source_dir/$source_path";done
@@ -60,4 +59,4 @@ safe_git -C "$temporary" init --quiet repository;safe_git -C "$temporary/reposit
 alternates="$temporary/repository/.git/objects/info/alternates";[[ ! -s $alternates ]]||exit 1
 capture_git fetch_head -C "$temporary/repository" rev-parse FETCH_HEAD;[[ $fetch_head == "$source_commit" ]];safe_git -C "$temporary/repository" checkout --detach --quiet FETCH_HEAD;capture_git checkout_head -C "$temporary/repository" rev-parse HEAD;[[ $checkout_head == "$source_commit" ]]
 run_group /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME="$temporary/home" XDG_CONFIG_HOME="$temporary/home" TMPDIR="$temporary" "$temporary/trusted-node" "$temporary/repository/scripts/verify-production-policy-bundle.mjs" "$temporary/repository" >"$temporary/digest";IFS= read -r digest <"$temporary/digest"
-printf 'Trusted Node.js: %s sha256:%s\nReviewed clean checkout commit: %s\nReviewed bundle SHA-256: %s\n' "$trusted_node" "$node_digest" "$source_commit" "$digest";printf 'After two-person approval, an environment administrator must run:\n';printf 'gh variable set PRODUCTION_POLICY_BUNDLE_SHA256 --env production-release-policy-approval --body %s\n' "$digest"
+printf '{"schemaVersion":1,"purpose":"production-policy-rotation-preview","authorized":false,"reviewedCommit":"%s","bundleSha256":"%s","nodeSha256":"%s"}\n' "$source_commit" "$digest" "$node_digest"
