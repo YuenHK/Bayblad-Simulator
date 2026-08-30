@@ -3,7 +3,7 @@ set -euo pipefail
 die(){ echo "deployment authorization refused: $1" >&2;exit 1;}
 [[ $(id -u) -eq 0 && $# -eq 6 ]]||die "root and artifact/pending/repository/deployment/token/state required"
 artifact=$1;pending=$2;repository=$3;deployment_id=$4;token_file=$5;state_dir=$6
-purpose=${DEPLOYMENT_AUTHORIZATION_PURPOSE:-};case $purpose in production) expected_environment=production;;release-integration) expected_environment=release-host-integration;;*) die "authorization purpose";;esac
+purpose=${DEPLOYMENT_AUTHORIZATION_PURPOSE:-};case $purpose in production) expected_environment=${DEPLOYMENT_AUTHORIZATION_ENVIRONMENT:-production};[[ $expected_environment == production || $expected_environment =~ ^production-first-deploy-e2e-[1-9][0-9]*-[1-9][0-9]*$ ]]||die "authorization environment";;release-integration) expected_environment=release-host-integration;;*) die "authorization purpose";;esac
 [[ ${DEPLOYMENT_AUTHORIZATION_BUNDLE_SHA256:-} =~ ^[a-f0-9]{64}$ ]]||die "bundle digest required"
 script_path=$(realpath "$0");script_dir=$(CDPATH= cd -- "$(dirname -- "$script_path")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/.."&&pwd -P);source "$root/infra/backup/host-trust-guard.sh"
 [[ $script_path == /opt/steam-top/scripts/prepare-deployment-authorization.sh || $script_path =~ ^/opt/steam-top/releases/[a-f0-9]{64}/scripts/prepare-deployment-authorization\.sh$ ]]||die "installed canonical path required"
@@ -14,7 +14,7 @@ backup_private_file "$token_file"||die "token trust"
 snapshot=$(mktemp -d);chmod 700 "$snapshot";trap 'rm -rf "$snapshot"' EXIT;cp "$pending" "$snapshot/pending.json";cp "$artifact/release-manifest.json" "$snapshot/release-manifest.json";chmod 400 "$snapshot"/*
 cp "$artifact/runtime-files.sha256" "$snapshot/runtime-files.sha256";chmod 400 "$snapshot/runtime-files.sha256"
 values=$(node - "$snapshot/pending.json" "$snapshot/release-manifest.json" "$repository" <<'NODE'
-const fs=require("fs"),crypto=require("crypto"),request=JSON.parse(fs.readFileSync(process.argv[2])),manifestBytes=fs.readFileSync(process.argv[3]),manifest=JSON.parse(manifestBytes),repo=process.argv[4],p=request.payload,environment={production:"production","release-integration":"release-host-integration"}[process.env.DEPLOYMENT_AUTHORIZATION_PURPOSE];
+const fs=require("fs"),crypto=require("crypto"),request=JSON.parse(fs.readFileSync(process.argv[2])),manifestBytes=fs.readFileSync(process.argv[3]),manifest=JSON.parse(manifestBytes),repo=process.argv[4],p=request.payload,environment=process.env.DEPLOYMENT_AUTHORIZATION_ENVIRONMENT||{production:"production","release-integration":"release-host-integration"}[process.env.DEPLOYMENT_AUTHORIZATION_PURPOSE];
 if(request.environment!==environment||p?.schemaVersion!==4||p.purpose!==process.env.DEPLOYMENT_AUTHORIZATION_PURPOSE||request.ref!==p.commit||manifest.commit!==p.commit||JSON.stringify(manifest.images)!==JSON.stringify(p.images)||!/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.test(repo))process.exit(1);
 const digest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(digest!==p.manifestSha256||!/^[a-f0-9]{64}$/.test(p.nonce)||!/^(none|[1-9][0-9]*\|[a-f0-9]{64})$/.test(p.expectedPreviousState))process.exit(1);
 process.stdout.write([p.nonce,p.manifestSha256,p.commit,p.expectedPreviousState,p.signerKind,p.sourceWorkflow,p.runId,p.artifact,p.sourceHeadSha,p.sourceRef,p.sourceEvent].join("|"));
