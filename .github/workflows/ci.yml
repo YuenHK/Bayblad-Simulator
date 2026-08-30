@@ -406,7 +406,9 @@ jobs:
           platforms: arm64
           image: docker.io/tonistiigi/binfmt@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-        with: { version: v0.30.1 }
+        with:
+          version: v0.30.1
+          driver-opts: image=moby/buildkit@sha256:6545377d9442540605d5cb443ea634cd5769bc68cd884fa2ed0f38850072f56f
       - name: Authenticate only for immutable GHCR publication
         shell: bash
         run: printf '%s' '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin

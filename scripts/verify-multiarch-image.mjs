@@ -18,7 +18,29 @@ function exactSubject(statement, application, label) {
 function exactVcs(predicate, expectedCommit, expectedRepository, architecture) {
   const metadata = predicate?.metadata?.["https://mobyproject.org/buildkit@v1#metadata"], vcs = metadata?.vcs;
   const sources = new Set([`https://github.com/${expectedRepository}`, `https://github.com/${expectedRepository}.git`, `git@github.com:${expectedRepository}.git`]);
-  return predicate?.buildType === "https://mobyproject.org/buildkit@v1" && typeof predicate.builder?.id === "string" && predicate.invocation?.environment?.platform === `linux/${architecture}` && sources.has(vcs?.source) && same(vcs?.revision, expectedCommit);
+  const validTimestamp = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value));
+  return predicate?.buildType === "https://mobyproject.org/buildkit@v1"
+    && typeof predicate.builder?.id === "string" && predicate.builder.id.trim().length > 0
+    && predicate.invocation && typeof predicate.invocation === "object" && predicate.invocation.configSource && typeof predicate.invocation.configSource === "object"
+    && predicate.invocation.parameters && typeof predicate.invocation.parameters === "object" && predicate.invocation?.environment?.platform === `linux/${architecture}`
+    && predicate.buildConfig && typeof predicate.buildConfig === "object" && Array.isArray(predicate.materials)
+    && validTimestamp(predicate.metadata?.buildStartedOn) && validTimestamp(predicate.metadata?.buildFinishedOn)
+    && typeof predicate.metadata?.reproducible === "boolean"
+    && ["parameters", "environment", "materials"].every((key) => typeof predicate.metadata?.completeness?.[key] === "boolean")
+    && sources.has(vcs?.source) && same(vcs?.revision, expectedCommit);
+}
+
+function validSpdxDocument(document) {
+  let namespace;
+  try { namespace = new URL(document?.documentNamespace); } catch { return false; }
+  return document?.SPDXID === "SPDXRef-DOCUMENT"
+    && /^SPDX-2\.[23]$/u.test(document.spdxVersion)
+    && document.dataLicense === "CC0-1.0"
+    && typeof document.name === "string" && document.name.trim().length > 0
+    && ["http:", "https:"].includes(namespace.protocol)
+    && Array.isArray(document.creationInfo?.creators) && document.creationInfo.creators.length > 0
+    && document.creationInfo.creators.every((creator) => typeof creator === "string" && /^(Person|Organization|Tool):\s*\S/u.test(creator))
+    && typeof document.creationInfo.created === "string" && !Number.isNaN(Date.parse(document.creationInfo.created));
 }
 
 function verifyLayer(raw, layer, application, expectedType, label) {
@@ -39,7 +61,7 @@ function verifyAttestation(rawManifest, descriptorInIndex, application, rawProve
   const provenance = verifyLayer(rawProvenance, byType.get("https://slsa.dev/provenance/v0.2"), application, "https://slsa.dev/provenance/v0.2", `${architecture} provenance`);
   if (!exactVcs(provenance.predicate, expectedCommit, expectedRepository, architecture)) throw new Error(`${architecture} source provenance mismatch`);
   const sbom = verifyLayer(rawSbom, byType.get("https://spdx.dev/Document"), application, "https://spdx.dev/Document", `${architecture} SBOM`);
-  if (sbom.predicate.SPDXID !== "SPDXRef-DOCUMENT" || !/^SPDX-2\.[23]$/u.test(sbom.predicate.spdxVersion) || !Array.isArray(sbom.predicate.creationInfo?.creators) || sbom.predicate.creationInfo.creators.length < 1) throw new Error(`${architecture} SPDX document invalid`);
+  if (!validSpdxDocument(sbom.predicate)) throw new Error(`${architecture} SPDX document invalid`);
   return Object.freeze({ imageDigest: application.digest, attestationDigest: descriptorInIndex.digest, provenance: Object.freeze({ predicateType: provenance.predicateType, layerDigest: sha(rawProvenance), documentSha256: sha(rawProvenance).slice(7) }), sbom: Object.freeze({ predicateType: sbom.predicateType, layerDigest: sha(rawSbom), documentSha256: sha(rawSbom).slice(7) }) });
 }
 
