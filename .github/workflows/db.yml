@@ -77,7 +77,6 @@ jobs:
             sudo find "$root" -type d -exec chmod 0555 {} +
             sudo env RUNTIME_INSTALL_MANIFEST_SHA256="$runtime_sha" "$root/scripts/verify-runtime-install.sh" "$root"
           done
-          sudo ln -sfn "/opt/steam-top/releases/$runtime_sha" /opt/steam-top/current
           echo "RUNTIME_INSTALL_MANIFEST_SHA256=$runtime_sha" >> "$GITHUB_ENV"
       - name: Install the signed packaged bootstrap functional fixture
         shell: bash
@@ -97,13 +96,18 @@ jobs:
           NODE
           sudo install -d -o root -g root -m 0700 /run/steam-top-bootstrap-db
           sudo install -d -o root -g root -m 0700 /run/steam-top-ci /run/steam-top-ci/incidents
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/state-key"
+          printf 'state-ci %s\n' "$(cat "$RUNNER_TEMP/state-key.pub")" > "$RUNNER_TEMP/state-allowed"
+          sudo install -o root -g root -m 0400 "$RUNNER_TEMP/state-key" /run/steam-top-ci/state-key
+          sudo install -o root -g root -m 0444 "$RUNNER_TEMP/state-allowed" /run/steam-top-ci/state-allowed
           printf '[cutover-ci]\nhost=127.0.0.1\nport=5432\ndbname=steam_top_test\nuser=steam_top_test\nsslmode=disable\n' | sudo tee /run/steam-top-ci/pg_service.conf >/dev/null
           printf '127.0.0.1:5432:steam_top_test:steam_top_test:steam_top_test\n' | sudo tee /run/steam-top-ci/pgpass >/dev/null
           sudo chown root:root /run/steam-top-ci/pg_service.conf /run/steam-top-ci/pgpass
           sudo chmod 0400 /run/steam-top-ci/pg_service.conf /run/steam-top-ci/pgpass
           sudo install -o root -g root -m 0444 "$RUNNER_TEMP/bootstrap-allowed" /run/steam-top-bootstrap-db/allowed
           sudo install -o root -g root -m 0400 "$RUNNER_TEMP/bootstrap-trust.json" /run/steam-top-bootstrap-db/trust.json
-          sudo env EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$archive_sha" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-db/allowed ./infra/bootstrap/install-bootstrap.sh "$archive" "$archive.sig" bootstrap-ci /run/steam-top-bootstrap-db/trust.json --install-systemd
+          sudo env EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$archive_sha" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-db/allowed ./infra/bootstrap/install-bootstrap.sh "$archive" "$archive.sig" bootstrap-ci /run/steam-top-bootstrap-db/trust.json --install-systemd --initialize-first-deploy "$(printf %064d 27)"
+          sudo ln -sfn "/opt/steam-top/releases/$runtime_sha" /opt/steam-top/current
           sudo rm -rf /run/steam-top-bootstrap-db
       - name: Verify the production reaper service definitions
         run: systemd-analyze verify infra/systemd/steam-top-cutover-reaper.service infra/systemd/steam-top-cutover-reaper.timer
