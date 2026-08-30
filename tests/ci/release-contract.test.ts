@@ -243,6 +243,8 @@ describe("rollback deletion monotonicity", () => {
     const installer=read("infra/bootstrap/install-bootstrap.sh");expect(installer).toContain("--install-systemd");expect(installer).toContain("systemd-analyze verify");expect(installer).toContain("systemctl enable --now steam-top-cutover-reaper.timer");
     expect(read(".github/workflows/record-deployment.yml")).toContain("systemctl is-active --quiet steam-top-cutover-reaper.timer");
     const confirmCutover=read("infra/backup/confirm-cutover.sh");expect(confirmCutover).toContain("smoke_evidence_payload_b64");expect(confirmCutover).toContain("final_receipt_payload_b64");expect(confirmCutover).toContain("existing_state == verified");
+    expect(read("infra/backup/test-promotion-full.sh")).toContain("wait_advisory 2");
+    expect(read(".github/workflows/ci.yml")).toMatch(/Abort any provisional cutover[\s\S]*if: always\(\)[\s\S]*aborted\\\|t\\\|t/u);
     expect(promotion).toContain("not has_database_privilege(:'app_role'");
     expect(promotion.indexOf("allow_connections false")).toBeLessThan(promotion.indexOf("pg_terminate_backend"));
     expect(promotion.indexOf("pg_terminate_backend")).toBeLessThan(promotion.indexOf("pg_advisory_xact_lock"));
