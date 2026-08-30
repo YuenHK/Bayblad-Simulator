@@ -1,0 +1,11 @@
+import {createHash} from "node:crypto";
+import {readFileSync} from "node:fs";
+if(process.argv.length!==7)process.exit(2);
+const [receiptPath,readyPath,preflightPath,nonce,preflightSha]=process.argv.slice(2);
+const [receipt,ready,preflight]=[receiptPath,readyPath,preflightPath].map(x=>JSON.parse(readFileSync(x,"utf8")));
+const exact=(x,keys)=>Object.keys(x).sort().join("|")===keys.sort().join("|"),sha=x=>createHash("sha256").update(readFileSync(x)).digest("hex");
+if(!exact(receipt,["schemaVersion","purpose","readySha256","systemIdentifier","database","appRole","restoreTargetId","ledgerRows","databaseUrlSha256","deploymentManifestSha256","publicOrigin","publicSmoke","nonce","createdAt"])||receipt.schemaVersion!==2||receipt.purpose!=="production"||receipt.nonce!==nonce||receipt.readySha256!==sha(readyPath)||!/^https:\/\//.test(receipt.publicOrigin)||!Number.isFinite(Date.parse(receipt.createdAt))||!receipt.publicSmoke||receipt.publicSmoke.passed!==true||Object.keys(receipt.publicSmoke).some(k=>!["passed","checkedAt","nonce"].includes(k))||receipt.publicSmoke.nonce!==nonce)process.exit(1);
+if(ready.schemaVersion!==2||ready.promotionNonce!==nonce||preflight.schemaVersion!==2||preflight.purpose!=="production-cutover-preflight"||preflight.promotionNonce!==nonce||preflight.readySha256!==receipt.readySha256||sha(preflightPath)!==preflightSha)process.exit(1);
+for(const x of [ready,preflight])if(x.restoreTargetId!==receipt.restoreTargetId||String(x.systemIdentifier)!==String(receipt.systemIdentifier))process.exit(1);
+if(receipt.database!==ready.database||receipt.appRole!==ready.appRole||receipt.ledgerRows!==ready.ledgerRows||preflight.appRole!==ready.appRole||preflight.ledgerRows!==ready.ledgerRows||!/^[a-f0-9]{64}$/.test(receipt.databaseUrlSha256)||!/^[a-f0-9]{64}$/.test(receipt.deploymentManifestSha256))process.exit(1);
+process.stdout.write([receipt.restoreTargetId,receipt.systemIdentifier,ready.database,ready.appRole,ready.ledgerRows].join("|"));
