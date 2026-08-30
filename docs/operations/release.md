@@ -2,7 +2,7 @@
 
 ## 發佈前關卡
 
-1. 只發佈 CI `quality` 及 `production-security` 全部通過的 commit。`release-images` 會推送映像並產生 GitHub artifact attestation。CI 命令是 `./scripts/portable-sha256.sh manifest release server.json web.json database.json release-manifest.json > release/SHA256SUMS`，artifact 必須精確包含非隱藏 `release/` 的這五個檔案，checksum 項目必須是 basename。另外從 CI run 記錄 manifest SHA-256、repository 及 commit；同目錄 `SHA256SUMS` 不構成獨立授權。
+1. 只發佈 CI `quality` 及 `production-security` 全部通過的 commit。`release-images` 使用固定 digest 的 BuildKit v0.26.1 建立 amd64／arm64 映像，逐層核對 OCI index、attestation manifest、SLSA v0.2 provenance 與 SPDX 2.2／2.3 SBOM。`SHA256SUMS` 精確列出三個映像的 metadata、index、兩個平台各自的 attestation／provenance／SBOM、sealed evidence，以及 release manifest 與 runtime manifest；不得有缺項、重複、額外或非 basename 路徑。CI 會對 `SHA256SUMS` 作獨立 GitHub artifact attestation，下載後必須先驗證此 attestation及整個 checksum closure，才可授權或部署。
 2. 停止會寫入資料庫的發佈工作，按 [`infra/backup/README.md`](../../infra/backup/README.md) 設定受限的 `PGSERVICE`、`PGPASSFILE`、`BACKUP_DIR`、`AGE_RECIPIENT` 及簽署鍵，執行 `./infra/backup/backup.sh`。備份必須是含簽署 manifest 的 age 加密 `dump.age`，並另存於受控位置。立即在隔離 PostgreSQL 實例執行 `./infra/backup/restore.sh <完整備份目錄>` 還原演練，核對 backup manifest、migration ledger 及記錄數量；未能還原的備份不算可用。
 3. 核對正式環境 secret 沒有寫入 Git、image 或日誌，再用 `scripts/validate-deployment-env.mjs` 驗證 HTTPS origin 及映像 digest。
 

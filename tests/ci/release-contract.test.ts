@@ -58,6 +58,7 @@ describe("release CI contract", () => {
     expect(workflow).toContain('subject-path: release/*-evidence.json');
     expect(workflow).toContain("subject-path: release/SHA256SUMS");
     expect(workflow).toContain("version: v0.30.1");
+    expect(workflow).toMatch(/driver-opts: image=moby\/buildkit@sha256:[a-f0-9]{64}/u);
     expect(workflow).toMatch(/tonistiigi\/binfmt@sha256:[a-f0-9]{64}/u);
     expect(workflow).toContain("server-amd64-provenance.json");
     expect(workflow).toContain("database-arm64-sbom.json");
@@ -65,6 +66,9 @@ describe("release CI contract", () => {
     expect(workflow).toContain("release-manifest");
     expect(workflow).toContain("actions/attest-build-provenance@");
     expect(workflow).toContain("portable-sha256.sh manifest release");
+    const checksumAttestation = workflow.indexOf("subject-path: release/SHA256SUMS");
+    expect(workflow.indexOf("gh attestation verify candidate/SHA256SUMS")).toBeGreaterThan(checksumAttestation);
+    expect(read("scripts/deploy-production.sh")).toContain('portable-sha256.sh" check "$snapshot" "$snapshot/SHA256SUMS"');
     expect(workflow).toContain("path: release/");
     expect(workflow).not.toContain("Resolve immutable base-image digests");
     expect(read("scripts/validate-deployment-env.mjs")).toContain("SERVER_IMAGE");
