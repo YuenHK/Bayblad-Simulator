@@ -8,6 +8,7 @@ jobs:
   authorize:
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')
     permissions: { contents: read, actions: read, deployments: write, packages: read, id-token: write, attestations: write }
+    concurrency: { group: production-deployment-status-authority, cancel-in-progress: false }
     uses: ./.github/workflows/ci.yml
     with:
       candidate_run_id: "${{ github.event.workflow_run.id }}"
