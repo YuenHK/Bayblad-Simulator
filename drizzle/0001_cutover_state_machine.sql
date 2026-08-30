@@ -9,10 +9,15 @@ CREATE TABLE IF NOT EXISTS restore_control.finalize_outbox (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 --> statement-breakpoint
-DO $$ DECLARE c record; BEGIN
-  FOR c IN SELECT conname FROM pg_constraint WHERE conrelid='restore_control.finalize_outbox'::regclass AND contype='c' LOOP
-    EXECUTE format('ALTER TABLE restore_control.finalize_outbox DROP CONSTRAINT %I',c.conname);
-  END LOOP;
+DO $$ DECLARE legacy_name text; BEGIN
+  SELECT conname INTO legacy_name
+    FROM pg_constraint
+   WHERE conrelid='restore_control.finalize_outbox'::regclass
+     AND contype='c'
+     AND regexp_replace(pg_get_constraintdef(oid),'\s+',' ','g') = 'CHECK ((state = ''committed''::text))';
+  IF legacy_name IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE restore_control.finalize_outbox DROP CONSTRAINT %I',legacy_name);
+  END IF;
 END $$;
 --> statement-breakpoint
 ALTER TABLE restore_control.finalize_outbox
@@ -32,6 +37,10 @@ ALTER TABLE restore_control.finalize_outbox
   ADD COLUMN IF NOT EXISTS verified_at timestamptz,
   ADD COLUMN IF NOT EXISTS aborted_at timestamptz;
 --> statement-breakpoint
-UPDATE restore_control.finalize_outbox SET state='verified',verified_at=coalesce(verified_at,created_at) WHERE state='committed';
+UPDATE restore_control.finalize_outbox SET state='legacy-committed' WHERE state='committed';
 --> statement-breakpoint
-ALTER TABLE restore_control.finalize_outbox ADD CONSTRAINT finalize_outbox_state_machine CHECK (state IN ('preflight-recorded','connect-granted-pending-smoke','smoke-observed','verified','aborted'));
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='restore_control.finalize_outbox'::regclass AND conname='finalize_outbox_state_machine') THEN
+    ALTER TABLE restore_control.finalize_outbox ADD CONSTRAINT finalize_outbox_state_machine CHECK (state IN ('legacy-committed','preflight-recorded','connect-granted-pending-smoke','smoke-observed','verified','aborted'));
+  END IF;
+END $$;
