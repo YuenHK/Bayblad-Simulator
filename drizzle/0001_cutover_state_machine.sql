@@ -44,8 +44,9 @@ ALTER TABLE restore_control.finalize_outbox
   ADD COLUMN IF NOT EXISTS final_receipt_signer_id text,
   ADD COLUMN IF NOT EXISTS legacy_ready_payload_b64 text,
   ADD COLUMN IF NOT EXISTS legacy_ready_sha256 text,
-  ADD COLUMN IF NOT EXISTS legacy_ready_sha_file_b64 text,
-  ADD COLUMN IF NOT EXISTS legacy_ready_signer_id text,
+  ADD COLUMN IF NOT EXISTS legacy_ready_sha_file_b64 text, -- deprecated; writers leave NULL
+  ADD COLUMN IF NOT EXISTS legacy_ready_sha_text_b64 text,
+  ADD COLUMN IF NOT EXISTS legacy_ready_signer_id text, -- deprecated; ready had no signature
   ADD COLUMN IF NOT EXISTS legacy_preflight_payload_b64 text,
   ADD COLUMN IF NOT EXISTS legacy_preflight_sha256 text,
   ADD COLUMN IF NOT EXISTS legacy_preflight_signature_b64 text,

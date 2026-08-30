@@ -1,6 +1,5 @@
 [Unit]
 Description=Fail-closed Steam Top pending cutover reaper
-ConditionPathExists=/opt/steam-top/current
 [Service]
 Type=oneshot
 ExecStart=/opt/steam-top-bootstrap/reconcile-cutover-pending.sh
