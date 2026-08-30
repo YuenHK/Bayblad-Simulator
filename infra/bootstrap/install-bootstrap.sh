@@ -13,9 +13,33 @@ archive_size=$(stat -c %s "$archive");[[ $archive_size =~ ^[0-9]+$ && $archive_s
 ssh-keygen -Y verify -q -f "$BOOTSTRAP_ALLOWED_SIGNERS_FILE" -I "$signer" -n steam-top-bootstrap-source -s "$signature" <"$archive"||die "external archive signature"
 tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT
 python3 - "$archive" "$tmp" "$0" <<'PY'||die "unsafe or invalid signed archive"
-import hashlib,os,re,sys,tarfile
+import gzip,hashlib,os,re,sys,tarfile
 archive_path,target,installer=sys.argv[1:]
-with tarfile.open(archive_path,"r:gz") as tar:
+raw_path=os.path.join(target,".validated.tar")
+expanded=0
+with gzip.open(archive_path,"rb") as source,open(raw_path,"xb") as raw:
+  while True:
+    chunk=source.read(65536)
+    if not chunk:break
+    expanded+=len(chunk)
+    if expanded>16_777_216 or expanded>max(65_536,os.stat(archive_path).st_size*64):raise SystemExit("archive expansion")
+    raw.write(chunk)
+with open(raw_path,"rb") as raw:
+  offset=0;headers=0
+  while offset<expanded:
+    raw.seek(offset);header=raw.read(512)
+    if len(header)!=512:raise SystemExit("truncated tar header")
+    if header==bytes(512):
+      if raw.read(512)!=bytes(512) or any(raw.read()):raise SystemExit("invalid tar terminator")
+      break
+    headers+=1
+    if headers>65 or header[156:157] in (b"L",b"K",b"x",b"g",b"S"):raise SystemExit("extended tar metadata")
+    try:size=int(header[124:136].rstrip(b"\0 ") or b"0",8)
+    except ValueError:raise SystemExit("invalid tar size")
+    if size<0 or size>2_097_152:raise SystemExit("tar member size")
+    offset+=512+((size+511)//512)*512
+  if headers<1 or offset>expanded:raise SystemExit("truncated tar payload")
+with tarfile.open(raw_path,"r:") as tar:
   if tar.pax_headers: raise SystemExit("global pax metadata")
   by_name={};total=0
   # Iterate directly: metadata allocation, member count and
@@ -23,7 +47,7 @@ with tarfile.open(archive_path,"r:gz") as tar:
   for member in tar:
     if len(by_name)>=64 or member.pax_headers or member.type!=tarfile.REGTYPE or member.sparse is not None or member.linkname or member.name in by_name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*",member.name) or member.uid!=0 or member.gid!=0 or member.size<0 or member.size>2_097_152: raise SystemExit("archive header")
     total+=member.size
-    if total>16_777_216 or total>max(65_536,os.stat(archive_path).st_size*64): raise SystemExit("archive expansion")
+    if total>16_777_216: raise SystemExit("archive expansion")
     by_name[member.name]=member
   if not by_name: raise SystemExit("archive count")
   manifest_member=by_name.get("bootstrap-files.sha256")
@@ -48,6 +72,7 @@ with tarfile.open(archive_path,"r:gz") as tar:
   with os.fdopen(fd,"wb") as output: output.write(manifest.encode("ascii"));output.flush();os.fsync(output.fileno())
 with open(installer,"rb") as running:
   if hashlib.sha256(running.read()).hexdigest()!=expected["install-bootstrap.sh"][0]: raise SystemExit("installer digest")
+os.unlink(raw_path)
 PY
 node "$tmp/verify-package-tree.mjs" "$tmp" "$0"||die "signed package tree"
 if [[ $deployment_purpose == production ]];then mapfile -t preflight_signing < <(node - "$config" <<'NODE'
