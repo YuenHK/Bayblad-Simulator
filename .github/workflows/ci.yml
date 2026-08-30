@@ -346,6 +346,7 @@ jobs:
         run: |
           state=failure;if [[ $PREVIOUS_OK == true && $CLEANUP_OK == true && -f $RUNNER_TEMP/production-e2e-passed ]];then state=success;fi
           node -e 'const fs=require("fs"),[out,state,id,run,attempt,ref,sha,manifest,nonce]=process.argv.slice(1);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"production-e2e-terminal",desiredTerminal:state,deploymentId:id,authorizationRunId:run,authorizationRunAttempt:Number(attempt),authorizationWorkflowRef:ref,authorizationWorkflowSha:sha,manifestSha256:manifest,nonce})+"\n")' "$RUNNER_TEMP/production-e2e-terminal.json" "$state" "$PRODUCTION_E2E_DEPLOYMENT_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_WORKFLOW_REF" "$GITHUB_WORKFLOW_SHA" "$PRODUCTION_E2E_MANIFEST_SHA" "$PRODUCTION_E2E_NONCE"
+          echo "TERMINAL_RECEIPT_SHA=$(sha256sum "$RUNNER_TEMP/production-e2e-terminal.json"|awk '{print $1}')" >> "$GITHUB_ENV"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         if: always() && env.PRODUCTION_E2E_DEPLOYMENT_ID != ''
         with: { subject-path: "${{ runner.temp }}/production-e2e-terminal.json" }
@@ -358,10 +359,10 @@ jobs:
         run: |
           set -euo pipefail;state=$(node -p 'require(process.argv[1]).desiredTerminal' "$RUNNER_TEMP/production-e2e-terminal.json");description='canonical production first deployment failed'
           [[ $PREVIOUS_OK == true ]]||state=failure
-          [[ $state != success ]]||description='canonical production first deployment passed and cleanup completed'
+          description="terminal-receipt:$TERMINAL_RECEIPT_SHA"
           node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:process.argv[2],environment:"production-first-deploy-e2e",description:process.argv[3]})+"\n")' "$RUNNER_TEMP/terminal-status.json" "$state" "$description"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses?per_page=100" > "$RUNNER_TEMP/existing-terminal.json"
-          if node -e 'const s=require(process.argv[1]).flat().find(x=>["success","failure","error","inactive"].includes(x.state));if(!s)process.exit(1);process.exit(s.state==="success"?0:2)' "$RUNNER_TEMP/existing-terminal.json";then exit 0;else code=$?;[[ $code == 1 ]]||exit "$code";fi
+          if node -e 'const s=require(process.argv[1]).flat().filter(x=>["success","failure","error","inactive"].includes(x.state)),want=process.argv[2],description=process.argv[3];if(!s.length)process.exit(1);process.exit(s.every(x=>x.state===want&&x.description===description)?0:2)' "$RUNNER_TEMP/existing-terminal.json" "$state" "$description";then exit 0;else code=$?;[[ $code == 1 ]]||exit "$code";fi
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses" --input "$RUNNER_TEMP/terminal-status.json"
           [[ $state == success ]]
   release-images:
