@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - infra/bootstrap/**
+      - scripts/sign-production-policy-entry.py
+      - scripts/verify-production-policy-anchor.mjs
+      - scripts/create-production-policy-ledger-entry.mjs
       - scripts/verify-environment-protection.mjs
       - .github/workflows/bootstrap.yml
 permissions: { contents: read }
