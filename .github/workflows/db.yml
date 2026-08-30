@@ -114,6 +114,25 @@ jobs:
           sudo env EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$archive_sha" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-db/allowed ./infra/bootstrap/install-bootstrap.sh "$archive" "$archive.sig" bootstrap-ci /run/steam-top-bootstrap-db/trust.json --install-systemd --initialize-first-deploy "$(printf %064d 27)"
           sudo ln -sfn "/opt/steam-top/releases/$runtime_sha" /opt/steam-top/current
           sudo rm -rf /run/steam-top-bootstrap-db
+      - name: Exercise signed first-deploy authority and inherited host lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          nonce=$(printf %064d 27)
+          sudo /opt/steam-top-bootstrap/read-install-receipt.sh >/dev/null
+          sudo /opt/steam-top-bootstrap/read-first-deploy-state.sh | grep -q "^pending $nonce "
+          # This is the lock topology used by host-deploy-and-receipt ->
+          # deploy-production -> advance-first-deploy-state. It must not
+          # deadlock by opening the already-held production lock again.
+          sudo env NONCE="$nonce" bash -c 'exec 9<>/var/lock/steam-top-production.lock; flock 9; timeout 5 /opt/steam-top-bootstrap/advance-first-deploy-state.sh pending "$NONCE"'
+          receipt=$(sudo find /var/lib/steam-top-bootstrap/install-receipts -mindepth 1 -maxdepth 1 -type d)
+          sudo cp -a "$receipt" "${receipt}-duplicate"
+          if sudo /opt/steam-top-bootstrap/read-install-receipt.sh; then
+            echo "duplicate canonical install receipt was accepted" >&2
+            exit 1
+          fi
+          sudo rm -rf "${receipt}-duplicate"
+          sudo /opt/steam-top-bootstrap/read-install-receipt.sh >/dev/null
       - name: Verify the production reaper service definitions
         run: systemd-analyze verify infra/systemd/steam-top-cutover-reaper.service infra/systemd/steam-top-cutover-reaper.timer
       - run: sudo chown root:root "$GITHUB_WORKSPACE" && sudo chown -R root:root infra/backup apps/server/dist && sudo find infra/backup apps/server/dist -type d -exec chmod go-w {} + && sudo chmod 0555 apps/server/dist/admin/deletion-ledger-cli.js && sudo chmod 0444 infra/backup/trusted-ledger-cli.sha256

@@ -23,12 +23,18 @@ esac
 node "$script_dir/authorize-production-deploy.mjs" "$snapshot/release-manifest.json" "$snapshot/production.env" "$snapshot/canonical.env" "$expected_repository" "$expected_commit"
 "${compose[@]}" config --quiet
 "${compose[@]}" pull
-if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production ]]&&read -r claim_phase claim_nonce claim_host claim_digest _ < <(/opt/steam-top-bootstrap/read-first-deploy-state.sh)&&[[ $claim_phase == pending ]];then
+if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production ]];then
+  state_output=$(/opt/steam-top-bootstrap/read-first-deploy-state.sh)||die "signed first-deploy authority missing or corrupt";read -r claim_phase claim_nonce claim_host claim_digest claim_receipt <<<"$state_output";[[ $claim_phase =~ ^(pending|db-claimed|consumed)$ ]]||die "unexpected first-deploy phase"
+fi
+if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production && $claim_phase =~ ^(pending|db-claimed)$ ]];then
   "${compose[@]}" up -d --wait db
   "${compose[@]}" run --rm migration
   [[ -n ${DEPLOYMENT_NONCE:-} && $claim_nonce == "$DEPLOYMENT_NONCE" ]]||die "first-deploy authorization nonce mismatch"
   PGSERVICE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgService' ) PGSERVICEFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgServiceFile') PGPASSFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgPassFile') "$script_dir/claim-first-installation.sh" "$claim_host" "$claim_digest" "$claim_nonce"
   /opt/steam-top-bootstrap/advance-first-deploy-state.sh db-claimed "$claim_nonce"
   /opt/steam-top-bootstrap/verify-reaper-health.sh --post-migration-first-deploy
+fi
+if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production && $claim_phase == consumed ]];then
+  PGSERVICE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgService') PGSERVICEFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgServiceFile') PGPASSFILE=$(node -p 'require("/etc/steam-top-bootstrap/trust.json").cutoverPgPassFile') psql -X -qAt -v host="$claim_host" -v digest="$claim_digest" -v nonce="$claim_nonce" -c "select case when count(*)=1 then 1 else 1/0 end from restore_control.platform_installation where host_id=:'host' and bootstrap_digest=:'digest' and authorization_nonce=:'nonce' and generation>=2" >/dev/null||die "established database authority mismatch"
 fi
 "${compose[@]}" up -d --wait
