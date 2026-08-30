@@ -104,6 +104,21 @@ install -o root -g root -m 0400 "$tmp/bootstrap-files.sha256" "$tree_stage/boots
 if [[ -e /opt/steam-top-bootstrap ]];then diff -qr --no-dereference "$tree_stage" /opt/steam-top-bootstrap >/dev/null||die "installed bootstrap differs; use explicit audited upgrade";rm -rf "$tree_stage";tree_stage=;else mv "$tree_stage" /opt/steam-top-bootstrap;tree_stage=;sync -f /opt;fi
 publish_exact(){ local source=$1 target=$2 mode=$3 parent tmp_file;if [[ -e $target ]];then [[ -f $target && ! -L $target && $(stat -c '%u %a' "$target") == "0 $mode" && $(sha "$target") == $(sha "$source") ]]||die "existing output differs: $target";return;fi;parent=$(dirname "$target");tmp_file=$(mktemp "$parent/.install-output.XXXXXX");install -o root -g root -m "$mode" "$source" "$tmp_file";sync -f "$tmp_file";mv "$tmp_file" "$target";sync -f "$parent";}
 install -d -o root -g root -m 0555 /etc/steam-top-bootstrap;publish_exact "$config" /etc/steam-top-bootstrap/trust.json 400
+python_runtime=$(readlink -f /usr/bin/python3);[[ $python_runtime == /* && -f $python_runtime && ! -L $python_runtime ]]||die "policy signer Python runtime"
+signer_manifest="$tmp/policy-signer-manifest.json";python3 - "$signer_manifest" "$python_runtime" /opt/steam-top-bootstrap/sign-production-policy-entry.py <<'PY'||die "policy signer manifest"
+import hashlib,json,os,stat,sys
+out,runtime,signer=sys.argv[1:]
+def sha(path):
+ h=hashlib.sha256()
+ with open(path,"rb") as source:
+  for block in iter(lambda:source.read(65536),b""):h.update(block)
+ return h.hexdigest()
+s=os.stat(runtime,follow_symlinks=False)
+if s.st_uid!=0 or s.st_nlink!=1 or s.st_mode&0o022 or not stat.S_ISREG(s.st_mode):raise SystemExit(1)
+value={"schemaVersion":1,"purpose":"steam-top-production-policy-signer","signerPath":signer,"signerSha256":sha(signer),"pythonPath":runtime,"pythonSha256":sha(runtime),"pythonStat":{"dev":s.st_dev,"ino":s.st_ino,"size":s.st_size,"mtimeNs":s.st_mtime_ns,"ctimeNs":s.st_ctime_ns,"uid":s.st_uid,"mode":stat.S_IMODE(s.st_mode),"nlink":s.st_nlink}}
+with open(out,"x") as target:target.write(json.dumps(value,separators=(",",":"))+"\n");target.flush();os.fsync(target.fileno())
+PY
+publish_exact "$signer_manifest" /etc/steam-top-bootstrap/policy-signer-manifest.json 400
 install -d -o root -g root -m 0700 /var/lib/steam-top-bootstrap
 [[ -e /var/lock/steam-top-production.lock ]]||install -o root -g root -m 0600 /dev/null /var/lock/steam-top-production.lock
 [[ -f /var/lock/steam-top-production.lock && ! -L /var/lock/steam-top-production.lock && $(stat -c '%u %a' /var/lock/steam-top-production.lock) == '0 600' ]]||die "production lock unsafe"
