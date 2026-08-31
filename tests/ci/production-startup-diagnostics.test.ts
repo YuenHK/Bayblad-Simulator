@@ -17,6 +17,9 @@ describe("production startup diagnostics", () => {
     expect(source).toContain('return "DELETION_SOURCE_INSTANCE_ID_MISMATCH"');
     expect(source).toContain("invalidArgumentName(error)");
     expect(source).toContain('new Set(["path", "key", "data", "input", "buffer", "string"])');
+    expect(source).toContain("safeStackSites(error)");
+    expect(source).toContain("node:internal\\/");
+    expect(source).toContain("production-entry\\.mjs");
     expect(source).toContain('issue.path.join(".")');
   });
 });
