@@ -4,9 +4,10 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "@steam-top/db";
 import { PostgresAdminCommandStore, adminCommandPayloadHash } from "./command-operations";
+import { postgresTestSchemaUrl } from "../postgres-test-url";
 
 const databaseUrl=process.env.TEST_DATABASE_URL,schemaName=`commands_${randomUUID().replaceAll("-","")}`;let client:DatabaseClient;
-beforeAll(async()=>{if(!databaseUrl)return;const local=/(?:localhost|127\.0\.0\.1)/u.test(databaseUrl);client=createDatabaseClient({url:databaseUrl,ssl:local?false:"require",allowInsecure:local,maxConnections:10});await client.sql.unsafe(`create schema ${schemaName}`);await client.sql.unsafe(`set search_path to ${schemaName},public`);const directory=fileURLToPath(new URL("../../../../drizzle",import.meta.url));for(const file of readdirSync(directory).filter(name=>name.endsWith(".sql")).sort())for(const statement of readFileSync(`${directory}/${file}`,"utf8").split("--> statement-breakpoint").map(value=>value.trim()).filter(Boolean))if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement);},30_000);
+beforeAll(async()=>{if(!databaseUrl)return;const local=/(?:localhost|127\.0\.0\.1)/u.test(databaseUrl);client=createDatabaseClient({url:postgresTestSchemaUrl(databaseUrl,schemaName),ssl:local?false:"require",allowInsecure:local,maxConnections:10});await client.sql.unsafe(`create schema ${schemaName}`);await client.sql.unsafe(`set search_path to ${schemaName},public`);const directory=fileURLToPath(new URL("../../../../drizzle",import.meta.url));for(const file of readdirSync(directory).filter(name=>name.endsWith(".sql")).sort())for(const statement of readFileSync(`${directory}/${file}`,"utf8").split("--> statement-breakpoint").map(value=>value.trim()).filter(Boolean))if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement);},30_000);
 afterAll(async()=>{if(!client)return;await client.sql.unsafe("set search_path to public");await client.sql.unsafe(`drop schema ${schemaName} cascade`);await client.close();});
 
 it.skipIf(!databaseUrl)("fences two workers across claim renewal expiry progress completion and pruning",async()=>{
