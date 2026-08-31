@@ -11,6 +11,7 @@ describe("production startup diagnostics", () => {
     }
     expect(source).toContain("startupStage, ...safeLogErrorDetails(error)");
     expect(source).toContain("configIssuePaths(error)");
+    expect(source).toContain("configErrorCode(error)");
     expect(source).toContain('issue.path.join(".")');
   });
 });
