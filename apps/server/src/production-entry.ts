@@ -1,6 +1,7 @@
 import { createDatabaseClient } from "@steam-top/db";
 import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
+import { ZodError } from "zod";
 import { createAdminComposition } from "./auth/composition";
 import { loadConfig, publicConfig } from "./config";
 import { createIClassComposition } from "./identity/composition";
@@ -11,6 +12,11 @@ import { safeLogErrorDetails } from "./safe-logging";
 import { StudentCredentialService } from "./identity/student-credential";
 
 let startupStage: "config" | "database" | "iclass" | "admin" | "server" = "config";
+
+function configIssuePaths(error: unknown): readonly string[] {
+  if (!(error instanceof ZodError)) return [];
+  return error.issues.slice(0, 8).map((issue) => `${issue.path.join(".") || "$"}:${issue.code}`);
+}
 
 function forwardedAddress(request: IncomingMessage): string {
   const raw = request.headers["x-forwarded-for"];
@@ -85,6 +91,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error) })}\n`);
+  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error) })}\n`);
   process.exitCode = 1;
 });
