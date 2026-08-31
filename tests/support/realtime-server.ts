@@ -72,8 +72,9 @@ rooms.create({ id: "admin-e2e-owner", displayName: "1A 陳同學" }, "測試房"
 rooms.create({ id: "admin-e2e-owner-2", displayName: "1B 李同學" }, "管理操作房");
 const designs = new DesignRegistry({ now, ttlMs: 60_000 });
 const webOrigin = `http://127.0.0.1:${process.env.E2E_WEB_PORT ?? "4173"}`;
+const adminOrigin = `http://127.0.0.1:${process.env.E2E_ADMIN_PORT ?? "4175"}`;
 const adminStore = new InMemoryAdminStore();
-const adminAuth = new AdminAuthService(adminStore, { allowedOrigins: [webOrigin], secureCookies: false });
+const adminAuth = new AdminAuthService(adminStore, { allowedOrigins: [webOrigin, adminOrigin], secureCookies: false });
 const identityId = "550e8400-e29b-41d4-a716-446655440000";
 const deletionStore = new InMemoryDeletionStore([{ identityId, className: "1A", occurredAt: new Date("2026-08-29T00:00:00Z"), designs: 2, matches: 3 }]);
 const record: AdminRecordRow = { rowId:"m1:player1",matchId:"m1",slot:"player1",occurredAt:"2026-08-29T00:00:00.000Z",identityId,className:"1A",identity:"陳同學",deviceName:"iPad-01",design:{layers:["top","middle","bottom"].map((position,index)=>({position:position as "top"|"middle"|"bottom",shape:"circle",points:3,diameterMm:50-index,actualAreaMm2:1000,holeCount:2,rotationDeg:0,cornerRoundness:0})),totalMassG:25,metalDiscDiameterMm:20,centerOfMassOffsetMm:0,momentOfInertiaGmm2:5000},totalScore:2.5 };

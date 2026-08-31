@@ -10,6 +10,14 @@ describe("split web build contract", () => {
     const config = createWebBuildConfig({ STEAM_TOP_WEB_TARGET: "admin" });
     expect(config).toMatchObject({ base: "/admin/", resolve: { alias: { "@steam-top/build-entry": expect.stringMatching(/admin-entry\.tsx$/) } }, define: { "import.meta.env.VITE_API_BASE_URL": '""' } });
   });
+  it("uses the same-origin proxy only for the explicit local e2e build", () => {
+    const config = createWebBuildConfig({ STEAM_TOP_WEB_TARGET: "student", STEAM_TOP_PAGES_BASE: "/steam-top/", VITE_API_BASE_URL: "https://api.example.invalid", TEST_REALTIME_PROXY: "http://127.0.0.1:4174" });
+    expect(config).toMatchObject({
+      define: { "import.meta.env.VITE_API_BASE_URL": '""' },
+      server: { proxy: { "/api": { target: "http://127.0.0.1:4174" } } },
+      preview: { proxy: { "/api": { target: "http://127.0.0.1:4174" } } },
+    });
+  });
   it.each([
     { STEAM_TOP_WEB_TARGET: "student", STEAM_TOP_PAGES_BASE: "/", VITE_API_BASE_URL: "https://tops.duckdns.org" },
     { STEAM_TOP_WEB_TARGET: "student", STEAM_TOP_PAGES_BASE: "/steam-top", VITE_API_BASE_URL: "https://tops.duckdns.org" },

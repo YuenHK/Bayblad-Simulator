@@ -7,7 +7,7 @@ async function openGuest(browser: Browser): Promise<{ context: BrowserContext; p
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true });
   const page = await context.newPage();
   page.on("requestfailed", (request) => console.info(`[requestfailed] ${request.method()} ${request.url()} ${request.failure()?.errorText}`));
-  await page.goto("/");
+  await page.goto(".");
   await expect(page.getByText("已連線", { exact: true })).toBeVisible();
   return { context, page };
 }
