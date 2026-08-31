@@ -54,6 +54,13 @@ function invalidArgumentName(error: unknown): string {
   return name && new Set(["path", "key", "data", "input", "buffer", "string"]).has(name) ? name : "UNCLASSIFIED";
 }
 
+function safeStackSites(error: unknown): readonly string[] {
+  const stack = (error as { stack?: unknown })?.stack;
+  if (typeof stack !== "string") return [];
+  const sites = stack.match(/(?:node:internal\/[A-Za-z0-9_./-]+|production-entry\.mjs):\d+:\d+/gu) ?? [];
+  return sites.slice(0, 4);
+}
+
 function forwardedAddress(request: IncomingMessage): string {
   const raw = request.headers["x-forwarded-for"];
   const first = (Array.isArray(raw) ? raw[0] : raw)?.split(",", 1)[0]?.trim();
@@ -127,6 +134,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error), configErrorCode: configErrorCode(error), serverErrorCode: serverErrorCode(error), invalidArgumentName: invalidArgumentName(error) })}\n`);
+  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error), configErrorCode: configErrorCode(error), serverErrorCode: serverErrorCode(error), invalidArgumentName: invalidArgumentName(error), stackSites: safeStackSites(error) })}\n`);
   process.exitCode = 1;
 });
