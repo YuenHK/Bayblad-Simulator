@@ -518,6 +518,7 @@ export const launchScheduleEventSchema = z
     type: z.literal("launch.schedule"),
     ...battleCorrelationShape,
     serverTargetTimeMs: safeNonnegativeIntegerSchema,
+    serverDeadlineTimeMs: safeNonnegativeIntegerSchema,
     nonce: correlationIdSchema,
     ...serverEnvelopeShape,
   })

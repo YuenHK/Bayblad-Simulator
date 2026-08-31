@@ -428,6 +428,7 @@ export class LaunchCoordinator {
         matchId: input.matchId,
         roundId: input.roundId,
         serverTargetTimeMs: target,
+        serverDeadlineTimeMs: deadlineMs,
         nonce,
       });
     } catch (error) {
@@ -479,7 +480,17 @@ export class LaunchCoordinator {
     }
     const player = state.players.find((candidate) => candidate.participantId === participantId);
     if (!player) throw new LaunchError("UNKNOWN_PARTICIPANT");
-    if (state.closed) throw new LaunchError("ROUND_CLOSED");
+    if (state.closed) {
+      const finalEvent = state.results.get(participantId);
+      if (!finalEvent) throw new LaunchError("ROUND_CLOSED");
+      this.#events.set(tapEvent.eventId, {
+        participantId,
+        fingerprint,
+        event: finalEvent,
+        expiresAt: this.#expirationFrom(retentionNow),
+      });
+      return { event: clonePrivate(finalEvent), replayed: true };
+    }
     if (state.results.has(participantId)) throw new LaunchError("ALREADY_SUBMITTED");
 
     if (received < state.earliestAcceptedAtMs || received > state.deadlineMs) {
