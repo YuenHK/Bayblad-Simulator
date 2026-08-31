@@ -7,7 +7,7 @@ export const EXPECTED_MIGRATIONS = Object.freeze([
   Object.freeze({ id: EXPECTED_MIGRATION_ID, sha256: EXPECTED_MIGRATION_SHA256 }),
   Object.freeze({ id: "0001_cutover_state_machine", sha256: "ca26cdef9195ae550a0fd4eb4db66fe02c2915e646a71e51182b4b4cf8a40571" }),
   Object.freeze({ id: "0002_platform_installation", sha256: "55a06f26947827ec40a29068fb17cd91a02b2085acaca15a1b2bb95f63c5aefb" }),
-  Object.freeze({ id: "0003_postgresql_catalog_array_compatibility", sha256: "217477e8ab96461a148d1f2cc22405610ae52ecba85701fd920bc07ba0d680d2" }),
+  Object.freeze({ id: "0003_postgresql_catalog_array_compatibility", sha256: "cec65962fe473861a97502548058a453a3a6ceda969e8b1fd414abede48ebc27" }),
 ]);
 
 type MigrationTransaction = Readonly<{
