@@ -154,6 +154,16 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .student-game .preview-tabs button[aria-selected="true"],.student-game .designer-workspace-tabs button[aria-selected="true"] { color: #fff; border-color: rgb(84 232 255 / 40%); background: rgb(42 91 180 / 42%); box-shadow: 0 0 14px rgb(84 232 255 / 13%); }
 .student-game .field-note,.student-game .assembly-note,.student-game .gesture-hint,.student-game .room-code,.student-game .seat-number { color: var(--game-muted); }
 .student-game .valid-message { color: #6fffc0; }.student-game .field-error,.student-game .issue-message,.student-game .issue-list { color: #ff8496; }
+.student-game .matchmaking-card { transition: border-color .18s ease,transform .18s ease,box-shadow .18s ease; }
+.student-game .matchmaking-card:hover { border-color: rgb(84 232 255 / 58%); transform: translateY(-3px); box-shadow: 0 24px 54px rgb(0 0 0 / 38%),0 0 24px rgb(84 232 255 / 10%); }
+.student-game .phase-chip { border: 1px solid currentColor; background: rgb(5 13 31 / 82%); }
+.student-game .phase-waiting { color: #65ffc0; }.student-game .phase-launch,.student-game .phase-battle { color: #ffbd67; }
+.student-game .versus-grid { position: relative; grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+.student-game .combatant-card { overflow: visible; min-height: 168px; }
+.student-game .combatant-1 { border-left-color: var(--game-cyan); }.student-game .combatant-2 { border-right-color: var(--game-violet); text-align: right; }
+.student-game .combatant-card.is-ready { border-color: #5fffb9; background: linear-gradient(145deg,rgb(18 62 66 / 92%),rgb(8 24 40 / 92%)); box-shadow: 0 0 24px rgb(95 255 185 / 15%),inset 0 0 24px rgb(95 255 185 / 6%); }
+.student-game .combatant-card.is-ready::after { position: absolute; top: 12px; right: 12px; color: #75ffd0; font-size: .7rem; font-weight: 900; letter-spacing: .12em; content: "LOCKED"; text-shadow: 0 0 10px currentColor; }
+.student-game .versus-mark { position: absolute; z-index: 2; top: 50%; left: 50%; display: grid; place-items: center; width: 58px; height: 58px; color: #fff; border: 1px solid rgb(255 255 255 / 45%); border-radius: 50%; background: radial-gradient(circle,var(--game-orange),#c43550 68%,transparent 70%); box-shadow: 0 0 25px rgb(255 91 85 / 48%); font-size: 1.25rem; font-style: italic; font-weight: 950; transform: translate(-50%,-50%) rotate(-6deg); }
 @keyframes hologram-scan { from { transform: translateY(-8%); } to { transform: translateY(8%); } }
 @keyframes energy-flow { from { background-position: 0 50%; } to { background-position: 100% 50%; } }
 

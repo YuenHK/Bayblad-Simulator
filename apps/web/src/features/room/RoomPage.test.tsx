@@ -25,6 +25,15 @@ function room(role: "player1" | "player2" | "spectator", spectators = 1): RoomSn
 
 const noop = vi.fn();
 describe("RoomPage", () => {
+  it("以VS競技結構呈現兩席並顯示準備鎖定狀態", () => {
+    const snapshot = { ...room("spectator"), phase: "waiting" as const };
+    const { container } = render(<RoomPage snapshot={snapshot} battle={{ phase: "waiting" }} design={makeDefaultDesign()} onCommand={noop} onLeave={noop} />);
+    expect(container.querySelector(".versus-mark")).toHaveTextContent("VS");
+    expect(container.querySelectorAll(".combatant-card")).toHaveLength(2);
+    expect(container.querySelectorAll(".combatant-card.is-ready")).toHaveLength(1);
+    expect(screen.getByText("已準備·設計已鎖定")).toBeVisible();
+  });
+
   it("只有正在發射的玩家進入手機專注模式", () => {
     const { container, rerender } = render(<RoomPage snapshot={room("player1")} battle={{ phase: "launch" }} design={makeDefaultDesign()} onCommand={noop} onLeave={noop} />);
     expect(container.querySelector("main")).toHaveClass("battle-focus-content");
