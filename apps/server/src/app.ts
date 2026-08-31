@@ -433,7 +433,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
         resolved = await resolveIdentityRequest(request);
       } catch (error) {
         if (error instanceof IdentityAdmissionError) return reply.code(429).send({ error: error.message });
-        if (error instanceof IdentityCapacityError || error instanceof IdentityStoreUnavailableError) return reply.code(503).send({ error: error.message });
+        if (error instanceof IdentityCapacityError) return reply.code(503).send({ error: error.message });
+        if (error instanceof IdentityStoreUnavailableError) { reportBackgroundError(error.cause ?? error); return reply.code(503).send({ error: error.message }); }
         throw error;
       }
       if (!crossOrigin) setIdentityCookie(reply, resolved);

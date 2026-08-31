@@ -172,6 +172,20 @@ describe("identity routes", () => {
     expect(response.cookies[0]).toMatchObject({ maxAge: 86_412, expires: new Date(fixed.getTime() + 86_412_000) });
   });
 
+  it("reports the original identity-store failure while keeping the public 503 generic", async () => {
+    const failure = Object.assign(new Error("private database detail"), { code: "42703" });
+    class FailingStore extends InMemoryIdentityStore {
+      override async createGuestSession(): Promise<never> { throw failure; }
+    }
+    const logged: unknown[] = [];
+    const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new FailingStore()), logError: (error) => logged.push(error), sweepIntervalMs: 0 }); apps.push(app);
+    const response = await app.inject({ method: "GET", url: "/api/identity" });
+    expect(response).toMatchObject({ statusCode: 503 });
+    expect(response.json()).toEqual({ error: "IDENTITY_STORE_UNAVAILABLE" });
+    expect(logged).toEqual([failure]);
+    expect(response.body).not.toContain("private database detail");
+  });
+
   it("rejects absent or memory identity stores in production", () => {
     const previous = process.env.NODE_ENV; process.env.NODE_ENV = "production";
     try {

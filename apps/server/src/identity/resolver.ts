@@ -66,7 +66,7 @@ function diagnostics(input: Readonly<{ ip?: string; userAgent?: string }>): Sess
 }
 
 export class IdentityStoreUnavailableError extends Error {
-  constructor() { super("IDENTITY_STORE_UNAVAILABLE"); this.name = "IdentityStoreUnavailableError"; }
+  constructor(readonly cause?: unknown) { super("IDENTITY_STORE_UNAVAILABLE"); this.name = "IdentityStoreUnavailableError"; }
 }
 
 export class SessionTokenUnavailableError extends Error {}
@@ -93,12 +93,12 @@ export class IdentityResolver {
       const session = await this.#store.findSession(hashIdentityToken(cookieToken), this.#now());
       if (!session) return null;
       return session.identity.status === "iclass" ? { ...session.identity, status: "cookie" } : session.identity;
-    } catch { throw new IdentityStoreUnavailableError(); }
+    } catch (error) { throw new IdentityStoreUnavailableError(error); }
   }
   async recordActivity(cookieToken: unknown): Promise<boolean> {
     if (!isIdentityToken(cookieToken)) return false;
     try { return await this.#store.recordActivity?.(hashIdentityToken(cookieToken), this.#now()) ?? false; }
-    catch { throw new IdentityStoreUnavailableError(); }
+    catch (error) { throw new IdentityStoreUnavailableError(error); }
   }
 
   async resolve(request: Readonly<{ cookieToken?: string; ip?: string; userAgent?: string; admitCreation?: () => boolean }>, live?: TrustedLiveIdentity): Promise<Readonly<{ identity: Identity; cookieToken: string; issuedAt: Date; expiresAt: Date; isNew: boolean }>> {
@@ -141,7 +141,7 @@ export class IdentityResolver {
       return { identity: session.identity, cookieToken: token, issuedAt: now, expiresAt, isNew: true };
     } catch (error) {
       if (error instanceof IdentityStoreUnavailableError || error instanceof IdentityAdmissionError || error instanceof IdentityCapacityError || error instanceof TypeError || (error instanceof Error && error.message === "IDENTITY_TOKEN_EXHAUSTED")) throw error;
-      throw new IdentityStoreUnavailableError();
+      throw new IdentityStoreUnavailableError(error);
     }
   }
 
@@ -165,7 +165,7 @@ export class IdentityResolver {
   async revoke(cookieToken: unknown): Promise<boolean> {
     if (!isIdentityToken(cookieToken)) return false;
     try { return await this.#store.revokeSession(hashIdentityToken(cookieToken), this.#now()); }
-    catch { throw new IdentityStoreUnavailableError(); }
+    catch (error) { throw new IdentityStoreUnavailableError(error); }
   }
 }
 
