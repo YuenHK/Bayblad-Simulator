@@ -4,6 +4,18 @@ import { describe, expect, it } from "vitest";
 import { BattleArena } from "./BattleArena";
 
 describe("BattleArena", () => {
+  it("渲染競技場能量環、殘影及碰撞效果層", () => {
+    const frames = [
+      { sequence: 1, tick: 1, player1: { x: -24, y: 0, angle: 0, angularSpeed: 22 }, player2: { x: 24, y: 0, angle: 0, angularSpeed: 20 } },
+      { sequence: 2, tick: 2, player1: { x: -5, y: 0, angle: 1, angularSpeed: 21 }, player2: { x: 5, y: 0, angle: -1, angularSpeed: 19 } },
+    ];
+    const { container } = render(<BattleArena designs={[makeDefaultDesign(), makeDefaultDesign()]} frames={frames} />);
+    expect(container.querySelectorAll(".arena-energy-ring").length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelectorAll(".top-trail")).toHaveLength(2);
+    expect(container.querySelector(".battle-effects-layer")).toBeInTheDocument();
+    expect(container.querySelector("[data-effect-id='impact-2']")).toBeInTheDocument();
+  });
+
   it("低動態模式直接顯示最新 frame 並提供 aria 摘要", () => {
     render(<BattleArena designs={[makeDefaultDesign(), makeDefaultDesign()]} frames={[
       { sequence: 1, tick: 4, player1: { x: -20, y: 0, angle: 0, angularSpeed: 20 }, player2: { x: 20, y: 0, angle: 0, angularSpeed: 18 } },
