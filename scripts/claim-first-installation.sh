@@ -11,7 +11,7 @@ SQL
 cat "$catalog_sql"
 cat <<'SQL'
 lock table restore_control.deployment_environment in exclusive mode;
-select case when count(*)=1 then 1 else 1/0 end from restore_control.deployment_environment where singleton for update;
+select case when count(*)=1 then 1 else 1/0 end from restore_control.deployment_environment where singleton;
 lock table restore_control.platform_installation in exclusive mode;
 lock table restore_control.promotion_outbox in exclusive mode;
 lock table restore_control.promotion_audit in exclusive mode;
