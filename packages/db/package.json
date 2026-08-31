@@ -11,7 +11,7 @@
     "./schema": "./src/schema.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --exclude '**/*.postgres.test.ts'",
     "test:postgres": "node -e \"if (!process.env.TEST_DATABASE_URL) { console.error('TEST_DATABASE_URL is required'); process.exit(1) }\" && vitest run src/schema.postgres.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
