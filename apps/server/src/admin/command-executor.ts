@@ -9,10 +9,10 @@ export class AdminCommandExecutor {
   #running = false;
   constructor(private readonly store: AdminCommandStore, private readonly auth: AdminAuthService, private readonly realtime: AdminRealtimeCommands, private readonly platform: PlatformSettingsStore, private readonly now = () => new Date()) {}
 
-  async pump(limit = 16) {
+  async pump(limit = 16, reportStage?: (stage: string) => void) {
     if (this.#running) return;
     this.#running = true;
-    try { await this.store.pruneTerminal?.(this.now(), 100); for (let index = 0; index < limit; index++) { const operation = await this.store.claimDue(this.now(), LEASE_MS); if (!operation) break; await this.#execute(operation); } }
+    try { reportStage?.("admin-command-prune"); await this.store.pruneTerminal?.(this.now(), 100); for (let index = 0; index < limit; index++) { reportStage?.("admin-command-claim"); const operation = await this.store.claimDue(this.now(), LEASE_MS); if (!operation) break; reportStage?.("admin-command-execute"); await this.#execute(operation); } }
     finally { this.#running = false; }
   }
 
