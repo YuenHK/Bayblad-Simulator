@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
@@ -11,7 +11,7 @@ const contentTypes: Readonly<Record<string, string>> = Object.freeze({
 
 export function registerAdminStaticRoutes(app: FastifyInstance, configuredRoot: string): void {
   const root = resolve(configuredRoot);
-  const send = async (relative: string, reply: Parameters<Parameters<FastifyInstance["get"]>[1]>[1]) => {
+  const send = async (relative: string, reply: FastifyReply) => {
     const candidate = resolve(root, relative);
     if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) return reply.code(404).send({ error: "NOT_FOUND" });
     try {
