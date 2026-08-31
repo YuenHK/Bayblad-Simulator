@@ -51,7 +51,8 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
       (select summary_date,filter_hash from analytics_daily_summaries order by refreshed_at desc,summary_date desc,filter_hash offset 10000)`;
   }
   async exclusive<T>(hash: string, operation: () => Promise<T>): Promise<T> {
-    return await this.sql.begin("isolation level repeatable read", async (transaction) => {
+    return await this.sql.begin(async (transaction) => {
+      await transaction.unsafe("set transaction isolation level repeatable read");
       if(this.onReservedBackendForTest){const [backend]=await transaction<{pid:number}[]>`select pg_backend_pid() pid`;this.onReservedBackendForTest(backend!.pid);}
       await transaction`select pg_advisory_xact_lock(hashtextextended(${hash}, 1937002026))`;
       const [clock]=await transaction<{cutoff:Date|string}[]>`select transaction_timestamp() cutoff`;const cutoff=clock?.cutoff instanceof Date?clock.cutoff:new Date(String(clock?.cutoff));
