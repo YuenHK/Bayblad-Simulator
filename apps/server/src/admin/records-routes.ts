@@ -38,6 +38,11 @@ export interface AdminRecordsSource {
 }
 const pattern = (value: string | undefined) =>
   value ? `%${value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%` : null;
+export function adminRecordTimestamp(value: unknown): string {
+  const parsed = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
+  if (!parsed || !Number.isFinite(parsed.getTime())) throw new TypeError("INVALID_ADMIN_RECORD_TIMESTAMP");
+  return parsed.toISOString();
+}
 export class PostgresAdminRecordsSource implements AdminRecordsSource {
   constructor(private readonly sql: DatabaseClient["sql"]) {}
   async query(filters: AdminRecordFilters) {
@@ -57,10 +62,7 @@ export class PostgresAdminRecordsSource implements AdminRecordsSource {
         .filter((row) => row.rowId !== null)
         .map(({ total: _, ...row }) => ({
           ...row,
-          occurredAt:
-            row.occurredAt instanceof Date
-              ? row.occurredAt.toISOString()
-              : row.occurredAt,
+          occurredAt: adminRecordTimestamp(row.occurredAt),
         }));
     return adminRecordsPageSchema.parse({
       rows,

@@ -246,8 +246,18 @@ export class PostgresRoomProjectionStore implements RoomProjectionStore {
         .limit(limit).for("update", { skipLocked: true });
       const claims: ClaimedRoomProjection[] = [];
       for (const row of rows) {
-        const payload = payloadSchema.parse(row.payloadJson);
-        if (createHash("sha256").update(JSON.stringify(payload)).digest("hex") !== row.payloadHash) throw new Error("ROOM_PROJECTION_PAYLOAD_CORRUPT");
+        const parsed = payloadSchema.safeParse(row.payloadJson);
+        const payload = parsed.success ? parsed.data : null;
+        const validHash = payload !== null && createHash("sha256").update(JSON.stringify(payload)).digest("hex") === row.payloadHash;
+        if (!payload || !validHash) {
+          await tx.update(roomProjectionJobs).set({
+            status: "dead", leaseToken: null, leaseUntil: null,
+            nextAttemptAt: new Date(8_640_000_000_000_000),
+            lastError: payload ? "ROOM_PROJECTION_PAYLOAD_CORRUPT" : "ROOM_PROJECTION_PAYLOAD_INVALID",
+            updatedAt: now,
+          }).where(and(eq(roomProjectionJobs.roomId, row.roomId), eq(roomProjectionJobs.generation, row.generation)));
+          continue;
+        }
         const leaseToken = randomUUID();
         const generation = row.generation + 1;
         await tx.update(roomProjectionJobs).set({ status: "leased", leaseToken, generation, leaseUntil: new Date(now.getTime() + this.#leaseMs), updatedAt: now }).where(and(eq(roomProjectionJobs.roomId, row.roomId), eq(roomProjectionJobs.generation, row.generation)));
