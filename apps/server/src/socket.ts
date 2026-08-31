@@ -946,19 +946,11 @@ export class RealtimeGateway {
       if (beforeLeave.phase !== "waiting" && beforeLeave.viewer.role !== "spectator") {
         throw Object.assign(new Error("ROOM_ACTIVE"), { code: "ROOM_ACTIVE" });
       }
-      const closesRoom = Number(beforeLeave.player1 !== null) + Number(beforeLeave.player2 !== null) + beforeLeave.spectators.length === 1;
       const participantId = this.#participantForSession(event.roomId, session.id);
       const checkpoint = this.#rooms.checkpoint(event.roomId);
-      if (closesRoom && this.#roomProjections.usesDurableStore) {
-        this.#rooms.leave(event.roomId, session.id); // validate the in-memory transition before the atomic DB commit
-        this.#rooms.restore(checkpoint);
-        if (!this.#roomRecordRepository?.closeWithProjection) throw new Error("ROOM_ATOMIC_CLOSE_UNAVAILABLE");
-        const closedAt = new Date(this.#now());
-        await this.#roomRecordRepository.closeWithProjection(event.roomId, closedAt, closingRevision, { phase: "closed", firstBattleAt: null, closedAt: closedAt.toISOString() }, participantId);
-      }
       this.#rooms.leave(event.roomId, session.id);
       try {
-        if (this.#roomRecordRepository && !(closesRoom && this.#roomProjections.usesDurableStore)) {
+        if (this.#roomRecordRepository) {
           if (this.#rooms.hasRoom(event.roomId)) {
             const projection = this.#roomRoleProjection(event.roomId);
             await this.#roomRecordRepository.leaveAndSync(event.roomId, participantId, new Date(this.#now()), projection.roles, projection.ownerParticipantId, projection.ownerIdentityId);
