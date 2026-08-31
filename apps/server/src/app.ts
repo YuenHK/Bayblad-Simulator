@@ -376,7 +376,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   const platformSettings = options.platformSettingsStore ?? new InMemoryPlatformSettingsStore();
   const commandStore=options.adminCommandStore??new InMemoryAdminCommandStore();
   const commandExecutor=options.adminAuth?new AdminCommandExecutor(commandStore,options.adminAuth,gateway,platformSettings):undefined;
-  app.addHook("onReady", async () => {options.reportStartupStage?.("platform-settings");gateway.setPlatformPaused(await platformSettings.readPaused());options.reportStartupStage?.("admin-command-pump");await commandExecutor?.pump();});
+  app.addHook("onReady", async () => {options.reportStartupStage?.("platform-settings");gateway.setPlatformPaused(await platformSettings.readPaused());options.reportStartupStage?.("admin-command-pump");await commandExecutor?.pump(16, options.reportStartupStage);});
   if (options.adminAuth) registerAdminDashboardRoutes(app, options.adminAuth, rooms, gateway, adminResolver, platformSettings, commandStore, commandExecutor!);
   app.decorate("battleEngine", battleEngine);
 
