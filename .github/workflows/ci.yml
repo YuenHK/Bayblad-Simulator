@@ -364,9 +364,9 @@ jobs:
           if [[ -z $failures ]];then echo cleanup_ok=true >> "$GITHUB_OUTPUT";else echo "cleanup failures:$failures" >&2;echo cleanup_ok=false >> "$GITHUB_OUTPUT";fi
       - name: Prepare the authoritative terminal receipt
         if: always() && env.PRODUCTION_E2E_DEPLOYMENT_ID != ''
-        env: { CLEANUP_OK: "${{ steps.production-cleanup.outputs.cleanup_ok }}", PREVIOUS_OK: "${{ success() }}" }
+        env: { CLEANUP_OK: "${{ steps.production-cleanup.outputs.cleanup_ok }}" }
         run: |
-          state=failure;if [[ $PREVIOUS_OK == true && $CLEANUP_OK == true && -f $RUNNER_TEMP/production-e2e-passed ]];then state=success;fi
+          state=failure;if [[ $CLEANUP_OK == true && -f $RUNNER_TEMP/production-e2e-passed ]];then state=success;fi
           node -e 'const fs=require("fs"),[out,state,id,run,attempt,ref,sha,manifest,nonce]=process.argv.slice(1);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"production-e2e-terminal",desiredTerminal:state,deploymentId:id,authorizationRunId:run,authorizationRunAttempt:Number(attempt),authorizationWorkflowRef:ref,authorizationWorkflowSha:sha,manifestSha256:manifest,nonce})+"\n")' "$RUNNER_TEMP/production-e2e-terminal.json" "$state" "$PRODUCTION_E2E_DEPLOYMENT_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_WORKFLOW_REF" "$GITHUB_WORKFLOW_SHA" "$PRODUCTION_E2E_MANIFEST_SHA" "$PRODUCTION_E2E_NONCE"
           echo "TERMINAL_RECEIPT_SHA=$(sha256sum "$RUNNER_TEMP/production-e2e-terminal.json"|awk '{print $1}')" >> "$GITHUB_ENV"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
@@ -377,10 +377,9 @@ jobs:
         with: { name: "production-e2e-terminal-${{ github.run_attempt }}", path: "${{ runner.temp }}/production-e2e-terminal.json", retention-days: 90, if-no-files-found: error }
       - name: Publish the single terminal production E2E status
         if: always() && env.PRODUCTION_E2E_DEPLOYMENT_ID != ''
-        env: { GH_TOKEN: "${{ github.token }}", CLEANUP_OK: "${{ steps.production-cleanup.outputs.cleanup_ok }}", PREVIOUS_OK: "${{ success() }}" }
+        env: { GH_TOKEN: "${{ github.token }}", CLEANUP_OK: "${{ steps.production-cleanup.outputs.cleanup_ok }}" }
         run: |
           set -euo pipefail;state=$(node -p 'require(process.argv[1]).desiredTerminal' "$RUNNER_TEMP/production-e2e-terminal.json");description='canonical production first deployment failed'
-          [[ $PREVIOUS_OK == true ]]||state=failure
           description="terminal-receipt:$TERMINAL_RECEIPT_SHA"
           node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({state:process.argv[2],environment:process.env.DEPLOYMENT_ENVIRONMENT,description:process.argv[3]})+"\n")' "$RUNNER_TEMP/terminal-status.json" "$state" "$description"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/deployments/$PRODUCTION_E2E_DEPLOYMENT_ID/statuses?per_page=100" > "$RUNNER_TEMP/existing-terminal.json"
@@ -731,11 +730,14 @@ jobs:
       - if: always() && !success() && env.INTEGRATION_DEPLOYMENT_ID != ''
         env: { GH_TOKEN: "${{ github.token }}" }
         run: printf '{"state":"failure","environment":"release-host-integration","description":"isolated host core integration failed"}\n' | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$INTEGRATION_DEPLOYMENT_ID/statuses" --input -
+      - name: Record successful integration before cleanup
+        if: success()
+        run: echo 'PRIOR_SUCCESS=true' >> "$GITHUB_ENV"
       - if: always()
         shell: bash
         env:
           RECOVERY_VERIFIED: "${{ steps.cutover-recovery.outputs.recovery_verified }}"
-          PRIOR_SUCCESS: "${{ success() }}"
+          PRIOR_SUCCESS: "${{ env.PRIOR_SUCCESS }}"
         run: |
           set +e
           failures=""
