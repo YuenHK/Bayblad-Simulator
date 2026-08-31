@@ -53,6 +53,9 @@ it.skipIf(!databaseUrl)("atomically exchanges a durable Web Clip nonce and recov
 it.skipIf(!databaseUrl)("allows duplicate guest labels and atomically upgrades concurrent live identity", async () => {
   const store = new PostgresIdentityStore(client.db, { maxIdentities: 100, maxSessions: 200 });
   const now = new Date("2026-08-29T00:00:00Z");
+  const [identityBaseline] = await client.db.select({ value: count() }).from(identities);
+  const [linkBaseline] = await client.db.select({ value: count() }).from(identityLinks);
+  const [activeBaseline] = await client.db.select({ value: count() }).from(identitySessions).where(and(isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now)));
   const expiresAt = new Date(now.getTime() + 86_400_000);
   const a = await store.createGuestSession({ tokenHash: hashIdentityToken("E".repeat(43)), displayName: "訪客-AAAA", now, expiresAt, diagnostics: {} });
   const b = await store.createGuestSession({ tokenHash: hashIdentityToken("F".repeat(43)), displayName: "訪客-AAAA", now, expiresAt, diagnostics: {} });
@@ -73,9 +76,9 @@ it.skipIf(!databaseUrl)("allows duplicate guest labels and atomically upgrades c
   const [identityCount] = await client.db.select({ value: count() }).from(identities);
   const [linkCount] = await client.db.select({ value: count() }).from(identityLinks);
   const [activeCount] = await client.db.select({ value: count() }).from(identitySessions).where(and(isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now)));
-  expect(identityCount!.value).toBe(4);
-  expect(linkCount!.value).toBe(1);
-  expect(activeCount!.value).toBe(3);
+  expect(identityCount!.value).toBe(identityBaseline!.value + 4);
+  expect(linkCount!.value).toBe(linkBaseline!.value + 1);
+  expect(activeCount!.value).toBe(activeBaseline!.value + 3);
   const [upgradedIdentity]=await client.db.select().from(identities).where(eq(identities.id,upgraded[0]!.identity.id));
   const [sameDay]=await client.db.select().from(deviceActivityDays).where(eq(deviceActivityDays.anonymousDeviceId,upgradedIdentity!.anonymousDeviceId));
   expect(sameDay).toMatchObject({identityStatusSnapshot:"iclass",classNameSnapshot:"1A"});
@@ -109,9 +112,10 @@ it.skipIf(!databaseUrl)("counts only active sessions and rotates one-for-one at 
   const now = new Date("2026-08-29T00:00:00Z");
   const [baseline] = await client.db.select({ value: count() }).from(identitySessions).where(and(isNull(identitySessions.revokedAt), gt(identitySessions.expiresAt, now)));
   const limit = baseline!.value + 1;
-  const store = new PostgresIdentityStore(client.db, { maxIdentities: 1_000, maxSessions: limit });
   const expiredSessionStart = new Date(now.getTime() - 86_400_000);
-  for (let index = 0; index < 20; index += 1) await store.createGuestSession({ tokenHash: hashIdentityToken(`${index}`.padStart(43, "G").replaceAll(/[^A-Za-z0-9_-]/gu, "G")), displayName: "訪客-OLD", now: expiredSessionStart, expiresAt: new Date(expiredSessionStart.getTime() + 1), diagnostics: {} });
+  const seedingStore = new PostgresIdentityStore(client.db, { maxIdentities: 1_000, maxSessions: 1_000 });
+  for (let index = 0; index < 20; index += 1) await seedingStore.createGuestSession({ tokenHash: hashIdentityToken(`${index}`.padStart(43, "G").replaceAll(/[^A-Za-z0-9_-]/gu, "G")), displayName: "訪客-OLD", now: expiredSessionStart, expiresAt: new Date(expiredSessionStart.getTime() + 1), diagnostics: {} });
+  const store = new PostgresIdentityStore(client.db, { maxIdentities: 1_000, maxSessions: limit });
   const active = await store.createGuestSession({ tokenHash: hashIdentityToken("H".repeat(43)), displayName: "訪客-CAP", now, expiresAt: new Date(now.getTime() + 86_400_000), diagnostics: {} });
   await expect(store.createGuestSession({ tokenHash: hashIdentityToken("I".repeat(43)), displayName: "訪客-FULL", now, expiresAt: new Date(now.getTime() + 86_400_000), diagnostics: {} })).rejects.toThrow("IDENTITY_CAPACITY_REACHED");
   const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: "ipad-cap", displayName: "1A 08", studentName: "何同學", className: "1A", studentNumber: "08" }) }).resolve();
