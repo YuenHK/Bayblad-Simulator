@@ -60,7 +60,8 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
 
   const connectionLabel = state.status === "online" ? "已連線" : state.status === "reconnecting" ? "重新連線中……" : state.status === "connecting" ? "連線中……" : "離線";
   const phase = state.matchFinished || state.cancelledReason ? "result" : state.room?.phase ?? "waiting";
-  return <>
+  const battleFocus = page === "room" && phase === "launch" && state.room?.viewer.role !== "spectator";
+  return <div className={`app-root${battleFocus ? " battle-focus-mode" : ""}`}>
     <nav className="app-nav" aria-label="主要導航"><div className="app-brand">STEAM 陀螺</div><div className="nav-actions"><button aria-current={page === "designer" ? "page" : undefined} onClick={() => setPage("designer")}>設計室</button><button aria-current={page === "lobby" ? "page" : undefined} onClick={() => setPage("lobby")}>對戰大廳</button></div>{state.identity ? <span aria-label={`身份來源：${state.identity.status}`}>{state.identity.displayName}</span> : null}<span className={`connection-status status-${state.status}`} aria-live="polite">{state.identityStatus === "loading" ? "辨識裝置中……" : connectionLabel}</span></nav>
     {state.sessionStatus === "resumed" ? <p className="system-banner" role="status">已恢復上次的房間位置。</p> : null}
     {state.sessionStatus === "replaced" ? <p className="system-banner warning" role="status">舊連線已過期，已為你建立新訪客連線。</p> : null}
@@ -75,5 +76,5 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
       frames: state.frames, roundWinner: state.roundFinished?.winner,
       matchFinished: state.matchFinished ?? undefined, cancelledReason: state.cancelledReason ?? undefined,
     }} /> : null}
-  </>;
+  </div>;
 }

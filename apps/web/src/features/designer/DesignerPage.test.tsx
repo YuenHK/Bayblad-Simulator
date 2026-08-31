@@ -28,6 +28,21 @@ async function replaceNumber(
 }
 
 describe("DesignerPage", () => {
+  it("提供三個設計室頁籤並可用方向鍵切換而不重設輸入", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+    const tabs = screen.getByRole("tablist", { name: "設計室區域" });
+    expect(within(tabs).getAllByRole("tab")).toHaveLength(3);
+    await replaceNumber(user, "直徑（mm）", "58");
+    const controls = screen.getByRole("tab", { name: "控制台" });
+    controls.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "模擬預覽" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("tab", { name: "預測結果" }));
+    await user.click(controls);
+    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(58);
+  });
+
   it("只有合規設計可以交給對戰流程，無效設計不會上載", async () => {
     const onUseDesign = vi.fn();
     const user = userEvent.setup();
