@@ -8,6 +8,7 @@ import { ExportLifecycleManager } from "./lifecycle";
 import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { exportDatabaseDate } from "./postgres-source";
 
 const filters = { from: "2026-08-01", to: "2026-08-31", className: "1A" } as const;
 const dataset:ExportDataset = {
@@ -21,6 +22,10 @@ const dataset:ExportDataset = {
 const source=inMemoryExportDataSource(dataset,{cutoff:new Date("2026-08-29T03:00:00Z"),performanceModelVersions:["p1"],physicsModelVersions:["v1"]});
 
 describe("teacher Excel export",()=>{
+  it("accepts the ISO timestamp representation returned by hosted PostgreSQL drivers",()=>{
+    expect(exportDatabaseDate("2026-08-31T01:02:03.000Z")).toEqual(new Date("2026-08-31T01:02:03.000Z"));
+    expect(()=>exportDatabaseDate("not-a-date")).toThrow("INVALID_EXPORT_CURSOR");
+  });
   it("exports the six required sheets with typed values, presentation controls, no formulas and safe strings",async()=>{
     const bytes=await buildWorkbookBuffer(source,filters,{generatedAt:new Date("2026-08-29T04:00:00Z")});
     const book=new ExcelJS.Workbook();await book.xlsx.load(bytes as never);

@@ -130,6 +130,24 @@ describe("durable record contracts", () => {
     expect(await repository.listRetryable(new Date("2099-01-01"))).toHaveLength(0);
   });
 
+  it("keeps the completion fingerprint stable after PostgreSQL jsonb reorders object keys", () => {
+    const match = fixture();
+    const { idempotencyFingerprint: _fingerprint, ...payload } = match;
+    const reorderedRaw = JSON.parse(JSON.stringify(payload), (_key, value) => {
+      if (!value || Array.isArray(value) || typeof value !== "object") return value;
+      return Object.fromEntries(Object.entries(value).reverse());
+    }) as Record<string, unknown>;
+    const reordered = {
+      ...reorderedRaw,
+      startedAt: new Date(String(reorderedRaw.startedAt)),
+      completedAt: new Date(String(reorderedRaw.completedAt)),
+      rounds: (reorderedRaw.rounds as Array<Record<string, unknown>>).map((item) => ({
+        ...item, startedAt: new Date(String(item.startedAt)), completedAt: new Date(String(item.completedAt)),
+      })),
+    } as Omit<CompletedMatchRecord, "idempotencyFingerprint">;
+    expect(completedMatchFingerprint(reordered)).toBe(completedMatchFingerprint(payload));
+  });
+
   it("atomically claims due match completions once across workers", async () => {
     const repository = new MemoryMatchRepository();
     const match = fixture();
