@@ -35,14 +35,14 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
     const executor = this.currentExecutor();
     const rows = await executor<readonly { filters_json: AnalyticsFilters; usage_json: readonly UsageDay[]; usage_periods_json: AnalyticsSummary["usagePeriods"]; parameter_usage_json: readonly unknown[]; parameters_json: readonly unknown[]; rankings_json:AnalyticsSummary["rankings"]; refreshed_at: Date }[]>`
       select filters_json,usage_json,usage_periods_json,parameter_usage_json,parameters_json,rankings_json,refreshed_at from analytics_daily_summaries
-      where filter_hash=${hash} and refreshed_at >= ${maxAge} order by summary_date desc limit 1`;
+      where filter_hash=${hash} and refreshed_at >= ${maxAge.toISOString()}::timestamptz order by summary_date desc limit 1`;
     const row = rows[0];
     return row ? Object.freeze({ filters: row.filters_json, filterApplicability: FILTER_APPLICABILITY, usage: row.usage_json, usagePeriods: row.usage_periods_json, parameterUsage: row.parameter_usage_json as readonly JsonRow[], parameters: row.parameters_json as readonly JsonRow[],rankings:row.rankings_json, refreshedAt: row.refreshed_at.toISOString() }) : null;
   }
   async write(hash: string, summary: AnalyticsSummary): Promise<void> {
     const executor = this.currentExecutor();
     await executor`insert into analytics_daily_summaries(summary_date,filter_hash,filters_json,usage_json,usage_periods_json,parameter_usage_json,parameters_json,rankings_json,refreshed_at)
-      values ((${summary.refreshedAt}::timestamptz at time zone 'Asia/Hong_Kong')::date,${hash},${executor.json(summary.filters)},${executor.json(summary.usage)},${executor.json(summary.usagePeriods)},${executor.json(summary.parameterUsage as readonly never[])},${executor.json(summary.parameters as readonly never[])},${executor.json(summary.rankings as never)},${summary.refreshedAt}::timestamptz)
+      values ((${summary.refreshedAt}::timestamptz at time zone 'Asia/Hong_Kong')::date,${hash},${JSON.stringify(summary.filters)}::jsonb,${JSON.stringify(summary.usage)}::jsonb,${JSON.stringify(summary.usagePeriods)}::jsonb,${JSON.stringify(summary.parameterUsage)}::jsonb,${JSON.stringify(summary.parameters)}::jsonb,${JSON.stringify(summary.rankings)}::jsonb,${summary.refreshedAt}::timestamptz)
       on conflict(summary_date,filter_hash) do update set filters_json=excluded.filters_json,usage_json=excluded.usage_json,usage_periods_json=excluded.usage_periods_json,parameter_usage_json=excluded.parameter_usage_json,parameters_json=excluded.parameters_json,rankings_json=excluded.rankings_json,refreshed_at=excluded.refreshed_at
       where excluded.refreshed_at >= analytics_daily_summaries.refreshed_at`;
     await executor`delete from analytics_daily_summaries where refreshed_at < now() - interval '400 days'`;
@@ -50,14 +50,13 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
       (select summary_date,filter_hash from analytics_daily_summaries order by refreshed_at desc,summary_date desc,filter_hash offset 10000)`;
   }
   async exclusive<T>(hash: string, operation: () => Promise<T>): Promise<T> {
-    const reserved=await this.sql.reserve();let locked=false;
-    try {
-      if(this.onReservedBackendForTest){const [backend]=await reserved<{pid:number}[]>`select pg_backend_pid() pid`;this.onReservedBackendForTest(backend!.pid);}
-      await reserved`select pg_advisory_lock(hashtextextended(${hash}, 1937002026))`;locked=true;
-      return await reserved.begin(async (transaction) => { await transaction`set transaction isolation level repeatable read`;const [clock]=await transaction<{cutoff:Date}[]>`select transaction_timestamp() cutoff`;return this.#transaction.run({executor:transaction as unknown as DatabaseClient["sql"],cutoff:clock!.cutoff}, operation); }) as T;
-    } finally {
-      try {if(locked)await reserved`select pg_advisory_unlock(hashtextextended(${hash}, 1937002026))`;} finally {await reserved.release();}
-    }
+    return await this.sql.begin("isolation level repeatable read", async (transaction) => {
+      if(this.onReservedBackendForTest){const [backend]=await transaction<{pid:number}[]>`select pg_backend_pid() pid`;this.onReservedBackendForTest(backend!.pid);}
+      await transaction`select pg_advisory_xact_lock(hashtextextended(${hash}, 1937002026))`;
+      const [clock]=await transaction<{cutoff:Date|string}[]>`select transaction_timestamp() cutoff`;const cutoff=clock?.cutoff instanceof Date?clock.cutoff:new Date(String(clock?.cutoff));
+      if(!Number.isFinite(cutoff.getTime()))throw new TypeError("INVALID_ANALYTICS_TRANSACTION_CUTOFF");
+      return this.#transaction.run({executor:transaction as unknown as DatabaseClient["sql"],cutoff}, operation);
+    }) as T;
   }
 }
 
