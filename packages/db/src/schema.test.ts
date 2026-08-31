@@ -338,7 +338,7 @@ describe("persistent PostgreSQL schema", () => {
     const migrationFiles = readdirSync(migrationDirectory)
       .filter((name) => name.endsWith(".sql"))
       .sort();
-    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql", "0001_cutover_state_machine.sql", "0002_platform_installation.sql"]);
+    expect(migrationFiles).toEqual(["0000_steam_top_pre_first_deploy.sql", "0001_cutover_state_machine.sql", "0002_platform_installation.sql", "0003_postgresql_catalog_array_compatibility.sql"]);
     const sql = migrationFiles
       .map((name) => readFileSync(`${migrationDirectory}/${name}`, "utf8"))
       .join("\n");
@@ -407,6 +407,7 @@ describe("persistent PostgreSQL schema", () => {
       expect.objectContaining({ tag: "0000_steam_top_pre_first_deploy" }),
       expect.objectContaining({ tag: "0001_cutover_state_machine" }),
       expect.objectContaining({ tag: "0002_platform_installation" }),
+      expect.objectContaining({ tag: "0003_postgresql_catalog_array_compatibility" }),
     ]);
     const snapshot = JSON.parse(
       readFileSync(`${migrationDirectory}/meta/0000_snapshot.json`, "utf8"),

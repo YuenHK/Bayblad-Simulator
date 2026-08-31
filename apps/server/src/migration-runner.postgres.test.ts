@@ -42,7 +42,7 @@ describe.skipIf(!databaseUrl)("baseline migration PostgreSQL concurrency", () =>
   }, 30_000);
 
   it("runs the canonical migration runner before the production installation claim", async () => {
-    const sources = ["0000_steam_top_pre_first_deploy.sql", "0001_cutover_state_machine.sql", "0002_platform_installation.sql"].map((name) => readFileSync(fileURLToPath(new URL(`../../../drizzle/${name}`, import.meta.url)), "utf8"));
+    const sources = ["0000_steam_top_pre_first_deploy.sql", "0001_cutover_state_machine.sql", "0002_platform_installation.sql", "0003_postgresql_catalog_array_compatibility.sql"].map((name) => readFileSync(fileURLToPath(new URL(`../../../drizzle/${name}`, import.meta.url)), "utf8"));
     await applyMigrations(createPostgresMigrationExecutor(worker1!), sources);
     const ledger = await worker1!.sql.unsafe("select id,sha256 from app_schema_migrations order by id") as readonly Record<string, unknown>[];
     expect(ledger).toEqual(EXPECTED_MIGRATIONS.map(({ id, sha256 }) => ({ id, sha256 })));
