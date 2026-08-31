@@ -4,7 +4,6 @@ import type { DatabaseClient } from "@steam-top/db";
 import { withAuditedDeletion } from "@steam-top/db";
 import type { TransactionSql } from "postgres";
 import { z } from "zod";
-import { ADMIN_COOKIE_NAME } from "../auth/admin-session";
 import { authenticateAdminMutation, type AdminAuthService, type AdminClientResolver } from "../auth/admin-auth";
 import type { DeletionLedger } from "./deletion-ledger";
 
@@ -26,8 +25,7 @@ export type DeletionAuditSummary = Readonly<{ auditId: string; adminUserId: stri
 const deleteBodySchema = z.object({
   previewToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
   filterHash: z.string().regex(/^[a-f0-9]{64}$/u),
-  password: z.string().min(8).max(1024).optional(),
-  confirmation: z.string().max(32),
+  confirmed: z.literal(true),
 }).strict();
 
 /** Random operation digest: deliberately reveals nothing about low-entropy class/date filters. */
@@ -248,19 +246,9 @@ export function registerDeleteRecordRoutes(app: FastifyInstance, auth: AdminAuth
   app.delete("/api/admin/records", async (request, reply) => {
     const current = await authenticateAdminMutation(request, reply, auth, clientResolver); if (!current) return;
     const parsed = deleteBodySchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "INVALID_REQUEST" });
-    if (parsed.data.confirmation !== "DELETE") return reply.code(403).send({ error: "CONFIRMATION_REQUIRED" });
-    const rawSession = request.cookies[ADMIN_COOKIE_NAME]; if (!rawSession) return reply.code(401).send({ error: "UNAUTHORIZED" });
     const check = await store.inspectPreview({ previewToken: parsed.data.previewToken, filterHash: parsed.data.filterHash, adminUserId: current.user.id, adminSessionId: current.session.id, now: new Date() });
     if (check.status === "recovered") { reply.header("Cache-Control", "no-store"); return { auditId: check.auditId, counts: check.counts, recovered: true }; }
     if (check.status !== "ok") return reply.code(409).send({ error: `DELETION_PREVIEW_${check.status.toUpperCase()}` });
-    if (!parsed.data.password) return reply.code(403).send({ error: "REAUTHENTICATION_FAILED" });
-    const csrf = request.headers["x-csrf-token"] as string;
-    const diagnostic = clientResolver(request.raw);
-    const purpose = parsed.data.filterHash;
-    let grant: string | null;
-    try { grant = await auth.reauthenticate(rawSession, csrf, parsed.data.password, purpose, { ...diagnostic, ...(typeof request.headers["user-agent"] === "string" ? { userAgent: request.headers["user-agent"].slice(0, 512) } : {}) }); }
-    catch (error) { auth.report("admin.records.reauthenticate", error, request.id); return reply.code(503).send({ error: "REAUTHENTICATION_UNAVAILABLE" }); }
-    if (!grant || !await auth.consumeReauthGrant(rawSession, grant, purpose)) return reply.code(403).send({ error: "REAUTHENTICATION_FAILED" });
     try {
       const result = await store.execute({ previewToken: parsed.data.previewToken, filterHash: parsed.data.filterHash, adminUserId: current.user.id, adminSessionId: current.session.id, now: new Date() });
       if (result.status !== "ok") return reply.code(409).send({ error: `DELETION_PREVIEW_${result.status.toUpperCase()}` });

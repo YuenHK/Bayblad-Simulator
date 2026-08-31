@@ -183,7 +183,28 @@ it("shows an error instead of rendering invalid legacy analytics", async () => {
   render(<AdminApp fetcher={fetcher} />);
   expect(await screen.findByRole("alert")).toHaveTextContent("格式不正確");
 });
-it("previews exact deletion filter and clears password in finally", async () => {
+it("requires two confirmations for room operations and sends no password", async () => {
+  const calls: unknown[] = [];
+  const fetcher = authenticated(async (url, init) => {
+    if (url.pathname === "/api/admin/rooms/actions" && init?.method === "POST") {
+      calls.push(JSON.parse(String(init.body)));
+      return json({ operationId: "550e8400-e29b-41d4-a716-446655440000", status: "completed" });
+    }
+    return undefined;
+  });
+  render(<AdminApp fetcher={fetcher} />);
+  await screen.findByRole("heading", { name: "教師控制台" });
+  await userEvent.click(screen.getByRole("button", { name: "暫停平台" }));
+  expect(calls).toHaveLength(0);
+  expect(screen.queryByLabelText("再次輸入管理員密碼")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "繼續" }));
+  expect(calls).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: "確定暫停平台" }));
+  await waitFor(() => expect(calls).toHaveLength(1));
+  expect(calls[0]).toMatchObject({ action: "platform.pause", paused: true, confirmed: true });
+  expect(calls[0]).not.toHaveProperty("password");
+});
+it("previews the exact deletion filter and requires two confirmations without a password", async () => {
   const calls: Array<{ method: string; body?: unknown }> = [];
   const fetcher = authenticated(async (url, init) => {
     const method = init?.method ?? "GET";
@@ -212,18 +233,18 @@ it("previews exact deletion filter and clears password in finally", async () => 
   expect(
     await screen.findByText(/2 個身份、4 個設計、3 場對戰/),
   ).toBeInTheDocument();
-  await userEvent.type(
-    screen.getByLabelText("再次輸入管理員密碼"),
-    "secret-password",
-  );
-  await userEvent.type(screen.getByLabelText("輸入 DELETE 確認"), "DELETE");
-  await userEvent.click(screen.getByRole("button", { name: "永久刪除" }));
+  expect(screen.queryByLabelText("再次輸入管理員密碼")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("輸入 DELETE 確認")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "繼續" }));
+  expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "確定永久刪除" }));
   await waitFor(() =>
     expect(
       calls.some(
         (call) =>
           call.method === "DELETE" &&
-          (call.body as { password?: string }).password === "secret-password",
+          (call.body as { confirmed?: boolean }).confirmed === true &&
+          !("password" in (call.body as object)),
       ),
     ).toBe(true),
   );

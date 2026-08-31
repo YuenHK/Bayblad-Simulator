@@ -82,7 +82,7 @@ describe("admin dashboard routes", () => {
       payload: {
           action: "room.close",
           roomId: f.room.roomId,
-          password: "test-password-2026",
+          confirmed: true,
           operationId: "550e8400-e29b-41d4-a716-446655440000",
       },
     });
@@ -91,7 +91,7 @@ describe("admin dashboard routes", () => {
     const replayed = await f.app.inject({
       method: "POST", url: "/api/admin/rooms/actions",
       headers: { ...headers, cookie: f.cookie, "x-csrf-token": f.csrf },
-      payload: { action: "room.close", roomId: f.room.roomId, password: "test-password-2026", operationId: "550e8400-e29b-41d4-a716-446655440000" },
+      payload: { action: "room.close", roomId: f.room.roomId, confirmed: true, operationId: "550e8400-e29b-41d4-a716-446655440000" },
     });
     expect(replayed.statusCode).toBe(200);
     expect(replayed.json()).toMatchObject({ status: "completed" });
@@ -113,7 +113,7 @@ describe("admin dashboard routes", () => {
           payload: {
           action: "platform.pause",
           paused: true,
-          password: "test-password-2026",
+          confirmed: true,
           operationId: "550e8400-e29b-41d4-a716-446655440001",
           },
         })
@@ -126,8 +126,14 @@ describe("admin dashboard routes", () => {
   it("rejects nonexistent close and remove targets before accepting an operation", async () => {
     const f = await fixture(); apps.push(f.app);
     const request = (payload: object) => f.app.inject({ method: "POST", url: "/api/admin/rooms/actions", headers: { ...headers, cookie: f.cookie, "x-csrf-token": f.csrf }, payload });
-    expect((await request({ action:"room.close",roomId:"missing",password:"test-password-2026",operationId:"550e8400-e29b-41d4-a716-446655440003" })).statusCode).toBe(404);
-    expect((await request({ action:"room.remove",roomId:f.room.roomId,participantId:"missing",password:"test-password-2026",operationId:"550e8400-e29b-41d4-a716-446655440004" })).statusCode).toBe(404);
+    expect((await request({ action:"room.close",roomId:"missing",confirmed:true,operationId:"550e8400-e29b-41d4-a716-446655440003" })).statusCode).toBe(404);
+    expect((await request({ action:"room.remove",roomId:f.room.roomId,participantId:"missing",confirmed:true,operationId:"550e8400-e29b-41d4-a716-446655440004" })).statusCode).toBe(404);
+  });
+  it("requires an explicit second-stage confirmation without accepting a password field", async () => {
+    const f = await fixture(); apps.push(f.app);
+    const request = (payload: object) => f.app.inject({ method: "POST", url: "/api/admin/rooms/actions", headers: { ...headers, cookie: f.cookie, "x-csrf-token": f.csrf }, payload });
+    expect((await request({ action:"platform.pause",paused:true,operationId:"550e8400-e29b-41d4-a716-446655440005" })).statusCode).toBe(400);
+    expect((await request({ action:"platform.pause",paused:true,confirmed:true,password:"test-password-2026",operationId:"550e8400-e29b-41d4-a716-446655440005" })).statusCode).toBe(400);
   });
   it("keeps a room open while a spectator remains after the last player is removed", async () => {
     const f = await fixture(); apps.push(f.app);

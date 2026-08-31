@@ -76,8 +76,8 @@ export function AdminDashboard({
       payload: object;
       label: string;
       operationId: string;
+      stage: "review" | "confirm";
     } | null>(null),
-    [password, setPassword] = useState(""),
     [mutationBusy, setMutationBusy] = useState(false),
     [deleteOpen, setDeleteOpen] = useState(false),
     [exportStatus, setExportStatus] = useState("");
@@ -179,7 +179,7 @@ export function AdminDashboard({
   }, [fetcher, guarded]);
   useEffect(() => () => { exportController.current?.abort(); queryController.current?.abort(); }, []);
   const mutate = (action: string, payload: object, label: string) => {
-    if (!mutationBusy) setConfirm({ action, payload, label, operationId: crypto.randomUUID() });
+    if (!mutationBusy) setConfirm({ action, payload, label, operationId: crypto.randomUUID(), stage: "review" });
   };
   const runMutation = async () => {
     if (!confirm || mutationBusy) return;
@@ -192,7 +192,7 @@ export function AdminDashboard({
           body: JSON.stringify({
             action: confirm.action,
             ...confirm.payload,
-            password,
+            confirmed: true,
             operationId: confirm.operationId,
           }),
         }),
@@ -206,7 +206,6 @@ export function AdminDashboard({
       try{const recovered=await guarded(()=>requestJson<{status:string}>(fetcher,`/api/admin/rooms/actions/${confirm.operationId}`));if(recovered.status==="completed"){await query(filters);setConfirm(null);return;}}catch{/* operation may not have reached server */}
       setError("管理操作仍在處理或暫時失敗；可使用同一確認視窗重試。");
     } finally {
-      setPassword("");
       setMutationBusy(false);
     }
   };
@@ -358,32 +357,15 @@ export function AdminDashboard({
             mutationBusy
               ? () => undefined
               : () => {
-                  setPassword("");
                   setConfirm(null);
                 }
           }
         >
-          <p>確定要{confirm.label}？此操作會寫入稽核紀錄。</p>
-          <label>
-            再次輸入管理員密碼
-            <input
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </label>
-          <button
-            className="danger-button"
-            onClick={runMutation}
-            disabled={mutationBusy || password.length < 8}
-          >
-            {mutationBusy ? "處理中……" : "確認"}
-          </button>
+          <p>{confirm.stage === "review" ? `即將${confirm.label}。此操作會寫入稽核紀錄。` : `再次確認要${confirm.label}？請先核對操作內容。`}</p>
+          {confirm.stage === "review" ? <button onClick={() => setConfirm({ ...confirm, stage: "confirm" })}>繼續</button> : <button className="danger-button admin-final-confirm" onClick={runMutation} disabled={mutationBusy}>{mutationBusy ? "處理中……" : `確定${confirm.label}`}</button>}
           <button
             disabled={mutationBusy}
             onClick={() => {
-              setPassword("");
               setConfirm(null);
             }}
           >

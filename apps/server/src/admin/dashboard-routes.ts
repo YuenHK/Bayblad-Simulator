@@ -6,18 +6,16 @@ import {
   type AdminAuthService,
   type AdminClientResolver,
 } from "../auth/admin-auth";
-import { ADMIN_COOKIE_NAME } from "../auth/admin-session";
 import type { RoomService } from "../rooms/room-service";
 import { InMemoryPlatformSettingsStore,type PlatformSettingsStore } from "./platform-settings";
 import { InMemoryAdminCommandStore, adminCommandPayloadHash, type AdminCommandStore } from "./command-operations";
 import { AdminCommandExecutor } from "./command-executor";
-const password = z.string().min(8).max(1024);
 const actionSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("platform.pause"),
       paused: z.boolean(),
-      password,
+      confirmed: z.literal(true),
       operationId: z.uuid(),
     })
     .strict(),
@@ -25,7 +23,7 @@ const actionSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("room.close"),
       roomId: z.string().min(1).max(128),
-      password,
+      confirmed: z.literal(true),
       operationId: z.uuid(),
     })
     .strict(),
@@ -34,7 +32,7 @@ const actionSchema = z.discriminatedUnion("action", [
       action: z.literal("room.remove"),
       roomId: z.string().min(1).max(128),
       participantId: z.string().min(1).max(128),
-      password,
+      confirmed: z.literal(true),
       operationId: z.uuid(),
     })
     .strict(),
@@ -70,9 +68,7 @@ export function registerAdminDashboardRoutes(
     const parsed = actionSchema.safeParse(request.body);
     if (!parsed.success)
       return reply.code(400).send({ error: "INVALID_ADMIN_ROOM_ACTION" });
-    const command = parsed.data,
-      raw = request.cookies[ADMIN_COOKIE_NAME],
-      purpose = `room-action:${command.operationId}`;
+    const command = parsed.data;
     const priorOperation = await commandStore.get(command.operationId);
     if (!priorOperation && command.action !== "platform.pause") {
       const room = rooms.adminRooms().find((candidate) => candidate.roomId === command.roomId);
@@ -80,22 +76,6 @@ export function registerAdminDashboardRoutes(
       if (command.action === "room.remove" && !room.players.concat(room.spectators).some((participant) => participant.id === command.participantId))
         return reply.code(404).send({ error: "PARTICIPANT_NOT_FOUND" });
     }
-    if (!raw) return reply.code(401).send({ error: "UNAUTHORIZED" });
-    let grant: string | null;
-    try {
-      grant = await auth.reauthenticate(
-        raw,
-        String(request.headers["x-csrf-token"] ?? ""),
-        command.password,
-        purpose,
-        resolver(request.raw),
-      );
-    } catch (error) {
-      auth.report("admin.room.reauthenticate", error, request.id);
-      return reply.code(503).send({ error: "REAUTHENTICATION_UNAVAILABLE" });
-    }
-    if (!grant || !(await auth.consumeReauthGrant(raw, grant, purpose)))
-      return reply.code(403).send({ error: "REAUTHENTICATION_FAILED" });
     const details =
       command.action === "platform.pause"
         ? {
