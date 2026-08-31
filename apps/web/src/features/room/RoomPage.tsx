@@ -38,9 +38,9 @@ function GradeFeedback({ grade, prefix }: Readonly<{ grade: LaunchGrade; prefix:
   return <p className={`grade-card judgement-feedback ${presentation.className}`}><span className="grade-original">{prefix}：{grade}</span><strong>{presentation.label}</strong><em>{presentation.chinese}</em></p>;
 }
 
-export function RoomPage({ snapshot, battle, design, designId, onUseDesign, onCommand, onLeave, gameAudio, reducedMotion = false, departurePending = false, actionsDisabled = false }: Readonly<{
+export function RoomPage({ snapshot, battle, design, designId, onUseDesign, onCommand, onLeave, gameAudio, gameQuality = "auto", reducedMotion = false, departurePending = false, actionsDisabled = false }: Readonly<{
   snapshot: RoomSnapshotEvent; battle: RoomBattleView; design: TopDesign; designId?: string | null; departurePending?: boolean;
-  onUseDesign?: () => void | Promise<void>; onCommand: (event: CommandInput) => void; onLeave: () => void; gameAudio?: GameAudio; reducedMotion?: boolean; actionsDisabled?: boolean;
+  onUseDesign?: () => void | Promise<void>; onCommand: (event: CommandInput) => void; onLeave: () => void; gameAudio?: GameAudio; gameQuality?: "auto" | "reduced"; reducedMotion?: boolean; actionsDisabled?: boolean;
 }>) {
   const active = snapshot.phase !== "waiting";
   const canLaunch = snapshot.viewer.role !== "spectator" && battle.schedule;
@@ -62,7 +62,7 @@ export function RoomPage({ snapshot, battle, design, designId, onUseDesign, onCo
     {canLaunch ? <RhythmLaunch schedule={battle.schedule!} onCommand={onCommand} onLaunch={() => gameAudio?.play("launch", `launch-${battle.schedule!.roundId}`)} reducedMotion={reducedMotion} clockReady={battle.clockReady ?? true} clockSamples={battle.clockSamples ?? 0} clockQuality={battle.clockQuality ?? "good"} /> : null}
     {snapshot.viewer.role !== "spectator" && battle.privateGrade ? <GradeFeedback grade={battle.privateGrade} prefix="你的判定" /> : null}
     {snapshot.viewer.role === "spectator" && battle.spectatorGrades ? <div className="spectator-grades"><GradeFeedback grade={battle.spectatorGrades.player1} prefix="玩家一" /><GradeFeedback grade={battle.spectatorGrades.player2} prefix="玩家二" /></div> : null}
-    {(snapshot.phase === "battle" || battle.frames?.length) ? <BattleArena designs={battleDesigns} frames={battle.frames ?? []} reducedMotion={reducedMotion} onEffect={(effect) => gameAudio?.play(effect.type === "heavy-impact" ? "heavy-impact" : effect.type, effect.id)} /> : null}
+    {(snapshot.phase === "battle" || battle.frames?.length) ? <BattleArena designs={battleDesigns} frames={battle.frames ?? []} reducedMotion={reducedMotion} quality={gameQuality} onEffect={(effect) => gameAudio?.play(effect.type === "heavy-impact" ? "heavy-impact" : effect.type, effect.id)} /> : null}
     {battle.roundWinner && !battle.matchFinished ? <p className="round-result" role="status">本輪勝方：{battle.roundWinner === "draw" ? "平手，重賽" : battle.roundWinner === "player1" ? "玩家一" : "玩家二"}</p> : null}
     <MatchResult result={battle.matchFinished ? resultView(battle.matchFinished) : undefined} cancelledReason={battle.cancelledReason} />
     <SpectatorList spectators={snapshot.spectators} />
