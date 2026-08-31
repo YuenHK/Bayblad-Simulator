@@ -22,7 +22,7 @@ beforeAll(async () => {
   await client.sql.unsafe(`create schema ${schemaName}`);
   await client.sql.unsafe(`set search_path to ${schemaName},public`);
   const directory = fileURLToPath(new URL("../../../../drizzle", import.meta.url));
-  for (const file of readdirSync(directory).filter((name) => name.endsWith(".sql")).sort()) for (const statement of readFileSync(`${directory}/${file}`, "utf8").split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement);
+  for (const file of readdirSync(directory).filter((name) => name.endsWith(".sql")).sort()) for (const statement of readFileSync(`${directory}/${file}`, "utf8").split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement.replaceAll('"public".', `"${schemaName}".`));
   await client.sql.unsafe("insert into admin_users(id,username,password_hash) values($1,'delete-admin','hash')", [adminId]);
   await client.sql.unsafe("insert into admin_sessions(id,admin_user_id,token_hash,csrf_token_hash,expires_at) values($1,$2,$3,$4,now()+interval '1 hour')", [sessionId, adminId, "a".repeat(64), "b".repeat(64)]);
 }, 30_000);
