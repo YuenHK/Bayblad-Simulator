@@ -64,7 +64,7 @@ const ARGON = Object.freeze({ algorithm: Algorithm.Argon2id, memoryCost: 19_456,
 const loginSchema = z.object({ username: z.string().trim().min(1).max(80).regex(/^[^\p{Cc}]+$/u), password: z.string().min(8).max(1024).regex(/^[^\p{Cc}]+$/u) }).strict();
 export class AdminStoreUnavailableError extends Error { constructor() { super("ADMIN_STORE_UNAVAILABLE"); } }
 export class AdminAuthBusyError extends Error { constructor() { super("ADMIN_AUTH_BUSY"); } }
-export type AdminAuthLogEvent = Readonly<{ operation: string; errorClass: string; requestId?: string }>;
+export type AdminAuthLogEvent = Readonly<{ operation: string; errorClass: string; errorCode?: string; requestId?: string }>;
 
 export class AdminAuthService {
   readonly #limiter = new AdminLoginLimiter(); readonly #now: () => Date; readonly #origins: Set<string>; readonly #hosts: Set<string>; readonly #secure: boolean; readonly #tokens: () => string; readonly #csrfSecret: Buffer; readonly #csrfKeyId: string;
@@ -79,7 +79,7 @@ export class AdminAuthService {
     this.#logError = options.logError ?? (() => undefined); this.#dummyHash = this.#withArgon(() => hash(randomBytes(32), ARGON));
   }
   get secureCookies() { return this.#secure; }
-  report(operation: string, error: unknown, requestId?: string): void { try { this.#logError({ operation, errorClass: error instanceof Error ? error.constructor.name : "UnknownError", ...(requestId ? { requestId } : {}) }); } catch { /* Logging must never alter the authentication result. */ } }
+  report(operation: string, error: unknown, requestId?: string): void { try { const candidate=typeof error==="object"&&error!==null&&"code" in error?(error as {code?:unknown}).code:undefined,errorCode=typeof candidate==="string"&&/^EXPORT_[A-Z0-9_:.-]+$/u.test(candidate)?candidate:undefined;this.#logError({ operation, errorClass: error instanceof Error ? error.constructor.name : "UnknownError", ...(errorCode?{errorCode}:{}), ...(requestId ? { requestId } : {}) }); } catch { /* Logging must never alter the authentication result. */ } }
   async #withArgon<T>(operation: () => Promise<T>): Promise<T> { if (this.#argonActive >= 4) { if (this.#argonWaiters.length >= 32) throw new AdminAuthBusyError(); await new Promise<void>((resolve, reject) => { const waiter = () => { clearTimeout(timer); resolve(); }; const timer = setTimeout(() => { const index = this.#argonWaiters.indexOf(waiter); if (index >= 0) this.#argonWaiters.splice(index, 1); reject(new AdminAuthBusyError()); }, 2_000); timer.unref(); this.#argonWaiters.push(waiter); }); } this.#argonActive++; try { return await operation(); } finally { this.#argonActive--; this.#argonWaiters.shift()?.(); } }
   allowsRead(request: FastifyRequest): boolean { const site = request.headers["sec-fetch-site"]; if (site === "cross-site" || (site && !["same-origin", "same-site", "none"].includes(site))) return false; if (!this.#hosts.has(request.headers.host ?? "")) return false; const origin = request.headers.origin; return origin === undefined || (typeof origin === "string" && this.#origins.has(origin)); }
   allowsMutation(request: FastifyRequest): boolean { const origin = request.headers.origin; return request.headers["sec-fetch-site"] === "same-origin" && typeof origin === "string" && this.#origins.has(origin) && new URL(origin).host === request.headers.host; }
