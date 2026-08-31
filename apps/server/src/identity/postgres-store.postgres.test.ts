@@ -9,6 +9,7 @@ import { createValidatedLiveIdentityProvider, IdentityResolver } from "./resolve
 import { hashIdentityToken } from "./cookie";
 import { PostgresIdentityStore } from "./postgres-store";
 import { PostgresTokenNonceStore } from "./postgres-token-nonce";
+import { postgresTestSchemaUrl } from "../postgres-test-url";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const schemaName = `identity_${randomUUID().replaceAll("-", "")}`;
@@ -17,7 +18,7 @@ let client: DatabaseClient;
 beforeAll(async () => {
   if (!databaseUrl) return;
   const local = /(?:localhost|127\.0\.0\.1)/u.test(databaseUrl);
-  client = createDatabaseClient({ url: databaseUrl, ssl: local ? false : "require", allowInsecure: local, maxConnections: 10 });
+  client = createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 10 });
   await client.sql.unsafe(`create schema ${schemaName}`);
   await client.sql.unsafe(`set search_path to ${schemaName},public`);
   const directory = fileURLToPath(new URL("../../../../drizzle", import.meta.url));

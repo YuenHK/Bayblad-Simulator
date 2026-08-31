@@ -8,6 +8,7 @@ import { PostgresExportDataSource } from "../exports/postgres-source";
 import { buildWorkbookBuffer } from "../exports/workbook";
 import { usageAnalytics } from "../analytics/usage";
 import ExcelJS from "exceljs";
+import { postgresTestSchemaUrl } from "../postgres-test-url";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const schemaName = `deletion_${randomUUID().replaceAll("-", "")}`;
@@ -17,7 +18,7 @@ const adminId = "a0000000-0000-4000-8000-000000000001", sessionId = "a0000000-00
 beforeAll(async () => {
   if (!databaseUrl) return;
   const local = /(?:localhost|127\.0\.0\.1)/u.test(databaseUrl);
-  client = createDatabaseClient({ url: databaseUrl, ssl: local ? false : "require", allowInsecure: local, maxConnections: 10 });
+  client = createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 10 });
   await client.sql.unsafe(`create schema ${schemaName}`);
   await client.sql.unsafe(`set search_path to ${schemaName},public`);
   const directory = fileURLToPath(new URL("../../../../drizzle", import.meta.url));

@@ -10,6 +10,7 @@ import { AnalyticsService, canonicalFilterHash, FILTER_APPLICABILITY, PostgresAn
 import { PostgresExportDataSource } from "../exports/postgres-source";
 import { buildWorkbookBuffer } from "../exports/workbook";
 import ExcelJS from "exceljs";
+import { postgresTestSchemaUrl } from "../postgres-test-url";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const schemaName = `analytics_${randomUUID().replaceAll("-", "")}`;
@@ -18,7 +19,7 @@ let firstIdentityId: string;
 
 beforeAll(async () => {
   if (!databaseUrl) return;
-  client = createDatabaseClient({ url: databaseUrl, ssl: false, allowInsecure: true, maxConnections: 4 });
+  client = createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl, schemaName), ssl: false, allowInsecure: true, maxConnections: 4 });
   await client.sql.unsafe(`create schema ${schemaName}`); await client.sql.unsafe(`set search_path to ${schemaName},public`);
   const directory = fileURLToPath(new URL("../../../../drizzle", import.meta.url));
   for (const file of readdirSync(directory).filter((name) => name.endsWith(".sql")).sort()) for (const statement of readFileSync(`${directory}/${file}`, "utf8").split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement);
@@ -108,13 +109,13 @@ it.skipIf(!databaseUrl)("coordinates the same cache hash across service instance
 },30_000);
 
 it.skipIf(!databaseUrl)("serializes two service instances on a single pooled connection without a stale pre-lock snapshot",async()=>{
-  const single=createDatabaseClient({url:databaseUrl!,ssl:false,allowInsecure:true,maxConnections:1});await single.sql.unsafe(`set search_path to ${schemaName},public`);let executions=0,firstStarted!:()=>void,releaseFirst!:()=>void;const started=new Promise<void>(resolve=>{firstStarted=resolve;});const release=new Promise<void>(resolve=>{releaseFirst=resolve;});
+  const single=createDatabaseClient({url:postgresTestSchemaUrl(databaseUrl!,schemaName),ssl:false,allowInsecure:true,maxConnections:1});await single.sql.unsafe(`set search_path to ${schemaName},public`);let executions=0,firstStarted!:()=>void,releaseFirst!:()=>void;const started=new Promise<void>(resolve=>{firstStarted=resolve;});const release=new Promise<void>(resolve=>{releaseFirst=resolve;});
   const make=(block:boolean)=>new AnalyticsService(new PostgresAnalyticsCache(single.sql),async()=>{executions++;if(block&&executions===1){firstStarted();await release;}return[];},async()=>[],async()=>[],()=>new Date("2026-10-03T16:00:00Z"));
   const first=make(true).query({from:"2026-06-01",to:"2026-06-02"});await started;const second=make(false).query({from:"2026-06-01",to:"2026-06-02"});releaseFirst();await Promise.all([first,second]);expect(executions).toBe(3);await single.close();
 },30_000);
 
 it.skipIf(!databaseUrl)("releases the session advisory lock after an analytics failure",async()=>{
-  const lockOwner=createDatabaseClient({url:databaseUrl!,ssl:false,allowInsecure:true,maxConnections:1}),observer=createDatabaseClient({url:databaseUrl!,ssl:false,allowInsecure:true,maxConnections:1});let ownerPid=0;const cache=new PostgresAnalyticsCache(lockOwner.sql,pid=>{ownerPid=pid;});
+  const lockOwner=createDatabaseClient({url:postgresTestSchemaUrl(databaseUrl!,schemaName),ssl:false,allowInsecure:true,maxConnections:1}),observer=createDatabaseClient({url:postgresTestSchemaUrl(databaseUrl!,schemaName),ssl:false,allowInsecure:true,maxConnections:1});let ownerPid=0;const cache=new PostgresAnalyticsCache(lockOwner.sql,pid=>{ownerPid=pid;});
   await expect(cache.exclusive!("f".repeat(64),async()=>{throw new Error("fixture");})).rejects.toThrow("fixture");
   const [observerBackend]=await observer.sql<{pid:number}[]>`select pg_backend_pid() pid`;expect(observerBackend!.pid).not.toBe(ownerPid);
   const [lock]=await observer.sql<{available:boolean}[]>`select pg_try_advisory_lock(hashtextextended(${'f'.repeat(64)},1937002026)) available`;expect(lock?.available).toBe(true);if(lock?.available)await observer.sql`select pg_advisory_unlock(hashtextextended(${'f'.repeat(64)},1937002026))`;
