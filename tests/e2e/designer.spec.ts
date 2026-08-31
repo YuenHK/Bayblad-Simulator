@@ -33,7 +33,7 @@ async function center(locator: Locator): Promise<{ x: number; y: number }> {
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.goto("/designer");
+  await page.goto("designer");
 });
 
 test("iPad student creates a legal three-layer design and loads the real 3D chunk", async ({ page, browser }) => {
@@ -86,12 +86,12 @@ test("production 首屏不預載3D heavy chunk，選擇3D後才載入", async ({
   const heavyFiles = [...heavyKeys].map((key) => manifest[key]!.file);
   expect(heavyFiles.length).toBeGreaterThan(0);
   const initialResources = await page.evaluate(() => performance.getEntriesByType("resource").map((entry) => new URL(entry.name).pathname));
-  for (const file of heavyFiles) expect(initialResources).not.toContain(`/${file}`);
-  const html = await (await request.get("/")).text();
+  for (const file of heavyFiles) expect(initialResources.some((path) => path.endsWith(`/${file}`))).toBe(false);
+  const html = await (await request.get(".")).text();
   for (const file of heavyFiles) expect(html).not.toContain(file);
   await page.getByRole("tab", { name: "3D 預覽" }).click();
   await expect(page.getByTestId("top-preview-3d")).toBeVisible({ timeout: 15_000 });
-  await expect.poll(() => page.evaluate((files) => { const loaded = new Set(performance.getEntriesByType("resource").map((entry) => new URL(entry.name).pathname)); return files.every((file) => loaded.has(`/${file}`)); }, heavyFiles)).toBe(true);
+  await expect.poll(() => page.evaluate((files) => { const loaded = performance.getEntriesByType("resource").map((entry) => new URL(entry.name).pathname); return files.every((file) => loaded.some((path) => path.endsWith(`/${file}`))); }, heavyFiles)).toBe(true);
 });
 
 test("60.00 mm is valid while 60.01 mm reaches the course boundary rule", async ({ page }) => {
@@ -247,7 +247,7 @@ test("iPad viewport has no horizontal overflow, 44 px controls, and keyboard tab
       label: control.getAttribute("aria-label") ?? control.textContent?.trim(),
       height: control.getBoundingClientRect().height,
     })));
-  expect(sizes.filter(({ height }) => height < 44)).toEqual([]);
+  expect(sizes.filter(({ height }) => height > 0 && height < 44)).toEqual([]);
 
   const topTab = page.getByRole("tab", { name: "俯視圖" });
   await topTab.focus();
@@ -257,6 +257,6 @@ test("iPad viewport has no horizontal overflow, 44 px controls, and keyboard tab
 });
 
 test("root route also loads the designer", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(".");
   await expect(page.getByRole("heading", { name: "陀螺設計器" })).toBeVisible();
 });

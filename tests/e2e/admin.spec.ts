@@ -1,15 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 const password = process.env.E2E_ADMIN_PASSWORD ?? "e2e-admin-only-password";
 async function login(page: Page) {
-  await page.goto("/admin");
+  await page.goto(".");
   await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
   await page.getByLabel("密碼").fill(password);
   await page.getByRole("button", { name: "登入" }).press("Enter");
   await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
 }
 async function confirmAction(page: Page) {
-  await page.getByLabel("再次輸入管理員密碼").pressSequentially(password);
-  await page.getByRole("button", { name: "確認" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "繼續" }).click();
+  await dialog.getByRole("button", { name: /^確定/u }).click();
   await expect(page.getByRole("dialog")).toBeHidden();
 }
 test("教師登入、房間確認、篩選、統計及刪除流程不外洩密碼", async ({ page }) => {
@@ -56,9 +57,8 @@ test("教師登入、房間確認、篩選、統計及刪除流程不外洩密�
   await page.getByRole("button", { name: "刪除紀錄" }).click();
   await page.getByRole("button", { name: "預覽刪除範圍" }).click();
   await expect(page.getByText(/1 個身份、2 個設計、3 場對戰/)).toBeVisible();
-  await page.getByLabel("再次輸入管理員密碼").fill(password);
-  await page.getByLabel("輸入 DELETE 確認").fill("DELETE");
-  await page.getByRole("button", { name: "永久刪除" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "繼續" }).click();
+  await page.getByRole("button", { name: "確定永久刪除" }).click();
   await expect(page.getByText("0 筆紀錄")).toBeVisible();
   await page.getByRole("button", { name: "登出" }).click();
   await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();

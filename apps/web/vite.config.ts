@@ -18,19 +18,20 @@ export function createWebBuildConfig(environment: BuildEnvironment): UserConfig 
   if (target === "student") {
     base = environment.STEAM_TOP_PAGES_BASE ?? "";
     if (!/^\/[A-Za-z0-9._-]+\/$/u.test(base)) throw new Error("STEAM_TOP_PAGES_BASE must be one repository path segment with surrounding slashes");
-    apiBase = exactHttpsOrigin(environment.VITE_API_BASE_URL);
+    apiBase = environment.TEST_REALTIME_PROXY ? "" : exactHttpsOrigin(environment.VITE_API_BASE_URL);
   } else { base = "/admin/"; apiBase = ""; }
   const entry = fileURLToPath(new URL(`./src/${target}-entry.tsx`, import.meta.url));
+  const proxy = environment.TEST_REALTIME_PROXY ? {
+    "/api": { target: environment.TEST_REALTIME_PROXY, changeOrigin: false },
+    "/socket.io": { target: environment.TEST_REALTIME_PROXY, ws: true, changeOrigin: true },
+    "/__test": { target: environment.TEST_REALTIME_PROXY, changeOrigin: false },
+  } : undefined;
   return {
     base,
     build: { manifest: true },
     resolve: { alias: { "@steam-top/build-entry": entry } },
     define: { "import.meta.env.VITE_API_BASE_URL": JSON.stringify(apiBase) },
-    ...(environment.TEST_REALTIME_PROXY ? { preview: { proxy: {
-      "/api": { target: environment.TEST_REALTIME_PROXY, changeOrigin: false },
-      "/socket.io": { target: environment.TEST_REALTIME_PROXY, ws: true, changeOrigin: true },
-      "/__test": { target: environment.TEST_REALTIME_PROXY, changeOrigin: false },
-    } } } : {}),
+    ...(proxy ? { server: { proxy }, preview: { proxy } } : {}),
     test: { environment: "jsdom", setupFiles: "./src/test/setup.ts" },
   };
 }
