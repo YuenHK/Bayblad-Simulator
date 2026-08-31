@@ -19,5 +19,9 @@ suite("production analytics composition", () => {
       parameters: expect.any(Array),
       parameterUsage: expect.any(Array),
     });
+    await expect(analytics.query({ from: "2026-08-01", to: "2026-08-31" })).resolves.toMatchObject({
+      usage: expect.any(Array),
+      refreshedAt: expect.stringMatching(/^2026-/u),
+    });
   }, 30_000);
 });

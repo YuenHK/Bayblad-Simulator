@@ -33,11 +33,12 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
   transactionCutoff():Date|undefined{return this.#transaction.getStore()?.cutoff;}
   async read(hash: string, maxAge: Date): Promise<AnalyticsSummary | null> {
     const executor = this.currentExecutor();
-    const rows = await executor<readonly { filters_json: AnalyticsFilters; usage_json: readonly UsageDay[]; usage_periods_json: AnalyticsSummary["usagePeriods"]; parameter_usage_json: readonly unknown[]; parameters_json: readonly unknown[]; rankings_json:AnalyticsSummary["rankings"]; refreshed_at: Date }[]>`
+    const rows = await executor<readonly { filters_json: AnalyticsFilters; usage_json: readonly UsageDay[]; usage_periods_json: AnalyticsSummary["usagePeriods"]; parameter_usage_json: readonly unknown[]; parameters_json: readonly unknown[]; rankings_json:AnalyticsSummary["rankings"]; refreshed_at: Date|string }[]>`
       select filters_json,usage_json,usage_periods_json,parameter_usage_json,parameters_json,rankings_json,refreshed_at from analytics_daily_summaries
       where filter_hash=${hash} and refreshed_at >= ${maxAge.toISOString()}::timestamptz order by summary_date desc limit 1`;
     const row = rows[0];
-    return row ? Object.freeze({ filters: row.filters_json, filterApplicability: FILTER_APPLICABILITY, usage: row.usage_json, usagePeriods: row.usage_periods_json, parameterUsage: row.parameter_usage_json as readonly JsonRow[], parameters: row.parameters_json as readonly JsonRow[],rankings:row.rankings_json, refreshedAt: row.refreshed_at.toISOString() }) : null;
+    if(!row)return null;const refreshedAt=row.refreshed_at instanceof Date?row.refreshed_at:new Date(row.refreshed_at);if(!Number.isFinite(refreshedAt.getTime()))throw new TypeError("INVALID_ANALYTICS_CACHE_TIMESTAMP");
+    return Object.freeze({ filters: row.filters_json, filterApplicability: FILTER_APPLICABILITY, usage: row.usage_json, usagePeriods: row.usage_periods_json, parameterUsage: row.parameter_usage_json as readonly JsonRow[], parameters: row.parameters_json as readonly JsonRow[],rankings:row.rankings_json, refreshedAt: refreshedAt.toISOString() });
   }
   async write(hash: string, summary: AnalyticsSummary): Promise<void> {
     const executor = this.currentExecutor();
