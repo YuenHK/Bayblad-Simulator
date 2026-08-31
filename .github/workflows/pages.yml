@@ -25,7 +25,8 @@ jobs:
         with: { node-version: 24.13.0, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm test
+      - name: Test student frontend and shared contracts
+        run: pnpm --filter @steam-top/domain --filter @steam-top/protocol --filter @steam-top/web test
       - name: Build student-only site
         env:
           STEAM_TOP_BUILD_TARGET: student
