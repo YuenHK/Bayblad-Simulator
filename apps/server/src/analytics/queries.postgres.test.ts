@@ -22,7 +22,7 @@ beforeAll(async () => {
   client = createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl, schemaName), ssl: false, allowInsecure: true, maxConnections: 4 });
   await client.sql.unsafe(`create schema ${schemaName}`); await client.sql.unsafe(`set search_path to ${schemaName},public`);
   const directory = fileURLToPath(new URL("../../../../drizzle", import.meta.url));
-  for (const file of readdirSync(directory).filter((name) => name.endsWith(".sql")).sort()) for (const statement of readFileSync(`${directory}/${file}`, "utf8").split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement);
+  for (const file of readdirSync(directory).filter((name) => name.endsWith(".sql")).sort()) for (const statement of readFileSync(`${directory}/${file}`, "utf8").split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement.replaceAll('"public".', `"${schemaName}".`));
   const first = randomUUID(), second = randomUUID(), star = randomUUID(), circle = randomUUID(), firstDevice=randomUUID(), secondDevice=randomUUID();
   firstIdentityId=first;
   await client.sql`insert into identities(id,status,display_name,class_name,anonymous_device_id) values (${first},'iclass','1A-01','1A',${firstDevice}),(${second},'guest','訪客-ABCD',null,${secondDevice})`;
