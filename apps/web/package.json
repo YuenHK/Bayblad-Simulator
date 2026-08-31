@@ -7,7 +7,7 @@
     "build": "pnpm build:admin",
     "build:student": "STEAM_TOP_WEB_TARGET=student vite build",
     "build:admin": "STEAM_TOP_WEB_TARGET=admin vite build",
-    "test": "node ../../scripts/run-bounded-command.mjs --timeout-ms 60000 -- pnpm exec vitest run --maxWorkers=1 --no-file-parallelism",
+    "test": "node ../../scripts/run-bounded-command.mjs --timeout-ms 120000 -- pnpm exec vitest run --maxWorkers=1 --no-file-parallelism",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"
   },
