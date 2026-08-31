@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { MemoryRoomProjectionStore } from "./room-projection-store";
-import { MemoryRoomRecordRepository } from "./room-repository";
+import { MemoryRoomRecordRepository, PostgresRoomRecordRepository } from "./room-repository";
+
+it("requires a bounded positive authority lock object id", () => {
+  expect(() => new PostgresRoomRecordRepository(null as never, undefined, 0)).toThrow("INVALID_ROOM_AUTHORITY_LOCK_OBJECT_ID");
+  expect(() => new PostgresRoomRecordRepository(null as never, undefined, 2)).not.toThrow();
+});
 
 const participant = { participantPublicId: "participant-1", identityId: null, displayName: "Student", role: "player1" as const, isOwner: true, ip: null, userAgent: null, deviceName: null };
 
