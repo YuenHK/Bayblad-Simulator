@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 
 export const EXPECTED_MIGRATION_ID = "0000_steam_top_pre_first_deploy";
-export const EXPECTED_MIGRATION_SHA256 = "48386c47be2562e241cb520f17cd2cd6d00ca221be6e84860ccebc4ac52c2be8";
+export const EXPECTED_MIGRATION_SHA256 = "51757c37f19429c162cbd2de8f04682e5e8dad0a78723fb142332e5f11d7721f";
 export const EXPECTED_MIGRATIONS = Object.freeze([
   Object.freeze({ id: EXPECTED_MIGRATION_ID, sha256: EXPECTED_MIGRATION_SHA256 }),
   Object.freeze({ id: "0001_cutover_state_machine", sha256: "ca26cdef9195ae550a0fd4eb4db66fe02c2915e646a71e51182b4b4cf8a40571" }),
-  Object.freeze({ id: "0002_platform_installation", sha256: "1135865894cd73de9c69649958fcaab0f663b64a4c97ae4d3b1c5d81e12f6e68" }),
+  Object.freeze({ id: "0002_platform_installation", sha256: "55a06f26947827ec40a29068fb17cd91a02b2085acaca15a1b2bb95f63c5aefb" }),
 ]);
 
 type MigrationTransaction = Readonly<{
