@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { defineConfig, type UserConfig } from "vitest/config";
+import { defineConfig } from "vitest/config";
+import type { UserConfig } from "vite";
 
 type BuildEnvironment = Readonly<Record<string, string | undefined>>;
 
