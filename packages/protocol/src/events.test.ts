@@ -477,6 +477,7 @@ const launchSchedule = {
   matchId: "match-1",
   roundId: "round-1",
   serverTargetTimeMs: 1_000,
+  serverDeadlineTimeMs: 2_500,
   nonce: "nonce-1",
   ...serverEnvelope,
 } as const;

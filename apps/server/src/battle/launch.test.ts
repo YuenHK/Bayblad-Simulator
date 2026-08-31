@@ -199,6 +199,7 @@ describe("LaunchCoordinator scheduling", () => {
       matchId: "match-1",
       roundId: "round-1",
       serverTargetTimeMs: 4_000,
+      serverDeadlineTimeMs: 5_500,
       nonce: "nonce-1",
     });
   });
@@ -445,7 +446,7 @@ describe("LaunchCoordinator submissions and result privacy", () => {
     );
   });
 
-  it("rejects a second distinct tap and any tap after a closed round", () => {
+  it("rejects a second tap while open and replays the final result after closure", () => {
     const { coordinator, schedule } = makeHarness();
     schedule();
     coordinator.submit("p1", tap(), 4_000);
@@ -453,13 +454,13 @@ describe("LaunchCoordinator submissions and result privacy", () => {
       new LaunchError("ALREADY_SUBMITTED"),
     );
     coordinator.submit("p2", tap({ eventId: TAP_2 }), 4_000);
-    expect(() =>
+    expect(
       coordinator.submit(
         "p1",
         tap({ eventId: "10000000-0000-4000-8000-000000000003" }),
         4_000,
       ),
-    ).toThrow(new LaunchError("ROUND_CLOSED"));
+    ).toMatchObject({ replayed: true, event: { participantId: "p1", grade: "Perfect" } });
   });
 
   it("does not partially commit when result event-id generation is exhausted", () => {
@@ -553,6 +554,25 @@ describe("LaunchCoordinator submissions and result privacy", () => {
 });
 
 describe("LaunchCoordinator expiry and cleanup", () => {
+  it("returns the authoritative Miss for a late tap after automatic closure", () => {
+    const { coordinator, schedule, setNow } = makeHarness();
+    const event = schedule();
+    expect(event.serverDeadlineTimeMs).toBe(5_500);
+    setNow(5_501);
+    coordinator.finalizeExpired();
+
+    const late = coordinator.submit(
+      "p1",
+      tap({ eventId: "10000000-0000-4000-8000-000000000099" }),
+      5_502,
+    );
+
+    expect(late.event.grade).toBe("Miss");
+    expect(late.replayed).toBe(true);
+    expect(coordinator.takeSpectatorResult("room-1", "round-1")).toBeDefined();
+    expect(coordinator.takeSpectatorResult("room-1", "round-1")).toBeUndefined();
+  });
+
   it("keeps the round open at the inclusive deadline and auto-Misses only after it", () => {
     const { coordinator, schedule, setNow } = makeHarness();
     schedule();
