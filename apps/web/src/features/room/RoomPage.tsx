@@ -5,6 +5,7 @@ import { BattleArena, type ArenaFrame } from "../battle/BattleArena";
 import { MatchResult, type MatchResultView } from "../battle/MatchResult";
 import { RhythmLaunch, type LaunchScheduleView } from "../battle/RhythmLaunch";
 import { SpectatorList } from "./SpectatorList";
+import type { GameAudio } from "../game/GameAudio";
 
 export type RoomBattleView = Readonly<{
   phase: "waiting" | "launch" | "battle" | "result";
@@ -31,9 +32,9 @@ function resultView(event: MatchFinishedEvent): MatchResultView {
   return { winner: p1 === 2 ? "player1" : "player2", scoreline: `2:${Math.min(p1, p2)}` as "2:0" | "2:1", player1: event.player1, player2: event.player2 };
 }
 
-export function RoomPage({ snapshot, battle, design, designId, onUseDesign, onCommand, onLeave, reducedMotion = false, departurePending = false, actionsDisabled = false }: Readonly<{
+export function RoomPage({ snapshot, battle, design, designId, onUseDesign, onCommand, onLeave, gameAudio, reducedMotion = false, departurePending = false, actionsDisabled = false }: Readonly<{
   snapshot: RoomSnapshotEvent; battle: RoomBattleView; design: TopDesign; designId?: string | null; departurePending?: boolean;
-  onUseDesign?: () => void | Promise<void>; onCommand: (event: CommandInput) => void; onLeave: () => void; reducedMotion?: boolean; actionsDisabled?: boolean;
+  onUseDesign?: () => void | Promise<void>; onCommand: (event: CommandInput) => void; onLeave: () => void; gameAudio?: GameAudio; reducedMotion?: boolean; actionsDisabled?: boolean;
 }>) {
   const active = snapshot.phase !== "waiting";
   const canLaunch = snapshot.viewer.role !== "spectator" && battle.schedule;
