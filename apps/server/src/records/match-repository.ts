@@ -201,6 +201,21 @@ export class MemoryMatchRepository implements MatchRepository {
 }
 
 type Db = DatabaseClient["db"];
+type MatchBeginStageCode =
+  | "MATCH_BEGIN_MATCH_INSERT_FAILED"
+  | "MATCH_BEGIN_IDENTITY_READ_FAILED"
+  | "MATCH_BEGIN_CANONICAL_READ_FAILED"
+  | "MATCH_BEGIN_SNAPSHOT_INSERT_FAILED"
+  | "MATCH_BEGIN_TRANSACTION_FAILED";
+class MatchBeginStageError extends Error {
+  readonly code: MatchBeginStageCode;
+  override readonly cause: unknown;
+  constructor(code: MatchBeginStageCode, cause: unknown) { super(code); this.name = "MatchBeginStageError"; this.code = code; this.cause = cause; }
+}
+export async function runMatchBeginStage<T>(code: MatchBeginStageCode, operation: () => Promise<T>): Promise<T> {
+  try { return await operation(); }
+  catch (error) { if (error instanceof MatchBeginStageError || error instanceof MatchPersistenceConflictError) throw error; throw new MatchBeginStageError(code, error); }
+}
 const persistedRoundProjection = (row: typeof rounds.$inferSelect | typeof rounds.$inferInsert) => ({
   id: row.id, matchId: row.matchId, externalRoundId: row.externalRoundId, authorityKeyHash: row.authorityKeyHash,
   roundNumber: row.roundNumber, attempt: row.attempt, seed: row.seed, outcome: row.outcome, outcomeReason: row.outcomeReason,
@@ -217,16 +232,16 @@ export class PostgresMatchRepository implements MatchRepository {
   constructor(readonly db: Db) {}
   async beginMatch(input: PendingMatchRecord): Promise<"created" | "replayed"> {
     const pendingFingerprint = createHash("sha256").update(JSON.stringify(input, (_key, value) => value instanceof Date ? value.toISOString() : value)).digest("hex");
-    const inserted = await this.db.transaction(async (tx) => {
-      const created = await tx.insert(matches).values({ id: input.id, roomId: input.roomId, idempotencyFingerprint: pendingFingerprint, status: "in_progress", player1IdentityId: input.player1IdentityId, player2IdentityId: input.player2IdentityId, player1DesignId: input.player1DesignId, player2DesignId: input.player2DesignId, performanceModelVersion: input.performanceModelVersion, physicsModelVersion: input.physicsModelVersion, protocolVersion: input.protocolVersion, spectatorCount: input.spectatorCount, startedAt: input.startedAt }).onConflictDoNothing().returning({ id: matches.id });
+    const inserted = await runMatchBeginStage("MATCH_BEGIN_TRANSACTION_FAILED", () => this.db.transaction(async (tx) => {
+      const created = await runMatchBeginStage("MATCH_BEGIN_MATCH_INSERT_FAILED", () => tx.insert(matches).values({ id: input.id, roomId: input.roomId, idempotencyFingerprint: pendingFingerprint, status: "in_progress", player1IdentityId: input.player1IdentityId, player2IdentityId: input.player2IdentityId, player1DesignId: input.player1DesignId, player2DesignId: input.player2DesignId, performanceModelVersion: input.performanceModelVersion, physicsModelVersion: input.physicsModelVersion, protocolVersion: input.protocolVersion, spectatorCount: input.spectatorCount, startedAt: input.startedAt }).onConflictDoNothing().returning({ id: matches.id }));
       if (created.length !== 1) return false;
       for (const participant of [{ slot: "player1" as const, identityId: input.player1IdentityId, designId: input.player1DesignId }, { slot: "player2" as const, identityId: input.player2IdentityId, designId: input.player2DesignId }]) {
-        const [identity] = participant.identityId ? await tx.select().from(identities).where(eq(identities.id, participant.identityId)).limit(1) : [];
-        const canonical = participant.identityId ? await tx.execute<{ id: string }>(sql`with recursive chain as (select id,merged_into_identity_id,0 depth from identities where id=${participant.identityId} union all select i.id,i.merged_into_identity_id,c.depth+1 from identities i join chain c on i.id=c.merged_into_identity_id where c.depth<16) select id from chain order by depth desc limit 1`) : [];
-        await tx.insert(matchParticipantSnapshots).values({ matchId: input.id, slot: participant.slot, identityIdAtStart: participant.identityId, canonicalIdentityIdAtStart: canonical[0]?.id ?? participant.identityId, identityStatusSnapshot: identity?.status ?? null, displayNameSnapshot: identity?.displayName ?? null, classNameSnapshot: identity?.className ?? null, designId: participant.designId, capturedAt: input.startedAt });
+        const [identity] = participant.identityId ? await runMatchBeginStage("MATCH_BEGIN_IDENTITY_READ_FAILED", () => tx.select().from(identities).where(eq(identities.id, participant.identityId!)).limit(1)) : [];
+        const canonical = participant.identityId ? await runMatchBeginStage("MATCH_BEGIN_CANONICAL_READ_FAILED", () => tx.execute<{ id: string }>(sql`with recursive chain as (select id,merged_into_identity_id,0 depth from identities where id=${participant.identityId} union all select i.id,i.merged_into_identity_id,c.depth+1 from identities i join chain c on i.id=c.merged_into_identity_id where c.depth<16) select id from chain order by depth desc limit 1`)) : [];
+        await runMatchBeginStage("MATCH_BEGIN_SNAPSHOT_INSERT_FAILED", () => tx.insert(matchParticipantSnapshots).values({ matchId: input.id, slot: participant.slot, identityIdAtStart: participant.identityId, canonicalIdentityIdAtStart: canonical[0]?.id ?? participant.identityId, identityStatusSnapshot: identity?.status ?? null, displayNameSnapshot: identity?.displayName ?? null, classNameSnapshot: identity?.className ?? null, designId: participant.designId, capturedAt: input.startedAt }));
       }
       return true;
-    });
+    }));
     if (inserted) return "created";
     const [existing] = await this.db.select().from(matches).where(eq(matches.id, input.id)).limit(1);
     if (existing?.idempotencyFingerprint === pendingFingerprint) return "replayed";
