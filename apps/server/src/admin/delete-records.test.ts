@@ -60,13 +60,14 @@ describe("audited record deletion routes", () => {
   });
 
   it.each([
-    [{ password: "correct-password-2026", confirmation: "" }, "CONFIRMATION_REQUIRED"],
-    [{ password: "wrong-password", confirmation: "DELETE" }, "REAUTHENTICATION_FAILED"],
-  ])("rejects missing exact confirmation or invalid current password", async (override, error) => {
+    [{}, "INVALID_REQUEST"],
+    [{ confirmed: false }, "INVALID_REQUEST"],
+    [{ confirmed: true, password: "correct-password-2026" }, "INVALID_REQUEST"],
+  ])("requires only a strict second-stage confirmation", async (override, error) => {
     const { app, deletion, cookie, csrf } = await fixture();
     const preview = (await app.inject({ method: "POST", url: "/api/admin/records/deletion-preview", headers: mutationHeaders(cookie, csrf), payload: { scope: "identity", identityId: "10000000-0000-4000-8000-000000000001" } })).json();
     const response = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload: { previewToken: preview.previewToken, filterHash: preview.filterHash, ...override } });
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error });
     expect(deletion.remainingIdentities).toBe(2);
     await app.close();
@@ -75,7 +76,7 @@ describe("audited record deletion routes", () => {
   it("deletes atomically, retains content-free immutable audit metadata, and rejects replay", async () => {
     const { app, deletion, cookie, csrf } = await fixture();
     const preview = (await app.inject({ method: "POST", url: "/api/admin/records/deletion-preview", headers: mutationHeaders(cookie, csrf), payload: { scope: "date_range", from: "2026-08-01", to: "2026-08-01" } })).json();
-    const payload = { previewToken: preview.previewToken, filterHash: preview.filterHash, password: "correct-password-2026", confirmation: "DELETE" };
+    const payload = { previewToken: preview.previewToken, filterHash: preview.filterHash, confirmed: true };
     const response = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ auditId: expect.stringMatching(/^[0-9a-f-]{36}$/u), counts: { identities: 0, designs: 2, matches: 3 } });
@@ -83,7 +84,7 @@ describe("audited record deletion routes", () => {
     expect(deletion.audits).toHaveLength(1);
     expect(deletion.audits[0]).toEqual({ auditId: response.json().auditId, adminUserId: expect.any(String), scope: "date_range", filterHash: preview.filterHash, previewCount: 5, deletedIdentityCount: 0, deletedDesignCount: 2, deletedMatchCount: 3 });
     expect(JSON.stringify(deletion.audits[0])).not.toContain("1A");
-    const replay = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload: { previewToken: preview.previewToken, filterHash: preview.filterHash, confirmation: "DELETE" } });
+    const replay = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload });
     expect(replay.statusCode).toBe(200);
     expect(replay.json()).toMatchObject({ auditId: response.json().auditId, recovered: true });
     expect(deletion.audits).toHaveLength(1);
@@ -93,7 +94,7 @@ describe("audited record deletion routes", () => {
   it("rejects a changed filter hash before reauthentication and leaves all records intact", async () => {
     const { app, deletion, cookie, csrf } = await fixture();
     const preview = (await app.inject({ method: "POST", url: "/api/admin/records/deletion-preview", headers: mutationHeaders(cookie, csrf), payload: { scope: "all" } })).json();
-    const response = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload: { previewToken: preview.previewToken, filterHash: "f".repeat(64), password: "correct-password-2026", confirmation: "DELETE" } });
+    const response = await app.inject({ method: "DELETE", url: "/api/admin/records", headers: mutationHeaders(cookie, csrf), payload: { previewToken: preview.previewToken, filterHash: "f".repeat(64), confirmed: true } });
     expect(response.statusCode).toBe(409);
     expect(deletion.remainingIdentities).toBe(2);
     await app.close();

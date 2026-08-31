@@ -31,8 +31,7 @@ export function DeleteDialog({
       identities.length ? "identity" : "date_range",
     ),
     [identityId, setIdentityId] = useState(identities[0]?.id ?? ""),
-    [password, setPassword] = useState(""),
-    [confirmation, setConfirmation] = useState(""),
+    [stage, setStage] = useState<"review" | "confirm">("review"),
     [preview, setPreview] = useState<Preview | null>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -61,6 +60,7 @@ export function DeleteDialog({
           onChange={(event) => {
             setScope(event.target.value as Scope);
             setPreview(null);
+            setStage("review");
           }}
         >
           <option value="date_range">目前日期範圍</option>
@@ -96,8 +96,7 @@ export function DeleteDialog({
           setBusy(true);
           setError("");
           try {
-            setPreview(
-              await requestJson(
+            const nextPreview = await requestJson<Preview>(
                 fetcher,
                 "/api/admin/records/deletion-preview",
                 {
@@ -105,8 +104,9 @@ export function DeleteDialog({
                   headers: jsonHeaders(csrf),
                   body: JSON.stringify(filter),
                 },
-              ),
-            );
+              );
+            setPreview(nextPreview);
+            setStage("review");
           } catch (reason) {
             if (reason instanceof AdminApiError && reason.status === 401) onUnauthorized();
             setError("未能建立刪除預覽。");
@@ -125,25 +125,9 @@ export function DeleteDialog({
             將刪除 {preview.counts.identities} 個身份、{preview.counts.designs}{" "}
             個設計、{preview.counts.matches} 場對戰。
           </p>
-          <label>
-            再次輸入管理員密碼
-            <input
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </label>
-          <label>
-            輸入 DELETE 確認
-            <input
-              value={confirmation}
-              onChange={(event) => setConfirmation(event.target.value)}
-            />
-          </label>
-          <button
-            className="danger-button"
-            disabled={busy || password.length < 8 || confirmation !== "DELETE"}
+          {stage === "review" ? <button disabled={busy} onClick={() => setStage("confirm")}>繼續</button> : <><p className="field-error">再次確認：此操作不可還原。</p><button
+            className="danger-button admin-final-confirm"
+            disabled={busy}
             onClick={async () => {
               setBusy(true);
               setError("");
@@ -154,27 +138,25 @@ export function DeleteDialog({
                   body: JSON.stringify({
                     previewToken: preview.previewToken,
                     filterHash: preview.filterHash,
-                    password,
-                    confirmation,
+                    confirmed: true,
                   }),
                 });
-                setPassword("");
-                setConfirmation("");
                 setPreview(null);
+                setStage("review");
                 await onDeleted();
                 onClose();
               } catch (reason) {
                 if (reason instanceof AdminApiError && reason.status === 401) onUnauthorized();
                 setPreview(null);
+                setStage("review");
                 setError("刪除失敗；請重新預覽。");
               } finally {
-                setPassword("");
                 setBusy(false);
               }
             }}
           >
-            永久刪除
-          </button>
+            確定永久刪除
+          </button></>}
         </>
       ) : null}
       {error ? (
