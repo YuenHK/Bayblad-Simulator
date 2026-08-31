@@ -12,6 +12,7 @@ import { safeLogErrorDetails } from "./safe-logging";
 import { StudentCredentialService } from "./identity/student-credential";
 
 let startupStage: "config" | "database" | "iclass" | "admin" | "server" = "config";
+let serverStartupStage = "not-started";
 
 function configIssuePaths(error: unknown): readonly string[] {
   if (!(error instanceof ZodError)) return [];
@@ -117,7 +118,7 @@ async function main(): Promise<void> {
       identityResolver: new IdentityResolver(new PostgresIdentityStore(client.db)),
       adminAuth,
       ...iClass,
-    }, { host: config.host, port: config.port });
+    }, { host: config.host, port: config.port, reportStartupStage: (stage) => { serverStartupStage = stage; } });
     app.log.info({ event: "server.started", config: publicConfig(config) }, "Production server started");
     const shutdown = async (signal: string) => {
       app?.log.info({ event: "server.stopping", signal }, "Production server stopping");
@@ -134,6 +135,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error), configErrorCode: configErrorCode(error), serverErrorCode: serverErrorCode(error), invalidArgumentName: invalidArgumentName(error), stackSites: safeStackSites(error) })}\n`);
+  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, serverStartupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error), configErrorCode: configErrorCode(error), serverErrorCode: serverErrorCode(error), invalidArgumentName: invalidArgumentName(error), stackSites: safeStackSites(error) })}\n`);
   process.exitCode = 1;
 });

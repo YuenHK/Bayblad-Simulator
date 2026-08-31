@@ -9,7 +9,7 @@ describe("production startup diagnostics", () => {
     for (const stage of ["config", "database", "iclass", "admin", "server"]) {
       expect(source).toContain(`startupStage = "${stage}"`);
     }
-    expect(source).toContain("startupStage, ...safeLogErrorDetails(error)");
+    expect(source).toContain("startupStage, serverStartupStage, ...safeLogErrorDetails(error)");
     expect(source).toContain("configIssuePaths(error)");
     expect(source).toContain("configErrorCode(error)");
     expect(source).toContain("serverErrorCode(error)");
@@ -18,6 +18,8 @@ describe("production startup diagnostics", () => {
     expect(source).toContain("invalidArgumentName(error)");
     expect(source).toContain('new Set(["path", "key", "data", "input", "buffer", "string"])');
     expect(source).toContain("safeStackSites(error)");
+    expect(source).toContain("serverStartupStage");
+    expect(source).toContain("reportStartupStage");
     expect(source).toContain("node:internal\\/");
     expect(source).toContain("production-entry\\.mjs");
     expect(source).toContain('issue.path.join(".")');
