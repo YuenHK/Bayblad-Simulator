@@ -125,6 +125,7 @@ export type BuildAppOptions = Readonly<{
   platformSettingsStore?: PlatformSettingsStore;
   adminCommandStore?: AdminCommandStore;
   analyticsRefreshIntervalMs?: number;
+  reportStartupStage?: (stage: string) => void;
 }>;
 
 export type BuiltApp = FastifyInstance & Readonly<{
@@ -375,7 +376,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   const platformSettings = options.platformSettingsStore ?? new InMemoryPlatformSettingsStore();
   const commandStore=options.adminCommandStore??new InMemoryAdminCommandStore();
   const commandExecutor=options.adminAuth?new AdminCommandExecutor(commandStore,options.adminAuth,gateway,platformSettings):undefined;
-  app.addHook("onReady", async () => {gateway.setPlatformPaused(await platformSettings.readPaused());await commandExecutor?.pump();});
+  app.addHook("onReady", async () => {options.reportStartupStage?.("platform-settings");gateway.setPlatformPaused(await platformSettings.readPaused());options.reportStartupStage?.("admin-command-pump");await commandExecutor?.pump();});
   if (options.adminAuth) registerAdminDashboardRoutes(app, options.adminAuth, rooms, gateway, adminResolver, platformSettings, commandStore, commandExecutor!);
   app.decorate("battleEngine", battleEngine);
 
@@ -556,7 +557,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   app.addHook("onReady", async () => {
     // We intentionally fail closed rather than attempting to resume battles whose
     // in-memory timing/physics state cannot be reconstructed after a process exit.
+    options.reportStartupStage?.("authority-lease");
     if (process.env.NODE_ENV === "production" || options.requireAuthorityLease) await options.roomRecordRepository?.acquireStartupLease?.();
+    options.reportStartupStage?.("room-reconciliation");
     await options.roomRecordRepository?.reconcileOrphanedActiveRooms?.(new Date());
     if ((process.env.NODE_ENV === "production" || options.requireAuthorityLease) && options.roomRecordRepository?.verifyStartupLease) {
       leaseHealthTimer = setInterval(() => { void options.roomRecordRepository!.verifyStartupLease!().catch((error) => {
