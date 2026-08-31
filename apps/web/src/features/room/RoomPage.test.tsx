@@ -102,6 +102,14 @@ describe("RoomPage", () => {
     expect(onCommand).toHaveBeenCalledTimes(1);
     expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ type: "launch.tap", nonce: "nonce" }));
   });
+  it("把精簡品質傳給競技場粒子層", () => {
+    const frames = [
+      { sequence: 8, tick: 8, player1: { x: -24, y: 0, angle: 0, angularSpeed: 22 }, player2: { x: 24, y: 0, angle: 0, angularSpeed: 20 } },
+      { sequence: 9, tick: 9, player1: { x: -5, y: 0, angle: 1, angularSpeed: 21 }, player2: { x: 5, y: 0, angle: -1, angularSpeed: 19 } },
+    ];
+    const { container } = render(<RoomPage snapshot={{ ...room("spectator"), phase: "battle" }} battle={{ phase: "battle", frames }} design={makeDefaultDesign()} gameQuality="reduced" onCommand={noop} onLeave={noop} />);
+    expect(container.querySelectorAll("[data-effect-id='impact-9'] line")).toHaveLength(5);
+  });
 
   it("等待、launch 與 battle 都不顯示總分", () => {
     for (const phase of ["waiting", "launch", "battle"] as const) {

@@ -15,6 +15,14 @@ describe("BattleArena", () => {
     expect(container.querySelector(".battle-effects-layer")).toBeInTheDocument();
     expect(container.querySelector("[data-effect-id='impact-2']")).toBeInTheDocument();
   });
+  it("精簡品質限制每次碰撞的火花數量", () => {
+    const frames = [
+      { sequence: 5, tick: 5, player1: { x: -24, y: 0, angle: 0, angularSpeed: 22 }, player2: { x: 24, y: 0, angle: 0, angularSpeed: 20 } },
+      { sequence: 6, tick: 6, player1: { x: -5, y: 0, angle: 1, angularSpeed: 21 }, player2: { x: 5, y: 0, angle: -1, angularSpeed: 19 } },
+    ];
+    const { container } = render(<BattleArena designs={[makeDefaultDesign(), makeDefaultDesign()]} frames={frames} quality="reduced" />);
+    expect(container.querySelectorAll("[data-effect-id='impact-6'] line")).toHaveLength(5);
+  });
 
   it("低動態模式直接顯示最新 frame 並提供 aria 摘要", () => {
     render(<BattleArena designs={[makeDefaultDesign(), makeDefaultDesign()]} frames={[

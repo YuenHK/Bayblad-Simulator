@@ -33,6 +33,9 @@ test("學生設計、限制、預覽及響應式操作", async ({ page }, testIn
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
   await page.goto(".");
   await waitConnected(page);
+  await expect(page.locator(".student-game")).toBeVisible();
+  await expect(page.getByRole("button", { name: "關閉音效" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "減少動態效果" })).toBeVisible();
   await page.getByRole("combobox", { name: "形狀" }).selectOption("star");
   await page.getByRole("spinbutton", { name: "角數" }).fill("7");
   await page.getByRole("spinbutton", { name: "直徑（mm）" }).fill("80");
@@ -115,6 +118,7 @@ test("兩個獨立訪客完成建立、準備、三輪發射及賽後計分", as
       const peerGrade = peer.page.getByText(/^你的判定：(Perfect|Great|Good|Miss)$/u);
       await expect(ownerLaunch).toBeEnabled();
       await expect(peerLaunch).toBeEnabled();
+      await expect(owner.page.locator(".energy-track .zone-perfect")).toBeVisible();
       await expect(owner.page.locator(".launch-countdown")).toHaveText("發射！", { timeout: 8_000 });
       await expect(peer.page.locator(".launch-countdown")).toHaveText("發射！", { timeout: 8_000 });
       await Promise.all([ownerLaunch.click(), peerLaunch.click()]);
