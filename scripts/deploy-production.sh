@@ -12,7 +12,7 @@ for file in release-manifest.json SHA256SUMS;do [[ -f $release_dir/$file && ! -L
 snapshot=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-deploy.XXXXXX");chmod 700 "$snapshot";trap 'rm -rf "$snapshot"' EXIT;trap 'exit 130' INT TERM
 cp -p "$env_file" "$snapshot/production.env";cp -p "$release_dir/SHA256SUMS" "$snapshot/SHA256SUMS"
 while read -r digest name extra;do [[ -z ${extra:-} && $digest =~ ^[a-f0-9]{64}$ && $name =~ ^[A-Za-z0-9._-]+$ && -f $release_dir/$name && ! -L $release_dir/$name ]]||die "unsafe checksum entry";cp -p "$release_dir/$name" "$snapshot/$name";done <"$snapshot/SHA256SUMS"
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/.."&&pwd -P)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH='' cd -- "$script_dir/.."&&pwd -P)
 case ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} in
   production) compose=(docker compose --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml" -f "$root/compose.canonical-app.yaml");;
   release-integration) compose=(docker compose -p steam-top-release-integration --project-directory "$root" --env-file "$snapshot/canonical.env" -f "$root/compose.yaml" -f "$root/compose.release-integration.yaml");;
@@ -24,7 +24,7 @@ node "$script_dir/authorize-production-deploy.mjs" "$snapshot/release-manifest.j
 "${compose[@]}" config --quiet
 "${compose[@]}" pull
 if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production ]];then
-  state_output=$(/opt/steam-top-bootstrap/read-first-deploy-state.sh)||die "signed first-deploy authority missing or corrupt";read -r claim_phase claim_nonce claim_host claim_digest claim_receipt <<<"$state_output";[[ $claim_phase =~ ^(pending|db-claimed|consumed)$ ]]||die "unexpected first-deploy phase"
+  state_output=$(/opt/steam-top-bootstrap/read-first-deploy-state.sh)||die "signed first-deploy authority missing or corrupt";read -r claim_phase claim_nonce claim_host claim_digest _claim_receipt <<<"$state_output";[[ $claim_phase =~ ^(pending|db-claimed|consumed)$ ]]||die "unexpected first-deploy phase"
 fi
 if [[ ${DEPLOYMENT_AUTHORIZATION_PURPOSE:-production} == production && $claim_phase =~ ^(pending|db-claimed)$ ]];then
   "${compose[@]}" up -d --wait db
