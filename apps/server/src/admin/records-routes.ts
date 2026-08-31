@@ -108,6 +108,12 @@ export function registerAdminRecordRoutes(
     try {
       return await source.query(parsed.data);
     } catch (error) {
+      if (error instanceof z.ZodError) {
+        request.log.error({
+          event: "admin.records.validation_failed",
+          issuePaths: error.issues.slice(0, 8).map((issue) => `${issue.path.join(".") || "$"}:${issue.code}`),
+        }, "Admin records response validation failed");
+      }
       auth.report("admin.records.query", error, request.id);
       return reply.code(503).send({ error: "RECORDS_UNAVAILABLE" });
     }

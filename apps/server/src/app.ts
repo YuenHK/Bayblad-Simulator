@@ -239,6 +239,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   const reportBackgroundError = options.logError ?? ((error: unknown) => {
     app.log.error({ event: "background.operation_failed", ...safeLogErrorDetails(error) }, "Background operation failed");
   });
+  const reportNamedBackgroundError = (operation: string) => (error: unknown) => {
+    app.log.error({ event: "background.operation_failed", operation, ...safeLogErrorDetails(error) }, "Background operation failed");
+  };
   void app.register(fastifyCookie, options.cookieSigningKey ? { secret: options.cookieSigningKey } : {});
   const adminResolver = (request: IncomingMessage) => ({ clientKey: options.adminClientKeyResolver?.(request) ?? request.socket.remoteAddress ?? "unknown", ...(options.adminClientAddressResolver ? { ip: options.adminClientAddressResolver(request) } : (request.socket.remoteAddress ? { ip: request.socket.remoteAddress } : {})) });
   if (options.adminAuth) registerAdminAuthRoutes(app, options.adminAuth, adminResolver);
@@ -319,10 +322,10 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     const pump = Promise.resolve(options.matchRepository.pruneRetention?.(now, 1_000)).then(() => options.matchRepository!.claimDueJobs(now, 25)).then((jobs) => {
       for (const job of jobs) {
         if (retryWorkers.has(job.matchId)) continue;
-        const operation = options.matchRepository!.retryFailedMatch(job.matchId, { claimToken: job.claimToken, generation: job.generation }).then(() => undefined).catch(reportBackgroundError).finally(() => retryWorkers.delete(job.matchId));
+        const operation = options.matchRepository!.retryFailedMatch(job.matchId, { claimToken: job.claimToken, generation: job.generation }).then(() => undefined).catch(reportNamedBackgroundError("match-retry-worker")).finally(() => retryWorkers.delete(job.matchId));
         retryWorkers.set(job.matchId, operation);
       }
-    }).catch(reportBackgroundError).finally(() => { if (retryClaimPump === pump) retryClaimPump = undefined; });
+    }).catch(reportNamedBackgroundError("match-retry-claim")).finally(() => { if (retryClaimPump === pump) retryClaimPump = undefined; });
     retryClaimPump = pump;
   };
   const gateway = new RealtimeGateway(app.server, {
@@ -533,7 +536,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   });
 
   const intervalMs = config.sweepIntervalMs;
-  const timer = intervalMs > 0 ? setInterval(() => { void gateway.pump().catch(reportBackgroundError); }, intervalMs) : undefined;
+  const timer = intervalMs > 0 ? setInterval(() => { void gateway.pump().catch(reportNamedBackgroundError("realtime-gateway-pump")); }, intervalMs) : undefined;
   const nonceTimer = intervalMs > 0 && options.webClipTokens ? setInterval(() => { void options.webClipTokens!.pruneExpired().catch(() => undefined); }, Math.max(60_000, intervalMs)) : undefined;
   const adminMaintenanceIntervalMs = options.adminMaintenanceIntervalMs ?? 60_000;
   if (!Number.isFinite(adminMaintenanceIntervalMs) || adminMaintenanceIntervalMs < 1) throw new TypeError("adminMaintenanceIntervalMs must be a finite positive number");
@@ -548,7 +551,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
   const adminMaintenanceTimer = options.adminAuth ? setInterval(runAdminMaintenance, adminMaintenanceIntervalMs) : undefined;
   const analyticsRefreshIntervalMs = options.analyticsRefreshIntervalMs ?? 24 * 60 * 60_000;
   if (!Number.isFinite(analyticsRefreshIntervalMs) || analyticsRefreshIntervalMs < 60_000) throw new TypeError("analyticsRefreshIntervalMs must be at least one minute");
-  const analyticsRefreshTimer = options.analyticsService ? setInterval(() => { void options.analyticsService!.refreshDefaultWindow().catch(reportBackgroundError); }, analyticsRefreshIntervalMs) : undefined;
+  const analyticsRefreshTimer = options.analyticsService ? setInterval(() => { void options.analyticsService!.refreshDefaultWindow().catch(reportNamedBackgroundError("analytics-refresh")); }, analyticsRefreshIntervalMs) : undefined;
   timer?.unref();
   nonceTimer?.unref();
   adminMaintenanceTimer?.unref();
