@@ -6,7 +6,7 @@ describe("RhythmLaunch", () => {
   afterEach(() => vi.useRealTimers());
   it("schedule早於首個clock sample時只顯示同步並禁止tap", () => {
     const onCommand = vi.fn();
-    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "sync", serverTargetTimeMs: 3_000 }} onCommand={onCommand} clockReady={false} clockSamples={1} />);
+    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "sync", serverTargetTimeMs: 3_000, serverDeadlineTimeMs: 4_500 }} onCommand={onCommand} clockReady={false} clockSamples={1} />);
     expect(screen.getByText("正在同步時間 1/3", { selector: ".launch-countdown" })).toBeVisible();
     expect(screen.getByRole("button", { name: "在判定線發射" })).toBeDisabled();
     expect(screen.queryByTestId("moving-marker")).not.toBeInTheDocument();
@@ -15,7 +15,7 @@ describe("RhythmLaunch", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
     const onCommand = vi.fn();
-    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "nonce", serverTargetTimeMs: 3_000 }} onCommand={onCommand} reducedMotion />);
+    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "nonce", serverTargetTimeMs: 3_000, serverDeadlineTimeMs: 4_500 }} onCommand={onCommand} reducedMotion />);
     expect(screen.getByTestId("rhythm-track")).toHaveClass("is-reduced-motion");
     expect(screen.queryByTestId("moving-marker")).not.toBeInTheDocument();
     vi.advanceTimersByTime(100);
@@ -24,20 +24,20 @@ describe("RhythmLaunch", () => {
   });
   it("Space在輸入或互動元素上不會攔截或發射", () => {
     const onCommand = vi.fn();
-    render(<><input aria-label="房間碼" /><RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "nonce", serverTargetTimeMs: Date.now() + 1_000 }} onCommand={onCommand} /></>);
+    render(<><input aria-label="房間碼" /><RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "nonce", serverTargetTimeMs: Date.now() + 1_000, serverDeadlineTimeMs: Date.now() + 2_500 }} onCommand={onCommand} /></>);
     const input = screen.getByLabelText("房間碼");
     expect(fireEvent.keyDown(input, { code: "Space" })).toBe(true);
     expect(onCommand).not.toHaveBeenCalled();
   });
   it("高延遲降級時顯示公平性說明且仍可發射", () => {
     const onCommand = vi.fn();
-    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "degraded", serverTargetTimeMs: Date.now() + 1_000 }} onCommand={onCommand} clockReady clockQuality="degraded" />);
+    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "degraded", serverTargetTimeMs: Date.now() + 1_000, serverDeadlineTimeMs: Date.now() + 2_500 }} onCommand={onCommand} clockReady clockQuality="degraded" />);
     expect(screen.getByRole("status")).toHaveTextContent("網絡延遲較高，判定以伺服器收件時間為準");
     const button = screen.getByRole("button", { name: "在判定線發射" }); expect(button).toBeEnabled(); fireEvent.pointerDown(button); expect(onCommand).toHaveBeenCalledOnce();
   });
   it("重連恢復同一 nonce 不重複發射，新一輪 nonce 可再發射", () => {
     const onCommand = vi.fn();
-    const make = (nonce: string, roundId: string) => ({ roomId: "room", matchId: "match", roundId, nonce, serverTargetTimeMs: Date.now() });
+    const make = (nonce: string, roundId: string) => ({ roomId: "room", matchId: "match", roundId, nonce, serverTargetTimeMs: Date.now(), serverDeadlineTimeMs: Date.now() + 1_500 });
     const { rerender } = render(<RhythmLaunch schedule={make("nonce-1", "round-1")} onCommand={onCommand} />);
     fireEvent.pointerDown(screen.getByRole("button", { name: "在判定線發射" }));
     rerender(<RhythmLaunch schedule={make("nonce-1", "round-1")} onCommand={onCommand} />);
@@ -46,5 +46,17 @@ describe("RhythmLaunch", () => {
     rerender(<RhythmLaunch schedule={make("nonce-2", "round-2")} onCommand={onCommand} />);
     fireEvent.pointerDown(screen.getByRole("button", { name: "在判定線發射" }));
     expect(onCommand).toHaveBeenCalledTimes(2);
+  });
+  it("截止後停用所有發射輸入並顯示等待下一輪", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_501);
+    const onCommand = vi.fn();
+    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "expired", serverTargetTimeMs: 4_000, serverDeadlineTimeMs: 5_500 }} onCommand={onCommand} />);
+    const button = screen.getByRole("button", { name: "本輪已結束，等待下一輪" });
+    expect(button).toBeDisabled();
+    fireEvent.pointerDown(button);
+    fireEvent.click(button);
+    fireEvent.keyDown(window, { code: "Space" });
+    expect(onCommand).not.toHaveBeenCalled();
   });
 });

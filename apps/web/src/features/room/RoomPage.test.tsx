@@ -76,7 +76,7 @@ describe("RoomPage", () => {
 
   it("節拍可以觸控或 Space 發射且只送一次", () => {
     const onCommand = vi.fn();
-    render(<RoomPage snapshot={room("player1")} battle={{ phase: "launch", schedule: { roomId: "room-1", matchId: "match", roundId: "round", nonce: "nonce", serverTargetTimeMs: Date.now() + 1000 } }} design={makeDefaultDesign()} onCommand={onCommand} onLeave={noop} />);
+    render(<RoomPage snapshot={room("player1")} battle={{ phase: "launch", schedule: { roomId: "room-1", matchId: "match", roundId: "round", nonce: "nonce", serverTargetTimeMs: Date.now() + 1000, serverDeadlineTimeMs: Date.now() + 2500 } }} design={makeDefaultDesign()} onCommand={onCommand} onLeave={noop} />);
     const button = screen.getByRole("button", { name: "在判定線發射" });
     fireEvent.pointerDown(button, { pointerId: 1 });
     fireEvent.keyDown(window, { code: "Space" });

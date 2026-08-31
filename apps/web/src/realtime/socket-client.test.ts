@@ -400,12 +400,12 @@ describe("RealtimeClient", () => {
     expect(client.getState().frames).toHaveLength(1);
     transport.fire("server.event", {
       type: "launch.schedule", roomId: "room-1", matchId: "match", roundId: "round-2",
-      serverTargetTimeMs: 10_000, nonce: "nonce-2", protocolVersion: 1, serverEventId: uuid(7),
+      serverTargetTimeMs: 10_000, serverDeadlineTimeMs: 11_500, nonce: "nonce-2", protocolVersion: 1, serverEventId: uuid(7),
     });
     expect(client.getState().frames).toEqual([]);
     transport.fire("server.event", {
       type: "launch.schedule", roomId: "room-1", matchId: "match", roundId: "round-1",
-      serverTargetTimeMs: 9_000, nonce: "nonce-stale", protocolVersion: 1, serverEventId: uuid(8),
+      serverTargetTimeMs: 9_000, serverDeadlineTimeMs: 10_500, nonce: "nonce-stale", protocolVersion: 1, serverEventId: uuid(8),
     });
     expect(client.getState()).toMatchObject({ attempt: 2, currentRoundId: "round-2", schedule: { nonce: "nonce-2" } });
   });
