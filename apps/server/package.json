@@ -6,7 +6,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:postgres": "node -e \"if (!process.env.TEST_DATABASE_URL) { console.error('TEST_DATABASE_URL is required'); process.exit(1) }\" && vitest run --no-file-parallelism src/migration-runner.postgres.test.ts src/identity/postgres-store.postgres.test.ts src/auth/postgres-admin-store.postgres.test.ts src/records/battle-result-repository.postgres.test.ts src/analytics/queries.postgres.test.ts src/admin/admin-command-store.postgres.test.ts src/admin/leaderboard.postgres.test.ts src/admin/delete-records.postgres.test.ts src/admin/deletion-ledger-reconcile.postgres.test.ts",
+    "test:postgres": "node -e \"if (!process.env.TEST_DATABASE_URL) { console.error('TEST_DATABASE_URL is required'); process.exit(1) }\" && for file in src/migration-runner.postgres.test.ts src/identity/postgres-store.postgres.test.ts src/auth/postgres-admin-store.postgres.test.ts src/records/battle-result-repository.postgres.test.ts src/analytics/queries.postgres.test.ts src/admin/admin-command-store.postgres.test.ts src/admin/leaderboard.postgres.test.ts src/admin/delete-records.postgres.test.ts src/admin/deletion-ledger-reconcile.postgres.test.ts; do vitest run \"$file\" || exit; done",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"
   },
