@@ -38,6 +38,34 @@ async function recordActivity(tx: Tx, identity: typeof identities.$inferSelect, 
     .onConflictDoUpdate({ target: [deviceActivityDays.activityDate, deviceActivityDays.anonymousDeviceId], set: { identityId: identity.id, identityStatusSnapshot: identity.status, classNameSnapshot: identity.className, lastActivityAt: sql`greatest(${deviceActivityDays.lastActivityAt}, excluded.last_activity_at)` }, setWhere: sql`${deviceActivityDays.lastActivityAt} <= ${at} - interval '5 minutes' or ${deviceActivityDays.identityId} is distinct from ${identity.id} or ${deviceActivityDays.identityStatusSnapshot} is distinct from ${identity.status} or ${deviceActivityDays.classNameSnapshot} is distinct from ${identity.className}` });
 }
 
+type IdentityStoreStageCode =
+  | "IDENTITY_CAPACITY_READ_FAILED"
+  | "SESSION_CAPACITY_READ_FAILED"
+  | "IDENTITY_INSERT_FAILED"
+  | "SESSION_INSERT_FAILED"
+  | "DEVICE_ACTIVITY_WRITE_FAILED"
+  | "SESSION_MAPPING_FAILED";
+
+class IdentityStoreStageError extends Error {
+  readonly code: IdentityStoreStageCode;
+  override readonly cause: unknown;
+  constructor(code: IdentityStoreStageCode, cause: unknown) {
+    super(code);
+    this.name = "IdentityStoreStageError";
+    this.code = code;
+    this.cause = cause;
+  }
+}
+
+export async function runIdentityStoreStage<T>(code: IdentityStoreStageCode, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof IdentityCapacityError || error instanceof SessionTokenUnavailableError || (error as { code?: string }).code === "23505") throw error;
+    throw new IdentityStoreStageError(code, error);
+  }
+}
+
 export class PostgresIdentityStore implements IdentityStore {
   readonly #db: Db;
   readonly #maxIdentities: number;
@@ -85,12 +113,12 @@ export class PostgresIdentityStore implements IdentityStore {
   async createGuestSession(input: Readonly<{ tokenHash: string; displayName: string; now: Date; expiresAt: Date; diagnostics: SessionDiagnostics }>): Promise<IdentitySession> {
     try {
       return await this.#db.transaction(async (tx) => {
-        await this.#assertIdentityCapacity(tx);
-        await this.#assertSessionCapacity(tx, input.now);
-        const [identity] = await tx.insert(identities).values({ status: "guest", displayName: input.displayName, createdAt: input.now, updatedAt: input.now, lastSeenAt: input.now }).returning();
-        const [session] = await tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning();
-        await recordActivity(tx, identity!, input.now);
-        return mapSession(session!, identity!);
+        await runIdentityStoreStage("IDENTITY_CAPACITY_READ_FAILED", () => this.#assertIdentityCapacity(tx));
+        await runIdentityStoreStage("SESSION_CAPACITY_READ_FAILED", () => this.#assertSessionCapacity(tx, input.now));
+        const [identity] = await runIdentityStoreStage("IDENTITY_INSERT_FAILED", () => tx.insert(identities).values({ status: "guest", displayName: input.displayName, createdAt: input.now, updatedAt: input.now, lastSeenAt: input.now }).returning());
+        const [session] = await runIdentityStoreStage("SESSION_INSERT_FAILED", () => tx.insert(identitySessions).values({ identityId: identity!.id, tokenHash: input.tokenHash, createdAt: input.now, lastSeenAt: input.now, expiresAt: input.expiresAt, ...diagnosticColumns(input.diagnostics) }).returning());
+        await runIdentityStoreStage("DEVICE_ACTIVITY_WRITE_FAILED", () => recordActivity(tx, identity!, input.now));
+        return runIdentityStoreStage("SESSION_MAPPING_FAILED", async () => mapSession(session!, identity!));
       });
     } catch (error) { if ((error as { code?: string }).code === "23505") throw new SessionTokenUnavailableError(); throw error; }
   }
