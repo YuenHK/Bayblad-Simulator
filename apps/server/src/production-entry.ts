@@ -18,6 +18,26 @@ function configIssuePaths(error: unknown): readonly string[] {
   return error.issues.slice(0, 8).map((issue) => `${issue.path.join(".") || "$"}:${issue.code}`);
 }
 
+function configErrorCode(error: unknown): string {
+  const message = (error as { message?: unknown })?.message;
+  if (typeof message !== "string") return "UNCLASSIFIED";
+  const variable = message.match(/^([A-Z][A-Z0-9_]*)\s/u)?.[1];
+  const allowed = new Set([
+    "DATABASE_URL", "COOKIE_SIGNING_KEY", "ADMIN_INITIAL_PASSWORD", "ADMIN_CSRF_SECRET", "WEBCLIP_SIGNING_KEY",
+    "WEBCLIP_EXCHANGE_KEY", "ANALYTICS_CURSOR_SECRET", "STUDENT_CREDENTIAL_KEY", "DELETION_SOURCE_INSTANCE_ID",
+    "PUBLIC_ORIGIN", "STUDENT_ORIGIN", "ICLASS_API_URL", "ICLASS_DEVICE_MAP_CSV_PATH",
+  ]);
+  if (variable && allowed.has(variable)) {
+    if (message.includes("is required")) return `${variable}_REQUIRED`;
+    if (message.includes("mutually exclusive")) return `${variable}_SOURCE_AMBIGUOUS`;
+    if (message.includes("canonical base64url")) return `${variable}_NOT_CANONICAL`;
+    if (message.includes("must contain")) return `${variable}_TOO_SHORT`;
+    if (message.includes("must use") || message.includes("must differ") || message.includes("must contain only")) return `${variable}_INVALID`;
+  }
+  if (message === "Production secrets must be distinct") return "PRODUCTION_SECRETS_NOT_DISTINCT";
+  return "UNCLASSIFIED";
+}
+
 function forwardedAddress(request: IncomingMessage): string {
   const raw = request.headers["x-forwarded-for"];
   const first = (Array.isArray(raw) ? raw[0] : raw)?.split(",", 1)[0]?.trim();
@@ -91,6 +111,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error) })}\n`);
+  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error), configErrorCode: configErrorCode(error) })}\n`);
   process.exitCode = 1;
 });
