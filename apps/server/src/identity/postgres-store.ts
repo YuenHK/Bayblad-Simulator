@@ -30,12 +30,15 @@ const hongKongDate = (value: Date): string => {
   const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((candidate) => candidate.type === type)!.value;
   return `${part("year")}-${part("month")}-${part("day")}`;
 };
-async function recordActivity(tx: Tx, identity: typeof identities.$inferSelect, at: Date): Promise<void> {
+export function buildDeviceActivityUpsert(tx: Tx, identity: typeof identities.$inferSelect, at: Date) {
   // Policy: one physical device contributes once per HK civil day. If it becomes
   // verified that day, the day's class/status follow the latest canonical identity;
   // firstActivityAt remains immutable and lastActivityAt is throttled to five minutes.
-  await tx.insert(deviceActivityDays).values({ activityDate: hongKongDate(at), anonymousDeviceId: identity.anonymousDeviceId, identityId: identity.id, identityStatusSnapshot: identity.status, classNameSnapshot: identity.className, firstActivityAt: at, lastActivityAt: at })
-    .onConflictDoUpdate({ target: [deviceActivityDays.activityDate, deviceActivityDays.anonymousDeviceId], set: { identityId: identity.id, identityStatusSnapshot: identity.status, classNameSnapshot: identity.className, lastActivityAt: sql`greatest(${deviceActivityDays.lastActivityAt}, excluded.last_activity_at)` }, setWhere: sql`${deviceActivityDays.lastActivityAt} <= ${at} - interval '5 minutes' or ${deviceActivityDays.identityId} is distinct from ${identity.id} or ${deviceActivityDays.identityStatusSnapshot} is distinct from ${identity.status} or ${deviceActivityDays.classNameSnapshot} is distinct from ${identity.className}` });
+  return tx.insert(deviceActivityDays).values({ activityDate: hongKongDate(at), anonymousDeviceId: identity.anonymousDeviceId, identityId: identity.id, identityStatusSnapshot: identity.status, classNameSnapshot: identity.className, firstActivityAt: at, lastActivityAt: at })
+    .onConflictDoUpdate({ target: [deviceActivityDays.activityDate, deviceActivityDays.anonymousDeviceId], set: { identityId: sql`excluded.identity_id`, identityStatusSnapshot: sql`excluded.identity_status_snapshot`, classNameSnapshot: sql`excluded.class_name_snapshot`, lastActivityAt: sql`greatest(${deviceActivityDays.lastActivityAt}, excluded.last_activity_at)` }, setWhere: sql`${deviceActivityDays.lastActivityAt} <= excluded.last_activity_at - interval '5 minutes' or ${deviceActivityDays.identityId} is distinct from excluded.identity_id or ${deviceActivityDays.identityStatusSnapshot} is distinct from excluded.identity_status_snapshot or ${deviceActivityDays.classNameSnapshot} is distinct from excluded.class_name_snapshot` });
+}
+async function recordActivity(tx: Tx, identity: typeof identities.$inferSelect, at: Date): Promise<void> {
+  await buildDeviceActivityUpsert(tx, identity, at);
 }
 
 type IdentityStoreStageCode =
