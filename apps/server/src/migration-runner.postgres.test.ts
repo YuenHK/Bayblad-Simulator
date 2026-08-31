@@ -38,7 +38,7 @@ describe.skipIf(!databaseUrl)("baseline migration PostgreSQL concurrency", () =>
     const rows = await worker1!.sql.unsafe("select id, sha256, applied_at from public.app_schema_migrations") as readonly Record<string, unknown>[];
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ id: EXPECTED_MIGRATION_ID, sha256: EXPECTED_MIGRATION_SHA256 });
-    expect(rows[0]?.applied_at).toBeInstanceOf(Date);
+    expect(Number.isNaN(Date.parse(String(rows[0]?.applied_at)))).toBe(false);
   }, 30_000);
 
   it("runs the canonical migration runner before the production installation claim", async () => {
