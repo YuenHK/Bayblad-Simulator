@@ -46,6 +46,14 @@ function serverErrorCode(error: unknown): string {
   return "UNCLASSIFIED";
 }
 
+function invalidArgumentName(error: unknown): string {
+  if ((error as { code?: unknown })?.code !== "ERR_INVALID_ARG_TYPE") return "UNCLASSIFIED";
+  const message = (error as { message?: unknown })?.message;
+  if (typeof message !== "string") return "UNCLASSIFIED";
+  const name = /^The "([A-Za-z][A-Za-z0-9_]*)" argument/u.exec(message)?.[1];
+  return name && new Set(["path", "key", "data", "input", "buffer", "string"]).has(name) ? name : "UNCLASSIFIED";
+}
+
 function forwardedAddress(request: IncomingMessage): string {
   const raw = request.headers["x-forwarded-for"];
   const first = (Array.isArray(raw) ? raw[0] : raw)?.split(",", 1)[0]?.trim();
@@ -119,6 +127,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error), configErrorCode: configErrorCode(error), serverErrorCode: serverErrorCode(error) })}\n`);
+  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error), configErrorCode: configErrorCode(error), serverErrorCode: serverErrorCode(error), invalidArgumentName: invalidArgumentName(error) })}\n`);
   process.exitCode = 1;
 });

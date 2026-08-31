@@ -15,6 +15,8 @@ describe("production startup diagnostics", () => {
     expect(source).toContain("serverErrorCode(error)");
     expect(source).toContain('message === "DELETION_SOURCE_INSTANCE_ID mismatch"');
     expect(source).toContain('return "DELETION_SOURCE_INSTANCE_ID_MISMATCH"');
+    expect(source).toContain("invalidArgumentName(error)");
+    expect(source).toContain('new Set(["path", "key", "data", "input", "buffer", "string"])');
     expect(source).toContain('issue.path.join(".")');
   });
 });
