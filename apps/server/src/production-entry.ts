@@ -58,7 +58,7 @@ function safeStackSites(error: unknown): readonly string[] {
   const stack = (error as { stack?: unknown })?.stack;
   if (typeof stack !== "string") return [];
   const sites = stack.match(/(?:node:internal\/[A-Za-z0-9_./-]+|production-entry\.mjs):\d+:\d+/gu) ?? [];
-  return sites.slice(0, 4);
+  return sites.slice(0, 12);
 }
 
 function forwardedAddress(request: IncomingMessage): string {
