@@ -22,6 +22,10 @@ const dataset:ExportDataset = {
 const source=inMemoryExportDataSource(dataset,{cutoff:new Date("2026-08-29T03:00:00Z"),performanceModelVersions:["p1"],physicsModelVersions:["v1"]});
 
 describe("teacher Excel export",()=>{
+  it("reports a safe stage code when snapshot creation fails",async()=>{
+    const failing:ExportDataSource={async withSnapshot(){throw new TypeError("secret database URL");}};
+    await expect(buildWorkbookBuffer(failing,filters)).rejects.toMatchObject({name:"ExportStageError",code:"EXPORT_SNAPSHOT_FAILED"});
+  });
   it("accepts the ISO timestamp representation returned by hosted PostgreSQL drivers",()=>{
     expect(exportDatabaseDate("2026-08-31T01:02:03.000Z")).toEqual(new Date("2026-08-31T01:02:03.000Z"));
     expect(()=>exportDatabaseDate("not-a-date")).toThrow("INVALID_EXPORT_CURSOR");
