@@ -38,6 +38,14 @@ function configErrorCode(error: unknown): string {
   return "UNCLASSIFIED";
 }
 
+function serverErrorCode(error: unknown): string {
+  const message = (error as { message?: unknown })?.message;
+  if (message === "DELETION_SOURCE_INSTANCE_ID mismatch") return "DELETION_SOURCE_INSTANCE_ID_MISMATCH";
+  if (message === "DELETION_LEDGER_FILE is required") return "DELETION_LEDGER_FILE_REQUIRED";
+  if (message === "DELETION_SOURCE_INSTANCE_ID is required") return "DELETION_SOURCE_INSTANCE_ID_REQUIRED";
+  return "UNCLASSIFIED";
+}
+
 function forwardedAddress(request: IncomingMessage): string {
   const raw = request.headers["x-forwarded-for"];
   const first = (Array.isArray(raw) ? raw[0] : raw)?.split(",", 1)[0]?.trim();
@@ -111,6 +119,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error), configErrorCode: configErrorCode(error) })}\n`);
+  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error), configIssues: configIssuePaths(error), configErrorCode: configErrorCode(error), serverErrorCode: serverErrorCode(error) })}\n`);
   process.exitCode = 1;
 });

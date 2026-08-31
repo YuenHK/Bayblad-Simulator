@@ -12,6 +12,9 @@ describe("production startup diagnostics", () => {
     expect(source).toContain("startupStage, ...safeLogErrorDetails(error)");
     expect(source).toContain("configIssuePaths(error)");
     expect(source).toContain("configErrorCode(error)");
+    expect(source).toContain("serverErrorCode(error)");
+    expect(source).toContain('message === "DELETION_SOURCE_INSTANCE_ID mismatch"');
+    expect(source).toContain('return "DELETION_SOURCE_INSTANCE_ID_MISMATCH"');
     expect(source).toContain('issue.path.join(".")');
   });
 });
