@@ -4,6 +4,17 @@ import { describe, expect, it, vi } from "vitest";
 import { LobbyPage } from "./LobbyPage";
 
 describe("LobbyPage", () => {
+  it("房間使用競技配對卡並保留玩家、觀眾及狀態", () => {
+    const rooms = [{ id: "room-1", code: "ABC123", name: "能量競技房", phase: "waiting" as const, player1: { displayName: "玩家甲" }, player2: { displayName: "玩家乙" }, spectatorCount: 8 }];
+    const { container } = render(<LobbyPage rooms={rooms} onCommand={vi.fn()} />);
+    expect(container.querySelector(".room-card")).toHaveClass("matchmaking-card");
+    expect(screen.getByText("ABC123")).toBeVisible();
+    expect(screen.getByText("玩家甲")).toBeVisible();
+    expect(screen.getByText("玩家乙")).toBeVisible();
+    expect(screen.getByText("8 人")).toBeVisible();
+    expect(screen.getByText("等待中")).toBeVisible();
+  });
+
   it("1000房間分頁初始DOM有界且最後房可達，沒有排行榜", async () => {
     const rooms = Array.from({ length: 1_000 }, (_, index) => ({ id: `room-${index + 1}`, code: `R${index + 1}`, name: `房間 ${index + 1}`, phase: "waiting" as const, player1: { displayName: null }, player2: { displayName: null }, spectatorCount: 0 }));
     render(<LobbyPage rooms={rooms} onCommand={vi.fn()} />);

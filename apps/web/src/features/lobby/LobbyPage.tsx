@@ -99,7 +99,7 @@ export function LobbyPage({
           <>
             <div className="room-grid">
               {visibleRooms.map((room) => (
-                <article className="room-card" key={room.id}>
+                <article className="room-card matchmaking-card" key={room.id}>
                   <div>
                     <span className={`phase-chip phase-${room.phase}`}>
                       {PHASE_LABEL[room.phase]}
