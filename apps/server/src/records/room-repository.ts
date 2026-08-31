@@ -83,11 +83,16 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
   }
   async verifyStartupLease(): Promise<void> {
     if (!this.#reserved || this.#leaseBackendPid === undefined) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_LOST");
-    const rows = await this.#reserved<{ backendPid: number; held: boolean }[]>`
+    const verification = this.#reserved<{ backendPid: number; held: boolean }[]>`
       select pg_backend_pid() as "backendPid", exists(
         select 1 from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()
           and classid = 1937006964 and objid = ${this.authorityLockObjectId} and granted
       ) as held`;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const rows = await Promise.race([
+      verification,
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("ROOM_SINGLE_INSTANCE_LOCK_LOST")), 2_000); }),
+    ]).finally(() => { if (timeout) clearTimeout(timeout); });
     if (rows[0]?.backendPid !== this.#leaseBackendPid || !rows[0]?.held) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_LOST");
   }
   async create(input: Readonly<{ id: string; code: string; name: string; ownerIdentityId: string | null; participant: RoomParticipantRecord; at: Date }>): Promise<void> {
