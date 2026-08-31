@@ -10,6 +10,8 @@ import { startProductionServer } from "./production-bootstrap";
 import { safeLogErrorDetails } from "./safe-logging";
 import { StudentCredentialService } from "./identity/student-credential";
 
+let startupStage: "config" | "database" | "iclass" | "admin" | "server" = "config";
+
 function forwardedAddress(request: IncomingMessage): string {
   const raw = request.headers["x-forwarded-for"];
   const first = (Array.isArray(raw) ? raw[0] : raw)?.split(",", 1)[0]?.trim();
@@ -18,6 +20,7 @@ function forwardedAddress(request: IncomingMessage): string {
 }
 
 async function main(): Promise<void> {
+  startupStage = "config";
   const config = loadConfig(process.env);
   process.env.NODE_ENV = config.nodeEnv;
   process.env.PUBLIC_ORIGIN = config.publicOrigin;
@@ -37,6 +40,7 @@ async function main(): Promise<void> {
   process.env.DELETION_LEDGER_FILE = config.deletionLedgerFile;
   process.env.DELETION_SOURCE_INSTANCE_ID = config.deletionSourceInstanceId;
 
+  startupStage = "database";
   const client = createDatabaseClient({
     url: config.databaseUrl,
     ssl: config.databaseTls ? "require" : false,
@@ -45,9 +49,12 @@ async function main(): Promise<void> {
   }, { runtimeEnvironment: config.nodeEnv });
   let app: Awaited<ReturnType<typeof startProductionServer>> | undefined;
   try {
+    startupStage = "iclass";
     const iClass = await createIClassComposition(process.env, client.db);
+    startupStage = "admin";
     const adminAuth = await createAdminComposition(process.env, client.db, [config.publicOrigin]);
     const address = (request: IncomingMessage) => forwardedAddress(request);
+    startupStage = "server";
     app = await startProductionServer(client, {
       cookieSigningKey: config.cookieSigningKey,
       allowedOrigins: [config.publicOrigin, config.studentOrigin],
@@ -78,6 +85,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", ...safeLogErrorDetails(error) })}\n`);
+  process.stderr.write(`${JSON.stringify({ level: "fatal", event: "server.start_failed", startupStage, ...safeLogErrorDetails(error) })}\n`);
   process.exitCode = 1;
 });
