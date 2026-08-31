@@ -11,15 +11,15 @@ SQL
 cat "$catalog_sql"
 cat <<'SQL'
 lock table restore_control.deployment_environment in exclusive mode;
-select case when count(*)=1 then 1 else 1/0 end from restore_control.deployment_environment where singleton;
+select 1/(case when count(*)=1 then 1 else 0 end) from restore_control.deployment_environment where singleton;
 lock table restore_control.platform_installation in exclusive mode;
 lock table restore_control.promotion_outbox in exclusive mode;
 lock table restore_control.promotion_audit in exclusive mode;
 lock table restore_control.finalize_outbox in exclusive mode;
 -- database is not pristine => deliberate transaction failure below
-select case when not exists(select 1 from restore_control.platform_installation where not(host_id=:'host' and bootstrap_digest=:'digest' and authorization_nonce=:'nonce')) then 1 else 1/0 end;
+select 1/(case when count(*)=0 then 1 else 0 end) from restore_control.platform_installation where not(host_id=:'host' and bootstrap_digest=:'digest' and authorization_nonce=:'nonce');
 select restore_control.assert_pristine_platform_installation() where not exists(select 1 from restore_control.platform_installation);
 insert into restore_control.platform_installation(host_id,bootstrap_digest,authorization_nonce) values(:'host',:'digest',:'nonce') on conflict(singleton) do nothing;
-select case when exists(select 1 from restore_control.platform_installation where host_id=:'host' and bootstrap_digest=:'digest' and authorization_nonce=:'nonce') then 1 else 1/0 end;commit;
+select 1/(case when count(*)>0 then 1 else 0 end) from restore_control.platform_installation where host_id=:'host' and bootstrap_digest=:'digest' and authorization_nonce=:'nonce';commit;
 SQL
 } | psql -X -v ON_ERROR_STOP=1 -q -v host="$host" -v digest="$digest" -v nonce="$nonce" -v protect_sha="$protect_sha" -v deletion_sha="$deletion_sha" -v pristine_sha="$pristine_sha" >/dev/null
