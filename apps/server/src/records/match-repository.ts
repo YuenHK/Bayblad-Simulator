@@ -84,15 +84,26 @@ export class MatchPersistenceConflictError extends Error {
   constructor() { super("MATCH_PERSISTENCE_CONFLICT"); this.name = "MatchPersistenceConflictError"; }
 }
 
+const canonicalJson = (value: unknown): unknown => {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") return Object.fromEntries(
+    Object.entries(value as Readonly<Record<string, unknown>>)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => [key, canonicalJson(item)]),
+  );
+  return value;
+};
+const stableJson = (value: unknown): string => JSON.stringify(canonicalJson(value));
+
 export const completedMatchFingerprint = (input: Omit<CompletedMatchRecord, "idempotencyFingerprint">): string =>
-  createHash("sha256").update(JSON.stringify(input, (_key, value) => value instanceof Date ? value.toISOString() : value)).digest("hex");
+  createHash("sha256").update(stableJson(input)).digest("hex");
 const assertAuthorityFingerprint = (input: CompletedMatchRecord): void => {
   const { idempotencyFingerprint, ...payload } = input;
   if (completedMatchFingerprint(payload) !== idempotencyFingerprint) throw new MatchPersistenceConflictError();
 };
 const canonicalEqual = (left: unknown, right: unknown): boolean =>
-  JSON.stringify(left, (_key, value) => value instanceof Date ? value.toISOString() : value) ===
-  JSON.stringify(right, (_key, value) => value instanceof Date ? value.toISOString() : value);
+  stableJson(left) === stableJson(right);
 
 export class MemoryMatchRepository implements MatchRepository {
   readonly records = new Map<string, CompletedMatchRecord>();
@@ -226,7 +237,7 @@ const persistedRoundProjection = (row: typeof rounds.$inferSelect | typeof round
   battleResultJson: row.battleResultJson, startedAt: row.startedAt?.toISOString(), completedAt: row.completedAt.toISOString(),
 });
 const sameRound = (left: typeof rounds.$inferSelect | typeof rounds.$inferInsert, right: typeof rounds.$inferSelect | typeof rounds.$inferInsert) =>
-  JSON.stringify(persistedRoundProjection(left)) === JSON.stringify(persistedRoundProjection(right));
+  stableJson(persistedRoundProjection(left)) === stableJson(persistedRoundProjection(right));
 
 export class PostgresMatchRepository implements MatchRepository {
   constructor(readonly db: Db) {}
