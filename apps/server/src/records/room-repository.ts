@@ -71,7 +71,17 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
     if (!this.sql) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_UNAVAILABLE");
     const reserved = await this.sql.reserve();
     try {
-      const rows = await reserved<{ acquired: boolean; backendPid: number }[]>`select pg_try_advisory_lock(1937006964, ${this.authorityLockObjectId}) as acquired, pg_backend_pid() as "backendPid"`;
+      let rows = await reserved<{ acquired: boolean; backendPid: number }[]>`select pg_try_advisory_lock(1937006964, ${this.authorityLockObjectId}) as acquired, pg_backend_pid() as "backendPid"`;
+      if (!rows[0]?.acquired) {
+        const takeover = await reserved<{ terminated: boolean }[]>`
+          select pg_terminate_backend(pid) as terminated from pg_locks
+          where locktype = 'advisory' and classid = 1937006964 and objid = ${this.authorityLockObjectId}
+            and granted and pid <> pg_backend_pid()
+        `;
+        if (!takeover.some(({ terminated }) => terminated)) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_HELD");
+        const [replacement] = await reserved<{ backendPid: number }[]>`select pg_advisory_lock(1937006964, ${this.authorityLockObjectId}), pg_backend_pid() as "backendPid"`;
+        rows = [{ acquired: true, backendPid: replacement!.backendPid }];
+      }
       if (!rows[0]?.acquired) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_HELD");
       this.#reserved = reserved; this.#leaseBackendPid = rows[0].backendPid;
     } catch (error) { reserved.release(); throw error; }
