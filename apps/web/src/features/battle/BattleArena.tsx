@@ -1,10 +1,11 @@
 import type { TopDesign } from "@steam-top/domain";
 import { useEffect, useMemo, useState } from "react";
 import { layerPath } from "../designer/previewGeometry";
+import { deriveBattleEffects, type BattleEffect } from "./battleEffects";
 
 export type ArenaFrame = Readonly<{ sequence: number; tick: number; player1: Readonly<{ x: number; y: number; angle: number; angularSpeed: number }>; player2: Readonly<{ x: number; y: number; angle: number; angularSpeed: number }> }>;
 
-export function BattleArena({ designs, frames, reducedMotion = false }: Readonly<{ designs: readonly [TopDesign, TopDesign]; frames: readonly ArenaFrame[]; reducedMotion?: boolean }>) {
+export function BattleArena({ designs, frames, reducedMotion = false, quality = "auto", onEffect }: Readonly<{ designs: readonly [TopDesign, TopDesign]; frames: readonly ArenaFrame[]; reducedMotion?: boolean; quality?: "auto" | "reduced"; onEffect?: (effect: BattleEffect) => void }>) {
   const latest = frames.at(-1);
   const previous = frames.at(-2) ?? latest;
   const [mix, setMix] = useState(reducedMotion ? 1 : 0);
@@ -24,15 +25,23 @@ export function BattleArena({ designs, frames, reducedMotion = false }: Readonly
   };
   const p1 = body("player1"), p2 = body("player2");
   const paths = useMemo(() => designs.map((design) => [...design.layers].reverse().map((layer) => ({ ...layer, path: layerPath(layer) }))), [designs]);
+  const effects = useMemo(() => reducedMotion ? [] : deriveBattleEffects(previous, latest), [latest?.sequence, previous?.sequence, reducedMotion]);
+  useEffect(() => { for (const effect of effects) onEffect?.(effect); }, [effects, onEffect]);
+  const sparkCount = quality === "reduced" ? 5 : 10;
   return (
     <section className="battle-arena-panel" aria-labelledby="arena-heading">
       <h3 id="arena-heading">對戰場</h3>
       <svg className="battle-arena" viewBox="-105 -105 210 210" aria-hidden="true">
+        <defs><radialGradient id="arenaFloor" cx="50%" cy="45%"><stop offset="0" stopColor="#163c68" /><stop offset=".58" stopColor="#0b1833" /><stop offset="1" stopColor="#030711" /></radialGradient><filter id="topGlow"><feGaussianBlur stdDeviation="2.5" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
+        <circle cx="0" cy="0" r="100" className="arena-floor" />
         <circle cx="0" cy="0" r="100" className="arena-ring" />
-        {([p1, p2] as const).map((position, index) => <g key={index} data-testid={`battle-player${index + 1}`} transform={`translate(${position.x} ${position.y}) rotate(${position.angle * 180 / Math.PI}) scale(.72)`}>
+        <circle cx="0" cy="0" r="82" className="arena-energy-ring" /><circle cx="0" cy="0" r="56" className="arena-energy-ring inner" />
+        <g className="arena-grid"><path d="M-92 0H92M0-92V92M-65-65L65 65M65-65L-65 65" /></g>
+        {([p1, p2] as const).map((position, index) => <g key={index}><circle className={`top-trail trail-${index + 1}`} cx={position.x} cy={position.y} r={Math.min(15, 6 + Math.abs(latest?.[index === 0 ? "player1" : "player2"].angularSpeed ?? 0) / 4)} /><g filter="url(#topGlow)" data-testid={`battle-player${index + 1}`} transform={`translate(${position.x} ${position.y}) rotate(${position.angle * 180 / Math.PI}) scale(.72)`}>
           {paths[index]!.map((layer) => <path key={layer.id} d={layer.path} fill={layer.color} fillOpacity=".68" stroke={layer.color} strokeWidth="1" />)}
           <circle r="2.5" fill="#172033" />
-        </g>)}
+        </g></g>)}
+        <g className="battle-effects-layer">{effects.map((effect) => <g key={effect.id} data-effect-id={effect.id} className={`battle-effect effect-${effect.type}`} transform={`translate(${effect.x} ${effect.y})`}><circle r={effect.type === "heavy-impact" ? 18 : 10} /><g className="spark-burst">{Array.from({ length: sparkCount }, (_, index) => { const angle = index * 360 / sparkCount; const length = (effect.type === "heavy-impact" ? 18 : 11) * (.65 + (index % 3) * .14); return <line key={index} x1="5" y1="0" x2={length} y2="0" transform={`rotate(${angle})`} />; })}</g></g>)}</g>
       </svg>
       <p className="sr-only">{latest ? "對戰進行中" : "等待戰況資料"}</p>
     </section>

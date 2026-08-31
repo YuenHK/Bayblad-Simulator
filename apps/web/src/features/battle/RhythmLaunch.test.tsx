@@ -4,6 +4,20 @@ import { RhythmLaunch } from "./RhythmLaunch";
 
 describe("RhythmLaunch", () => {
   afterEach(() => vi.useRealTimers());
+  it("顯示三層判定區及能量發射台", () => {
+    const { container } = render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "zones", serverTargetTimeMs: Date.now() + 1_000, serverDeadlineTimeMs: Date.now() + 2_500 }} onCommand={vi.fn()} />);
+    expect(container.querySelectorAll(".judgement-zone")).toHaveLength(3);
+    expect(screen.getByTestId("rhythm-track")).toHaveClass("energy-track");
+    expect(screen.getByRole("button", { name: "在判定線發射" })).toHaveClass("energy-launch-button");
+  });
+  it("成功送出發射時同步觸發本機回饋一次", () => {
+    const onLaunch = vi.fn();
+    render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "feedback", serverTargetTimeMs: Date.now() + 1_000, serverDeadlineTimeMs: Date.now() + 2_500 }} onCommand={vi.fn()} onLaunch={onLaunch} />);
+    const button = screen.getByRole("button", { name: "在判定線發射" });
+    fireEvent.pointerDown(button);
+    fireEvent.click(button);
+    expect(onLaunch).toHaveBeenCalledTimes(1);
+  });
   it("schedule早於首個clock sample時只顯示同步並禁止tap", () => {
     const onCommand = vi.fn();
     render(<RhythmLaunch schedule={{ roomId: "room", matchId: "match", roundId: "round", nonce: "sync", serverTargetTimeMs: 3_000, serverDeadlineTimeMs: 4_500 }} onCommand={onCommand} clockReady={false} clockSamples={1} />);

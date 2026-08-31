@@ -46,12 +46,15 @@ describe("RoomPage", () => {
     expect(screen.getByText("你的判定：Perfect")).toBeVisible();
     expect(container.textContent).not.toContain("對手判定");
     expect(container.textContent).not.toContain("Great");
+    expect(screen.getByText("PERFECT")).toBeVisible();
+    expect(screen.getByText("完美")).toBeVisible();
   });
 
   it("觀眾者同時看到兩方判定", () => {
     render(<RoomPage snapshot={room("spectator")} battle={{ phase: "launch", spectatorGrades: { player1: "Perfect", player2: "Great" } }} design={makeDefaultDesign()} onCommand={noop} onLeave={noop} />);
     expect(screen.getByText("玩家一：Perfect")).toBeVisible();
     expect(screen.getByText("玩家二：Great")).toBeVisible();
+    expect(screen.getByText("準確")).toBeVisible();
   });
 
   it("房主等待時可轉到觀賽，active match 時不可任意 move", async () => {
