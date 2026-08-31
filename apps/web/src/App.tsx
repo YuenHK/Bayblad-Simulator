@@ -4,6 +4,9 @@ import { DesignerPage } from "./features/designer/DesignerPage";
 import { loadDesignerDraft } from "./features/designer/designerDraft";
 import { LobbyPage } from "./features/lobby/LobbyPage";
 import { RoomPage } from "./features/room/RoomPage";
+import { GameAudio } from "./features/game/GameAudio";
+import { GameHudControls } from "./features/game/GameHudControls";
+import { loadGamePreferences, saveGamePreferences } from "./features/game/gamePreferences";
 import { createRealtimeClient, type RealtimeClient } from "./realtime/socket-client";
 import { createSafeStorage, type SafeStorage } from "./realtime/safe-storage";
 
@@ -19,14 +22,18 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
   const [designId, setDesignId] = useState<string | null>(() => storage.get(DESIGN_ID_KEY));
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [reducedMotion, setReducedMotion] = useState(false);
+  const [systemReducedMotion, setSystemReducedMotion] = useState(false);
+  const [gamePreferences, setGamePreferences] = useState(() => loadGamePreferences(storage));
+  const gameAudio = useMemo(() => new GameAudio(), []);
+  const reducedMotion = systemReducedMotion || !gamePreferences.motionEnabled;
   const actionController = useRef<AbortController | null>(null);
 
-  useEffect(() => { client.start(); return () => { actionController.current?.abort(); client.stop(); }; }, [client]);
+  useEffect(() => { client.start(); return () => { actionController.current?.abort(); client.stop(); void gameAudio.dispose(); }; }, [client, gameAudio]);
+  useEffect(() => { gameAudio.setEnabled(gamePreferences.soundEnabled); saveGamePreferences(storage, gamePreferences); }, [gameAudio, gamePreferences, storage]);
   useEffect(() => {
     const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     if (!media) return;
-    const update = () => setReducedMotion(media.matches);
+    const update = () => setSystemReducedMotion(media.matches);
     update(); media.addEventListener?.("change", update);
     return () => media.removeEventListener?.("change", update);
   }, []);
@@ -61,8 +68,8 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
   const connectionLabel = state.status === "online" ? "已連線" : state.status === "reconnecting" ? "重新連線中……" : state.status === "connecting" ? "連線中……" : "離線";
   const phase = state.matchFinished || state.cancelledReason ? "result" : state.room?.phase ?? "waiting";
   const battleFocus = page === "room" && phase === "launch" && state.room?.viewer.role !== "spectator";
-  return <div className={`app-root${battleFocus ? " battle-focus-mode" : ""}`}>
-    <nav className="app-nav" aria-label="主要導航"><div className="app-brand">STEAM 陀螺</div><div className="nav-actions"><button aria-current={page === "designer" ? "page" : undefined} onClick={() => setPage("designer")}>設計室</button><button aria-current={page === "lobby" ? "page" : undefined} onClick={() => setPage("lobby")}>對戰大廳</button></div>{state.identity ? <span aria-label={`身份來源：${state.identity.status}`}>{state.identity.displayName}</span> : null}<span className={`connection-status status-${state.status}`} aria-live="polite">{state.identityStatus === "loading" ? "辨識裝置中……" : connectionLabel}</span></nav>
+  return <div className={`app-root student-game quality-${gamePreferences.quality}${reducedMotion ? " reduced-game-motion" : ""}${battleFocus ? " battle-focus-mode" : ""}`} onPointerDownCapture={() => { if (gamePreferences.soundEnabled) void gameAudio.unlock().catch(() => undefined); }}>
+    <nav className="app-nav game-hud" aria-label="主要導航"><div className="app-brand"><span aria-hidden="true" className="brand-core" />STEAM 陀螺<small>ARENA LAB</small></div><div className="nav-actions"><button aria-current={page === "designer" ? "page" : undefined} onClick={() => setPage("designer")}>設計室</button><button aria-current={page === "lobby" ? "page" : undefined} onClick={() => setPage("lobby")}>對戰大廳</button></div>{state.identity ? <span className="player-identity" aria-label={`身份來源：${state.identity.status}`}>{state.identity.displayName}</span> : null}<span className={`connection-status status-${state.status}`} aria-live="polite">{state.identityStatus === "loading" ? "辨識裝置中……" : connectionLabel}</span><GameHudControls preferences={gamePreferences} onChange={setGamePreferences} /></nav>
     {state.sessionStatus === "resumed" ? <p className="system-banner" role="status">已恢復上次的房間位置。</p> : null}
     {state.sessionStatus === "replaced" ? <p className="system-banner warning" role="status">舊連線已過期，已為你建立新訪客連線。</p> : null}
     {state.platformPaused ? <p className="system-banner warning" role="status">平台現正暫停：不可建立或加入房間，也不可開始新對戰；已開始的對戰可繼續完成。</p> : null}
@@ -75,6 +82,6 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
       spectatorGrades: state.spectatorGrades ?? undefined, started: state.battleStarted ?? undefined,
       frames: state.frames, roundWinner: state.roundFinished?.winner,
       matchFinished: state.matchFinished ?? undefined, cancelledReason: state.cancelledReason ?? undefined,
-    }} /> : null}
+    }} gameAudio={gameAudio} /> : null}
   </div>;
 }

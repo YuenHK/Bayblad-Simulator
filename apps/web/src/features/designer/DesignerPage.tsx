@@ -231,7 +231,7 @@ export function DesignerPage({
   const readinessValid = validation.valid && invalidFieldKeys.size === 0;
 
   return (
-    <main className="designer-shell">
+    <main className="designer-shell game-designer">
       <header className="page-heading">
         <p className="eyebrow">STEAM 陀螺</p>
         <h1>陀螺設計器</h1>
@@ -298,7 +298,7 @@ export function DesignerPage({
           </div>
           <div
             id="preview-tabpanel"
-            className="preview-stage"
+            className="preview-stage hologram-stage"
             role="tabpanel"
             aria-labelledby={`preview-tab-${previewMode}`}
           >
@@ -408,7 +408,7 @@ export function DesignerPage({
 
         <aside id="workspace-panel-results" className={`panel results-panel workspace-panel${workspaceTab === "results" ? " is-active" : ""}`} aria-labelledby="results-heading" data-workspace-panel="results">
           <h2 id="results-heading">即時計算</h2>
-          <dl className="metrics">
+          <dl className="metrics ability-grid" role="group" aria-label="陀螺能力值">
             <div><dt>重量</dt><dd>{format(validation.massProperties.totalMassG)} g</dd></div>
             <div>
               <dt>重心偏移</dt>

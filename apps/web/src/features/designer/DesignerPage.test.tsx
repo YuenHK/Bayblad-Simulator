@@ -28,6 +28,15 @@ async function replaceNumber(
 }
 
 describe("DesignerPage", () => {
+  it("提供競技設計室、全息預覽及能力值面板語義", () => {
+    const { container } = render(<DesignerPage />);
+    expect(container.querySelector(".designer-shell")).toHaveClass("game-designer");
+    expect(container.querySelector(".preview-stage")).toHaveClass("hologram-stage");
+    expect(screen.getByRole("group", { name: "陀螺能力值" })).toBeVisible();
+    expect(screen.getByText("速度")).toBeVisible();
+    expect(screen.getByText("抗撞能力")).toBeVisible();
+  });
+
   it("提供三個設計室頁籤並可用方向鍵切換而不重設輸入", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
