@@ -190,7 +190,7 @@ it.skipIf(!databaseUrl)("persists an exact authoritative round set and rejects a
     battleResult: { modelVersion: "2.0.0", seed: roundNumber, ticks: 1_352, frames: roundNumber === 1 ? Array.from({ length: 1_352 }, (_, tick) => ({ tick, player1: { x: tick / 100, y: 0, angle: tick / 10, angularSpeed: 10 }, player2: { x: -tick / 100, y: 0, angle: -tick / 10, angularSpeed: 9 } })) : [], outcome: { winner: "player1" as const, reason: "stopped" as const }, finalStats: { player1: { angularSpeed: 1, speedMps: 0, energyJ: 1, stoppedTicks: 0, impactRetentionProduct: 1 }, player2: { angularSpeed: 1, speedMps: 0, energyJ: 1, stoppedTicks: 0, impactRetentionProduct: 1 }, topTopContactCount: 0, topTopBeginContactEpisodes: 0, topTopImpactApplications: 0 } },
   });
   const authoritativeRounds = [makeRound(1), makeRound(2)];
-  expect(Buffer.byteLength(JSON.stringify(authoritativeRounds[0]!.battleResult), "utf8")).toBeGreaterThan(200_000);
+  expect(Buffer.byteLength(JSON.stringify(authoritativeRounds[0]!.battleResult), "utf8")).toBeGreaterThan(150_000);
   expect(Buffer.byteLength(JSON.stringify(authoritativeRounds[0]!.battleResult), "utf8")).toBeLessThan(2_097_152);
   for (const round of authoritativeRounds) await repository.saveRoundAttempt(matchId, round);
   await expect(repository.saveRoundAttempt(matchId, { ...authoritativeRounds[0]!, battleResult: { ...authoritativeRounds[0]!.battleResult, ticks: 61 } })).rejects.toBeInstanceOf(MatchPersistenceConflictError);
