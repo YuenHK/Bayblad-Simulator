@@ -25,6 +25,13 @@ function room(role: "player1" | "player2" | "spectator", spectators = 1): RoomSn
 
 const noop = vi.fn();
 describe("RoomPage", () => {
+  it("只有正在發射的玩家進入手機專注模式", () => {
+    const { container, rerender } = render(<RoomPage snapshot={room("player1")} battle={{ phase: "launch" }} design={makeDefaultDesign()} onCommand={noop} onLeave={noop} />);
+    expect(container.querySelector("main")).toHaveClass("battle-focus-content");
+    rerender(<RoomPage snapshot={room("spectator")} battle={{ phase: "launch" }} design={makeDefaultDesign()} onCommand={noop} onLeave={noop} />);
+    expect(container.querySelector("main")).not.toHaveClass("battle-focus-content");
+  });
+
   it("玩家只顯示自己判定，DOM 不含對手 grade", () => {
     const { container } = render(<RoomPage snapshot={room("player1")} battle={{ phase: "launch", privateGrade: "Perfect" }} design={makeDefaultDesign()} onCommand={noop} onLeave={noop} />);
     expect(screen.getByText("你的判定：Perfect")).toBeVisible();

@@ -42,6 +42,13 @@ const ISSUE_LABELS: Record<RuleIssueCode, string> = {
 
 type Position = keyof typeof POSITION_LABELS;
 type PreviewMode = "top" | "exploded" | "3d";
+type WorkspaceTab = "controls" | "preview" | "results";
+
+const WORKSPACE_TABS: ReadonlyArray<Readonly<{ tab: WorkspaceTab; label: string }>> = [
+  { tab: "controls", label: "控制台" },
+  { tab: "preview", label: "模擬預覽" },
+  { tab: "results", label: "預測結果" },
+];
 
 const PREVIEW_TABS: ReadonlyArray<Readonly<{ mode: PreviewMode; label: string }>> = [
   { mode: "top", label: "俯視圖" },
@@ -79,6 +86,7 @@ export function DesignerPage({
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("top");
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("controls");
   const [previewLoadAttempt, setPreviewLoadAttempt] = useState(0);
   const LazyTopPreview3D = useMemo(
     () => lazy(load3DPreview),
@@ -230,8 +238,33 @@ export function DesignerPage({
         <p>調整三層層板與共用裝配設定，數值會即時重新計算。</p>
       </header>
 
+      <div className="designer-workspace-tabs" role="tablist" aria-label="設計室區域">
+        {WORKSPACE_TABS.map(({ tab, label }, index) => <button
+          key={tab}
+          id={`workspace-tab-${tab}`}
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === tab}
+          aria-controls={`workspace-panel-${tab}`}
+          tabIndex={workspaceTab === tab ? 0 : -1}
+          onClick={() => setWorkspaceTab(tab)}
+          onKeyDown={(event) => {
+            let nextIndex = index;
+            if (event.key === "ArrowRight") nextIndex = (index + 1) % WORKSPACE_TABS.length;
+            else if (event.key === "ArrowLeft") nextIndex = (index - 1 + WORKSPACE_TABS.length) % WORKSPACE_TABS.length;
+            else if (event.key === "Home") nextIndex = 0;
+            else if (event.key === "End") nextIndex = WORKSPACE_TABS.length - 1;
+            else return;
+            event.preventDefault();
+            const next = WORKSPACE_TABS[nextIndex]!.tab;
+            setWorkspaceTab(next);
+            requestAnimationFrame(() => document.getElementById(`workspace-tab-${next}`)?.focus());
+          }}
+        >{label}</button>)}
+      </div>
+
       <div className="designer-layout">
-        <section className="panel preview-panel" aria-labelledby="preview-heading">
+        <section id="workspace-panel-preview" className={`panel preview-panel workspace-panel${workspaceTab === "preview" ? " is-active" : ""}`} aria-labelledby="preview-heading" data-workspace-panel="preview">
           <div className="preview-heading-row">
             <h2 id="preview-heading">即時預覽</h2>
             <div className="preview-tabs" role="tablist" aria-label="預覽模式">
@@ -281,7 +314,7 @@ export function DesignerPage({
           </div>
         </section>
 
-        <section className="panel controls-panel" aria-labelledby="layer-heading">
+        <section id="workspace-panel-controls" className={`panel controls-panel workspace-panel${workspaceTab === "controls" ? " is-active" : ""}`} aria-labelledby="layer-heading" data-workspace-panel="controls">
           <h2 id="layer-heading">層板設計</h2>
           <ol className="layer-list" aria-label="三層排列">
             {design.layers.map((layer) => (
@@ -373,7 +406,7 @@ export function DesignerPage({
           />
         </section>
 
-        <aside className="panel results-panel" aria-labelledby="results-heading">
+        <aside id="workspace-panel-results" className={`panel results-panel workspace-panel${workspaceTab === "results" ? " is-active" : ""}`} aria-labelledby="results-heading" data-workspace-panel="results">
           <h2 id="results-heading">即時計算</h2>
           <dl className="metrics">
             <div><dt>重量</dt><dd>{format(validation.massProperties.totalMassG)} g</dd></div>
