@@ -7,6 +7,7 @@ RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 WORKDIR /workspace
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/server/package.json apps/server/package.json
+COPY apps/web/package.json apps/web/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/domain/package.json packages/domain/package.json
 COPY packages/protocol/package.json packages/protocol/package.json
@@ -17,6 +18,7 @@ COPY . .
 RUN pnpm install --offline --frozen-lockfile
 RUN pnpm exec esbuild apps/server/src/production-entry.ts --bundle --platform=node --target=node24 --format=esm --external:@fastify/cookie --external:@node-rs/argon2 --external:drizzle-orm '--external:drizzle-orm/*' --external:exceljs --external:fastify --external:planck --external:postgres --external:socket.io --external:zod --outfile=apps/server/dist/production-entry.mjs
 RUN pnpm exec esbuild apps/server/src/migrate-entry.ts --bundle --platform=node --target=node24 --format=esm --external:drizzle-orm --external:postgres --outfile=apps/server/dist/migrate-entry.mjs
+RUN pnpm --filter @steam-top/web build:admin
 RUN pnpm --filter @steam-top/server deploy --legacy --prod /production/server
 
 FROM ${NODE_IMAGE_REPOSITORY}@${NODE_IMAGE_DIGEST} AS runtime
@@ -26,6 +28,7 @@ COPY --from=build --chown=node:node /production/server/ ./
 COPY --from=build --chown=node:node /workspace/apps/server/dist/production-entry.mjs ./production-entry.mjs
 COPY --from=build --chown=node:node /workspace/apps/server/dist/migrate-entry.mjs ./migrate-entry.mjs
 COPY --from=build --chown=node:node /workspace/drizzle ./drizzle
+COPY --from=build --chown=node:node /workspace/apps/web/dist ./admin
 COPY --from=build --chown=node:node --chmod=0555 /workspace/scripts/migrate-and-start.sh ./scripts/migrate-and-start.sh
 RUN install -d -m 0700 -o node -g node /var/lib/steam-top /var/lib/steam-top-state
 USER node

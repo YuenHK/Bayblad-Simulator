@@ -11,6 +11,7 @@ import { PostgresAdminCommandStore } from "./admin/command-operations";
 import { checkDatabaseReadiness, registerHealthRoutes, startFailStopReadinessMonitor, withReadinessDeadline } from "./readiness";
 import { safeLogErrorDetails } from "./safe-logging";
 import { PostgresDeploymentProbeSource } from "./admin/deployment-probe";
+import { registerAdminStaticRoutes } from "./admin/admin-static";
 
 export async function startProductionServer(
   client: DatabaseClient,
@@ -24,6 +25,7 @@ export async function startProductionServer(
   await runReadiness();
   listen.reportStartupStage?.("build-app");
   const app = buildApp({ ...options, reportStartupStage: listen.reportStartupStage, ...createProductionRecordRepositories(client), analyticsService: options.analyticsService ?? createProductionAnalytics(client), exportDataSource: options.exportDataSource ?? createProductionExportDataSource(client), deletionStore: new PostgresDeletionStore(client, 1_000, new FileDeletionLedger(ledgerPath)), adminRecordsSource: options.adminRecordsSource ?? new PostgresAdminRecordsSource(client.sql), deploymentProbeSource: options.deploymentProbeSource ?? new PostgresDeploymentProbeSource(client.sql), platformSettingsStore: options.platformSettingsStore ?? new PostgresPlatformSettingsStore(client), adminCommandStore: options.adminCommandStore ?? new PostgresAdminCommandStore(client), requireAuthorityLease: true });
+  registerAdminStaticRoutes(app, process.env.ADMIN_STATIC_ROOT ?? "/app/admin");
   let readinessHealthy = true;
   registerHealthRoutes(app, async () => { if (!readinessHealthy) throw new Error("FAIL_STOP_READINESS_LOST"); return runReadiness(); });
   app.addHook("onRequest", async (request, reply) => { if (!readinessHealthy && !request.url.startsWith("/health/")) return reply.code(503).send({ error: "SERVICE_NOT_READY" }); });
