@@ -30,6 +30,9 @@ export interface RoomRecordRepository {
 }
 
 type Db = DatabaseClient["db"];
+export function coalesceTimestamp(column: typeof rooms.firstBattleAt | typeof rooms.closedAt, value: Date) {
+  return sql`coalesce(${column}, ${sql.param(value, column)})`;
+}
 const participantValues = (roomId: string, value: RoomParticipantRecord, joinedAt: Date) => ({
   roomId, identityId: value.identityId, participantPublicId: value.participantPublicId,
   displayNameSnapshot: value.displayName, role: value.role, isOwner: value.isOwner,
@@ -104,7 +107,7 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
     });
   }
   async recordBattleStart(roomId: string, at: Date): Promise<void> {
-    await this.db.update(rooms).set({ firstBattleAt: sql`coalesce(${rooms.firstBattleAt}, ${at})` }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
+    await this.db.update(rooms).set({ firstBattleAt: coalesceTimestamp(rooms.firstBattleAt, at) }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
   }
   async updatePhase(roomId: string, phase: "waiting" | "launch" | "battle" | "result"): Promise<void> {
     await this.db.update(rooms).set({ status: phase }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt)));
@@ -181,7 +184,7 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
       }
       if (!job) await tx.insert(roomProjectionJobs).values({ roomId, revision, payloadHash, payloadJson: payload, status: "pending", nextAttemptAt: at });
       else await tx.update(roomProjectionJobs).set({ revision, payloadHash, payloadJson: payload, status: "pending", reservationToken: null, attemptCount: 0, nextAttemptAt: at, leaseToken: null, leaseUntil: null, lastError: null, generation: job.generation + 1, updatedAt: at }).where(and(eq(roomProjectionJobs.roomId, roomId), eq(roomProjectionJobs.generation, job.generation)));
-      const updated = await tx.update(rooms).set({ status: payload.phase, appliedProjectionRevision: revision, lastTransitionHash: payloadHash, ...(payload.firstBattleAt ? { firstBattleAt: sql`coalesce(${rooms.firstBattleAt}, ${new Date(payload.firstBattleAt)})` } : {}) }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt), lt(rooms.appliedProjectionRevision, revision))).returning({ id: rooms.id });
+      const updated = await tx.update(rooms).set({ status: payload.phase, appliedProjectionRevision: revision, lastTransitionHash: payloadHash, ...(payload.firstBattleAt ? { firstBattleAt: coalesceTimestamp(rooms.firstBattleAt, new Date(payload.firstBattleAt)) } : {}) }).where(and(eq(rooms.id, roomId), isNull(rooms.closedAt), lt(rooms.appliedProjectionRevision, revision))).returning({ id: rooms.id });
       if (updated.length !== 1) throw new Error("ROOM_PHASE_CAS_MISS");
     });
   }
@@ -205,8 +208,8 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
     const updated = await this.db.update(rooms).set({
       status: payload.phase,
       appliedProjectionRevision: revision,
-      ...(payload.firstBattleAt ? { firstBattleAt: sql`coalesce(${rooms.firstBattleAt}, ${new Date(payload.firstBattleAt)})` } : {}),
-      ...(payload.closedAt ? { closedAt: sql`coalesce(${rooms.closedAt}, ${new Date(payload.closedAt)})` } : {}),
+      ...(payload.firstBattleAt ? { firstBattleAt: coalesceTimestamp(rooms.firstBattleAt, new Date(payload.firstBattleAt)) } : {}),
+      ...(payload.closedAt ? { closedAt: coalesceTimestamp(rooms.closedAt, new Date(payload.closedAt)) } : {}),
     }).where(and(eq(rooms.id, roomId), lt(rooms.appliedProjectionRevision, revision))).returning({ id: rooms.id });
     return updated.length === 1;
   }
