@@ -406,8 +406,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     const resolveIdentityRequest = async (request: { raw: IncomingMessage; cookies: Record<string, string | undefined>; headers: Record<string, string | string[] | undefined> }, live?: Parameters<IdentityResolver["resolve"]>[1]) => {
       const clientKey = safeClientKey(request.raw);
       const ip = identityIp(request.raw);
+      const cookieToken = bearerFrom(request.headers) ?? request.cookies[COOKIE_NAME];
       return identityResolver.resolve({
-        ...(bearerFrom(request.headers) ?? request.cookies[COOKIE_NAME] ? { cookieToken: bearerFrom(request.headers) ?? request.cookies[COOKIE_NAME] } : {}),
+        ...(cookieToken ? { cookieToken } : {}),
         ...(ip ? { ip } : {}),
         ...(typeof request.headers["user-agent"] === "string" ? { userAgent: request.headers["user-agent"] } : {}),
         admitCreation: () => identityCreationLimiter.consume(clientKey) && identityGlobalCreationLimiter.consume("global"),
