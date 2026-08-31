@@ -35,6 +35,18 @@ describe("single baseline migration", () => {
     expect(verifyMigrationSource(source)).toEqual({ id: EXPECTED_MIGRATION_ID, sha256: EXPECTED_MIGRATION_SHA256 });
   });
 
+  it("declares every deletion preview result column before its consistency constraint", () => {
+    const table = source.match(/CREATE TABLE "deletion_previews" \(([\s\S]*?)\n\);/)?.[1] ?? "";
+    const constraintOffset = table.indexOf('CONSTRAINT "deletion_previews_result_consistent"');
+
+    expect(constraintOffset).toBeGreaterThan(0);
+    for (const column of ["result_audit_id", "result_identity_count", "result_design_count", "result_match_count"]) {
+      const columnOffset = table.indexOf(`"${column}"`);
+      expect(columnOffset, `${column} must be declared`).toBeGreaterThan(0);
+      expect(columnOffset, `${column} must precede its constraint`).toBeLessThan(constraintOffset);
+    }
+  });
+
   it("applies a fresh baseline atomically and records its hash", async () => {
     const target = executor();
     await expect(applyBaselineMigration(target.value, source)).resolves.toBe("applied");
