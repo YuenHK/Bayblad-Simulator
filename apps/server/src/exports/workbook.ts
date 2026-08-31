@@ -11,7 +11,7 @@ import { ExportBusyError, ExportLifecycleManager, ExportStorageError, type Expor
 
 type Cell=string|number|boolean|Date|null|undefined;type Row=Readonly<Record<string,Cell>>;
 class ExportStageError extends Error{readonly code:string;override readonly cause:unknown;constructor(code:string,cause:unknown){super(code);this.name="ExportStageError";this.code=code;this.cause=cause;}}
-const exportStage=async<T>(code:string,operation:()=>Promise<T>):Promise<T>=>{try{return await operation();}catch(error){if(error instanceof ExportStageError||error instanceof ExportStorageError)throw error;throw new ExportStageError(code,error);}};
+const exportStage=async<T>(code:string,operation:()=>Promise<T>):Promise<T>=>{try{return await operation();}catch(error){const candidate=typeof error==="object"&&error!==null&&"code" in error?(error as {code?:unknown}).code:undefined;if(error instanceof ExportStageError||error instanceof ExportStorageError||(typeof candidate==="string"&&/^EXPORT_[A-Z0-9_:.-]+$/u.test(candidate)))throw error;throw new ExportStageError(code,error);}};
 export type ExportSheetKey="matches"|"rounds"|"designs"|"identities"|"usage"|"parameters";
 export type ExportMetadata=Readonly<{cutoff:Date;performanceModelVersions:readonly string[];physicsModelVersions:readonly string[];rowCounts?:Readonly<Partial<Record<ExportSheetKey,number>>>;truncated?:readonly string[]}>;
 export type ExportSnapshot=Readonly<{metadata:ExportMetadata;sheets:Readonly<Record<ExportSheetKey,AsyncIterable<Row>>>}>;
