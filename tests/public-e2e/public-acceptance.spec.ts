@@ -130,12 +130,15 @@ test("兩個獨立訪客完成建立、準備、三輪發射及賽後計分", as
       const firstTransform = await top.getAttribute("transform");
       await owner.page.waitForTimeout(500);
       await expect(top).not.toHaveAttribute("transform", firstTransform ?? "", { timeout: 5_000 });
+      await expect(owner.page.locator(".top-afterimage").first()).toBeVisible();
       await Promise.race([
         resultHeading.waitFor({ state: "visible", timeout: 30_000 }),
         ownerGrade.waitFor({ state: "hidden", timeout: 30_000 }),
       ]);
     }
     await expect(resultHeading).toBeVisible({ timeout: 30_000 });
+    await expect(owner.page.getByTestId("arena-victory")).toBeVisible();
+    await expect(owner.page.getByTestId("arena-victory")).toContainText(/玩家[一二]勝出/u);
     await expect(owner.page.getByText("總分：", { exact: false })).toHaveCount(2);
     await expect(owner.page.getByText("排行榜")).toHaveCount(0);
   } finally {
