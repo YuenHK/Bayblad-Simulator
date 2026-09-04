@@ -124,6 +124,12 @@ test("兩個獨立訪客完成建立、準備、三輪發射及賽後計分", as
       await Promise.all([ownerLaunch.click(), peerLaunch.click()]);
       await expect(ownerGrade).toBeVisible();
       await expect(peerGrade).toBeVisible();
+      const arena = owner.page.locator(".battle-arena");
+      const top = owner.page.getByTestId("battle-player1");
+      await expect(arena).toBeVisible({ timeout: 30_000 });
+      const firstTransform = await top.getAttribute("transform");
+      await owner.page.waitForTimeout(500);
+      await expect(top).not.toHaveAttribute("transform", firstTransform ?? "", { timeout: 5_000 });
       await Promise.race([
         resultHeading.waitFor({ state: "visible", timeout: 30_000 }),
         ownerGrade.waitFor({ state: "hidden", timeout: 30_000 }),
