@@ -72,7 +72,7 @@ test("iPad student creates a legal three-layer design and loads the real 3D chun
 });
 
 test("production 首屏不預載3D heavy chunk，選擇3D後才載入", async ({ page, request }) => {
-  type Entry = { file: string; imports?: string[]; dynamicImports?: string[] };
+  type Entry = { file: string; name?: string; imports?: string[]; dynamicImports?: string[] };
   const manifest = JSON.parse(await readFile(resolve(process.cwd(), "apps/web/dist/.vite/manifest.json"), "utf8")) as Record<string, Entry>;
   const collect = (root: string, includeDynamic: boolean, excluded = new Set<string>()) => {
     const found = new Set<string>(); const visit = (key: string) => { if (found.has(key) || excluded.has(key) || !manifest[key]) return; found.add(key); const entry = manifest[key]!; for (const dependency of [...(entry.imports ?? []), ...(includeDynamic ? entry.dynamicImports ?? [] : [])]) visit(dependency); }; visit(root); return found;
@@ -82,7 +82,9 @@ test("production 首屏不預載3D heavy chunk，選擇3D後才載入", async ({
   const staticMainSizes = await Promise.all(staticMainFiles.map(async (file) => (await stat(resolve(process.cwd(), "apps/web/dist", file))).size));
   for (const size of staticMainSizes) expect(size).toBeLessThan(500 * 1_024);
   expect(staticMainSizes.reduce((total, size) => total + size, 0)).toBeLessThan(650 * 1_024);
-  const heavyKeys = collect("src/features/designer/TopPreview3D.tsx", true, sharedMain);
+  const previewKey = Object.keys(manifest).find(key => key === "src/features/designer/TopPreview3D.tsx" || manifest[key]!.name === "TopPreview3D");
+  expect(previewKey).toBeDefined();
+  const heavyKeys = collect(previewKey!, true, sharedMain);
   const heavyFiles = [...heavyKeys].map((key) => manifest[key]!.file);
   expect(heavyFiles.length).toBeGreaterThan(0);
   const initialResources = await page.evaluate(() => performance.getEntriesByType("resource").map((entry) => new URL(entry.name).pathname));

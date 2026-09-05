@@ -221,6 +221,11 @@ it.skipIf(!databaseUrl)("persists an exact authoritative round set and rejects a
   await expect(repository.retryFailedMatch(matchId, { claimToken: takeover!.claimToken, generation: takeover!.generation })).resolves.toBe("created");
   await expect(new PostgresMatchRepository(client.db).retryFailedMatch(matchId)).resolves.toBe("replayed");
   await expect(repository.saveCompletedMatch(completed)).resolves.toBe("replayed");
+  // Exercise the actual SQL used when a room selects its computer opponent.
+  await expect(designs.mostPopularBattleDesign()).resolves.toMatchObject({
+    screwLayout: player1Design.design.screwLayout,
+    metalDiscDiameterMm: player1Design.design.metalDiscDiameterMm,
+  });
   expect(await repository.pruneRetention(new Date("9999-01-01"), 10)).toBe(1);
   expect(await repository.getRetryJob(matchId)).toBeUndefined();
 }, 30_000);
