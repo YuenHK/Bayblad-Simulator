@@ -26,6 +26,25 @@ it("takes over the dedicated authority lock from a rolling-deploy predecessor", 
   expect(repository.startupLeaseBackendPidForTesting).toBe(202);
 });
 
+it("drops a failed authority lease without querying the dead connection again", async () => {
+  const calls: string[] = []; let releases = 0;
+  const reserved = async (strings: TemplateStringsArray) => {
+    const query = strings.join("?"); calls.push(query);
+    if (query.includes("pg_try_advisory_lock")) return [{ acquired: true, backendPid: 303 }];
+    if (query.includes("pg_backend_pid")) throw new Error("connection terminated");
+    return [];
+  };
+  Object.assign(reserved, { release: () => { releases += 1; } });
+  const sql = Object.assign(async () => [], { reserve: async () => reserved });
+  const repository = new PostgresRoomRecordRepository(null as never, sql as never, 1002);
+  await repository.acquireStartupLease();
+  await expect(repository.verifyStartupLease()).rejects.toThrow("ROOM_SINGLE_INSTANCE_LOCK_LOST");
+  expect(repository.startupLeaseBackendPidForTesting).toBeUndefined();
+  await repository.releaseStartupLease();
+  expect(releases).toBe(1);
+  expect(calls.some((value) => value.includes("pg_advisory_unlock"))).toBe(false);
+});
+
 const participant = { participantPublicId: "participant-1", identityId: null, displayName: "Student", role: "player1" as const, isOwner: true, ip: null, userAgent: null, deviceName: null };
 
 describe("MemoryRoomRecordRepository authoritative transitions", () => {
