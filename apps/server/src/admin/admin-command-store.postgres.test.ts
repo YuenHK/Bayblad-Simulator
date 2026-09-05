@@ -11,7 +11,7 @@ beforeAll(async()=>{if(!databaseUrl)return;const local=/(?:localhost|127\.0\.0\.
 afterAll(async()=>{if(!client)return;await client.sql.unsafe("set search_path to public");await client.sql.unsafe(`drop schema ${schemaName} cascade`);await client.close();});
 
 it.skipIf(!databaseUrl)("fences two workers across claim renewal expiry progress completion and pruning",async()=>{
-  const first=new PostgresAdminCommandStore(client),second=new PostgresAdminCommandStore(client),now=new Date("2026-08-29T00:00:00Z"),operationId=randomUUID();
+  const first=new PostgresAdminCommandStore(client),second=new PostgresAdminCommandStore(client),now=new Date("2026-08-01T00:00:00Z"),operationId=randomUUID();
   await first.accept({operationId,payloadHash:adminCommandPayloadHash({action:"room.close",roomId:"ROOM"}),action:"room.close",target:"ROOM",payload:{action:"room.close",roomId:"ROOM"},adminUserId:randomUUID(),adminSessionId:randomUUID()},now);
   const claims=await Promise.all([first.claimDue(now,1_000),second.claimDue(now,1_000)]),claimed=claims.find(Boolean)!;
   expect(claims.filter(Boolean)).toHaveLength(1);
