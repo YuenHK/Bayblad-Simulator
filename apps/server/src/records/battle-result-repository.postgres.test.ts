@@ -31,23 +31,52 @@ beforeAll(async () => {
   }
 }, 30_000);
 
-it.skipIf(!databaseUrl)("holds a dedicated single-instance advisory lock until release", async () => {
-  const first = new PostgresRoomRecordRepository(client.db, client.sql); const second = new PostgresRoomRecordRepository(client.db, client.sql);
-  await first.acquireStartupLease();
-  await expect(second.acquireStartupLease()).rejects.toThrow("ROOM_SINGLE_INSTANCE_LOCK_HELD");
-  await first.releaseStartupLease();
-  await expect(second.acquireStartupLease()).resolves.toBeUndefined();
-  await second.releaseStartupLease();
-});
+function leaseClient(): DatabaseClient {
+  const local = /(?:localhost|127\.0\.0\.1)/u.test(databaseUrl!);
+  return createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl!, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 1 });
+}
+
+it.skipIf(!databaseUrl)("hands the dedicated single-instance lock to the replacement and fences the old backend", async () => {
+  // Termination must not poison the pool used by subsequent persistence tests.
+  const oldClient = leaseClient(); const replacementClient = leaseClient();
+  const lockId = Math.floor(Math.random() * 2_147_483_646) + 1;
+  const first = new PostgresRoomRecordRepository(oldClient.db, oldClient.sql, lockId);
+  const second = new PostgresRoomRecordRepository(replacementClient.db, replacementClient.sql, lockId);
+  try {
+    await first.acquireStartupLease();
+    await expect(first.verifyStartupLease()).resolves.toBeUndefined();
+    const oldPid = first.startupLeaseBackendPidForTesting;
+    await expect(second.acquireStartupLease()).resolves.toBeUndefined();
+    expect(second.startupLeaseBackendPidForTesting).not.toBe(oldPid);
+    await expect(second.verifyStartupLease()).resolves.toBeUndefined();
+    await expect(first.verifyStartupLease()).rejects.toThrow();
+    await second.releaseStartupLease();
+    await expect(second.verifyStartupLease()).rejects.toThrow("ROOM_SINGLE_INSTANCE_LOCK_LOST");
+    await expect(second.acquireStartupLease()).resolves.toBeUndefined();
+    await expect(second.verifyStartupLease()).resolves.toBeUndefined();
+    await second.releaseStartupLease();
+  } finally {
+    // A killed reserved connection cannot reliably execute an unlock query.
+    await Promise.all([oldClient.close(), replacementClient.close()]);
+  }
+}, 30_000);
 
 it.skipIf(!databaseUrl)("detects a terminated lease backend and permits takeover", async () => {
-  const first = new PostgresRoomRecordRepository(client.db, client.sql); const second = new PostgresRoomRecordRepository(client.db, client.sql);
-  await first.acquireStartupLease(); const pid = first.startupLeaseBackendPidForTesting!;
-  await client.sql`select pg_terminate_backend(${pid})`;
-  await expect(first.verifyStartupLease()).rejects.toThrow();
-  await expect(second.acquireStartupLease()).resolves.toBeUndefined();
-  await second.releaseStartupLease();
-  await first.releaseStartupLease().catch(() => undefined);
+  const oldClient = leaseClient(); const replacementClient = leaseClient();
+  const lockId = Math.floor(Math.random() * 2_147_483_646) + 1;
+  const first = new PostgresRoomRecordRepository(oldClient.db, oldClient.sql, lockId);
+  const second = new PostgresRoomRecordRepository(replacementClient.db, replacementClient.sql, lockId);
+  try {
+    await first.acquireStartupLease(); const pid = first.startupLeaseBackendPidForTesting!;
+    const [termination] = await client.sql`select pg_terminate_backend(${pid}) as terminated`;
+    expect(termination?.terminated).toBe(true);
+    await expect(first.verifyStartupLease()).rejects.toThrow();
+    await expect(second.acquireStartupLease()).resolves.toBeUndefined();
+    await expect(second.verifyStartupLease()).resolves.toBeUndefined();
+    await second.releaseStartupLease();
+  } finally {
+    await Promise.all([oldClient.close(), replacementClient.close()]);
+  }
 }, 30_000);
 
 it.skipIf(!databaseUrl)("projects room owner, phases, first battle metadata and closure idempotently", async () => {
@@ -110,6 +139,7 @@ it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it 
     roomsRepository.closeWithProjection(roomId, new Date("2026-08-29T03:00:00Z"), 6, { phase: "closed", firstBattleAt: null, closedAt: "2026-08-29T03:00:00.000Z" }),
     roomsRepository.join(roomId, { participantPublicId: "racing-spectator", identityId: null, displayName: "Racer", role: "spectator", isOwner: false, ip: null, userAgent: null, deviceName: null }, new Date("2026-08-29T02:59:59Z")),
   ]);
+  if (closeRace.status === "rejected") throw closeRace.reason;
   expect(closeRace.status).toBe("fulfilled");
   expect(["fulfilled", "rejected"]).toContain(joinRace.status);
   expect(await roomsRepository.applyProjection(roomId, 4, { phase: "waiting", firstBattleAt: null, closedAt: null })).toBe(false);
@@ -193,7 +223,7 @@ it.skipIf(!databaseUrl)("persists an exact authoritative round set and rejects a
   expect(Buffer.byteLength(JSON.stringify(authoritativeRounds[0]!.battleResult), "utf8")).toBeGreaterThan(150_000);
   expect(Buffer.byteLength(JSON.stringify(authoritativeRounds[0]!.battleResult), "utf8")).toBeLessThan(2_097_152);
   for (const round of authoritativeRounds) await repository.saveRoundAttempt(matchId, round);
-  await expect(repository.saveRoundAttempt(matchId, { ...authoritativeRounds[0]!, battleResult: { ...authoritativeRounds[0]!.battleResult, ticks: 61 } })).rejects.toBeInstanceOf(MatchPersistenceConflictError);
+  await expect(repository.saveRoundAttempt(matchId, { ...authoritativeRounds[0]!, battleResult: { ...authoritativeRounds[0]!.battleResult, seed: 61 } })).rejects.toBeInstanceOf(MatchPersistenceConflictError);
   const base = {
     id: matchId, roomId: null,
     player1: { identityId: player1IdentityId, identitySource: "guest" as const, deviceName: null, ip: null, userAgent: null, designId: player1Design.designId, massG: player1Design.massG, score: { battlePoints: 2, challengePoints: 0, total: 2 } },

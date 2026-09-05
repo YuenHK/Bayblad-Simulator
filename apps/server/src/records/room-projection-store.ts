@@ -293,7 +293,7 @@ export class PostgresRoomProjectionStore implements RoomProjectionStore {
   async pruneDead(now = new Date(), limit = 1_000): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) throw new RangeError("invalid prune limit");
     await this.db.update(roomProjectionJobs).set({ status: "aborted", reservationToken: null, updatedAt: now }).where(and(eq(roomProjectionJobs.status, "prepared"), lte(roomProjectionJobs.updatedAt, new Date(now.getTime() - 300_000))));
-    const rows = await this.db.execute(sql`with expired as (select room_id from room_projection_jobs where status in ('dead','aborted') and updated_at < ${new Date(now.getTime() - 30 * 86_400_000)} order by updated_at limit ${limit} for update skip locked) delete from room_projection_jobs j using expired where j.room_id=expired.room_id and j.status in ('dead','aborted') returning j.room_id`);
+    const rows = await this.db.execute(sql`with expired as (select room_id from room_projection_jobs where status in ('dead','aborted') and updated_at < ${new Date(now.getTime() - 30 * 86_400_000).toISOString()}::timestamptz order by updated_at limit ${limit} for update skip locked) delete from room_projection_jobs j using expired where j.room_id=expired.room_id and j.status in ('dead','aborted') returning j.room_id`);
     return rows.length;
   }
 }

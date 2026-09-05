@@ -372,7 +372,7 @@ export class PostgresMatchRepository implements MatchRepository {
   }
   async pruneRetention(now = new Date(), limit = 1_000): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) throw new RangeError("invalid prune limit");
-    const rows = await this.db.execute(sql`with expired as (select match_id from match_persistence_jobs where status='completed' and completed_at < ${new Date(now.getTime() - 7 * 86_400_000)} order by completed_at limit ${limit} for update skip locked) delete from match_persistence_jobs j using expired where j.match_id=expired.match_id and j.status='completed' returning j.match_id`);
+    const rows = await this.db.execute(sql`with expired as (select match_id from match_persistence_jobs where status='completed' and completed_at < ${new Date(now.getTime() - 7 * 86_400_000).toISOString()}::timestamptz order by completed_at limit ${limit} for update skip locked) delete from match_persistence_jobs j using expired where j.match_id=expired.match_id and j.status='completed' returning j.match_id`);
     return rows.length;
   }
 
