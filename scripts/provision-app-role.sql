@@ -54,7 +54,7 @@ IF EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member JOIN
  OR EXISTS(SELECT 1 FROM pg_roles WHERE rolname='steam_top_app' AND (NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit OR rolreplication OR rolbypassrls OR rolconnlimit<>-1 OR rolvaliduntil IS DISTINCT FROM 'infinity'::timestamptz OR rolconfig IS NOT NULL))
  OR EXISTS(SELECT 1 FROM pg_db_role_setting s JOIN pg_roles r ON r.oid=s.setrole WHERE r.rolname='steam_top_app')
  OR EXISTS(SELECT 1 FROM pg_database d WHERE d.datname<>current_database() AND has_database_privilege('steam_top_app',d.datname,'CONNECT'))
- OR has_database_privilege('steam_top_app',current_database(),'CREATE,TEMPORARY') OR has_schema_privilege('PUBLIC','public','CREATE') OR has_schema_privilege('steam_top_app','restore_control','USAGE')
+ OR has_database_privilege('steam_top_app',current_database(),'CREATE,TEMPORARY') OR EXISTS(SELECT 1 FROM pg_namespace n,aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='public' AND a.grantee=0 AND a.privilege_type='CREATE') OR has_schema_privilege('steam_top_app','restore_control','USAGE')
  OR has_table_privilege('steam_top_app','public.app_schema_migrations','SELECT,INSERT,UPDATE,DELETE')
  OR EXISTS(SELECT 1 FROM pg_tables CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('DELETE')) required(privilege) WHERE schemaname='public' AND tablename<>'app_schema_migrations' AND NOT has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),required.privilege))
  OR EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),'TRUNCATE,REFERENCES,TRIGGER'))
