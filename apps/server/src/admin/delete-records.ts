@@ -129,7 +129,7 @@ async function materializeCurrentTargets(transaction: Pick<TransactionSql, "unsa
       union select canonical_identity_id_at_start from match_participant_snapshots where class_name_snapshot=$3 and canonical_identity_id_at_start is not null
       union select owner_identity_id_at_creation from design_event_snapshots where class_name_snapshot=$3 and owner_identity_id_at_creation is not null
       union select canonical_identity_id_at_creation from design_event_snapshots where class_name_snapshot=$3 and canonical_identity_id_at_creation is not null
-    ))`, args);
+    ))`, args.slice(0, 3));
   await transaction.unsafe("create unique index on deletion_current_identities(id)");
   await transaction.unsafe(`create temporary table deletion_design_candidates on commit drop as select d.id from designs d where ${designPredicate("d")} or d.owner_identity_id in(select id from deletion_current_identities)`, args);
   await transaction.unsafe("create unique index on deletion_design_candidates(id)");
