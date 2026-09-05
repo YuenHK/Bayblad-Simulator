@@ -107,7 +107,7 @@ it.skipIf(!databaseUrl)("keeps the newest durable room projection and claims it 
   const ownerIdentityId = randomUUID(); const roomId = randomUUID();
   await client.db.insert(identities).values({ id: ownerIdentityId, status: "guest", displayName: "Projection owner" });
   const roomsRepository = new PostgresRoomRecordRepository(client.db);
-  await roomsRepository.create({ id: roomId, code: `PJ${randomUUID().slice(0, 6)}`, name: "Projection room", ownerIdentityId, participant: { participantPublicId: "projection-owner", identityId: ownerIdentityId, displayName: "Projection owner", role: "player1", isOwner: true, ip: null, userAgent: null, deviceName: null }, at: new Date() });
+  await roomsRepository.create({ id: roomId, code: `PJ${randomUUID().slice(0, 6)}`, name: "Projection room", ownerIdentityId, participant: { participantPublicId: "projection-owner", identityId: ownerIdentityId, displayName: "Projection owner", role: "player1", isOwner: true, ip: null, userAgent: null, deviceName: null }, at: new Date("2026-08-29T01:00:00Z") });
   const first = new PostgresRoomProjectionStore(client.db); const second = new PostgresRoomProjectionStore(client.db);
   await first.enqueue({ roomId, revision: 2, payload: { phase: "battle", firstBattleAt: "2026-08-29T02:00:00.000Z", closedAt: null } });
   await second.enqueue({ roomId, revision: 1, payload: { phase: "launch", firstBattleAt: null, closedAt: null } });
@@ -233,13 +233,23 @@ it.skipIf(!databaseUrl)("persists an exact authoritative round set and rejects a
     startedAt, completedAt: new Date(startedAt.getTime() + 3_000),
   };
   const completed = { ...base, idempotencyFingerprint: completedMatchFingerprint(base) } as CompletedMatchRecord;
+  // Keep the deliberately inconsistent round set separate: authoritative rounds
+  // cannot be deleted to repair a fixture before exercising successful completion.
+  const conflictMatchId = randomUUID();
+  await repository.beginMatch({ id: conflictMatchId, roomId: null, player1IdentityId, player2IdentityId, player1DesignId: player1Design.designId, player2DesignId: player2Design.designId, performanceModelVersion: player1Design.performance.modelVersion, physicsModelVersion: "2.0.0", protocolVersion: 1, spectatorCount: 0, startedAt });
+  const conflictRounds = [makeRound(1), makeRound(2)];
+  const conflictBase = { ...base, id: conflictMatchId, rounds: conflictRounds };
+  const conflictCompleted = { ...conflictBase, idempotencyFingerprint: completedMatchFingerprint(conflictBase) } as CompletedMatchRecord;
+  for (const round of conflictRounds) await repository.saveRoundAttempt(conflictMatchId, round);
   const extra = makeRound(3);
-  await repository.saveRoundAttempt(matchId, extra);
-  await expect(repository.saveCompletedMatch(completed)).rejects.toBeInstanceOf(MatchPersistenceConflictError);
-  const [unchanged] = await client.db.select().from(matches).where(eq(matches.id, matchId));
+  await repository.saveRoundAttempt(conflictMatchId, extra);
+  await expect(repository.saveCompletedMatch(conflictCompleted)).rejects.toBeInstanceOf(MatchPersistenceConflictError);
+  const [unchanged] = await client.db.select().from(matches).where(eq(matches.id, conflictMatchId));
   expect(unchanged).toMatchObject({ status: "in_progress", completedAt: null, player1BattlePoints: null, player1Total: null, persistFailureCode: null });
-  expect(await client.db.select().from(rounds).where(eq(rounds.matchId, matchId))).toHaveLength(3);
-  await client.db.delete(rounds).where(eq(rounds.id, extra.id));
+  expect(await client.db.select().from(rounds).where(eq(rounds.matchId, conflictMatchId))).toHaveLength(3);
+  await expect(client.db.delete(rounds).where(eq(rounds.id, extra.id))).rejects.toMatchObject({ cause: { code: "55000", constraint_name: "completed_rounds_are_immutable" } });
+  expect(await client.db.select().from(rounds).where(eq(rounds.matchId, conflictMatchId))).toHaveLength(3);
+  expect(await client.db.select().from(rounds).where(eq(rounds.matchId, matchId))).toHaveLength(2);
   await expect(repository.queueCompletion(completed)).resolves.toBe("created");
   const restarted = new PostgresMatchRepository(client.db);
   const [leftClaims, rightClaims] = await Promise.all([repository.claimDueJobs(new Date("2099-01-01"), 1), restarted.claimDueJobs(new Date("2099-01-01"), 1)]);
