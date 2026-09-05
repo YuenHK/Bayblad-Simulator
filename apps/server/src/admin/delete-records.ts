@@ -157,11 +157,11 @@ export class PostgresDeletionStore implements DeletionStore {
     const hash = tokenDigest(previewToken);
     const counts = await this.client.sql.begin("read write", async (transaction) => {
       await transaction.unsafe("select pg_advisory_xact_lock(hashtext('steam_top_deletion_preview_cap'))");
-      await transaction.unsafe(`delete from deletion_previews where token_hash in(select token_hash from deletion_previews where expires_at<=$1 order by expires_at limit 500)`, [input.now]);
-      const active = rows(await transaction.unsafe("select count(*)::integer count from deletion_previews where consumed_at is null and expires_at>$1", [input.now]))[0];
+      await transaction.unsafe(`delete from deletion_previews where token_hash in(select token_hash from deletion_previews where expires_at<=$1::timestamptz order by expires_at limit 500)`, [input.now.toISOString()]);
+      const active = rows(await transaction.unsafe("select count(*)::integer count from deletion_previews where consumed_at is null and expires_at>$1::timestamptz", [input.now.toISOString()]))[0];
       if (count(active?.count) >= this.maxActivePreviews) throw new Error("DELETION_PREVIEW_CAPACITY");
       await transaction.unsafe(`insert into deletion_previews (token_hash,admin_user_id,admin_session_id,scope,filters_json,filter_hash,identity_count,design_count,match_count,created_at,expires_at)
-        values ($1,$2,$3,$4,$5::jsonb,$6,0,0,0,$7,$8)`, [hash, input.adminUserId, input.adminSessionId, filter.scope, JSON.stringify(filter), filterHash, input.now, input.expiresAt]);
+        values ($1,$2,$3,$4,$5::jsonb,$6,0,0,0,$7::timestamptz,$8::timestamptz)`, [hash, input.adminUserId, input.adminSessionId, filter.scope, JSON.stringify(filter), filterHash, input.now.toISOString(), input.expiresAt.toISOString()]);
       const value = await materializeCurrentTargets(transaction, filter);
       await transaction.unsafe("insert into deletion_preview_identities(token_hash,identity_id) select $1,id from deletion_current_identities", [hash]);
       await transaction.unsafe("insert into deletion_preview_designs(token_hash,design_id) select $1,id from deletion_current_designs", [hash]);
@@ -220,7 +220,7 @@ export class PostgresDeletionStore implements DeletionStore {
         await transaction.unsafe("delete from deletion_preview_identities where token_hash=$1", [hash]);
         await transaction.unsafe("delete from deletion_preview_designs where token_hash=$1", [hash]);
         await transaction.unsafe("delete from deletion_preview_matches where token_hash=$1", [hash]);
-        await transaction.unsafe(`update deletion_previews set consumed_at=$2,filters_json='{}'::jsonb,result_audit_id=$3,result_identity_count=$4,result_design_count=$5,result_match_count=$6 where token_hash=$1`, [hash, input.now, auditId, deletedIdentities, deletedDesigns, deletedMatches]);
+        await transaction.unsafe(`update deletion_previews set consumed_at=$2::timestamptz,filters_json='{}'::jsonb,result_audit_id=$3,result_identity_count=$4,result_design_count=$5,result_match_count=$6 where token_hash=$1`, [hash, input.now.toISOString(), auditId, deletedIdentities, deletedDesigns, deletedMatches]);
         return { deletedIdentityCount: deletedIdentities, deletedDesignCount: deletedDesigns, deletedMatchCount: deletedMatches };
       });
       if(this.ledger){await transaction.unsafe("update deletion_operations set status='committed',updated_at=now(),terminal_at=now() where audit_id=$1 and operation_digest=$2 and status='pending'",[auditId,input.filterHash]);await transaction.unsafe("insert into deletion_ledger_outbox(audit_id,operation_digest,terminal) values($1,$2,'C') on conflict(audit_id,terminal) do nothing",[auditId,input.filterHash]);}
