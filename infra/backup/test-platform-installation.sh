@@ -24,7 +24,7 @@ psql "$url" -qAtc 'begin;select pg_advisory_xact_lock(1937002751);select pg_slee
 for _ in {1..40};do [[ $(psql "$url" -Atqc "select count(*) from pg_locks where locktype='advisory' and objid=1937002751 and granted") -gt 0 ]]&&break;sleep .05;done
 started=$(date +%s);claim "$a" "$b" "$c";elapsed=$(( $(date +%s)-started ));wait "$holder";[[ $elapsed -ge 1 ]]
 claim "$a" "$b" "$c";[[ $(psql "$url" -Atqc 'select count(*) from restore_control.platform_installation') == 1 ]];if claim "$a" "$b" "$(printf d%.0s {1..64})";then exit 1;fi
-psql "$url" -c "delete from restore_control.platform_installation;insert into identities(status,display_name) values('active','x')" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
+psql "$url" -c "delete from restore_control.platform_installation;insert into identities(status,display_name) values('guest','x')" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
 psql "$url" -c "delete from identities;create table unexpected_durable_state(id bigint)" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
 psql "$url" -c "drop table unexpected_durable_state;create table restore_control.unexpected_authority(id bigint)" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
 psql "$url" -c "drop table restore_control.unexpected_authority;alter table restore_control.platform_installation add column unexpected_column text" >/dev/null;if claim "$a" "$b" "$c";then exit 1;fi
