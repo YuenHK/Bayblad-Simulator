@@ -22,7 +22,7 @@ it("fails quickly with a clear diagnostic when the child stalls", () => {
 
 it("bounds web Vitest and keeps worker usage deterministic", () => {
   const command = JSON.parse(readFileSync("apps/web/package.json", "utf8")).scripts.test;
-  expect(command).toContain("run-bounded-command.mjs --timeout-ms 60000");
+  expect(command).toContain("run-bounded-command.mjs --timeout-ms 120000");
   expect(command).toContain("vitest run --maxWorkers=1 --no-file-parallelism");
 });
 

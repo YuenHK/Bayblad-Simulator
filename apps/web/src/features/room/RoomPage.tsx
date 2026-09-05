@@ -7,7 +7,8 @@ import { RhythmLaunch, type LaunchScheduleView } from "../battle/RhythmLaunch";
 import { SpectatorList } from "./SpectatorList";
 import type { GameAudio } from "../game/GameAudio";
 import { gradePresentation } from "../battle/battleEffects";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+const CinematicBattle = lazy(() => import("../battle/CinematicBattle").then(module => ({ default: module.CinematicBattle })));
 
 export type RoomBattleView = Readonly<{
   phase: "waiting" | "launch" | "battle" | "result";
@@ -22,6 +23,7 @@ export type RoomBattleView = Readonly<{
   clockReady?: boolean;
   clockSamples?: number;
   clockQuality?: "syncing" | "good" | "degraded";
+  clockOffsetMs?: number;
 }>;
 
 function publicToDesign(started: BattleStartedEvent, side: "player1" | "player2"): TopDesign {
@@ -42,8 +44,12 @@ export function RoomPage({ snapshot, battle, design, designId, onUseDesign, onCo
   snapshot: RoomSnapshotEvent; battle: RoomBattleView; design: TopDesign; designId?: string | null; departurePending?: boolean;
   onUseDesign?: () => void | Promise<void>; onCommand: (event: CommandInput) => void; onLeave: () => void; gameAudio?: GameAudio; gameQuality?: "auto" | "reduced"; reducedMotion?: boolean; actionsDisabled?: boolean;
 }>) {
+  useEffect(() => { void import("../battle/CinematicBattle").catch(() => undefined); }, [snapshot.roomId]);
   const active = snapshot.phase !== "waiting";
-  const canLaunch = snapshot.viewer.role !== "spectator" && battle.schedule;
+  const hasComputer = [snapshot.player1, snapshot.player2].some((seat) => seat?.displayName === "電腦玩家");
+  const [dismissedMatch, setDismissedMatch] = useState<string | null>(null);
+  const resultDismissed = Boolean(battle.matchFinished && dismissedMatch === battle.matchFinished.matchId);
+  const canLaunch = snapshot.viewer.role !== "spectator" && battle.schedule && snapshot.phase === "launch";
   const focusContent = snapshot.viewer.role !== "spectator" && battle.phase === "launch";
   const battleDesigns: readonly [TopDesign, TopDesign] = battle.started ? [publicToDesign(battle.started, "player1"), publicToDesign(battle.started, "player2")] : [design, design];
   useEffect(() => {
@@ -62,9 +68,11 @@ export function RoomPage({ snapshot, battle, design, designId, onUseDesign, onCo
     {canLaunch ? <RhythmLaunch schedule={battle.schedule!} onCommand={onCommand} onLaunch={() => gameAudio?.play("launch", `launch-${battle.schedule!.roundId}`)} reducedMotion={reducedMotion} clockReady={battle.clockReady ?? true} clockSamples={battle.clockSamples ?? 0} clockQuality={battle.clockQuality ?? "good"} /> : null}
     {snapshot.viewer.role !== "spectator" && battle.privateGrade ? <GradeFeedback grade={battle.privateGrade} prefix="你的判定" /> : null}
     {snapshot.viewer.role === "spectator" && battle.spectatorGrades ? <div className="spectator-grades"><GradeFeedback grade={battle.spectatorGrades.player1} prefix="玩家一" /><GradeFeedback grade={battle.spectatorGrades.player2} prefix="玩家二" /></div> : null}
-    {(snapshot.phase === "battle" || battle.frames?.length) ? <BattleArena designs={battleDesigns} frames={battle.frames ?? []} winner={battle.matchFinished ? resultView(battle.matchFinished).winner : battle.roundWinner} reducedMotion={reducedMotion} quality={gameQuality} onEffect={(effect) => gameAudio?.play(effect.type === "heavy-impact" ? "heavy-impact" : effect.type, effect.id)} /> : null}
+    {!resultDismissed && (snapshot.phase === "battle" || battle.frames?.length) ? battle.frames?.at(-1)?.presentation ? <Suspense fallback={<p role="status">正在載入 3D 對戰場……</p>}><CinematicBattle designs={battleDesigns} frames={battle.frames} clockOffsetMs={battle.clockOffsetMs ?? 0} reducedMotion={reducedMotion} gameAudio={gameAudio} /></Suspense> : <BattleArena designs={battleDesigns} frames={battle.frames ?? []} winner={battle.matchFinished ? resultView(battle.matchFinished).winner : battle.roundWinner} reducedMotion={reducedMotion} quality={gameQuality} onEffect={(effect) => gameAudio?.play(effect.type === "heavy-impact" ? "heavy-impact" : effect.type, effect.id)} /> : null}
     {battle.roundWinner && !battle.matchFinished ? <p className="round-result" role="status">本輪勝方：{battle.roundWinner === "draw" ? "平手，重賽" : battle.roundWinner === "player1" ? "玩家一" : "玩家二"}</p> : null}
-    <MatchResult result={battle.matchFinished ? resultView(battle.matchFinished) : undefined} cancelledReason={battle.cancelledReason} />
+    {!resultDismissed ? <MatchResult result={battle.matchFinished ? resultView(battle.matchFinished) : undefined} cancelledReason={battle.cancelledReason} /> : null}
+    {battle.matchFinished && !resultDismissed ? <button className="primary-button" onClick={() => { setDismissedMatch(battle.matchFinished!.matchId); window.scrollTo({ top: 0, behavior: reducedMotion ? "instant" : "smooth" }); }}>返回房間</button> : null}
+    {snapshot.viewer.isOwner && !active ? <button disabled={actionsDisabled || (!hasComputer && Boolean(snapshot.player1 && snapshot.player2))} onClick={() => onCommand({ type: "room.bot", roomId: snapshot.roomId, enabled: !hasComputer })}>{hasComputer ? "移除電腦玩家" : "加入電腦玩家"}</button> : null}
     <SpectatorList spectators={snapshot.spectators} />
   </main>;
 }

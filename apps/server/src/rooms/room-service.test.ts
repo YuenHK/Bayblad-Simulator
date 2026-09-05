@@ -30,6 +30,18 @@ const makeHarness = () => {
 const user = (id: string, displayName = id) => ({ id, displayName });
 
 describe("RoomService membership and public state", () => {
+  it("computer participants never inherit ownership or keep an empty room alive", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "CPU room");
+    service.join(room.roomId, { ...user("cpu"), isComputer: true }, "player");
+    const spectator = service.join(room.roomId, user("human"), "spectator");
+    service.leave(room.roomId, "owner");
+    expect(service.snapshot(room.roomId, "human").ownerParticipantId).toBe(spectator.participantId);
+    service.leave(room.roomId, "human");
+    advance(120_000);
+    service.sweep();
+    expect(service.hasRoom(room.roomId)).toBe(false);
+  });
   it("將公開房間碼解析為房間 id，也接受原本 id", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");

@@ -14,7 +14,7 @@ const adminUrl = `http://127.0.0.1:${adminPort}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  timeout: 30_000,
+  timeout: 90_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,

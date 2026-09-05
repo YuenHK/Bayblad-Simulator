@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "@steam-top/db";
 import { buildDesignSnapshotRows } from "@steam-top/db/persistence";
@@ -23,6 +23,7 @@ export type PersistedDesign = Readonly<{
 }>;
 
 export interface DesignRepository {
+  mostPopularBattleDesign?(): Promise<TopDesign | undefined>;
   saveBattleEligible(ownerIdentityId: string, input: unknown): Promise<PersistedDesign>;
   getOwned(ownerIdentityId: string, designId: string): Promise<PersistedDesign | undefined>;
 }
@@ -97,6 +98,27 @@ type Db = DatabaseClient["db"];
 
 export class PostgresDesignRepository implements DesignRepository {
   constructor(readonly db: Db) {}
+
+  async mostPopularBattleDesign(): Promise<TopDesign | undefined> {
+    const rows = await this.db.execute<{ id: string; owner: string }>(sql`
+      with usage as (
+        select player1_design_id id from matches where status = 'completed' and player1_identity_id is not null
+        union all
+        select player2_design_id id from matches where status = 'completed' and player2_identity_id is not null
+      ), shapes as (
+        select d.id, d.owner_identity_id owner,
+          jsonb_build_array(d.screw_count, d.screw_radius_mm, d.screw_rotation_deg, d.metal_disc_diameter_mm,
+            (select jsonb_agg(jsonb_build_array(l.position,l.shape,l.points,l.diameter_mm,l.corner_roundness,l.rotation_deg) order by l.layer_order)
+             from design_layers l where l.design_id=d.id)) signature,
+          count(*) uses
+        from usage u join designs d on d.id=u.id where d.battle_eligible=true
+        group by d.id
+      ), ranked as (
+        select id, owner, sum(uses) over(partition by signature) popularity from shapes
+      ) select id,owner from ranked order by popularity desc,id limit 1`);
+    const row = rows[0];
+    return row ? (await this.#load(this.db, row.owner, row.id))?.design : undefined;
+  }
 
   async saveBattleEligible(ownerIdentityId: string, input: unknown): Promise<PersistedDesign> {
     const design = canonical(input);

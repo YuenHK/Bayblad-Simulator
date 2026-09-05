@@ -85,6 +85,7 @@ const analyticsService = { query: async () => analytics, parameterPage: async ()
 const exportDataset: ExportDataset = { matches:[],rounds:[],designs:[],identities:[],usage:[],parameters:[] };
 const adminCommandStore=new InMemoryAdminCommandStore();
 const app = buildApp({
+  cinematicBattles: process.env.CINEMATIC_BATTLES === "1",
   battleEngine: engine,
   rooms,
   designs,

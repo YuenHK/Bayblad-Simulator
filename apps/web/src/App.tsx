@@ -80,7 +80,7 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
     {page === "room" && state.room ? <RoomPage snapshot={state.room} design={design} designId={designId} departurePending={state.departurePending} actionsDisabled={busy || state.pendingActions > 0 || state.status !== "online"} onUseDesign={ready} onCommand={send} onLeave={() => send({ type: "room.leave", roomId: state.room!.roomId })} gameAudio={gameAudio} gameQuality={gamePreferences.quality} reducedMotion={reducedMotion} battle={{
       phase, clockReady: state.clockReady && state.status === "online", clockSamples: state.clockSamples, clockQuality: state.clockQuality, schedule: state.schedule ? { ...state.schedule, serverTargetTimeMs: client.serverToClientTime(state.schedule.serverTargetTimeMs), serverDeadlineTimeMs: client.serverToClientTime(state.schedule.serverDeadlineTimeMs) } : undefined, privateGrade: state.privateGrade ?? undefined,
       spectatorGrades: state.spectatorGrades ?? undefined, started: state.battleStarted ?? undefined,
-      frames: state.frames, roundWinner: state.roundFinished?.winner,
+      frames: state.frames, roundWinner: state.roundFinished?.winner, clockOffsetMs: state.clockOffsetMs,
       matchFinished: state.matchFinished ?? undefined, cancelledReason: state.cancelledReason ?? undefined,
     }} /> : null}
   </div>;

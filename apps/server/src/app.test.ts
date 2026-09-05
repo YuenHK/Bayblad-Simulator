@@ -3,7 +3,7 @@ import type { ServerEvent } from "@steam-top/protocol";
 import { io, type Socket } from "socket.io-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BattleInputs, BattleResult } from "./battle/engine";
-import { buildApp, type BattleEnginePort } from "./app";
+import { buildApp as buildProductionApp, type BattleEnginePort, type BuildAppOptions } from "./app";
 import { LaunchCoordinator } from "./battle/launch";
 import { scoreMatch } from "./battle/scoring";
 import { RoomService } from "./rooms/room-service";
@@ -15,6 +15,8 @@ import { MemoryRoomProjectionStore } from "./records/room-projection-store";
 import { shouldRecordRealtimeActivity } from "./socket";
 
 const uuid = () => crypto.randomUUID();
+// Legacy protocol tests use the physics clock; cinematic timing is tested separately.
+const buildApp = (options: BuildAppOptions = {}) => buildProductionApp({ cinematicBattles: false, ...options });
 async function waitForCleanup(predicate:()=>boolean){for(let attempt=0;attempt<1_000;attempt++){if(predicate())return;await new Promise<void>(resolve=>setImmediate(resolve));}throw new Error("CLEANUP_TIMEOUT");}
 const command = (type: string, fields: Record<string, unknown> = {}) => ({
   type,
@@ -136,6 +138,79 @@ async function connect(url: string, displayName: string, sessionToken?: string) 
 }
 
 describe("realtime app", () => {
+  it("removing a computer is durable and an admin kick permits a replacement", async () => {
+    const rooms = new RoomService();
+    const repository = new FailWaitingRoomProjection();
+    const left = vi.spyOn(repository, "leaveAndSync");
+    const app = buildApp({ rooms, battleEngine: new FakeBattleEngine(), roomRecordRepository: repository, sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const owner = await connect(`http://127.0.0.1:${(app.server.address() as { port: number }).port}`, "Owner");
+    closers.push(() => { owner.socket.close(); });
+    const created = nextEvent(owner.socket, "room.snapshot");
+    owner.socket.emit("client.event", command("room.create", { name: "CPU lifecycle" }));
+    const room = await created;
+    const toggle = async (enabled: boolean) => {
+      const ack = nextEvent(owner.socket, "command.ack");
+      owner.socket.emit("client.event", command("room.bot", { roomId: room.roomId, enabled }));
+      await ack;
+    };
+    await toggle(true);
+    const cpuId = rooms.get(room.roomId)!.player2!.participantId;
+    const rejected = nextEvent(owner.socket, "error");
+    owner.socket.emit("client.event", command("room.move", { roomId: room.roomId, subjectParticipantId: cpuId, target: "spectator" }));
+    expect(await rejected).toMatchObject({ code: "PLAYER_REQUIRED" });
+    await toggle(false);
+    expect(left).toHaveBeenCalledTimes(1);
+    await toggle(true);
+    await app.realtimeGateway.adminRemoveParticipant(room.roomId, rooms.get(room.roomId)!.player2!.participantId);
+    expect(app.realtimeGateway.debugCounts.sessions).toBe(1);
+    await toggle(true);
+    expect(rooms.get(room.roomId)!.player2!.displayName).toBe("電腦玩家");
+  });
+  it("owner adds computer; timeout launches at minimum and cinematic result waits sixty seconds", async () => {
+    let now = 100_000;
+    const app = buildApp({ cinematicBattles: true, now: () => now, sweepIntervalMs: 0, battleEngine: new FakeBattleEngine(), frameScheduler: async (delay) => { now += Math.ceil(delay); await new Promise<void>(resolve => setImmediate(resolve)); } });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address() as { port: number };
+    const owner = await connect(`http://127.0.0.1:${address.port}`, "Bot owner");
+    closers.push(() => { owner.socket.close(); });
+    const created = nextEvent(owner.socket, "room.snapshot");
+    owner.socket.emit("client.event", command("room.create", { name: "60 seconds" }));
+    const room = await created;
+    const added = nextEvent(owner.socket, "command.ack");
+    owner.socket.emit("client.event", command("room.bot", { roomId: room.roomId, enabled: true }));
+    await added;
+    await waitForCleanup(() => app.realtimeGateway.debugCounts.sessions === 2);
+    const watcher = await connect(`http://127.0.0.1:${address.port}`, "Observer");
+    closers.push(() => { watcher.socket.close(); });
+    const joined = nextEvent(watcher.socket, "room.snapshot");
+    watcher.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "spectator" }));
+    await joined;
+    const upload = await app.inject({ method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${owner.token}` }, payload: makeDefaultDesign() });
+    const scheduled = nextEvent(owner.socket, "launch.schedule");
+    owner.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: upload.json().designId }));
+    const schedule = await scheduled;
+    expect(app.realtimeGateway.activeMatchCount).toBe(1);
+    const frames: any[] = [];
+    owner.socket.on("server.event", event => { if (event.type === "battle.frame") frames.push(event); });
+    const gradePromise = nextEvent(owner.socket, "launch.result.private");
+    const watcherGrade = nextEvent(watcher.socket, "launch.result.spectator");
+    const watcherFrame = nextEvent(watcher.socket, "battle.frame");
+    const finished = nextEvent(owner.socket, "round.finished", 10_000);
+    now = schedule.serverDeadlineTimeMs + 1;
+    await app.realtimeGateway.pump(now);
+    expect(await gradePromise).toMatchObject({ grade: "Miss", angularMultiplier: .75, impulseMultiplier: .75 });
+    await finished;
+    expect((await watcherFrame).presentation.startsAtMs).toBe(frames[0].presentation.startsAtMs);
+    expect(await watcherGrade).toMatchObject({ roomId: room.roomId });
+    expect(frames.length).toBeGreaterThan(2);
+    expect(frames[0].presentation.elapsedMs).toBe(0);
+    expect(frames.at(-1).presentation.elapsedMs).toBe(60000);
+    expect(frames.filter(frame => frame.presentation.elapsedMs < 48000).every(frame => frame.presentation.finisher === undefined)).toBe(true);
+    expect(now).toBeGreaterThanOrEqual(frames[0].presentation.startsAtMs + 60000);
+  });
   it("throttles a thousand heartbeat pings but records immediately across HK midnight",()=>{
     const start=Date.parse("2026-08-31T15:59:59Z");let recorded=start,count=0;
     for(let index=1;index<=1_000;index++){const at=start+index*100;if(shouldRecordRealtimeActivity(recorded,at)){recorded=at;count++;}}

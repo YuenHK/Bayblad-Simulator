@@ -149,7 +149,8 @@ export type CommandInput =
   | Readonly<{ type: "player.ready"; roomId: string; designId: string }>
   | Readonly<{ type: "launch.tap"; roomId: string; roundId: string; nonce: string; clientTimeMs: number }>
   | Readonly<{ type: "room.leave"; roomId: string }>
-  | Readonly<{ type: "room.close"; roomId: string }>;
+  | Readonly<{ type: "room.close"; roomId: string }>
+  | Readonly<{ type: "room.bot"; roomId: string; enabled: boolean }>;
 
 export class RealtimeClient {
   readonly #transport: RealtimeTransport;

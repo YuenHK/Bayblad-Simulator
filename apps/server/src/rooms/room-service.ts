@@ -26,6 +26,7 @@ const SCHEMA_EVENT_ID = "00000000-0000-4000-8000-000000000000";
 const ROOM_EXPIRED = Symbol("ROOM_EXPIRED");
 
 export type InternalUser = Readonly<{
+  isComputer?: boolean | undefined;
   id: string;
   displayName: string;
 }>;
@@ -77,6 +78,7 @@ export type PersistedRoomTransition = "launch" | "battle" | "result" | "next-rou
 export type PersistedRoomTransitionReservation = Readonly<{ roomId: string; expectedRevision: number; before: RoomCheckpoint; after: RoomCheckpoint }>;
 
 type Participant = {
+  readonly isComputer: boolean;
   readonly internalUserId: string;
   readonly participantId: string;
   readonly displayName: string;
@@ -280,7 +282,7 @@ export class RoomService {
   roomsDueForClosure(): readonly Readonly<{ roomId: string; revision: number }>[] {
     const now = this.#dependencies.now();
     return [...this.#rooms.values()].filter((room) =>
-      ![...room.participants.values()].some((participant) => participant.connected) &&
+      ![...room.participants.values()].some((participant) => participant.connected && !participant.isComputer) &&
       room.emptySinceMs !== null && now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
     ).map((room) => ({ roomId: room.id, revision: room.revision + 1 }));
   }
@@ -591,7 +593,7 @@ export class RoomService {
     const room = this.#room(roomId);
     const now = this.#dependencies.now();
     const hasConnectedParticipant = [...room.participants.values()].some(
-      (participant) => participant.connected,
+      (participant) => participant.connected && !participant.isComputer,
     );
     if (
       !hasConnectedParticipant &&
@@ -716,6 +718,7 @@ export class RoomService {
     });
     return {
       internalUserId: user.id,
+      isComputer: user.isComputer ?? false,
       participantId: summary.participantId,
       displayName: summary.displayName,
       joinedAt: this.#dependencies.now(),
@@ -852,7 +855,7 @@ export class RoomService {
 
   #ownerCandidate(room: Room): Participant | undefined {
     return [...room.participants.values()]
-      .filter((participant) => participant.connected)
+      .filter((participant) => participant.connected && !participant.isComputer)
       .sort(
         (left, right) =>
           left.joinedAt - right.joinedAt ||
@@ -868,7 +871,7 @@ export class RoomService {
 
   #markEmpty(room: Room, now = this.#dependencies.now()): void {
     const hasConnectedParticipant = [...room.participants.values()].some(
-      (participant) => participant.connected,
+      (participant) => participant.connected && !participant.isComputer,
     );
     if (hasConnectedParticipant) room.emptySinceMs = null;
     else if (room.emptySinceMs === null) room.emptySinceMs = now;

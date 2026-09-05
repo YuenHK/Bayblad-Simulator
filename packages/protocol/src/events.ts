@@ -116,6 +116,8 @@ export const playerReadyEventSchema = z
   })
   .strict();
 
+export const roomBotEventSchema = z.object({ type: z.literal("room.bot"), roomId: correlationIdSchema, enabled: z.boolean(), ...commandEnvelopeShape }).strict();
+
 export const launchTapEventSchema = z
   .object({
     type: z.literal("launch.tap"),
@@ -169,6 +171,7 @@ export const roomDepartedAckEventSchema = z
   .strict();
 
 export const v1CommandEventSchema = z.discriminatedUnion("type", [
+  roomBotEventSchema,
   roomCreateEventSchema,
   roomJoinEventSchema,
   roomMoveEventSchema,
@@ -182,6 +185,7 @@ export const v1CommandEventSchema = z.discriminatedUnion("type", [
 ]);
 export type V1CommandEvent = z.infer<typeof v1CommandEventSchema>;
 export const v1CommandTypeSchema = z.enum([
+  "room.bot",
   "room.create",
   "room.join",
   "room.move",
@@ -196,6 +200,7 @@ export const v1CommandTypeSchema = z.enum([
 export type V1CommandType = z.infer<typeof v1CommandTypeSchema>;
 
 export const clientEventSchema = z.discriminatedUnion("type", [
+  roomBotEventSchema,
   protocolHelloEventSchema,
   roomCreateEventSchema,
   roomJoinEventSchema,
@@ -651,6 +656,14 @@ export const battleFrameEventSchema = z
     ...battleCorrelationShape,
     sequence: safeNonnegativeIntegerSchema,
     tick: safeNonnegativeIntegerSchema,
+    presentation: z.object({
+      startsAtMs: safeNonnegativeIntegerSchema,
+      durationMs: z.literal(60000),
+      elapsedMs: z.number().min(0).max(60000),
+      zodiacIndex: z.number().int().min(0).max(11),
+      skillName: z.string().min(1).max(40),
+      finisher: z.enum(["player1", "player2", "draw"]).optional(),
+    }).strict().optional(),
     player1: battleBodySchema,
     player2: battleBodySchema,
     ...serverEnvelopeShape,
