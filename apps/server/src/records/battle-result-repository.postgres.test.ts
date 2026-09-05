@@ -35,15 +35,7 @@ function leaseClient(): DatabaseClient {
   const local = /(?:localhost|127\.0\.0\.1)/u.test(databaseUrl!);
   // Keep the deliberately terminated test connection's reconnect attempt
   // inside verifyStartupLease's two-second bound before the pool is closed.
-  return createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl!, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 1, connectTimeoutSeconds: 1 });
-}
-
-async function closeLeaseClients(...clients: DatabaseClient[]): Promise<void> {
-  // postgres.js schedules one final socket write after a backend termination.
-  // Let that queue drain before ending the pool, otherwise its Immediate can
-  // observe a socket already nulled by end() and surface an unrelated error.
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await Promise.all(clients.map((lease) => lease.close()));
+  return createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl!, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 1, idleTimeoutSeconds: 1, connectTimeoutSeconds: 1 });
 }
 
 it.skipIf(!databaseUrl)("hands the dedicated single-instance lock to the replacement and fences the old backend", async () => {
@@ -68,7 +60,10 @@ it.skipIf(!databaseUrl)("hands the dedicated single-instance lock to the replace
   } finally {
     await first.releaseStartupLease().catch(() => undefined);
     await second.releaseStartupLease().catch(() => undefined);
-    await closeLeaseClients(oldClient, replacementClient);
+    // postgres.js 3.4.9 throws from a queued socket write when end() is called
+    // on a deliberately terminated reserved backend. Let its one-second idle
+    // timeout dispose that test-only pool; close the healthy pool explicitly.
+    await replacementClient.close();
   }
 }, 30_000);
 
@@ -88,7 +83,7 @@ it.skipIf(!databaseUrl)("detects a terminated lease backend and permits takeover
   } finally {
     await first.releaseStartupLease().catch(() => undefined);
     await second.releaseStartupLease().catch(() => undefined);
-    await closeLeaseClients(oldClient, replacementClient);
+    await replacementClient.close();
   }
 }, 30_000);
 
