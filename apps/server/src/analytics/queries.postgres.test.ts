@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { createDatabaseClient, type DatabaseClient } from "@steam-top/db";
+import { battleAuthorityKeyHash, createDatabaseClient, type DatabaseClient } from "@steam-top/db";
 import { parameterPerformance } from "./parameters";
 import { parameterUsage } from "./parameter-usage";
 import { usageAnalytics } from "./usage";
@@ -47,7 +47,10 @@ beforeAll(async () => {
     const match = randomUUID(); const completed = index < 5 ? `2026-08-0${index + 1}T04:00:00Z` : `2026-09-0${index - 4}T04:00:00Z`;
     await client.sql`insert into matches(id,room_id,idempotency_fingerprint,status,player1_identity_id,player2_identity_id,player1_design_id,player2_design_id,performance_model_version,physics_model_version,protocol_version,started_at) values (${match},${roomJuly},${index.toString(16).padStart(64,"0")},'in_progress',${first},${second},${star},${circle},'perf-1','physics-1',1,${completed}::timestamptz - interval '1 minute')`;
     await client.sql`insert into match_participant_snapshots(match_id,slot,identity_id_at_start,canonical_identity_id_at_start,identity_status_snapshot,class_name_snapshot,design_id,captured_at) values (${match},'player1',${first},${first},'iclass','1A',${star},${completed}::timestamptz-interval '1 minute'),(${match},'player2',${second},${second},'guest',null,${circle},${completed}::timestamptz-interval '1 minute')`;
-    for (let round=1; round<=2; round++) await client.sql`insert into rounds(id,match_id,external_round_id,authority_key_hash,round_number,attempt,seed,outcome,outcome_reason,ticks,launch_grade_a,launch_grade_b,launch_angular_multiplier_a,launch_angular_multiplier_b,launch_linear_multiplier_a,launch_linear_multiplier_b,physics_model_version,input_fingerprint,battle_result_json,started_at,completed_at) values (${randomUUID()},${match},${`m${index}r${round}`},${(index * 2 + round).toString(16).padStart(64,"1")},${round},1,1,'player1','stopped',60,'Perfect','Good',1,1,1,1,'physics-1',${(index * 2 + round).toString(16).padStart(64,"2")},'{"modelVersion":"physics-1","seed":1,"ticks":60,"frames":[],"outcome":{"winner":"player1","reason":"stopped"},"finalStats":{}}',${completed}::timestamptz - interval '30 seconds',${completed})`;
+    for (let round=1; round<=2; round++) {
+      const externalRoundId = `m${index}r${round}`;
+      await client.sql`insert into rounds(id,match_id,external_round_id,authority_key_hash,round_number,attempt,seed,outcome,outcome_reason,ticks,launch_grade_a,launch_grade_b,launch_angular_multiplier_a,launch_angular_multiplier_b,launch_linear_multiplier_a,launch_linear_multiplier_b,physics_model_version,input_fingerprint,battle_result_json,started_at,completed_at) values (${randomUUID()},${match},${externalRoundId},${battleAuthorityKeyHash(match, externalRoundId)},${round},1,1,'player1','stopped',60,'Perfect','Good',1,1,1,1,'physics-1',${(index * 2 + round).toString(16).padStart(64,"2")},'{"modelVersion":"physics-1","seed":1,"ticks":60,"frames":[],"outcome":{"winner":"player1","reason":"stopped"},"finalStats":{}}',${completed}::timestamptz - interval '30 seconds',${completed})`;
+    }
     await client.sql`update matches set status='completed',player1_battle_points=2,player2_battle_points=0,player1_challenge_points=0,player2_challenge_points=0,player1_total=2,player2_total=0,winner='player1',round_winners='["player1","player1"]',completed_at=${completed} where id=${match}`;
   }
 }, 30_000);
