@@ -40,5 +40,5 @@ if os.geteuid()!=0 and os.environ.get("STEAM_TOP_INVOKER_TEST_READY") and os.env
  open(os.environ["STEAM_TOP_INVOKER_TEST_READY"],"x").close()
  while not os.path.exists(os.environ["STEAM_TOP_INVOKER_TEST_CONTINUE"]):time.sleep(.01)
 if not os.path.isdir("/proc/self/fd"):fail("fd execution unavailable")
-os.set_inheritable(signer,True)
-os.execve(runtime,[value["pythonPath"],"-I","-E","-S",f"/proc/self/fd/{signer}",*sys.argv[1:]],{"PATH":"/usr/bin:/bin","LANG":"C","LC_ALL":"C","PYTHONNOUSERSITE":"1"})
+os.set_inheritable(signer,True);os.set_inheritable(runtime,True)
+os.execve(f"/proc/self/fd/{runtime}",[value["pythonPath"],"-I","-E","-S",f"/proc/self/fd/{signer}",*sys.argv[1:]],{"PATH":"/usr/bin:/bin","LANG":"C","LC_ALL":"C","PYTHONNOUSERSITE":"1"})
