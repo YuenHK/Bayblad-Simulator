@@ -32,15 +32,15 @@ SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM steam_top_app',current_
 REVOKE CONNECT ON DATABASE postgres FROM PUBLIC,steam_top_app;
 REVOKE CONNECT ON DATABASE template0 FROM PUBLIC,steam_top_app;
 REVOKE CONNECT ON DATABASE template1 FROM PUBLIC,steam_top_app;
-REVOKE ALL ON SCHEMA public,restore_control FROM steam_top_app;
+REVOKE ALL ON SCHEMA public FROM steam_top_app;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 SELECT format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC',current_database()) \gexec
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public,restore_control FROM steam_top_app;
-SELECT format('REVOKE %s (%I) ON TABLE %I.%I FROM steam_top_app',privilege,a.attname,n.nspname,c.relname) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('REFERENCES')) p(privilege) WHERE n.nspname IN('public','restore_control') AND c.relkind IN('r','p') AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum \gexec
-SELECT format('REVOKE %s (%I) ON TABLE %I.%I FROM PUBLIC',privilege,a.attname,n.nspname,c.relname) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('REFERENCES')) p(privilege) WHERE n.nspname IN('public','restore_control') AND c.relkind IN('r','p') AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum \gexec
-REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public,restore_control FROM steam_top_app;
-REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public,restore_control FROM steam_top_app;
-REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public,restore_control FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM steam_top_app;
+SELECT format('REVOKE %s (%I) ON TABLE %I.%I FROM steam_top_app',privilege,a.attname,n.nspname,c.relname) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('REFERENCES')) p(privilege) WHERE n.nspname='public' AND c.relkind IN('r','p') AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum \gexec
+SELECT format('REVOKE %s (%I) ON TABLE %I.%I FROM PUBLIC',privilege,a.attname,n.nspname,c.relname) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('REFERENCES')) p(privilege) WHERE n.nspname='public' AND c.relkind IN('r','p') AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum \gexec
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM steam_top_app;
+REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM steam_top_app;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM steam_top_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM steam_top_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM steam_top_app;
