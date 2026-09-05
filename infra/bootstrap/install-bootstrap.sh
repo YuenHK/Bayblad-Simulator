@@ -166,7 +166,7 @@ NODE
   publish_exact /opt/steam-top-bootstrap/steam-top-cutover-reaper.service /etc/systemd/system/steam-top-cutover-reaper.service 644
   publish_exact /opt/steam-top-bootstrap/steam-top-cutover-reaper.timer /etc/systemd/system/steam-top-cutover-reaper.timer 644
   systemd_failed=true;rollback_systemd(){ if [[ $systemd_failed == true ]];then systemctl disable --now steam-top-cutover-reaper.timer >/dev/null 2>&1||true;rm -f /etc/systemd/system/steam-top-cutover-reaper.service /etc/systemd/system/steam-top-cutover-reaper.timer;systemctl daemon-reload >/dev/null 2>&1||true;fi;};trap 'rollback_systemd;rm -rf "$tmp"' EXIT
-  systemctl daemon-reload&&systemctl enable --now steam-top-cutover-reaper.timer&&systemctl start steam-top-cutover-reaper.service||die "cutover reaper activation"
+  systemctl daemon-reload&&systemctl enable --now steam-top-cutover-reaper.timer&&timeout 30s systemctl start steam-top-cutover-reaper.service||die "cutover reaper activation"
   /opt/steam-top-bootstrap/verify-reaper-health.sh||die "cutover reaper health"
   systemd_failed=false
 fi
