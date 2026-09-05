@@ -52,7 +52,10 @@ export class PostgresAnalyticsCache implements AnalyticsCache {
   }
   async exclusive<T>(hash: string, operation: () => Promise<T>): Promise<T> {
     return await this.sql.begin(async (transaction) => {
-      await transaction.unsafe("set transaction isolation level repeatable read");
+      // The advisory lock serializes writers for this hash. READ COMMITTED lets a
+      // waiter observe the summary committed by the previous lock owner; the
+      // fixed cutoff below still bounds every analytics source query.
+      await transaction.unsafe("set transaction isolation level read committed");
       if(this.onReservedBackendForTest){const [backend]=await transaction<{pid:number}[]>`select pg_backend_pid() pid`;this.onReservedBackendForTest(backend!.pid);}
       await transaction`select pg_advisory_xact_lock(hashtextextended(${hash}, 1937002026))`;
       const [clock]=await transaction<{cutoff:Date|string}[]>`select transaction_timestamp() cutoff`;const cutoff=clock?.cutoff instanceof Date?clock.cutoff:new Date(String(clock?.cutoff));

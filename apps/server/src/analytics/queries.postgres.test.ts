@@ -94,26 +94,26 @@ it.skipIf(!databaseUrl)("applies physics filters only through eligible completed
 it.skipIf(!databaseUrl)("keeps the completed-match analytics plan indexable at scale",async()=>{
   await client.sql`set local enable_seqscan=off`;
   const plan=await client.sql.unsafe(`explain (costs off) select id from matches where status='completed' and completed_at >= '2026-08-01T00:00:00Z' and completed_at < '2026-10-01T00:00:00Z'`);
-  expect(JSON.stringify(plan)).toMatch(/matches_(?:status_completed|completed_at)_idx/u);
+  expect(JSON.stringify(plan)).toMatch(/matches_(?:status_completed_at|status_completed|completed_at)_idx/u);
 },30_000);
 
 it.skipIf(!databaseUrl)("persists and reuses a bounded materialized summary", async () => {
   const cache = new PostgresAnalyticsCache(client.sql); let executions = 0;
-  const service = new AnalyticsService(cache, async (filters, period) => { executions++; return usageAnalytics(client.db, filters, period); }, async (filters) => parameterPerformance(client.db, filters), async () => [], () => new Date("2026-09-30T16:00:00Z"));
+  const service = new AnalyticsService(cache, async (filters, period) => { executions++; return usageAnalytics(client.db, filters, period); }, async (filters) => parameterPerformance(client.db, filters), async () => [], () => new Date());
   const filters = { from: "2026-08-01", to: "2026-09-30" } as const;
   await service.query(filters); await service.query(filters);
   expect(executions).toBe(3);
 }, 30_000);
 
 it.skipIf(!databaseUrl)("coordinates the same cache hash across service instances", async () => {
-  let executions=0; const make=()=>new AnalyticsService(new PostgresAnalyticsCache(client.sql),async()=>{ executions++; return []; },async()=>[],async()=>[],()=>new Date("2026-10-01T16:00:00Z"));
+  let executions=0; const make=()=>new AnalyticsService(new PostgresAnalyticsCache(client.sql),async()=>{ executions++; return []; },async()=>[],async()=>[],()=>new Date());
   await Promise.all([make().query({ from:"2026-08-01",to:"2026-08-02" }),make().query({ from:"2026-08-01",to:"2026-08-02" })]);
   expect(executions).toBe(3);
 },30_000);
 
 it.skipIf(!databaseUrl)("serializes two service instances on a single pooled connection without a stale pre-lock snapshot",async()=>{
   const single=createDatabaseClient({url:postgresTestSchemaUrl(databaseUrl!,schemaName),ssl:false,allowInsecure:true,maxConnections:1});await single.sql.unsafe(`set search_path to ${schemaName},public`);let executions=0,firstStarted!:()=>void,releaseFirst!:()=>void;const started=new Promise<void>(resolve=>{firstStarted=resolve;});const release=new Promise<void>(resolve=>{releaseFirst=resolve;});
-  const make=(block:boolean)=>new AnalyticsService(new PostgresAnalyticsCache(single.sql),async()=>{executions++;if(block&&executions===1){firstStarted();await release;}return[];},async()=>[],async()=>[],()=>new Date("2026-10-03T16:00:00Z"));
+  const make=(block:boolean)=>new AnalyticsService(new PostgresAnalyticsCache(single.sql),async()=>{executions++;if(block&&executions===1){firstStarted();await release;}return[];},async()=>[],async()=>[],()=>new Date());
   const first=make(true).query({from:"2026-06-01",to:"2026-06-02"});await started;const second=make(false).query({from:"2026-06-01",to:"2026-06-02"});releaseFirst();await Promise.all([first,second]);expect(executions).toBe(3);await single.close();
 },30_000);
 
