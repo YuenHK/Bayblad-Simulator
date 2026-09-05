@@ -94,9 +94,10 @@ def quarantine_cleanup(name,fd,variable):
     output_digest=hashlib.sha256(output_name.encode()).hexdigest();quarantine=f".steam-top-signature-quarantine-{output_digest}-{os.getpid()}-{os.urandom(8).hex()}"
     libc=ctypes.CDLL(None,use_errno=True)
     if libc.renameat2(parent_fd,name.encode(),parent_fd,quarantine.encode(),1)!=0:raise OSError(ctypes.get_errno(),"renameat2 no-clobber failed")
+    quarantined_expected=os.fstat(fd)
     quarantine_fd=os.open(quarantine,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent_fd)
     try:
-        if identity(os.fstat(quarantine_fd))!=identity(expected) or identity(os.fstat(fd))!=identity(expected):abort("quarantined stage identity mismatch")
+        if identity(os.fstat(quarantine_fd))!=identity(quarantined_expected) or identity(os.fstat(fd))!=identity(quarantined_expected):abort("quarantined stage identity mismatch")
     finally:os.close(quarantine_fd)
     os.unlink(quarantine,dir_fd=parent_fd);os.fsync(parent_fd)
 
