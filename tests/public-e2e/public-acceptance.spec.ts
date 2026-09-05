@@ -128,10 +128,13 @@ test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原
       const peerGrade = peer.page.getByText(/^你的判定：(Perfect|Great|Good|Miss)$/u);
       await expect(ownerLaunch).toBeEnabled();
       await expect(peerLaunch).toBeEnabled();
+      await Promise.all([ownerLaunch.focus(), peerLaunch.focus()]);
       await expect(owner.page.locator(".energy-track .zone-perfect")).toBeVisible();
       await expect(owner.page.locator(".launch-countdown")).toHaveText("發射！", { timeout: 8_000 });
       await expect(peer.page.locator(".launch-countdown")).toHaveText("發射！", { timeout: 8_000 });
-      await Promise.all([ownerLaunch.click(), peerLaunch.click()]);
+      // Keyboard activation is immediate; click actionability can wait across the
+      // short launch deadline when the arena auto-scroll moves the button.
+      await Promise.all([owner.page.keyboard.press("Space"), peer.page.keyboard.press("Space")]);
       await expect(ownerGrade).toBeVisible();
       await expect(peerGrade).toBeVisible();
       const arenas = [owner.page,peer.page].map(page=>page.getByTestId("battle-arena-3d"));
