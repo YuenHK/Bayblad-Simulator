@@ -89,6 +89,10 @@ type DbRow = Readonly<Record<string, unknown>>;
 const tokenDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 const rows = (value: unknown) => value as readonly DbRow[];
 const count = (value: unknown) => { const parsed = Number(value); if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error("INVALID_DELETION_COUNT"); return parsed; };
+const databaseDate = (value: unknown): Date | null => {
+  const parsed = value instanceof Date ? value : typeof value === "string" || typeof value === "number" ? new Date(value) : null;
+  return parsed && Number.isFinite(parsed.getTime()) ? parsed : null;
+};
 const matchOccurredAt=(alias:string)=>`case when ${alias}.status='completed' then ${alias}.completed_at else coalesce(${alias}.started_at,${alias}.created_at) end`;
 
 function filterArguments(filter: DeletionFilter): (string | null)[] {
@@ -175,8 +179,9 @@ export class PostgresDeletionStore implements DeletionStore {
     const result = rows(await this.client.sql.unsafe(`select filter_hash "filterHash",scope,expires_at "expiresAt",consumed_at "consumedAt",result_audit_id "resultAuditId",result_identity_count "resultIdentities",result_design_count "resultDesigns",result_match_count "resultMatches" from deletion_previews where token_hash=$1 and admin_user_id=$2 and admin_session_id=$3`, [tokenDigest(input.previewToken), input.adminUserId, input.adminSessionId]));
     const row = result[0]; if (!row) return { status: "invalid" as const };
     if (row.filterHash !== input.filterHash) return { status: "changed" as const };
-    if (row.consumedAt instanceof Date && typeof row.resultAuditId === "string") { if(this.ledger)await (this.ledger.recoverCommitted?.({auditId:row.resultAuditId,operationDigest:input.filterHash})??this.ledger.recordCommitted({auditId:row.resultAuditId,operationDigest:input.filterHash})); return { status: "recovered" as const, auditId: row.resultAuditId, counts: recoverCounts(row) }; }
-    if (!(row.expiresAt instanceof Date) || input.now >= row.expiresAt) return { status: "expired" as const };
+    if (databaseDate(row.consumedAt) && typeof row.resultAuditId === "string") { if(this.ledger)await (this.ledger.recoverCommitted?.({auditId:row.resultAuditId,operationDigest:input.filterHash})??this.ledger.recordCommitted({auditId:row.resultAuditId,operationDigest:input.filterHash})); return { status: "recovered" as const, auditId: row.resultAuditId, counts: recoverCounts(row) }; }
+    const expiresAt = databaseDate(row.expiresAt);
+    if (!expiresAt || input.now >= expiresAt) return { status: "expired" as const };
     return { status: "ok" as const, scope: row.scope as DeletionFilter["scope"] };
   }
   async execute(input: { previewToken: string; filterHash: string; adminUserId: string; adminSessionId: string; now: Date }): ReturnType<DeletionStore["execute"]> {
@@ -197,8 +202,9 @@ export class PostgresDeletionStore implements DeletionStore {
       const result = rows(await transaction.unsafe(`select filter_hash "filterHash",scope,filters_json "filters",identity_count identities,design_count designs,match_count matches,expires_at "expiresAt",consumed_at "consumedAt",result_audit_id "resultAuditId",result_identity_count "resultIdentities",result_design_count "resultDesigns",result_match_count "resultMatches" from deletion_previews where token_hash=$1 and admin_user_id=$2 and admin_session_id=$3 for update`, [hash, input.adminUserId, input.adminSessionId]));
       const row = result[0]; if (!row) return { status: "invalid" as const };
       if (row.filterHash !== input.filterHash) return { status: "changed" as const };
-      if (row.consumedAt instanceof Date && typeof row.resultAuditId === "string") return { status: "ok" as const, auditId: row.resultAuditId, counts: recoverCounts(row), recovered: true };
-      if (!(row.expiresAt instanceof Date) || input.now >= row.expiresAt) return { status: "expired" as const };
+      if (databaseDate(row.consumedAt) && typeof row.resultAuditId === "string") return { status: "ok" as const, auditId: row.resultAuditId, counts: recoverCounts(row), recovered: true };
+      const expiresAt = databaseDate(row.expiresAt);
+      if (!expiresAt || input.now >= expiresAt) return { status: "expired" as const };
       const filter = deletionFilterSchema.parse(row.filters), expected = Object.freeze({ identities: count(row.identities), designs: count(row.designs), matches: count(row.matches) }), actual = await materializeCurrentTargets(transaction, filter);
       if (JSON.stringify(actual) !== JSON.stringify(expected)) return { status: "stale" as const };
       const mismatch = rows(await transaction.unsafe(`select exists(
