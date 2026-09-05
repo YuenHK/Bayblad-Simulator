@@ -7,12 +7,21 @@ async function waitConnected(page: Page) {
   await expect(page.getByText("已連線", { exact: true })).toBeVisible({ timeout: 30_000 });
 }
 
-async function openIsolatedGuest(browser: Browser, protocolEvents: string[] = []): Promise<{ context: BrowserContext; page: Page }> {
+type RoundTiming = { roundId: string; startsAtMs: number; durationMs: number };
+async function openIsolatedGuest(browser: Browser, timings: RoundTiming[] = []): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true });
   const page = await context.newPage();
   page.on("websocket", (socket) => socket.on("framereceived", ({ payload }) => {
+    // Retain only timing metadata; never log full protocol messages or student records.
     const frame = String(payload);
-    if (["match.finished", "match.persistence", "match.persistence_failed", "room.snapshot", "room.delta", "battle.started", "BATTLE_FAILED"].some((type) => frame.includes(type))) protocolEvents.push(frame);
+    if (!frame.startsWith("42[")) return;
+    try {
+      const packet: unknown = JSON.parse(frame.slice(2));
+      if (!Array.isArray(packet)) return;
+      for (const event of packet) {
+        if (event?.type === "battle.frame" && typeof event.roundId === "string" && typeof event.presentation?.startsAtMs === "number" && !timings.some(t => t.roundId === event.roundId)) timings.push({roundId:event.roundId, startsAtMs:event.presentation.startsAtMs, durationMs:event.presentation.durationMs});
+      }
+    } catch { /* Non-JSON transport packets carry no timing evidence. */ }
   }));
   await page.goto("https://yuenhk.github.io/Bayblad-Simulator/");
   await waitConnected(page);
@@ -82,7 +91,6 @@ test("老師登入、統計篩選、排行榜及 Excel 匯出", async ({ page },
     const exportResponse = page.waitForResponse((response) => response.url().includes("/api/admin/export.xlsx"), { timeout: 20_000 });
     await page.getByRole("button", { name: "匯出 Excel" }).click();
     const response = await exportResponse;
-    console.info(`[admin-export] status=${response.status()} body=${await response.text()}`);
     expect(response.status()).toBe(200);
     const file = await download;
     expect(file.suggestedFilename()).toMatch(/\.xlsx$/u);
@@ -92,11 +100,13 @@ test("老師登入、統計篩選、排行榜及 Excel 匯出", async ({ page },
   await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
 });
 
-test("兩個獨立訪客完成建立、準備、三輪發射及賽後計分", async ({ browser, browserName }) => {
+test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原房", async ({ browser, browserName }, testInfo) => {
+  test.setTimeout(300_000);
   test.skip(browserName !== "chromium", "完整即時對戰只跑一次；其餘引擎測核心頁面與老師端");
-  const ownerEvents: string[] = [], peerEvents: string[] = [];
-  const owner = await openIsolatedGuest(browser, ownerEvents);
-  const peer = await openIsolatedGuest(browser, peerEvents);
+  test.skip(testInfo.project.name !== "chromium-desktop", "兩真人時間軸在桌面 Chromium 驗收一次");
+  const ownerTimings: RoundTiming[] = [], peerTimings: RoundTiming[] = [];
+  const owner = await openIsolatedGuest(browser, ownerTimings);
+  const peer = await openIsolatedGuest(browser, peerTimings);
   try {
     const ownerName = await owner.page.locator('[aria-label^="身份來源："]').textContent();
     const peerName = await peer.page.locator('[aria-label^="身份來源："]').textContent();
@@ -111,7 +121,7 @@ test("兩個獨立訪客完成建立、準備、三輪發射及賽後計分", as
       peer.page.getByRole("button", { name: "上載當前設計並準備" }).click(),
     ]);
     const resultHeading = owner.page.getByRole("heading", { name: "對戰結果" });
-    for (let attempt = 0; attempt < 6 && !(await resultHeading.isVisible()); attempt += 1) {
+    for (let attempt = 0; attempt < 4 && !(await resultHeading.isVisible()); attempt += 1) {
       const ownerLaunch = owner.page.getByRole("button", { name: "在判定線發射" });
       const peerLaunch = peer.page.getByRole("button", { name: "在判定線發射" });
       const ownerGrade = owner.page.getByText(/^你的判定：(Perfect|Great|Good|Miss)$/u);
@@ -124,26 +134,46 @@ test("兩個獨立訪客完成建立、準備、三輪發射及賽後計分", as
       await Promise.all([ownerLaunch.click(), peerLaunch.click()]);
       await expect(ownerGrade).toBeVisible();
       await expect(peerGrade).toBeVisible();
-      const arena = owner.page.locator(".battle-arena");
-      const top = owner.page.getByTestId("battle-player1");
-      await expect(arena).toBeVisible({ timeout: 30_000 });
-      const firstTransform = await top.getAttribute("transform");
-      await owner.page.waitForTimeout(500);
-      await expect(top).not.toHaveAttribute("transform", firstTransform ?? "", { timeout: 5_000 });
-      await expect(owner.page.locator(".top-afterimage").first()).toBeVisible();
-      await Promise.race([
-        resultHeading.waitFor({ state: "visible", timeout: 30_000 }),
-        ownerGrade.waitFor({ state: "hidden", timeout: 30_000 }),
-      ]);
+      const arenas = [owner.page,peer.page].map(page=>page.getByTestId("battle-arena-3d"));
+      await Promise.all(arenas.map(async arena=>{await expect(arena.locator("canvas")).toBeVisible({timeout:30_000});await expect(arena).toHaveAttribute("data-phase","battle");}));
+      await expect.poll(()=>ownerTimings.length).toBe(attempt+1);
+      await expect.poll(()=>peerTimings.length).toBe(attempt+1);
+      const timing=ownerTimings[attempt]!;
+      expect(timing.durationMs).toBe(60000);
+      expect(peerTimings[attempt]).toEqual(timing);
+      // Both clients independently reach the same phase on the shared server schedule.
+      for (const phase of ["summon","strike","result"] as const) {
+        const reached=await Promise.all(arenas.map(async arena=>{await expect(arena).toHaveAttribute("data-phase",phase,{timeout:phase === "summon" ? 52000 : 9000});return Date.now();}));
+        expect(Math.abs(reached[0]!-reached[1]!)).toBeLessThan(1200);
+        const boundary=phase === "summon" ? 48000 : phase === "strike" ? 54000 : 60000;
+        expect(Math.min(...reached)-timing.startsAtMs).toBeGreaterThanOrEqual(boundary);
+        expect(Math.max(...reached)-timing.startsAtMs).toBeLessThan(boundary+2500);
+        if (phase !== "result") {
+          await Promise.all([owner.page,peer.page].map(async page=>{await expect(page.getByTestId("arena-victory")).toHaveCount(0);await expect(page.getByRole("heading",{name:"對戰結果"})).toHaveCount(0);}));
+          await Promise.all(arenas.map(arena=>expect(arena.locator(".cinema-skill strong")).not.toBeEmpty()));
+        } else {
+          // No early completion: every played round must consume its entire minute.
+          expect(Math.min(...reached)-timing.startsAtMs).toBeGreaterThanOrEqual(60000);
+          await Promise.all([owner.page,peer.page].map(page=>expect(page.getByTestId("arena-victory")).toBeVisible()));
+        }
+      }
+      await expect.poll(async()=>await resultHeading.isVisible() || !(await ownerGrade.isVisible()),{timeout:10000}).toBe(true);
     }
     await expect(resultHeading).toBeVisible({ timeout: 30_000 });
     await expect(owner.page.getByTestId("arena-victory")).toBeVisible();
     await expect(owner.page.getByTestId("arena-victory")).toContainText(/玩家[一二]勝出/u);
     await expect(owner.page.getByText("總分：", { exact: false })).toHaveCount(2);
     await expect(owner.page.getByText("排行榜")).toHaveCount(0);
+    await Promise.all([owner.page,peer.page].map(page=>page.getByRole("button",{name:"返回房間",exact:true}).click()));
+    await Promise.all([owner.page,peer.page].map(async page=>{
+      await expect(page.getByText(`房間碼 ${code}`,{exact:true})).toBeVisible();
+      await expect(page.getByRole("heading",{name:"對戰結果"})).toHaveCount(0);
+      await expect(page.getByRole("button",{name:"以已選設計準備",exact:true})).toBeEnabled();
+    }));
+    await owner.page.getByRole("button",{name:"以已選設計準備",exact:true}).click();
+    await expect(owner.page.locator(".seat-card.is-ready")).toHaveCount(1);
+    await expect(peer.page.locator(".seat-card.is-ready")).toHaveCount(1);
   } finally {
-    console.info(`[owner-protocol] ${ownerEvents.join("\n")}`);
-    console.info(`[peer-protocol] ${peerEvents.join("\n")}`);
     await owner.context.close().catch(() => undefined);
     await peer.context.close().catch(() => undefined);
   }

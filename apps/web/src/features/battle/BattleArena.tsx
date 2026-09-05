@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { layerPath } from "../designer/previewGeometry";
 import { deriveBattleEffects, type BattleEffect } from "./battleEffects";
 
-export type ArenaFrame = Readonly<{ sequence: number; tick: number; player1: Readonly<{ x: number; y: number; angle: number; angularSpeed: number }>; player2: Readonly<{ x: number; y: number; angle: number; angularSpeed: number }> }>;
+export type ArenaFrame = Readonly<{ sequence: number; tick: number; presentation?: { startsAtMs: number; durationMs: 60000; elapsedMs: number; zodiacIndex: number; skillName: string; finisher?: "player1" | "player2" | "draw" | undefined } | undefined; player1: Readonly<{ x: number; y: number; angle: number; angularSpeed: number }>; player2: Readonly<{ x: number; y: number; angle: number; angularSpeed: number }> }>;
 
 export function BattleArena({ designs, frames, winner, reducedMotion = false, quality = "auto", onEffect }: Readonly<{ designs: readonly [TopDesign, TopDesign]; frames: readonly ArenaFrame[]; winner?: "player1" | "player2" | "draw" | undefined; reducedMotion?: boolean; quality?: "auto" | "reduced"; onEffect?: (effect: BattleEffect) => void }>) {
   const latest = frames.at(-1);

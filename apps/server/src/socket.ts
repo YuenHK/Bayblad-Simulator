@@ -28,8 +28,11 @@ import { LaunchCoordinator, type LaunchJudgement } from "./battle/launch";
 import { scoreMatch as defaultScoreMatch } from "./battle/scoring";
 import type { ScoreMatchInput, MatchScoreResult } from "./battle/scoring";
 import { RoomService } from "./rooms/room-service";
+import { presentationFrame, ROUND_DURATION_MS, SUMMON_AT_MS, ZODIAC_SKILLS } from "./battle/presentation";
+import { makeDefaultDesign, type TopDesign } from "@steam-top/domain";
 
 type Session = {
+  isComputer?: boolean;
   id: string;
   identityId: string;
   token: string;
@@ -79,6 +82,7 @@ export type RealtimeDependencies = Readonly<{
   createSessionId?: () => string;
   createSessionToken?: () => string;
   frameScheduler?: FrameScheduler;
+  cinematicBattles?: boolean;
   scoreMatch?: MatchScorer;
   allowedOrigins: readonly string[];
   allowMissingOrigin: boolean;
@@ -113,6 +117,7 @@ export type RealtimeDependencies = Readonly<{
 }>; 
 
 type MatchState = {
+  botTapAtMs?: number;
   generation: number;
   matchId: string;
   attempt: number;
@@ -203,6 +208,7 @@ export class RealtimeGateway {
   readonly #createSessionId: () => string;
   readonly #createSessionToken: () => string;
   readonly #frameScheduler: FrameScheduler;
+  readonly #cinematicBattles: boolean;
   readonly #scoreMatch: MatchScorer;
   readonly #handshakeTimeoutMs: number;
   readonly #pendingLimiter: TokenBucketLimiter;
@@ -227,6 +233,8 @@ export class RealtimeGateway {
   readonly #persistenceRetryDelaysMs: readonly number[];
   readonly #sessionsByToken = new Map<string, Session>();
   readonly #sessionsById = new Map<string, Session>();
+  readonly #roomBots = new Map<string, { session: Session; ownerIdentityId: string; designId: string }>();
+  readonly #popularDesigns = new Map<string, { design: TopDesign; uses: number }>();
   readonly #sessionIdsByParticipant = new Map<string, Map<string, string>>();
   readonly #matches = new Map<string, MatchState>();
   readonly #terminalMatches = new Map<string, TerminalMatchState>();
@@ -255,6 +263,7 @@ export class RealtimeGateway {
     this.#createSessionId = dependencies.createSessionId ?? (() => crypto.randomUUID());
     this.#createSessionToken = dependencies.createSessionToken ?? randomToken;
     this.#frameScheduler = dependencies.frameScheduler ?? defaultFrameScheduler;
+    this.#cinematicBattles = dependencies.cinematicBattles ?? true;
     this.#scoreMatch = dependencies.scoreMatch ?? defaultScoreMatch;
     this.#handshakeTimeoutMs = dependencies.handshakeTimeoutMs;
     const limiterOptions = {
@@ -393,6 +402,10 @@ export class RealtimeGateway {
         const session = sessionId ? this.#sessionsById.get(sessionId) : undefined;
         if (session) { const event = { type: "room.departed", departureId: this.#createServerEventId(), roomId, reason: "removed", protocolVersion: PROTOCOL_VERSION, serverEventId: this.#createServerEventId() } as const; this.#queueDeparture(session, event); for (const socketId of session.socketIds) { const socket = this.io.sockets.sockets.get(socketId); if (socket) this.#emit(socket, event); } session.roomIds.delete(roomId); session.ownedRoomIds.delete(roomId); }
         this.#sessionIdsByParticipant.get(roomId)?.delete(participantId);
+        if (session?.isComputer) {
+          this.#roomBots.delete(roomId);
+          this.#expireSession(session);
+        }
         await fence("session_kicked");
       }
       if (!completed("broadcast_done")) {
@@ -499,6 +512,14 @@ export class RealtimeGateway {
   }
   async #pumpOnce(nowMs: number): Promise<void> {
     this.#pruneTerminalMatches(nowMs);
+    for (const [roomId, match] of this.#matches) {
+      const bot = this.#roomBots.get(roomId);
+      if (bot && match.schedule && match.botTapAtMs !== undefined && nowMs >= match.botTapAtMs && nowMs <= match.schedule.serverDeadlineTimeMs) {
+        delete match.botTapAtMs;
+        const participantId = this.#participantForSession(roomId, bot.session.id);
+        this.#launch.submit(participantId, { type: "launch.tap", roomId, roundId: match.currentRoundId, nonce: match.schedule.nonce, clientTimeMs: nowMs, eventId: crypto.randomUUID(), protocolVersion: PROTOCOL_VERSION }, nowMs);
+      }
+    }
     this.#launch.finalizeExpired(nowMs);
     this.#pendingLimiter.pruneExpired();
     this.#sessionCommandLimiter.pruneExpired();
@@ -848,7 +869,42 @@ export class RealtimeGateway {
   }
 
   async #applyCommand(socket: Socket, session: Session, event: V1CommandEvent, receivedAtMs: number): Promise<void> {
-    if (event.type === "room.create") {
+    if (event.type === "room.bot") {
+      const room = this.#rooms.snapshot(event.roomId, session.id);
+      if (!room.viewer.isOwner) throw Object.assign(new Error("OWNER_REQUIRED"), { code: "OWNER_REQUIRED" });
+      if (room.phase !== "waiting") throw Object.assign(new Error("ROOM_ACTIVE"), { code: "ROOM_ACTIVE" });
+      if (event.enabled && !this.#roomBots.has(event.roomId)) {
+        if (room.player1 && room.player2) throw Object.assign(new Error("ROOM_FULL"), { code: "ROOM_FULL" });
+        const bot: Session = { ...session, id: crypto.randomUUID(), identityId: "", token: crypto.randomUUID(), displayName: "電腦玩家", deviceName: "電腦玩家", userAgent: "steam-top-computer", ip: null, isComputer: true, roomIds: new Set([event.roomId]), ownedRoomIds: new Set(), socketIds: new Set(), events: new Map(), inflightCommands: new Map(), commandTail: Promise.resolve(), clockChallenges: new Map(), clockPingIds: new Map(), observedRtts: [], pendingDepartures: new Map(), disconnectedAt: null };
+        bot.identitySource = "guest";
+        this.#sessionsById.set(bot.id, bot);
+        const membership = this.#rooms.join(event.roomId, this.#user(bot), "player");
+        this.#bindParticipant(event.roomId, membership.participantId, bot.id);
+        try {
+          const entry = { session: bot, ownerIdentityId: session.identityId, designId: "" };
+          this.#roomBots.set(event.roomId, entry);
+          await this.#prepareBot(event.roomId);
+          if (this.#roomRecordRepository) {
+            const role = this.#rooms.snapshot(event.roomId, bot.id).viewer.role;
+            await this.#roomRecordRepository.join(event.roomId, this.#participantRecord(bot, membership.participantId, role, false), new Date(this.#now()));
+          }
+        } catch (error) { this.#rooms.leave(event.roomId, bot.id); this.#roomBots.delete(event.roomId); this.#expireSession(bot); throw error; }
+      } else if (!event.enabled) {
+        const bot = this.#roomBots.get(event.roomId);
+        if (bot) {
+          const checkpoint = this.#rooms.checkpoint(event.roomId);
+          const participantId = this.#participantForSession(event.roomId, bot.session.id);
+          this.#rooms.leave(event.roomId, bot.session.id);
+          try {
+            const projection = this.#roomRoleProjection(event.roomId);
+            await this.#roomRecordRepository?.leaveAndSync(event.roomId, participantId, new Date(this.#now()), projection.roles, projection.ownerParticipantId, projection.ownerIdentityId);
+          } catch (error) { this.#rooms.restore(checkpoint); throw error; }
+          this.#roomBots.delete(event.roomId); this.#expireSession(bot.session);
+        }
+      }
+      this.#broadcastRoom(event.roomId); this.#broadcastLobby();
+      await this.#startMatchIfReady(event.roomId);
+    } else if (event.type === "room.create") {
       if (session.roomIds.size > 0) throw Object.assign(new Error("ALREADY_IN_ROOM"), { code: "ALREADY_IN_ROOM" });
       if (session.ownedRoomIds.size >= this.#maxOwnedRoomsPerSession) {
         throw Object.assign(new Error("ROOM_QUOTA_EXCEEDED"), { code: "ROOM_QUOTA_EXCEEDED" });
@@ -900,6 +956,8 @@ export class RealtimeGateway {
       this.#sendCheckpoint(socket, roomId, session.id);
       this.#broadcastLobby();
     } else if (event.type === "room.move") {
+      const bot = this.#roomBots.get(event.roomId);
+      if (bot && event.subjectParticipantId === this.#participantForSession(event.roomId, bot.session.id)) throw Object.assign(new Error("PLAYER_REQUIRED"), { code: "PLAYER_REQUIRED" });
       const checkpoint = this.#rooms.checkpoint(event.roomId);
       this.#rooms.move(event.roomId, session.id, event.target, event.subjectParticipantId);
       try { if (this.#roomRecordRepository) await this.#persistRoomRoles(event.roomId); }
@@ -918,6 +976,7 @@ export class RealtimeGateway {
         this.#designs.hydrate(session.id, persisted);
       }
       this.#rooms.ready(event.roomId, session.id, event.designId);
+      if (this.#roomBots.has(event.roomId)) await this.#prepareBot(event.roomId);
       this.#broadcastRoom(event.roomId);
       this.#broadcastLobby();
       await this.#startMatchIfReady(event.roomId);
@@ -1123,6 +1182,22 @@ export class RealtimeGateway {
     }
   }
 
+  async #prepareBot(roomId: string): Promise<void> {
+    const entry = this.#roomBots.get(roomId);
+    if (!entry) return;
+    const room = this.#rooms.snapshot(roomId, entry.session.id);
+    const seat = room.viewer.role === "player1" ? room.player1 : room.player2;
+    if (seat?.ready) return;
+    const popular = await this.#designRepository?.mostPopularBattleDesign?.() ?? [...this.#popularDesigns.values()].sort((a,b) => b.uses-a.uses)[0]?.design ?? makeDefaultDesign();
+    const design = { ...structuredClone(popular), id: crypto.randomUUID(), name: "電腦玩家・人氣設計" };
+    this.#designs.cleanupOwner(entry.session.id);
+    const stored = this.#designRepository
+      ? this.#designs.hydrate(entry.session.id, await this.#designRepository.saveBattleEligible(entry.ownerIdentityId, design))
+      : this.#designs.register(entry.session.id, design);
+    entry.designId = stored.designId;
+    this.#rooms.ready(roomId, entry.session.id, stored.designId);
+  }
+
   #scheduleRound(roomId: string, match: MatchState, emit = true): LaunchScheduleEvent | null {
     if (match.attempt >= this.#maxMatchAttempts) {
       void this.#cancelForAttemptLimit(roomId, match).catch(this.#logError);
@@ -1145,6 +1220,7 @@ export class RealtimeGateway {
       ],
     });
     match.schedule = schedule;
+    if (this.#roomBots.has(roomId)) match.botTapAtMs = schedule.serverTargetTimeMs + Math.floor(Math.random() * 500) - 200;
     if (emit) this.#emitToRoom(roomId, schedule);
     return schedule;
   }
@@ -1204,20 +1280,33 @@ export class RealtimeGateway {
       };
       if (this.#matchRepository) await this.#persistRoundAttempt(roomId, match, persistedAttempt);
       match.roundHistory.push(persistedAttempt);
+      const startsAtMs = this.#now() + 1_000;
+      const zodiacIndex = Math.abs(seed % 12);
+      const presentationFrames = this.#cinematicBattles
+        ? Array.from({ length: 901 }, (_, index) => presentationFrame(result, index * ROUND_DURATION_MS / 900))
+        : result.frames;
       let previousTick = 0;
-      for (const [sequence, frame] of result.frames.entries()) {
-        const delayMs = Math.max(0, frame.tick - previousTick) * (1_000 / 60);
+      for (const [sequence, frame] of presentationFrames.entries()) {
+        const elapsedMs = sequence * ROUND_DURATION_MS / 900;
+        const delayMs = this.#cinematicBattles ? (sequence === 0 ? 0 : Math.max(0, startsAtMs + elapsedMs - 150 - this.#now())) : Math.max(0, frame.tick - previousTick) * (1_000 / 60);
         previousTick = frame.tick;
         if (delayMs > 0) await this.#frameScheduler(delayMs, controller.signal);
         if (this.#matches.get(roomId) !== match || match.generation !== generation || match.currentRoundId !== roundId) return;
         const event: BattleFrameEvent = {
           type: "battle.frame", roomId, matchId: match.matchId, roundId,
           sequence, ...frame, protocolVersion: PROTOCOL_VERSION,
+          ...(this.#cinematicBattles ? { presentation: {
+            startsAtMs, durationMs: ROUND_DURATION_MS as 60000, elapsedMs,
+            zodiacIndex, skillName: ZODIAC_SKILLS[zodiacIndex]!,
+            ...(elapsedMs >= SUMMON_AT_MS ? { finisher: result.outcome.winner } : {}),
+          } } : {}),
           serverEventId: this.#createServerEventId(),
         };
         match.latestFrame = event;
-        this.#emitToRoom(roomId, event, sequence === 0 || sequence === result.frames.length - 1);
+        this.#emitToRoom(roomId, event, sequence === 0 || sequence === presentationFrames.length - 1 || (this.#cinematicBattles && elapsedMs === SUMMON_AT_MS));
       }
+      if (this.#cinematicBattles) await this.#frameScheduler(Math.max(0, startsAtMs + ROUND_DURATION_MS - this.#now()), controller.signal);
+      if (this.#matches.get(roomId) !== match || match.generation !== generation) return;
       const candidateWinners = [...match.roundWinners];
       if (result.outcome.winner !== "draw") candidateWinners.push(result.outcome.winner);
       const p1Wins = candidateWinners.filter((winner) => winner === "player1").length;
@@ -1252,6 +1341,14 @@ export class RealtimeGateway {
           if (this.#matches.get(roomId) !== match || match.generation !== generation) return;
         }
         match.officiallyCompleted = true;
+        for (const player of match.players) {
+          if (this.#sessionsById.get(player.sessionId)?.isComputer) continue;
+          const design = this.#designs.requireOwned(player.sessionId, player.designId).design;
+          const key = JSON.stringify({ layers: design.layers.map(({ id: _id, color: _color, ...layer }) => layer), screws: design.screwLayout, metal: design.metalDiscDiameterMm });
+          const current = this.#popularDesigns.get(key);
+          this.#popularDesigns.set(key, { design, uses: (current?.uses ?? 0) + 1 });
+          if (this.#popularDesigns.size > 2_000) this.#popularDesigns.delete(this.#popularDesigns.keys().next().value!);
+        }
         try {
           this.#emitToRoom(roomId, matchFinished);
           this.#storeTerminalMatch(roomId, match, matchFinished);
@@ -1267,6 +1364,8 @@ export class RealtimeGateway {
         }
         return;
       }
+      if (this.#cinematicBattles) await this.#frameScheduler(2_500, controller.signal);
+      if (this.#matches.get(roomId) !== match || match.generation !== generation) return;
       await this.#transitionRoomPhase(roomId, "launch", "next-round");
       this.#broadcastRoom(roomId);
       this.#broadcastLobby();
@@ -1467,6 +1566,8 @@ export class RealtimeGateway {
   }
 
   #cleanupRoom(roomId: string): void {
+    const bot = this.#roomBots.get(roomId);
+    if (bot) { this.#roomBots.delete(roomId); this.#expireSession(bot.session); }
     const match = this.#matches.get(roomId);
     if (match) this.#cancelMatch(roomId, match);
     this.#terminalMatches.delete(roomId);
@@ -1713,7 +1814,7 @@ export class RealtimeGateway {
     } else this.#roomProjections.enqueue(`${roomId}:phase`, revision, () => this.#roomRecordRepository!.close(roomId, closedAt));
   }
 
-  #user(session: Session) { return { id: session.id, displayName: session.displayName }; }
+  #user(session: Session) { return { id: session.id, displayName: session.displayName, isComputer: session.isComputer }; }
 
   #ack(socket: Socket, causedByEventId: string, commandType: V1CommandEvent["type"], status: "applied" | "replayed"): void {
     this.#emit(socket, {

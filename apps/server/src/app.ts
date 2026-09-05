@@ -63,6 +63,7 @@ export type BuildAppOptions = Readonly<{
   createSessionId?: () => string;
   createSessionToken?: () => string;
   frameScheduler?: FrameScheduler;
+  cinematicBattles?: boolean;
   scoreMatch?: MatchScorer;
   allowedOrigins?: readonly string[];
   studentOrigin?: string;
@@ -336,6 +337,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     ...(options.roomRecordRepository ? { roomRecordRepository: options.roomRecordRepository } : {}),
     ...(options.roomProjectionStore ? { roomProjectionStore: options.roomProjectionStore } : {}),
     battleEngine,
+    cinematicBattles: options.cinematicBattles ?? true,
     launch: options.launch ?? new LaunchCoordinator(options.now ? { now: options.now } : {}),
     ...(options.now ? { now: options.now } : {}),
     ...(options.seedFactory ? { seedFactory: options.seedFactory } : {}),
