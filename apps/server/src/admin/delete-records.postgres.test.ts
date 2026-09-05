@@ -41,9 +41,9 @@ async function recordFixture(suffix: string) {
 
 async function completeFixture(ids: Awaited<ReturnType<typeof recordFixture>>) {
   const at = new Date("2026-08-15T04:00:00Z");
-  await client.sql.unsafe(`update matches set status='completed',player1_battle_points=2,player2_battle_points=0,player1_challenge_points=0,player2_challenge_points=0.5,player1_total=2,player2_total=0.5,winner='player1',round_winners='["player1","player1"]',created_at=$2-interval '1 day',started_at=$2-interval '1 day',completed_at=$2 where id=$1`, [ids.match, at]);
-  await client.sql.unsafe("update designs set created_at=$2 where id in($1,$3)",[ids.design1,at,ids.design2]);
-  await client.sql.unsafe(`insert into match_participant_snapshots(match_id,slot,identity_id_at_start,canonical_identity_id_at_start,identity_status_snapshot,class_name_snapshot,design_id,captured_at) values($1,'player1',$2,$2,'iclass','1A',$3,$6),($1,'player2',$4,$4,'iclass','1B',$5,$6)`, [ids.match, ids.identity1, ids.design1, ids.identity2, ids.design2, at]);
+  await client.sql.unsafe(`update matches set status='completed',player1_battle_points=2,player2_battle_points=0,player1_challenge_points=0,player2_challenge_points=0.5,player1_total=2,player2_total=0.5,winner='player1',round_winners='["player1","player1"]',created_at=$2::timestamptz-interval '1 day',started_at=$2::timestamptz-interval '1 day',completed_at=$2::timestamptz where id=$1`, [ids.match, at.toISOString()]);
+  await client.sql.unsafe("update designs set created_at=$2::timestamptz where id in($1,$3)",[ids.design1,at.toISOString(),ids.design2]);
+  await client.sql.unsafe(`insert into match_participant_snapshots(match_id,slot,identity_id_at_start,canonical_identity_id_at_start,identity_status_snapshot,class_name_snapshot,design_id,captured_at) values($1,'player1',$2,$2,'iclass','1A',$3,$6::timestamptz),($1,'player2',$4,$4,'iclass','1B',$5,$6::timestamptz)`, [ids.match, ids.identity1, ids.design1, ids.identity2, ids.design2, at.toISOString()]);
 }
 
 it.skipIf(!databaseUrl)("serializes concurrent execution, keeps one immutable content-free audit, and hides deleted rows", async () => {
