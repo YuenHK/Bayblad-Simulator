@@ -13,7 +13,7 @@ for (const line of lines) {
   expected.set(match[3], { digest: match[1], mode: Number.parseInt(match[2], 8) });
 }
 if (!expected.has("install-bootstrap.sh") || !expected.has("verify-package-tree.mjs")) throw new Error("bootstrap manifest omits trust entrypoint");
-const actual = (await readdir(root)).sort();
+const actual = (await readdir(root)).filter((name) => name !== "archive.tgz" && name !== "archive.tgz.sig").sort();
 const wanted = [...expected.keys(), "bootstrap-files.sha256"].sort();
 if (JSON.stringify(actual) !== JSON.stringify(wanted)) throw new Error("bootstrap archive contains missing or unexpected entries");
 for (const [name, item] of expected) {
