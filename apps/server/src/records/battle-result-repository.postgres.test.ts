@@ -58,7 +58,8 @@ it.skipIf(!databaseUrl)("hands the dedicated single-instance lock to the replace
     await expect(second.verifyStartupLease()).resolves.toBeUndefined();
     await second.releaseStartupLease();
   } finally {
-    // A killed reserved connection cannot reliably execute an unlock query.
+    await first.releaseStartupLease().catch(() => undefined);
+    await second.releaseStartupLease().catch(() => undefined);
     await Promise.all([oldClient.close(), replacementClient.close()]);
   }
 }, 30_000);
@@ -77,6 +78,8 @@ it.skipIf(!databaseUrl)("detects a terminated lease backend and permits takeover
     await expect(second.verifyStartupLease()).resolves.toBeUndefined();
     await second.releaseStartupLease();
   } finally {
+    await first.releaseStartupLease().catch(() => undefined);
+    await second.releaseStartupLease().catch(() => undefined);
     await Promise.all([oldClient.close(), replacementClient.close()]);
   }
 }, 30_000);
