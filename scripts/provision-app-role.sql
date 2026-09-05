@@ -60,7 +60,7 @@ IF EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member JOIN
  OR EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),'TRUNCATE,REFERENCES,TRIGGER'))
  OR EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace,unnest(coalesce(a.attacl,'{}'::aclitem[])) acl WHERE n.nspname IN('public','restore_control') AND a.attnum>0 AND NOT a.attisdropped AND (acl::text LIKE 'steam_top_app=%' OR acl::text LIKE '=%'))
  OR EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN (VALUES('USAGE'),('SELECT'),('UPDATE')) required(privilege) WHERE n.nspname='public' AND c.relkind='S' AND NOT has_sequence_privilege('steam_top_app',c.oid,required.privilege))
- OR EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname IN('public','restore_control') AND has_function_privilege('steam_top_app',p.oid,'EXECUTE'))
+ OR EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND has_function_privilege('steam_top_app',p.oid,'EXECUTE'))
  OR EXISTS(SELECT 1 FROM pg_default_acl d,aclexplode(coalesce(d.defaclacl,acldefault(d.defaclobjtype,d.defaclrole))) a JOIN pg_roles r ON r.oid=a.grantee WHERE r.rolname='steam_top_app')
 THEN RAISE EXCEPTION 'steam_top_app privilege catalog mismatch';END IF;END $assert$;
 COMMIT;
