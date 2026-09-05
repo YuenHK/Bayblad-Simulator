@@ -102,20 +102,23 @@ export class PostgresRoomRecordRepository implements RoomRecordRepository {
           and classid = 1937006964 and objid = ${this.authorityLockObjectId} and granted
       ) as held`;
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let connectionResponded = false;
     try {
       const rows = await Promise.race([
         verification,
         new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("ROOM_SINGLE_INSTANCE_LOCK_LOST")), 2_000); }),
       ]);
+      connectionResponded = true;
       if (rows[0]?.backendPid !== expectedBackendPid || !rows[0]?.held) throw new Error("ROOM_SINGLE_INSTANCE_LOCK_LOST");
     } catch {
-      // A dead lease must never be queried again during shutdown. Releasing the
-      // reserved handle is local-only here because the backend lock is already
-      // absent (or unverifiable); a later acquire uses a fresh connection.
+      // A dead lease must never be queried again during shutdown. Do not call
+      // release() on a connection-error path: postgres.js already recycles the
+      // failed socket, while releasing its reserved handle can race a queued
+      // socket write. A later acquire uses a fresh reservation.
       if (this.#reserved === reserved) {
         this.#reserved = undefined;
         this.#leaseBackendPid = undefined;
-        reserved.release();
+        if (connectionResponded) reserved.release();
       }
       throw new Error("ROOM_SINGLE_INSTANCE_LOCK_LOST");
     } finally {
