@@ -62,7 +62,7 @@ def stable_read(fd, before):
 
 def secure_key_reference(key_data):
     if not hasattr(os,"memfd_create") or not os.path.isdir("/proc/self/fd"):abort("Linux memfd signer required")
-    fd=os.memfd_create("steam-top-policy-key",0);offset=0
+    fd=os.memfd_create("steam-top-policy-key",0);os.fchmod(fd,0o600);offset=0
     while offset<len(key_data):offset+=os.write(fd,key_data[offset:])
     os.lseek(fd,0,os.SEEK_SET);return fd,f"/proc/self/fd/{fd}"
 
