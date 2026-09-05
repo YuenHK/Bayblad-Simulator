@@ -126,7 +126,7 @@ def sha(path):
  return h.hexdigest()
 s=os.stat(runtime,follow_symlinks=False)
 if s.st_uid!=0 or s.st_nlink!=1 or s.st_mode&0o022 or not stat.S_ISREG(s.st_mode):raise SystemExit(1)
-value={"schemaVersion":1,"purpose":"steam-top-production-policy-signer","signerPath":signer,"signerSha256":sha(signer),"pythonPath":runtime,"pythonSha256":sha(runtime),"pythonStat":{"dev":s.st_dev,"ino":s.st_ino,"size":s.st_size,"mtimeNs":s.st_mtime_ns,"ctimeNs":s.st_ctime_ns,"uid":s.st_uid,"mode":stat.S_IMODE(s.st_mode),"nlink":s.st_nlink}}
+value={"schemaVersion":1,"purpose":"steam-top-production-policy-signer","signerPath":signer,"signerSha256":sha(signer),"pythonPath":runtime,"pythonSha256":sha(runtime),"pythonStat":{"dev":str(s.st_dev),"ino":str(s.st_ino),"size":str(s.st_size),"mtimeNs":str(s.st_mtime_ns),"ctimeNs":str(s.st_ctime_ns),"uid":s.st_uid,"mode":stat.S_IMODE(s.st_mode),"nlink":s.st_nlink}}
 with open(out,"x") as target:target.write(json.dumps(value,separators=(",",":"))+"\n");target.flush();os.fsync(target.fileno())
 PY
 publish_exact "$signer_manifest" /etc/steam-top-bootstrap/policy-signer-manifest.json 400
