@@ -38,6 +38,14 @@ function leaseClient(): DatabaseClient {
   return createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl!, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 1, connectTimeoutSeconds: 1 });
 }
 
+async function closeLeaseClients(...clients: DatabaseClient[]): Promise<void> {
+  // postgres.js schedules one final socket write after a backend termination.
+  // Let that queue drain before ending the pool, otherwise its Immediate can
+  // observe a socket already nulled by end() and surface an unrelated error.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await Promise.all(clients.map((lease) => lease.close()));
+}
+
 it.skipIf(!databaseUrl)("hands the dedicated single-instance lock to the replacement and fences the old backend", async () => {
   // Termination must not poison the pool used by subsequent persistence tests.
   const oldClient = leaseClient(); const replacementClient = leaseClient();
@@ -60,7 +68,7 @@ it.skipIf(!databaseUrl)("hands the dedicated single-instance lock to the replace
   } finally {
     await first.releaseStartupLease().catch(() => undefined);
     await second.releaseStartupLease().catch(() => undefined);
-    await Promise.all([oldClient.close(), replacementClient.close()]);
+    await closeLeaseClients(oldClient, replacementClient);
   }
 }, 30_000);
 
@@ -80,7 +88,7 @@ it.skipIf(!databaseUrl)("detects a terminated lease backend and permits takeover
   } finally {
     await first.releaseStartupLease().catch(() => undefined);
     await second.releaseStartupLease().catch(() => undefined);
-    await Promise.all([oldClient.close(), replacementClient.close()]);
+    await closeLeaseClients(oldClient, replacementClient);
   }
 }, 30_000);
 
