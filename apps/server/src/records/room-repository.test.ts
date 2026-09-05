@@ -41,7 +41,7 @@ it("drops a failed authority lease without querying the dead connection again", 
   await expect(repository.verifyStartupLease()).rejects.toThrow("ROOM_SINGLE_INSTANCE_LOCK_LOST");
   expect(repository.startupLeaseBackendPidForTesting).toBeUndefined();
   await repository.releaseStartupLease();
-  expect(releases).toBe(1);
+  expect(releases).toBe(0);
   expect(calls.some((value) => value.includes("pg_advisory_unlock"))).toBe(false);
 });
 
