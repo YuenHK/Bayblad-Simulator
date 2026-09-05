@@ -33,7 +33,9 @@ beforeAll(async () => {
 
 function leaseClient(): DatabaseClient {
   const local = /(?:localhost|127\.0\.0\.1)/u.test(databaseUrl!);
-  return createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl!, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 1 });
+  // Keep the deliberately terminated test connection's reconnect attempt
+  // inside verifyStartupLease's two-second bound before the pool is closed.
+  return createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl!, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 1, connectTimeoutSeconds: 1 });
 }
 
 it.skipIf(!databaseUrl)("hands the dedicated single-instance lock to the replacement and fences the old backend", async () => {
