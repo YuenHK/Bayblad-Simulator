@@ -32,7 +32,7 @@ while True:
 value=json.loads(raw);canonical=(json.dumps(value,separators=(",",":"))+"\n").encode()
 if raw!=canonical or list(value)!=KEYS or value["schemaVersion"]!=1 or value["purpose"]!="steam-top-production-policy-signer" or not re.fullmatch(r"[a-f0-9]{64}",value["signerSha256"]) or not re.fullmatch(r"[a-f0-9]{64}",value["pythonSha256"]):fail("invalid signer manifest")
 signer,ss=guarded(value["signerPath"],0o444);runtime,rs=guarded(value["pythonPath"])
-fields=lambda s:{"dev":s.st_dev,"ino":s.st_ino,"size":s.st_size,"mtimeNs":s.st_mtime_ns,"ctimeNs":s.st_ctime_ns,"uid":s.st_uid,"mode":stat.S_IMODE(s.st_mode),"nlink":s.st_nlink}
+fields=lambda s:{"dev":str(s.st_dev),"ino":str(s.st_ino),"size":str(s.st_size),"mtimeNs":str(s.st_mtime_ns),"ctimeNs":str(s.st_ctime_ns),"uid":s.st_uid,"mode":stat.S_IMODE(s.st_mode),"nlink":s.st_nlink}
 if digest(signer)!=value["signerSha256"] or digest(runtime)!=value["pythonSha256"] or fields(rs)!=value["pythonStat"]:fail("installed signer or runtime mismatch")
 os.close(mf)
 if TEST_ONLY:os.close(signer);os.close(runtime);print("verified");raise SystemExit(0)
