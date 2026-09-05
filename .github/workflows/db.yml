@@ -71,7 +71,8 @@ jobs:
               sudo install -D -o root -g root -m "$mode" "$path" "$root/$path"
             done < "$RUNNER_TEMP/runtime-files.sha256"
             sudo install -o root -g root -m 0444 "$RUNNER_TEMP/runtime-files.sha256" "$root/runtime-files.sha256"
-            node - "$root" "$runtime_sha" "$GITHUB_SHA" "$RUNNER_TEMP/runtime-receipt.json" <<'NODE'
+          rm -f "$RUNNER_TEMP/runtime-receipt.json"
+          node - "$root" "$runtime_sha" "$GITHUB_SHA" "$RUNNER_TEMP/runtime-receipt.json" <<'NODE'
           const fs=require("fs"),[installRoot,runtimeManifestSha256,commit,out]=process.argv.slice(2);fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-runtime-install",installRoot,runtimeManifestSha256,commit,sealedAt:new Date().toISOString()})+"\n",{mode:0o444});
           NODE
             sudo install -o root -g root -m 0444 "$RUNNER_TEMP/runtime-receipt.json" "$root/runtime-install-receipt.json"
