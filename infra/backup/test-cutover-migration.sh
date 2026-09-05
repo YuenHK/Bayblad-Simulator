@@ -16,5 +16,8 @@ ny=$(psql "$url" -Atqc "set time zone 'America/New_York';select restore_control.
 [[ $utc =~ ^[a-f0-9]{64}$ && $utc == "$hk" && $utc == "$ny" ]]
 psql "$base/$bad_db" -v ON_ERROR_STOP=1 -c "create schema restore_control;create table restore_control.finalize_outbox(nonce text primary key,restore_target_id uuid not null,app_role text not null,ledger_rows bigint not null,state text not null constraint finalize_outbox_state_check check(state in ('committed','failed')),created_at timestamptz not null default clock_timestamp())" >/dev/null
 if psql "$base/$bad_db" -v ON_ERROR_STOP=1 -f drizzle/0001_cutover_state_machine.sql >/dev/null 2>&1;then echo 'unexpected legacy constraint was accepted' >&2;exit 1;fi
-for item in "b:preflight-recorded" "c:connect-granted-pending-smoke" "d:smoke-observed" "e:verified" "f:aborted";do key=${item%%:*};state=${item#*:};psql "$url" -v state="$state" -v nonce="$(printf "$key%.0s" {1..64})" -c "insert into restore_control.finalize_outbox(nonce,restore_target_id,app_role,ledger_rows,state) values(:'nonce','00000000-0000-4000-8000-000000000001','steam_top_app',2,:'state')" >/dev/null;done
+for item in "b:preflight-recorded" "c:connect-granted-pending-smoke" "d:smoke-observed" "e:verified" "f:aborted";do key=${item%%:*};state=${item#*:};psql "$url" -v ON_ERROR_STOP=1 -v state="$state" -v nonce="$(printf "$key%.0s" {1..64})" >/dev/null <<'SQL'
+insert into restore_control.finalize_outbox(nonce,restore_target_id,app_role,ledger_rows,state) values(:'nonce','00000000-0000-4000-8000-000000000001','steam_top_app',2,:'state');
+SQL
+done
 [[ $(psql "$url" -Atqc 'select count(*) from restore_control.finalize_outbox') == 6 ]]
