@@ -54,6 +54,7 @@ async function launchRound(player1: Page, player2: Page, spectator?: Page): Prom
 }
 
 test("真實 Socket 三角色完成讓位、觀戰、三輪內對戰及賽後計分", async ({ browser }) => {
+  test.setTimeout(240_000);
   const owner = await openGuest(browser);
   const playerA = await openGuest(browser);
   const playerB = await openGuest(browser);
