@@ -15,8 +15,8 @@ const allowed=new Map([
 ]);
 const exactWriterJobs=new Map([
   ["authorize-release.yml:authorize","c95172180a7781847b3c5db632a8e9710452d37d710910551d6f500e2c991210"],
-  ["ci.yml:production-first-deploy-e2e","b4e793f26b9ab76c0dd583e5254c014bc828a02fe7927f7c7328710cc0b351ec"],
-  ["ci.yml:release-host-core-integration","024eb4d73892e906a1d705802e9fcec6f892acd6ea108e95b5a9f6c783767431"],
+  ["ci.yml:production-first-deploy-e2e","c3954f54e7c977303c4a386adc798aec2106bd1f82401867e4a6c8af93b1934f"],
+  ["ci.yml:release-host-core-integration","ca0bd69afbb4975f94b8eb0ab077cde302dc23a0a2257700e8dddfbee824067a"],
   ["reconcile-deployment.yml:reconcile","ffeb899f90803b23a2944a7733a0d89ff3b6dfc75cd86ae9743be2ed0a647f5e"],
   ["reconcile-production-e2e.yml:terminal-reconcile","e0cfe410b5b3cd89db0ee46d31c917ebe3aa59658c1600f46ba9bd0fab8ab1a8"],
   ["record-deployment.yml:deploy-record","239ec107c411321355c90edb3be37344dadbd5ae41b4bdb29b2305d5df52f126"],

@@ -64,7 +64,7 @@ jobs:
     needs: quality
     env:
       PUBLIC_ORIGIN: https://localhost
-      STUDENT_ORIGIN: https://localhost
+      STUDENT_ORIGIN: https://student.localhost
       SECURITY_HTTP_ORIGIN: http://localhost
       SECURITY_HTTPS_ORIGIN: https://localhost
       SERVER_IMAGE: steam-top-server:ci
@@ -218,7 +218,7 @@ jobs:
       AUTHORIZATION_WORKFLOW_REF: "${{ github.workflow_ref }}"
       DEPLOYMENT_ENVIRONMENT: "production-first-deploy-e2e-${{ github.run_id }}-${{ github.run_attempt }}"
       PUBLIC_ORIGIN: https://steam-top.production-e2e.test
-      STUDENT_ORIGIN: https://steam-top.production-e2e.test
+      STUDENT_ORIGIN: https://student.steam-top.production-e2e.test
       POSTGRES_DB: steam_top
       POSTGRES_USER: steam_top
       POSTGRES_PASSWORD: production-e2e-postgres-password
@@ -496,7 +496,7 @@ jobs:
       BOOTSTRAP_ARCHIVE_SHA256: "${{ vars.BOOTSTRAP_ARCHIVE_SHA256 }}"
       DEPLOYMENT_PURPOSE: release-integration
       PUBLIC_ORIGIN: https://steam-top.integration.test:18443
-      STUDENT_ORIGIN: https://steam-top.integration.test:18443
+      STUDENT_ORIGIN: https://student.steam-top.integration.test
       POSTGRES_DB: steam_top
       POSTGRES_USER: steam_top
       POSTGRES_PASSWORD: integration-postgres-password
