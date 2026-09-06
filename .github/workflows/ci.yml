@@ -83,10 +83,12 @@ jobs:
       WEBCLIP_SIGNING_KEY: AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM
       WEBCLIP_EXCHANGE_KEY: BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ
       ANALYTICS_CURSOR_SECRET: BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU
+      STUDENT_CREDENTIAL_KEY: BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY
       ICLASS_API_BEARER_TOKEN: ci-not-used
       ICLASS_MODE: guest-only-explicit
       POSTGRES_TLS_CERT_PATH: .ci/tls/server.crt
       POSTGRES_TLS_KEY_PATH: .ci/tls/server.key
+      CI_SECRET_DIR: .ci/secrets
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with: { persist-credentials: false }
@@ -101,16 +103,30 @@ jobs:
         env: { PUBLIC_ORIGIN: "https://localhost" }
       - name: Create ephemeral PostgreSQL TLS material
         run: |
-          mkdir -p .ci/tls
+          mkdir -p .ci/tls "$CI_SECRET_DIR"
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=db -addext subjectAltName=DNS:db -keyout .ci/tls/server.key -out .ci/tls/server.crt
           chmod 600 .ci/tls/server.key
+          while IFS='=' read -r name variable; do printf '%s' "${!variable}" > "$CI_SECRET_DIR/$name"; done <<'SECRETS'
+          postgres_password=POSTGRES_PASSWORD
+          database_url=DATABASE_URL
+          cookie_signing_key=COOKIE_SIGNING_KEY
+          admin_initial_password=ADMIN_INITIAL_PASSWORD
+          admin_csrf_secret=ADMIN_CSRF_SECRET
+          webclip_signing_key=WEBCLIP_SIGNING_KEY
+          webclip_exchange_key=WEBCLIP_EXCHANGE_KEY
+          analytics_cursor_secret=ANALYTICS_CURSOR_SECRET
+          student_credential_key=STUDENT_CREDENTIAL_KEY
+          iclass_api_bearer_token=ICLASS_API_BEARER_TOKEN
+          steam_top_app_database_url=APP_DATABASE_URL
+          SECRETS
+          chmod 600 "$CI_SECRET_DIR"/*
       - run: pnpm validate:caddy
-      - run: docker compose -f compose.yaml -f compose.build.yaml build
+      - run: docker compose -f compose.yaml -f compose.build.yaml -f compose.ci-secrets.yaml build
       - name: Start owner migration, provision non-owner app role, then start application
         shell: bash
         run: |
           set -euo pipefail
-          compose=(docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml)
+          compose=(docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml -f compose.ci-secrets.yaml)
           "${compose[@]}" config --format json > "$RUNNER_TEMP/compose.json"
           node - "$RUNNER_TEMP/compose.json" <<'NODE'
           const c=require(process.argv[2]),s=c.services.server.secrets.map(x=>typeof x==="string"?x:x.source);if(JSON.stringify(s)!==JSON.stringify(["steam_top_app_database_url"])||c.services.server.environment.DATABASE_URL_FILE!=="/run/secrets/steam_top_app_database_url"||!c.services.migration.secrets.some(x=>(typeof x==="string"?x:x.source)==="database_url"))process.exit(1)
@@ -124,7 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           if curl --noproxy '*' --fail --silent https://localhost/ >/dev/null 2>&1; then echo "TLS unexpectedly trusted before CA installation" >&2; exit 1; fi
-          docker compose -f compose.yaml -f compose.build.yaml cp caddy:/data/caddy/pki/authorities/local/root.crt "$GITHUB_WORKSPACE/.ci/caddy-root.crt"
+          docker compose -f compose.yaml -f compose.build.yaml -f compose.ci-secrets.yaml cp caddy:/data/caddy/pki/authorities/local/root.crt "$GITHUB_WORKSPACE/.ci/caddy-root.crt"
           test -s "$GITHUB_WORKSPACE/.ci/caddy-root.crt"
           curl --noproxy '*' --fail --silent --show-error --cacert "$GITHUB_WORKSPACE/.ci/caddy-root.crt" https://localhost/ >/dev/null
           sudo apt-get update
@@ -153,7 +169,7 @@ jobs:
           umask 077
           printf '{"username":"%s","password":"%s"}\n' "$ADMIN_USERNAME" "$ADMIN_INITIAL_PASSWORD" > "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
           ./infra/backup/test-canonical-cutover-full.sh
-          docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml up -d --force-recreate --wait server
+          docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml -f compose.ci-secrets.yaml up -d --force-recreate --wait server
           sudo rm -f "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
       - name: Verify strict Node TLS before browser security tests
         run: node -e 'require("https").get(process.env.SECURITY_HTTPS_ORIGIN,res=>{if(res.statusCode!==200)process.exit(1);res.resume()}).on("error",error=>{console.error(error);process.exit(1)})'
@@ -164,7 +180,7 @@ jobs:
           nonce="$(printf '6%.0s' {1..64})"
           umask 077
           printf '{"username":"%s","password":"%s"}\n' "$ADMIN_USERNAME" "$ADMIN_INITIAL_PASSWORD" > "$RUNNER_TEMP/admin-smoke.json"
-          docker compose -f compose.yaml -f compose.build.yaml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v nonce="$nonce" <<'SQL'
+          docker compose -f compose.yaml -f compose.build.yaml -f compose.ci-secrets.yaml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v nonce="$nonce" <<'SQL'
           create table if not exists restore_control.deployment_probe(nonce text primary key check(nonce~'^[a-f0-9]{64}$'),restore_target_id uuid not null,system_identifier text not null,created_at timestamptz not null default clock_timestamp(),consumed_at timestamptz);
           alter table restore_control.deployment_probe add column if not exists state text not null default 'pending';alter table restore_control.deployment_probe add column if not exists observed_at timestamptz;alter table restore_control.deployment_probe add column if not exists receipt_signed_at timestamptz;
           insert into restore_control.deployment_probe(nonce,restore_target_id,system_identifier,state)
@@ -196,7 +212,7 @@ jobs:
       - run: pnpm test:security
       - if: always()
         run: |
-          failures="";docker compose -f compose.yaml -f compose.build.yaml down -v || failures="${failures} production-security-compose"
+          failures="";docker compose -f compose.yaml -f compose.build.yaml -f compose.ci-secrets.yaml down -v || failures="${failures} production-security-compose"
           if [[ -n "$failures" ]];then echo "cleanup failures:$failures" >&2;exit 1;fi
 
   production-first-deploy-e2e:
