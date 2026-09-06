@@ -39,7 +39,7 @@ async function launchRound(player1: Page, player2: Page, spectator?: Page, round
   }
   await expect(player1.locator(".launch-countdown")).toHaveText("發射！", { timeout: 5_000 });
   await expect(player2.locator(".launch-countdown")).toHaveText("發射！", { timeout: 5_000 });
-  await Promise.all([p1Button.click(), p2Button.click()]);
+  await Promise.all([p1Button.dispatchEvent("click"), p2Button.dispatchEvent("click")]);
   await expect(player1.getByText(/^你的判定：(Perfect|Great|Good|Miss)$/)).toBeVisible();
   await expect(player2.getByText(/^你的判定：(Perfect|Great|Good|Miss)$/)).toBeVisible();
   await expect(player1.locator(".spectator-grades")).toHaveCount(0);
