@@ -33,6 +33,7 @@ const groupAlive = () => {
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") return false;
     throw error;
   }
 };
@@ -45,7 +46,12 @@ const beginTermination = (code, signal, diagnostic) => {
   terminate(signal);
   forceTimer = setTimeout(() => {
     if (groupAlive()) terminate("SIGKILL");
-    setTimeout(() => process.exit(outcome.code), 25);
+    const deadline = Date.now() + 1_500;
+    const finishWhenReaped = () => {
+      if (!groupAlive() || Date.now() >= deadline) process.exit(outcome.code);
+      else setTimeout(finishWhenReaped, 25);
+    };
+    finishWhenReaped();
   }, 750);
 };
 
