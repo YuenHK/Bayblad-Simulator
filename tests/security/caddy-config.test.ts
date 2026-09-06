@@ -7,9 +7,10 @@ const compose = readFileSync(new URL("compose.yaml", root), "utf8");
 const securityPlaywright = readFileSync(new URL("playwright.security.config.ts", root), "utf8");
 
 describe("public edge proxy contract", () => {
-  it("publishes only Caddy on HTTP and HTTPS", () => {
+  it("publishes only Caddy publicly and keeps PostgreSQL loopback-only", () => {
     expect(compose).toContain('ports: ["80:80", "443:443", "443:443/udp"]');
-    expect(compose.match(/\n\s+ports:/g)).toHaveLength(1);
+    expect(compose).toContain('ports: ["127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432"]');
+    expect(compose.match(/\n\s+ports:/g)).toHaveLength(2);
     expect(compose).toMatch(/server:[\s\S]*networks: \[backend, database\]/);
     expect(compose).toMatch(/backend:\n\s+internal: true/);
   });
