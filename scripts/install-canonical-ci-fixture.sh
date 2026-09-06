@@ -26,6 +26,10 @@ validator=/run/steam-top-bootstrap-install-ci/validate-bootstrap-tar.py
 sudo install -o root -g root -m 0444 "$RUNNER_TEMP/canonical-bootstrap-allowed" /run/steam-top-bootstrap-install-ci/allowed
 sudo install -o root -g root -m 0400 "$RUNNER_TEMP/canonical-bootstrap-trust.json" /run/steam-top-bootstrap-install-ci/trust.json
 first_deploy_nonce=$(printf '%064d' 29)
-sudo env BOOTSTRAP_TAR_VALIDATOR="$validator" BOOTSTRAP_TAR_VALIDATOR_SHA256="$validator_sha" EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$archive_sha" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-install-ci/allowed "$root/infra/bootstrap/install-bootstrap.sh" "$archive" "$archive.sig" bootstrap-ci /run/steam-top-bootstrap-install-ci/trust.json --install-systemd --initialize-first-deploy "$first_deploy_nonce"
+if ! sudo env BOOTSTRAP_TAR_VALIDATOR="$validator" BOOTSTRAP_TAR_VALIDATOR_SHA256="$validator_sha" EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$archive_sha" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-install-ci/allowed timeout 180s "$root/infra/bootstrap/install-bootstrap.sh" "$archive" "$archive.sig" bootstrap-ci /run/steam-top-bootstrap-install-ci/trust.json --install-systemd --initialize-first-deploy "$first_deploy_nonce"; then
+  sudo systemctl --no-pager --full status steam-top-cutover-reaper.service steam-top-cutover-reaper.timer >&2 || true
+  sudo journalctl --no-pager -u steam-top-cutover-reaper.service -n 100 >&2 || true
+  exit 1
+fi
 sudo rm -rf /run/steam-top-bootstrap-install-ci
 printf 'RUNTIME_INSTALL_MANIFEST_SHA256=%s\n' "$runtime_sha"
