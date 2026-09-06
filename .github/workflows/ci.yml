@@ -145,6 +145,8 @@ jobs:
           "${compose[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v app_password="$APP_DATABASE_PASSWORD" < scripts/provision-app-role.sql
           if ! "${compose[@]}" up -d --wait server web caddy; then
             "${compose[@]}" ps -a
+            server_id=$("${compose[@]}" ps -a -q server)
+            test -z "$server_id" || docker inspect --format '{{json .State.Health}}' "$server_id"
             "${compose[@]}" logs --no-color web server caddy
             exit 1
           fi

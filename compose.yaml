@@ -108,7 +108,7 @@ services:
     depends_on:
       migration: { condition: service_completed_successfully }
     healthcheck:
-      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:3000/health/ready"]
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health/ready').then(response=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 12
