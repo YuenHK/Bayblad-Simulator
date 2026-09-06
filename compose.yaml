@@ -122,9 +122,9 @@ services:
     <<: *service-hardening
     image: ${WEB_IMAGE:?WEB_IMAGE must be an immutable repository@sha256 reference}
     tmpfs:
-      - /tmp:size=16m,noexec,nosuid,nodev
-      - /config:size=16m,nosuid,nodev
-      - /data:size=16m,nosuid,nodev
+      - /tmp:size=16m,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700
+      - /config:size=16m,nosuid,nodev,uid=10001,gid=10001,mode=0700
+      - /data:size=16m,nosuid,nodev,uid=10001,gid=10001,mode=0700
     networks: [edge]
     healthcheck:
       test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/admin/"]
