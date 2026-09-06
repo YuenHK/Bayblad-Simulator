@@ -29,6 +29,13 @@
       "when": 1788232800000,
       "tag": "0003_postgresql_catalog_array_compatibility",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788319200000,
+      "tag": "0004_scoped_readiness_acl",
+      "breakpoints": true
     }
   ]
 }
