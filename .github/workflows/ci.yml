@@ -132,6 +132,8 @@ jobs:
           const c=require(process.argv[2]),s=c.services.server.secrets.map(x=>typeof x==="string"?x:x.source);if(JSON.stringify(s)!==JSON.stringify(["steam_top_app_database_url"])||c.services.server.environment.DATABASE_URL_FILE!=="/run/secrets/steam_top_app_database_url"||!c.services.migration.secrets.some(x=>(typeof x==="string"?x:x.source)==="database_url"))process.exit(1)
           NODE
           "${compose[@]}" up -d --wait db migration
+          "${compose[@]}" logs --no-color migration
+          "${compose[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -c "select to_regnamespace('restore_control') as restore_control_schema,coalesce((select count(*) from public.app_schema_migrations),0) as migration_count"
           "${compose[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v app_password="$APP_DATABASE_PASSWORD" < scripts/provision-app-role.sql
           "${compose[@]}" up -d --wait server web caddy
           test "$("${compose[@]}" exec -T server sh -c 'test -f /run/secrets/steam_top_app_database_url && test ! -e /run/secrets/database_url && printf ok')" = ok
