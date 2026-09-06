@@ -6,5 +6,13 @@ services:
     # application container must never retain the owner/control database_url.
     secrets: !override
       - steam_top_app_database_url
+      - cookie_signing_key
+      - admin_initial_password
+      - admin_csrf_secret
+      - webclip_signing_key
+      - webclip_exchange_key
+      - analytics_cursor_secret
+      - student_credential_key
+      - iclass_api_bearer_token
 secrets:
   steam_top_app_database_url: { environment: APP_DATABASE_URL }

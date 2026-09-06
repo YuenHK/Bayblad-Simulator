@@ -132,7 +132,7 @@ jobs:
           compose=(docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml -f compose.ci-secrets.yaml)
           "${compose[@]}" config --format json > "$RUNNER_TEMP/compose.json"
           node - "$RUNNER_TEMP/compose.json" <<'NODE'
-          const c=require(process.argv[2]),s=c.services.server.secrets.map(x=>typeof x==="string"?x:x.source);if(JSON.stringify(s)!==JSON.stringify(["steam_top_app_database_url"])||c.services.server.environment.DATABASE_URL_FILE!=="/run/secrets/steam_top_app_database_url"||!c.services.migration.secrets.some(x=>(typeof x==="string"?x:x.source)==="database_url"))process.exit(1)
+          const c=require(process.argv[2]),s=c.services.server.secrets.map(x=>typeof x==="string"?x:x.source),expected=["steam_top_app_database_url","cookie_signing_key","admin_initial_password","admin_csrf_secret","webclip_signing_key","webclip_exchange_key","analytics_cursor_secret","student_credential_key","iclass_api_bearer_token"];if(JSON.stringify(s)!==JSON.stringify(expected)||s.includes("database_url")||c.services.server.environment.DATABASE_URL_FILE!=="/run/secrets/steam_top_app_database_url"||!c.services.migration.secrets.some(x=>(typeof x==="string"?x:x.source)==="database_url"))process.exit(1)
           NODE
           "${compose[@]}" up -d --wait db
           "${compose[@]}" up -d migration
