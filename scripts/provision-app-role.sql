@@ -53,7 +53,7 @@ SELECT format('GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.%I TO steam_top
 GRANT SELECT ON TABLE public.app_schema_migrations TO steam_top_app;
 GRANT USAGE ON SCHEMA restore_control TO steam_top_app;
 GRANT SELECT ON TABLE restore_control.deployment_environment TO steam_top_app;
-GRANT SELECT,UPDATE ON TABLE restore_control.deployment_probe TO steam_top_app;
+SELECT 'GRANT SELECT,UPDATE ON TABLE restore_control.deployment_probe TO steam_top_app' WHERE to_regclass('restore_control.deployment_probe') IS NOT NULL \gexec
 GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA public TO steam_top_app;
 DO $assert$ BEGIN
 IF EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member JOIN pg_roles p ON p.oid=m.roleid WHERE r.rolname='steam_top_app' OR p.rolname='steam_top_app')
@@ -63,7 +63,7 @@ IF EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member JOIN
  OR has_database_privilege('steam_top_app',current_database(),'CREATE,TEMPORARY') OR EXISTS(SELECT 1 FROM pg_namespace n,aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='public' AND a.grantee=0 AND a.privilege_type='CREATE') OR NOT has_schema_privilege('steam_top_app','restore_control','USAGE') OR has_schema_privilege('steam_top_app','restore_control','CREATE')
  OR NOT has_table_privilege('steam_top_app','public.app_schema_migrations','SELECT') OR has_table_privilege('steam_top_app','public.app_schema_migrations','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
  OR NOT has_table_privilege('steam_top_app','restore_control.deployment_environment','SELECT') OR has_table_privilege('steam_top_app','restore_control.deployment_environment','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
- OR NOT has_table_privilege('steam_top_app','restore_control.deployment_probe','SELECT,UPDATE') OR has_table_privilege('steam_top_app','restore_control.deployment_probe','INSERT,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR (to_regclass('restore_control.deployment_probe') IS NOT NULL AND (NOT has_table_privilege('steam_top_app','restore_control.deployment_probe','SELECT,UPDATE') OR has_table_privilege('steam_top_app','restore_control.deployment_probe','INSERT,DELETE,TRUNCATE,REFERENCES,TRIGGER')))
  OR EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='restore_control' AND tablename NOT IN('deployment_environment','deployment_probe') AND has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
  OR EXISTS(SELECT 1 FROM pg_tables CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('DELETE')) required(privilege) WHERE schemaname='public' AND tablename<>'app_schema_migrations' AND NOT has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),required.privilege))
  OR EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),'TRUNCATE,REFERENCES,TRIGGER'))
