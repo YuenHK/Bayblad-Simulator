@@ -10,7 +10,7 @@ if [[ -e /proc/$$/fd/9 && /proc/$$/fd/9 -ef $lock ]];then
 else
   exec 9<>"$lock";flock 9
 fi
-install -d -o root -g root -m 0700 "$root/generations";config=/etc/steam-top-bootstrap/trust.json;read -r receipt_digest receipt_nonce host digest < <(/opt/steam-top-bootstrap/read-install-receipt.sh);[[ $receipt_nonce == "$nonce" ]];key=$(node -p 'require(process.argv[1]).productionStateSigningKey' "$config");allowed=$(node -p 'require(process.argv[1]).productionStateAllowedSigners' "$config");signer=$(node -p 'require(process.argv[1]).productionStateSignerId' "$config");current=;[[ ! -L $root/current ]]||current=$(realpath "$root/current")
+install -d -o root -g root -m 0700 "$root" "$root/generations";config=/etc/steam-top-bootstrap/trust.json;read -r receipt_digest receipt_nonce host digest < <(/opt/steam-top-bootstrap/read-install-receipt.sh);[[ $receipt_nonce == "$nonce" ]];key=$(node -p 'require(process.argv[1]).productionStateSigningKey' "$config");allowed=$(node -p 'require(process.argv[1]).productionStateAllowedSigners' "$config");signer=$(node -p 'require(process.argv[1]).productionStateSignerId' "$config");current=;[[ ! -L $root/current ]]||current=$(realpath "$root/current")
 if [[ -n $current ]];then
   prev=$(basename "$current")
   # Recover the single fully-published next generation when a crash happened
