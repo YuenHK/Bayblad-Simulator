@@ -5,7 +5,7 @@ phase=$1;nonce=$2;root=/var/lib/steam-top-bootstrap/first-deploy;lock=/var/lock/
 [[ -f $lock && ! -L $lock && $(stat -c '%u %a' "$lock") == '0 600' ]]
 # The canonical host core already owns fd 9. Re-opening the same inode in its
 # child creates another open-file description and deadlocks on our own flock.
-if [[ -e /proc/$$/fd/9 && $(readlink -f /proc/$$/fd/9) == "$lock" ]];then
+if [[ -e /proc/$$/fd/9 && /proc/$$/fd/9 -ef $lock ]];then
   flock -n 9
 else
   exec 9<>"$lock";flock 9
