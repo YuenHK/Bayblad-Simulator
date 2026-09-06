@@ -33,9 +33,11 @@ REVOKE CONNECT ON DATABASE postgres FROM PUBLIC,steam_top_app;
 REVOKE CONNECT ON DATABASE template0 FROM PUBLIC,steam_top_app;
 REVOKE CONNECT ON DATABASE template1 FROM PUBLIC,steam_top_app;
 REVOKE ALL ON SCHEMA public FROM steam_top_app;
+REVOKE ALL ON SCHEMA restore_control FROM steam_top_app;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 SELECT format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC',current_database()) \gexec
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM steam_top_app;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA restore_control FROM steam_top_app;
 SELECT format('REVOKE %s (%I) ON TABLE %I.%I FROM steam_top_app',privilege,a.attname,n.nspname,c.relname) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('REFERENCES')) p(privilege) WHERE n.nspname='public' AND c.relkind IN('r','p') AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum \gexec
 SELECT format('REVOKE %s (%I) ON TABLE %I.%I FROM PUBLIC',privilege,a.attname,n.nspname,c.relname) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('REFERENCES')) p(privilege) WHERE n.nspname='public' AND c.relkind IN('r','p') AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum \gexec
 REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM steam_top_app;
@@ -48,14 +50,21 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLI
 SELECT format('GRANT CONNECT ON DATABASE %I TO steam_top_app',current_database()) \gexec
 GRANT USAGE ON SCHEMA public TO steam_top_app;
 SELECT format('GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.%I TO steam_top_app',tablename) FROM pg_tables WHERE schemaname='public' AND tablename<>'app_schema_migrations' ORDER BY tablename \gexec
+GRANT SELECT ON TABLE public.app_schema_migrations TO steam_top_app;
+GRANT USAGE ON SCHEMA restore_control TO steam_top_app;
+GRANT SELECT ON TABLE restore_control.deployment_environment TO steam_top_app;
+GRANT SELECT,UPDATE ON TABLE restore_control.deployment_probe TO steam_top_app;
 GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA public TO steam_top_app;
 DO $assert$ BEGIN
 IF EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member JOIN pg_roles p ON p.oid=m.roleid WHERE r.rolname='steam_top_app' OR p.rolname='steam_top_app')
  OR EXISTS(SELECT 1 FROM pg_roles WHERE rolname='steam_top_app' AND (NOT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit OR rolreplication OR rolbypassrls OR rolconnlimit<>-1 OR rolvaliduntil IS DISTINCT FROM 'infinity'::timestamptz OR rolconfig IS NOT NULL))
  OR EXISTS(SELECT 1 FROM pg_db_role_setting s JOIN pg_roles r ON r.oid=s.setrole WHERE r.rolname='steam_top_app')
  OR EXISTS(SELECT 1 FROM pg_database d WHERE d.datname<>current_database() AND has_database_privilege('steam_top_app',d.datname,'CONNECT'))
- OR has_database_privilege('steam_top_app',current_database(),'CREATE,TEMPORARY') OR EXISTS(SELECT 1 FROM pg_namespace n,aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='public' AND a.grantee=0 AND a.privilege_type='CREATE') OR has_schema_privilege('steam_top_app','restore_control','USAGE')
- OR has_table_privilege('steam_top_app','public.app_schema_migrations','SELECT,INSERT,UPDATE,DELETE')
+ OR has_database_privilege('steam_top_app',current_database(),'CREATE,TEMPORARY') OR EXISTS(SELECT 1 FROM pg_namespace n,aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='public' AND a.grantee=0 AND a.privilege_type='CREATE') OR NOT has_schema_privilege('steam_top_app','restore_control','USAGE') OR has_schema_privilege('steam_top_app','restore_control','CREATE')
+ OR NOT has_table_privilege('steam_top_app','public.app_schema_migrations','SELECT') OR has_table_privilege('steam_top_app','public.app_schema_migrations','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR NOT has_table_privilege('steam_top_app','restore_control.deployment_environment','SELECT') OR has_table_privilege('steam_top_app','restore_control.deployment_environment','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR NOT has_table_privilege('steam_top_app','restore_control.deployment_probe','SELECT,UPDATE') OR has_table_privilege('steam_top_app','restore_control.deployment_probe','INSERT,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='restore_control' AND tablename NOT IN('deployment_environment','deployment_probe') AND has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
  OR EXISTS(SELECT 1 FROM pg_tables CROSS JOIN (VALUES('SELECT'),('INSERT'),('UPDATE'),('DELETE')) required(privilege) WHERE schemaname='public' AND tablename<>'app_schema_migrations' AND NOT has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),required.privilege))
  OR EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND has_table_privilege('steam_top_app',format('%I.%I',schemaname,tablename),'TRUNCATE,REFERENCES,TRIGGER'))
  OR EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace,unnest(coalesce(a.attacl,'{}'::aclitem[])) acl WHERE n.nspname IN('public','restore_control') AND a.attnum>0 AND NOT a.attisdropped AND (acl::text LIKE 'steam_top_app=%' OR acl::text LIKE '=%'))
