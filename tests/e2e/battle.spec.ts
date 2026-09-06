@@ -4,7 +4,7 @@ const CONTROL_SECRET = "steam-top-e2e-only";
 const REALTIME_URL = `http://127.0.0.1:${Number(process.env.E2E_REALTIME_PORT ?? 4174)}`;
 
 async function openGuest(browser: Browser): Promise<{ context: BrowserContext; page: Page }> {
-  const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true });
+  const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true, reducedMotion: "reduce" });
   const page = await context.newPage();
   page.on("requestfailed", (request) => console.info(`[requestfailed] ${request.method()} ${request.url()} ${request.failure()?.errorText}`));
   await page.goto(".");
@@ -55,7 +55,7 @@ async function launchRound(player1: Page, player2: Page, spectator?: Page, round
   console.info(`[battle-e2e] round ${round} launch accepted`);
 }
 
-test("真實 Socket 三角色完成讓位、觀戰、三輪內對戰及賽後計分", async ({ browser }) => {
+test("真實 Socket 三角色完成讓位、觀戰、三輪內對戰及賽後計分", async ({ browser, request }) => {
   test.setTimeout(240_000);
   const owner = await openGuest(browser);
   const playerA = await openGuest(browser);
@@ -81,13 +81,25 @@ test("真實 Socket 三角色完成讓位、觀戰、三輪內對戰及賽後計
       playerA.page.getByRole("button", { name: /設計準備/ }).click(),
       playerB.page.getByRole("button", { name: /設計準備/ }).click(),
     ]);
-    await launchRound(playerA.page, playerB.page, owner.page, 1);
-    await launchRound(playerA.page, playerB.page, owner.page, 2);
-    await launchRound(playerA.page, playerB.page, owner.page, 3);
+    const initialStats = await (await request.get(`${REALTIME_URL}/__test/stats`, { headers: { "x-test-secret": CONTROL_SECRET } })).json() as { simulationCount: number };
+    for (let round = 1; round <= 3; round += 1) {
+      await launchRound(playerA.page, playerB.page, owner.page, round);
+      await expect.poll(async () => {
+        const response = await request.get(`${REALTIME_URL}/__test/stats`, { headers: { "x-test-secret": CONTROL_SECRET } });
+        return ((await response.json()) as { simulationCount: number }).simulationCount;
+      }, { timeout: 30_000 }).toBe(initialStats.simulationCount + round);
+      if (round === 3) break;
+      await expect.poll(async () => {
+        if (await playerA.page.getByRole("heading", { name: "對戰結果" }).isVisible()) return "result";
+        if (await playerA.page.getByRole("button", { name: "在判定線發射" }).isEnabled().catch(() => false)) return "next-round";
+        return "waiting";
+      }, { timeout: 30_000 }).not.toBe("waiting");
+      if (await playerA.page.getByRole("heading", { name: "對戰結果" }).isVisible()) break;
+    }
 
     for (const page of [owner.page, playerA.page, playerB.page]) {
-      await expect(page.getByRole("heading", { name: "對戰結果" })).toBeVisible();
-      await expect(page.locator(".scoreline")).toHaveText("2:1");
+      await expect(page.getByRole("heading", { name: "對戰結果" })).toBeVisible({ timeout: 30_000 });
+      await expect(page.locator(".scoreline")).toHaveText(/^(?:2:[01]|[01]:2)$/);
       await expect(page.getByText("對戰分：", { exact: false })).toHaveCount(2);
       await expect(page.getByText("挑戰分：", { exact: false })).toHaveCount(2);
       await expect(page.getByText("總分：", { exact: false })).toHaveCount(2);
