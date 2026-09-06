@@ -133,6 +133,28 @@ describe("IdentityResolver", () => {
     expect(new Set(results.map((item) => item.identity.id))).toEqual(new Set([initial.identity.id]));
   });
 
+  it("keeps the lookup inside the live-rotation singleflight window", async () => {
+    const backing = new InMemoryIdentityStore();
+    let cookieLookups = 0;
+    const store = {
+      findSession: async (...args: Parameters<typeof backing.findSession>) => {
+        cookieLookups += 1;
+        if (cookieLookups > 1) await new Promise((resolve) => setTimeout(resolve, 10));
+        return backing.findSession(...args);
+      },
+      touchSession: backing.touchSession.bind(backing),
+      createGuestSession: backing.createGuestSession.bind(backing),
+      upsertLiveSession: backing.upsertLiveSession.bind(backing),
+      revokeSession: backing.revokeSession.bind(backing),
+    };
+    const resolver = new IdentityResolver(store, { now: () => now });
+    const guest = await resolver.resolve(request());
+    const live = await createValidatedLiveIdentityProvider({ resolve: async () => ({ externalId: "device-staggered", displayName: "1C 03", studentName: "黃同學", className: "1C", studentNumber: "03" }) }).resolve();
+    const results = await Promise.all(Array.from({ length: 5 }, () => resolver.resolve(request(guest.cookieToken), live!)));
+    expect(cookieLookups).toBe(1);
+    expect(new Set(results.map((item) => item.cookieToken)).size).toBe(1);
+  });
+
   it("normalizes diagnostics but never uses them as lookup keys", async () => {
     const store = new InMemoryIdentityStore();
     const resolver = new IdentityResolver(store, { now: () => now });

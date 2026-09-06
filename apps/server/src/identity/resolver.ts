@@ -108,26 +108,28 @@ export class IdentityResolver {
     const diagnostic = diagnostics(request);
     try {
       const validToken = isIdentityToken(request.cookieToken) ? request.cookieToken : undefined;
-      const cached = validToken ? await this.#store.findSession(hashIdentityToken(validToken), now) : null;
       if (live) {
         if (!trustedLiveValues.has(live as object)) throw new TypeError("UNTRUSTED_LIVE_IDENTITY");
-        const compatible = cached?.identity.status === "guest" || (cached?.identity.status === "iclass" && cached.identity.externalId === live.externalId);
-        const rotationKey = compatible && validToken ? hashIdentityToken(validToken) : undefined;
-        const rotate = async () => {
+        const resolveLive = async () => {
+          const previousTokenHash = validToken ? hashIdentityToken(validToken) : undefined;
+          const cached = previousTokenHash ? await this.#store.findSession(previousTokenHash, now) : null;
+          const compatible = cached?.identity.status === "guest" || (cached?.identity.status === "iclass" && cached.identity.externalId === live.externalId);
           for (let attempt = 0; attempt < 3; attempt += 1) {
             const token = issueIdentityToken();
             try {
-              const session = await this.#store.upsertLiveSession({ tokenHash: hashIdentityToken(token), ...(attempt === 0 && rotationKey && cached ? { previousTokenHash: rotationKey, cachedIdentityId: cached.identity.id } : {}), identity: live, now, expiresAt, diagnostics: diagnostic });
+              const session = await this.#store.upsertLiveSession({ tokenHash: hashIdentityToken(token), ...(attempt === 0 && compatible && previousTokenHash && cached ? { previousTokenHash, cachedIdentityId: cached.identity.id } : {}), identity: live, now, expiresAt, diagnostics: diagnostic });
               return { identity: session.identity, cookieToken: token, issuedAt: now, expiresAt, isNew: true } as const;
             } catch (error) { if (error instanceof SessionTokenUnavailableError) continue; throw error; }
           }
           throw new Error("IDENTITY_TOKEN_EXHAUSTED");
         };
-        if (!rotationKey) return await rotate();
+        if (!validToken) return await resolveLive();
+        const rotationKey = `${hashIdentityToken(validToken)}:${live.externalId}`;
         const pending = this.#liveRotations.get(rotationKey); if (pending) return await pending;
-        const operation = rotate(); this.#liveRotations.set(rotationKey, operation);
+        const operation = resolveLive(); this.#liveRotations.set(rotationKey, operation);
         try { return await operation; } finally { if (this.#liveRotations.get(rotationKey) === operation) this.#liveRotations.delete(rotationKey); }
       }
+      const cached = validToken ? await this.#store.findSession(hashIdentityToken(validToken), now) : null;
       if (cached && !cached.revokedAt && cached.expiresAt > now) {
         const touched = await this.#store.touchSession(hashIdentityToken(validToken!), now, diagnostic, expiresAt);
         if (touched) {
