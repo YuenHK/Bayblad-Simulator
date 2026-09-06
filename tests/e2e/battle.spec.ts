@@ -25,7 +25,8 @@ async function joinByCode(page: Page, code: string, role: "player" | "spectator"
   await expect(page.getByText(`房間碼 ${code}`, { exact: true })).toBeVisible();
 }
 
-async function launchRound(player1: Page, player2: Page, spectator?: Page): Promise<void> {
+async function launchRound(player1: Page, player2: Page, spectator?: Page, round = 0): Promise<void> {
+  console.info(`[battle-e2e] round ${round} launch start`);
   const p1Button = player1.getByRole("button", { name: "在判定線發射" });
   const p2Button = player2.getByRole("button", { name: "在判定線發射" });
   await expect(p1Button).toBeEnabled();
@@ -51,6 +52,7 @@ async function launchRound(player1: Page, player2: Page, spectator?: Page): Prom
     await expect(spectator.getByTestId("battle-player1").locator("path")).toHaveCount(3);
     await expect(spectator.getByTestId("battle-player2").locator("path")).toHaveCount(3);
   }
+  console.info(`[battle-e2e] round ${round} launch accepted`);
 }
 
 test("真實 Socket 三角色完成讓位、觀戰、三輪內對戰及賽後計分", async ({ browser }) => {
@@ -79,9 +81,9 @@ test("真實 Socket 三角色完成讓位、觀戰、三輪內對戰及賽後計
       playerA.page.getByRole("button", { name: /設計準備/ }).click(),
       playerB.page.getByRole("button", { name: /設計準備/ }).click(),
     ]);
-    await launchRound(playerA.page, playerB.page, owner.page);
-    await launchRound(playerA.page, playerB.page, owner.page);
-    await launchRound(playerA.page, playerB.page, owner.page);
+    await launchRound(playerA.page, playerB.page, owner.page, 1);
+    await launchRound(playerA.page, playerB.page, owner.page, 2);
+    await launchRound(playerA.page, playerB.page, owner.page, 3);
 
     for (const page of [owner.page, playerA.page, playerB.page]) {
       await expect(page.getByRole("heading", { name: "對戰結果" })).toBeVisible();
@@ -92,7 +94,7 @@ test("真實 Socket 三角色完成讓位、觀戰、三輪內對戰及賽後計
       await expect(page.getByText("排行榜")).toHaveCount(0);
     }
   } finally {
-    await Promise.all([owner.context.close(), playerA.context.close(), playerB.context.close()]);
+    await Promise.allSettled([owner.context.close(), playerA.context.close(), playerB.context.close()]);
   }
 });
 
