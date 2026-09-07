@@ -2,8 +2,9 @@
 set -euo pipefail
 die(){ echo "promotion refused: $1" >&2;exit 1;}
 [[ $# -eq 1 ]]||die "pass exactly one verified backup set"
-source_set=$1;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
-# shellcheck source=host-trust-guard.sh
+source_set=$1;script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")"&&pwd -P)
+# Runtime-relative trusted helper is validated below.
+# shellcheck disable=SC1091
 source "$script_dir/host-trust-guard.sh"
 [[ $(id -u) -eq 0 ]]||die "promotion must run as root"
 for name in PROMOTE_PGSERVICE PROMOTE_MAINTENANCE_PGSERVICE PROMOTE_APP_ROLE PROMOTE_STATE_DIR PGSERVICEFILE PGPASSFILE PROMOTE_CONFIRM_DATABASE RESTORE_ALLOWED_TARGET_ID DELETION_LEDGER_FILE BACKUP_ALLOWED_SIGNERS_FILE BACKUP_SIGNER_ID PROMOTE_CONFIRM APP_UID PROMOTION_NONCE;do [[ -n ${!name:-} ]]||die "$name is required";done
@@ -16,14 +17,17 @@ read -r state_owner state_mode < <(stat -c '%u %a' "$PROMOTE_STATE_DIR" 2>/dev/n
 backup_reject_libpq_overrides PROMOTE_PGSERVICE||die "libpq trust boundary"
 for private in "$PGSERVICEFILE" "$PGPASSFILE" "$BACKUP_ALLOWED_SIGNERS_FILE";do backup_private_file "$private"||die "private file trust boundary";done
 [[ -f $DELETION_LEDGER_FILE && ! -L $DELETION_LEDGER_FILE ]]||die "ledger unsafe";read -r ledger_owner ledger_mode < <(stat -c '%u %a' "$DELETION_LEDGER_FILE" 2>/dev/null||stat -f '%u %Lp' "$DELETION_LEDGER_FILE");[[ $APP_UID =~ ^[1-9][0-9]*$ && $ledger_owner == "$APP_UID" && $ledger_mode == 600 ]]||die "live ledger must remain configured APP_UID-owned 0600"
-ledger_cli="$script_dir/../../apps/server/dist/admin/deletion-ledger-cli.js";deployment_root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P)
+ledger_cli="$script_dir/../../apps/server/dist/admin/deletion-ledger-cli.js";deployment_root=$(CDPATH='' cd -- "$script_dir/../.."&&pwd -P)
 backup_trusted_root_deployment "$deployment_root" "$script_dir" "${ledger_cli%/*}"||die "deployment trust boundary"
 backup_trusted_ledger_cli "$deployment_root" "$script_dir" "$ledger_cli"||die "ledger CLI trust boundary"
 for stale in "$PROMOTE_STATE_DIR"/promotion-ready "$PROMOTE_STATE_DIR"/promotion-ready.sha256 "$PROMOTE_STATE_DIR"/.promotion-reserved "$PROMOTE_STATE_DIR"/RECOVERY-REQUIRED.*;do [[ ! -e $stale ]]||die "unconsumed promotion state exists";done
 reserve="$PROMOTE_STATE_DIR/.promotion-reserved";(set -o noclobber;umask 077;printf '%s\n' "$$" >"$reserve") 2>/dev/null||die "promotion already reserved";chmod 600 "$reserve"
 ready_dir=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-promotion.XXXXXX");chmod 700 "$ready_dir";guard_pid=""
 restore_allow(){ local allowed=true;[[ -f $ready_dir/original-allow && $(<"$ready_dir/original-allow") == f ]]&&allowed=false;PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_database="$PROMOTE_CONFIRM_DATABASE" -v allowed="$allowed" -c "select format('alter database %I allow_connections %s', :'target_database', :'allowed')" -At | PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 >/dev/null;}
-cleanup(){ local original=$1 recovery=0 committed=f table_exists=f;if [[ -f $ready_dir/connections-disabled ]];then restore_allow||recovery=70;fi;if [[ $original -ne 0 && $recovery -eq 0 ]];then table_exists=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -Atqc "select to_regclass('restore_control.promotion_outbox') is not null")||recovery=70;if [[ $table_exists == t ]];then committed=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v nonce="$PROMOTION_NONCE" -Atqc "select exists(select 1 from restore_control.promotion_outbox where nonce=:'nonce' and state='committed')")||recovery=70;fi;[[ $committed == t ]]&&recovery=70;fi;if [[ -n $guard_pid ]];then kill "$guard_pid" >/dev/null 2>&1||true;wait "$guard_pid" >/dev/null 2>&1||true;fi;if [[ $recovery -ne 0 ]];then umask 077;incident="$PROMOTE_STATE_DIR/RECOVERY-REQUIRED.$(date -u +%Y%m%dT%H%M%SZ).$$";printf 'incident_path=%s\ndatabase=%s\nsystem_identifier=%s\ntime_utc=%s\nphase=%s\nmanual_action=keep application traffic stopped; reconcile authoritative promotion_outbox\n' "$incident" "$PROMOTE_CONFIRM_DATABASE" "${target_system:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([[ $committed == t ]]&&echo post-commit||echo pre-commit)" >"$incident";chmod 600 "$incident";return "$recovery";fi;rm -f "$reserve";rm -rf "$ready_dir";return "$original";};trap 'rc=$?;trap - EXIT;cleanup "$rc";exit $?' EXIT;trap 'exit 130' INT TERM
+cleanup(){ local original=$1 recovery=0 committed=f table_exists=f;if [[ -f $ready_dir/connections-disabled ]];then restore_allow||recovery=70;fi;if [[ $original -ne 0 && $recovery -eq 0 ]];then table_exists=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -Atqc "select to_regclass('restore_control.promotion_outbox') is not null")||recovery=70;if [[ $table_exists == t ]];then committed=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v nonce="$PROMOTION_NONCE" -Atqc "select exists(select 1 from restore_control.promotion_outbox where nonce=:'nonce' and state='committed')")||recovery=70;fi;[[ $committed == t ]]&&recovery=70;fi;if [[ -n $guard_pid ]];then kill "$guard_pid" >/dev/null 2>&1||true;wait "$guard_pid" >/dev/null 2>&1||true;fi;if [[ $recovery -ne 0 ]];then umask 077;incident="$PROMOTE_STATE_DIR/RECOVERY-REQUIRED.$(date -u +%Y%m%dT%H%M%SZ).$$";printf 'incident_path=%s\ndatabase=%s\nsystem_identifier=%s\ntime_utc=%s\nphase=%s\nmanual_action=keep application traffic stopped; reconcile authoritative promotion_outbox\n' "$incident" "$PROMOTE_CONFIRM_DATABASE" "${target_system:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([[ $committed == t ]]&&echo post-commit||echo pre-commit)" >"$incident";chmod 600 "$incident";return "$recovery";fi;rm -f "$reserve";rm -rf "$ready_dir";return "$original";}
+# rc is assigned inside the EXIT trap before use.
+# shellcheck disable=SC2154
+trap 'rc=$?;trap - EXIT;cleanup "$rc";exit $?' EXIT;trap 'exit 130' INT TERM
 node "$ledger_cli" hold-lock "$DELETION_LEDGER_FILE" "$ready_dir/ready" & guard_pid=$!
 for _ in {1..100};do [[ -f $ready_dir/ready && $(<"$ready_dir/ready") == ready ]]&&break;kill -0 "$guard_pid" >/dev/null 2>&1||die "ledger guard exited";sleep 0.1;done
 [[ -f $ready_dir/ready && $(<"$ready_dir/ready") == ready ]]||die "ledger guard timeout"

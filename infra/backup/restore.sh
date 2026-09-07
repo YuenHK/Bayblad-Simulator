@@ -2,8 +2,9 @@
 set -euo pipefail
 umask 077
 die(){ echo "restore refused: $1" >&2;exit 1;}
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
-# shellcheck source=host-trust-guard.sh
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")"&&pwd -P)
+# Runtime-relative trusted helper is validated below.
+# shellcheck disable=SC1091
 source "$script_dir/host-trust-guard.sh"
 guard_pid="";ready_dir="";expected_signed="";cleanup(){ if [[ -n $guard_pid ]];then kill "$guard_pid" >/dev/null 2>&1||true;wait "$guard_pid" >/dev/null 2>&1||true;fi;[[ -n $expected_signed ]]&&rm -f "$expected_signed";[[ -n $ready_dir && -d $ready_dir && ! -L $ready_dir ]]&&rm -rf "$ready_dir";};trap cleanup EXIT;trap 'cleanup;exit 130' INT TERM
 [[ $# -eq 1 ]]||die "pass exactly one completed backup directory";backup_set=$1
@@ -17,7 +18,7 @@ base=${backup_set##*/};[[ $base =~ ^steam-top-[0-9]{8}T[0-9]{6}Z-[0-9]{6}\.backu
 for file in dump.age checksum.sha256 manifest SIGNED-METADATA signature deletion-ledger.log;do [[ -f $backup_set/$file && ! -L $backup_set/$file ]]||die "backup set missing $file";done
 for private in "$AGE_IDENTITY_FILE" "$DELETION_LEDGER_FILE" "$PGSERVICEFILE" "$PGPASSFILE" "$BACKUP_ALLOWED_SIGNERS_FILE";do backup_private_file "$private"||die "private file trust boundary";done
 DELETION_LEDGER_CLI="$script_dir/../../apps/server/dist/admin/deletion-ledger-cli.js";cli_manifest="$script_dir/trusted-ledger-cli.sha256"
-deployment_root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);stat_owner_mode(){ if stat -c '%u %a' "$1" >/dev/null 2>&1;then stat -c '%u %a' "$1";else stat -f '%u %Lp' "$1";fi;}
+deployment_root=$(CDPATH='' cd -- "$script_dir/../.."&&pwd -P);stat_owner_mode(){ if stat -c '%u %a' "$1" >/dev/null 2>&1;then stat -c '%u %a' "$1";else stat -f '%u %Lp' "$1";fi;}
 backup_trusted_deployment "$deployment_root" "$script_dir" "${DELETION_LEDGER_CLI%/*}"||die "deployment trust boundary"
 [[ -f $DELETION_LEDGER_CLI && ! -L $DELETION_LEDGER_CLI && -f $cli_manifest && ! -L $cli_manifest ]]||die "ledger CLI trust files are unsafe";read -r cli_owner cli_mode < <(stat_owner_mode "$DELETION_LEDGER_CLI");read -r manifest_owner manifest_mode < <(stat_owner_mode "$cli_manifest");[[ $cli_owner == 0 && $manifest_owner == 0 && $cli_mode == 555 && $manifest_mode == 444 ]]||die "ledger CLI must be root:0555 and manifest root:0444";read -r trusted_cli_sha trusted_cli_name extra <"$cli_manifest";[[ -z ${extra:-} && $trusted_cli_name == apps/server/dist/admin/deletion-ledger-cli.js && $trusted_cli_sha =~ ^[a-f0-9]{64}$ ]]||die "ledger CLI trust manifest invalid";if command -v sha256sum >/dev/null 2>&1;then cli_sha=$(sha256sum "$DELETION_LEDGER_CLI"|awk '{print $1}');else cli_sha=$(shasum -a 256 "$DELETION_LEDGER_CLI"|awk '{print $1}');fi;[[ $cli_sha == "$trusted_cli_sha" ]]||die "ledger CLI digest mismatch"
 ready_dir=$(mktemp -d "${TMPDIR:-/tmp}/steam-top-ledger-guard.XXXXXX");chmod 700 "$ready_dir";ready_file="$ready_dir/ready";node "$DELETION_LEDGER_CLI" hold-lock "$DELETION_LEDGER_FILE" "$ready_file" & guard_pid=$!
@@ -25,7 +26,7 @@ for _ in {1..100};do [[ -f $ready_file && ! -L $ready_file && $(<"$ready_file") 
 "$script_dir/verify-backup-set.sh" "$backup_set" "$BACKUP_ALLOWED_SIGNERS_FILE" "$BACKUP_SIGNER_ID" "$DELETION_LEDGER_CLI" >/dev/null||die "backup set verification failed"
 ssh-keygen -Y verify -q -f "$BACKUP_ALLOWED_SIGNERS_FILE" -I "$BACKUP_SIGNER_ID" -n steam-top-backup -s "$backup_set/signature" <"$backup_set/SIGNED-METADATA" >/dev/null||die "backup signature invalid"
 expected_signed=$(mktemp "${TMPDIR:-/tmp}/steam-top-signed.XXXXXX");{ cat "$backup_set/manifest";cat "$backup_set/checksum.sha256";} >"$expected_signed";cmp -s "$expected_signed" "$backup_set/SIGNED-METADATA"||die "signed metadata mismatch"
-declare format= backup_id= set_name= created_at= source_database= source_schema= verification_table= verification_rows= sha256= deletion_ledger_lines= deletion_ledger_sha256= signer_id=
+declare format="" backup_id="" set_name="" created_at="" source_database="" source_schema="" verification_table="" verification_rows="" sha256="" deletion_ledger_lines="" deletion_ledger_sha256="" signer_id=""
 while IFS='=' read -r key value;do case "$key" in format|backup_id|set_name|created_at|source_database|source_schema|verification_table|verification_rows|sha256|deletion_ledger_lines|deletion_ledger_sha256|signer_id)printf -v "$key" '%s' "$value";;*)die "manifest field invalid";;esac;done <"$backup_set/manifest"
 [[ $format == steam-top-age-pgdump-v4 && $backup_id =~ ^[0-9a-f-]{36}$ && $set_name == "$base" && $created_at =~ ^[0-9]{8}T[0-9]{6}Z$ && $source_database =~ ^[A-Za-z0-9_.-]{1,63}$ && $source_schema =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ && $verification_table == deletion_audit && $verification_rows =~ ^[0-9]+$ && $sha256 =~ ^[a-f0-9]{64}$ && $deletion_ledger_lines =~ ^[0-9]+$ && $deletion_ledger_sha256 =~ ^[a-f0-9]{64}$ && $signer_id == "$BACKUP_SIGNER_ID" ]]||die "manifest invalid"
 read -r checksum checksum_name extra <"$backup_set/checksum.sha256"||die "checksum invalid";[[ -z ${extra:-} && $checksum == "$sha256" && $checksum_name == dump.age ]]||die "checksum metadata mismatch"

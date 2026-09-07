@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")"&&pwd -P)
 [[ $# -eq 4 ]]||exit 1;set_path=$1;allowed=$2;signer=$3;ledger_cli=$4;base=${set_path##*/}
 [[ -f $ledger_cli && ! -L $ledger_cli ]]||exit 1
 [[ $base =~ ^steam-top-[0-9]{8}T[0-9]{6}Z-[0-9]{6}\.backup$ && -d $set_path && ! -L $set_path ]]||exit 1

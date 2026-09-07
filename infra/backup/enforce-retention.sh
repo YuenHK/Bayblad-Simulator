@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 [[ $# -eq 3 ]]||{ echo "usage: enforce-retention BACKUP_DIR ALLOWED_SIGNERS SIGNER_ID" >&2;exit 2;}
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);backup_dir=$1;allowed=$2;signer=$3
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")"&&pwd -P);backup_dir=$1;allowed=$2;signer=$3
 [[ -d $backup_dir && ! -L $backup_dir ]]||exit 1
 quarantine="$backup_dir/.quarantine";mkdir -p "$quarantine";chmod 700 "$quarantine";[[ -d $quarantine && ! -L $quarantine ]]||exit 1
 sets=();seen_ids='|';seen_digests='|';moved=0;purged=0

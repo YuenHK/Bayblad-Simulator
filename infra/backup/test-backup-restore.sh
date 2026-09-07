@@ -2,17 +2,17 @@
 set -euo pipefail
 umask 077
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 for script in "$script_dir/backup.sh" "$script_dir/restore.sh" "$script_dir/host-trust-guard.sh" "$script_dir/verify-backup-set.sh" "$script_dir/verify-retention-set.sh" "$script_dir/enforce-retention.sh" "$script_dir/scrub-backups.sh" "$script_dir/verify-rollback-preflight.sh" "$script_dir/promote-restored-target.sh" "$0"; do
   bash -n "$script"
 done
-! grep -q 'mkfifo\|read ignored' "$script_dir/backup.sh"
+if grep -q 'mkfifo\|read ignored' "$script_dir/backup.sh";then exit 1;fi
 grep -q 'loop perform pg_sleep' "$script_dir/backup.sh"
-! grep -q 'DELETION_LEDGER_CLI_ROOT\|DELETION_LEDGER_CLI_SHA256' "$script_dir/backup.sh" "$script_dir/restore.sh"
-! grep -q 'ALLOW_TEST_LEDGER_CLI_INJECTION\|TEST_DELETION_LEDGER_CLI' "$script_dir/backup.sh" "$script_dir/restore.sh"
-guard_output=$(env PGPASSWORD=exposed PGSERVICE=source PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass BACKUP_DIR=/tmp/backups AGE_RECIPIENT=age1test DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli DELETION_LEDGER_CLI_ROOT=/tmp DELETION_LEDGER_CLI_SHA256=$(printf '%064d' 0) BACKUP_SIGNING_KEY=/tmp/key BACKUP_SIGNER_ID=test BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers "$script_dir/backup.sh" 2>&1||true)
+if grep -q 'DELETION_LEDGER_CLI_ROOT\|DELETION_LEDGER_CLI_SHA256' "$script_dir/backup.sh" "$script_dir/restore.sh";then exit 1;fi
+if grep -q 'ALLOW_TEST_LEDGER_CLI_INJECTION\|TEST_DELETION_LEDGER_CLI' "$script_dir/backup.sh" "$script_dir/restore.sh";then exit 1;fi
+guard_output=$(env PGPASSWORD=exposed PGSERVICE=source PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass BACKUP_DIR=/tmp/backups AGE_RECIPIENT=age1test DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli DELETION_LEDGER_CLI_ROOT=/tmp DELETION_LEDGER_CLI_SHA256="$(printf '%064d' 0)" BACKUP_SIGNING_KEY=/tmp/key BACKUP_SIGNER_ID=test BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers "$script_dir/backup.sh" 2>&1||true)
 [[ $guard_output == *"libpq override PGPASSWORD is forbidden"* ]]
-guard_output=$(env PGPASSWORD=exposed RESTORE_PGSERVICE=restore PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass RESTORE_CONFIRM_DATABASE=test AGE_IDENTITY_FILE=/tmp/key DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli DELETION_LEDGER_CLI_ROOT=/tmp DELETION_LEDGER_CLI_SHA256=$(printf '%064d' 0) RESTORE_ALLOWED_TARGET_ID=x NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers BACKUP_SIGNER_ID=test "$script_dir/restore.sh" /tmp/steam-top-20260101T000000Z-000001.backup 2>&1||true)
+guard_output=$(env PGPASSWORD=exposed RESTORE_PGSERVICE=restore PGSERVICEFILE=/tmp/service PGPASSFILE=/tmp/pass RESTORE_CONFIRM_DATABASE=test AGE_IDENTITY_FILE=/tmp/key DELETION_LEDGER_FILE=/tmp/ledger DELETION_LEDGER_CLI=/tmp/cli DELETION_LEDGER_CLI_ROOT=/tmp DELETION_LEDGER_CLI_SHA256="$(printf '%064d' 0)" RESTORE_ALLOWED_TARGET_ID=x NONPROD_RESTORE_CONFIRM=RESTORE_NONPRODUCTION_DATA BACKUP_ALLOWED_SIGNERS_FILE=/tmp/signers BACKUP_SIGNER_ID=test "$script_dir/restore.sh" /tmp/steam-top-20260101T000000Z-000001.backup 2>&1||true)
 [[ $guard_output == *"PGPASSWORD/PGOPTIONS forbidden"* && $guard_output == *"libpq trust boundary"* ]]
 
 if command -v shellcheck >/dev/null 2>&1; then
@@ -43,6 +43,8 @@ if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1
   echo "SKIP: SHA-256 tool is missing" >&2; exit 0
 fi
 
+# The literal backticks deliberately exercise an adversarial path.
+# shellcheck disable=SC2016
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/steam top "'`path`.XXXXXX')
 chmod 700 "$test_root"
 source_db="steam_top_backup_source_${RANDOM}_$$"
