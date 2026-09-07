@@ -6,7 +6,7 @@ const [rootArg, outputArg] = process.argv.slice(2);
 if (!rootArg || !outputArg) throw new Error("root and output required");
 const root = resolve(rootArg);
 const output = resolve(outputArg);
-const fixed = ["Caddyfile", "compose.yaml", "compose.canonical-app.yaml", "compose.release-integration.yaml"];
+const fixed = ["Caddyfile", "compose.yaml", "compose.canonical-app.yaml", "compose.release-integration.yaml", "infra/backup/trusted-ledger-cli.sha256"];
 const trees = ["scripts", "infra/backup", "apps/server/dist/admin", "drizzle"];
 const allowed = /\.(?:sh|mjs|js|sql)$/u;
 const files = [...fixed];
@@ -27,7 +27,7 @@ const lines = normalized.map((path) => {
   const absolute = join(root, path);
   if (!statSync(absolute).isFile()) throw new Error(`runtime file missing: ${path}`);
   const digest = createHash("sha256").update(readFileSync(absolute)).digest("hex");
-  const mode = path.endsWith(".sh") ? "0555" : "0444";
+  const mode = path.endsWith(".sh") || path === "apps/server/dist/admin/deletion-ledger-cli.js" ? "0555" : "0444";
   return `${digest} ${mode} ${path}`;
 });
 writeFileSync(output, `${lines.join("\n")}\n`, { flag: "wx", mode: 0o444 });
