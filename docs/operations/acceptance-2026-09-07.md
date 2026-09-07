@@ -49,3 +49,11 @@
 不能以本次 CI 或公開網站驗收通過，推定另一套受保護正式主機發布流程已完成。該 CI 的 release-host-core-integration、production-first-deploy-e2e 及 release-images 工作因事件條件未執行，不列作通過。
 
 另確認 Authorize release candidate 流程仍回報 startup_failure（https://github.com/YuenHK/Bayblad-Simulator/actions/runs/34114834322）；本次沒有繞過這項發布保護或宣稱受保護主機發布已完成。
+
+## 發布流程後續修復
+
+最新 `952aea7` 的品質、安全、PostgreSQL 及 Pages 檢查均通過，但授權流程仍在啟動時失敗。直接查看 GitHub 執行紀錄 `34124867691` 的錯誤註解，確認可重用工作流程中的 `release-images` 要求 `packages: write`，呼叫端卻只允許 `read`。
+
+新增回歸測試先重現權限不相容，以及未在普通 push 執行的 host integration 步驟有三處未閉合引號；修正後兩項均通過。只補齊授權呼叫端的映像發布權限及三處引號，沒有移除標籤條件、環境審批或部署權限檢查；精確工作形狀雜湊隨這兩項已審查的變更更新。
+
+本機驗證：發布權限驗證器通過，54 項部署／權限／工作流程回歸測試通過，全專案型別檢查通過。這仍不代表另一套正式主機已配置或部署完成。

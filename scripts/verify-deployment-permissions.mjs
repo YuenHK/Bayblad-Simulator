@@ -14,9 +14,9 @@ const allowed=new Map([
   ["ci.yml",new Set(["production-first-deploy-e2e","release-host-core-integration"])],
 ]);
 const exactWriterJobs=new Map([
-  ["authorize-release.yml:authorize","c95172180a7781847b3c5db632a8e9710452d37d710910551d6f500e2c991210"],
+  ["authorize-release.yml:authorize","a5ba29b565c4370767d05a5e5ce9dea6771f62ac5c72f533e25794d9de5476c3"],
   ["ci.yml:production-first-deploy-e2e","e7977f3f7533ba28c15fef2e765b8adc746fe2f144aa128843040476fbcd85a6"],
-  ["ci.yml:release-host-core-integration","ca0bd69afbb4975f94b8eb0ab077cde302dc23a0a2257700e8dddfbee824067a"],
+  ["ci.yml:release-host-core-integration","c36f160d034ef6e9e162b74bd300658a204112a3d716fbd7a7420f1566137154"],
   ["reconcile-deployment.yml:reconcile","ffeb899f90803b23a2944a7733a0d89ff3b6dfc75cd86ae9743be2ed0a647f5e"],
   ["reconcile-production-e2e.yml:terminal-reconcile","e0cfe410b5b3cd89db0ee46d31c917ebe3aa59658c1600f46ba9bd0fab8ab1a8"],
   ["record-deployment.yml:deploy-record","239ec107c411321355c90edb3be37344dadbd5ae41b4bdb29b2305d5df52f126"],
