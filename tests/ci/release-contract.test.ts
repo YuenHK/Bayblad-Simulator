@@ -236,9 +236,9 @@ describe("rollback deletion monotonicity", () => {
     const wss=read("scripts/production-wss-smoke.mjs");expect(wss.indexOf("rhythm coverage deadline")).toBeLessThan(wss.lastIndexOf('socket.off("server.event"'));
     const cutover=read("infra/backup/record-cutover-receipt.sh");expect(cutover).toContain("existing cutover receipt conflict");expect(cutover).toContain("steam-top-cutover-preflight");expect(cutover).toContain("preflight-recorded");
     expect(read(".github/workflows/db.yml")).toContain("test-promotion-isolation.sh");
-    expect(read(".github/workflows/db.yml")).toContain("test-canonical-cutover-full.sh");
+    expect(read(".github/workflows/db.yml")).toContain('/opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256/infra/backup/test-canonical-cutover-full.sh');
     const canonical = read("infra/backup/test-canonical-cutover-full.sh");
-    expect(read(".github/workflows/ci.yml")).toContain("test-canonical-cutover-full.sh");
+    expect(read(".github/workflows/ci.yml")).toContain('/opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256/infra/backup/test-canonical-cutover-full.sh');
     for (const entrypoint of ["/opt/steam-top-bootstrap/activate-production-state.sh", "/opt/steam-top/releases/", "/opt/steam-top-bootstrap/record-cutover-current.sh", "/opt/steam-top-bootstrap/finalize-current.sh", "promote-restored-target.sh"])
       expect(canonical).toContain(entrypoint);
     expect(canonical).toContain("steam-top-production.lock");

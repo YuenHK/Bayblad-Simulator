@@ -186,7 +186,7 @@ jobs:
           set -euo pipefail
           umask 077
           printf '{"username":"%s","password":"%s"}\n' "$ADMIN_USERNAME" "$ADMIN_INITIAL_PASSWORD" > "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
-          ./infra/backup/test-canonical-cutover-full.sh
+          /opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256/infra/backup/test-canonical-cutover-full.sh
           docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml -f compose.ci-secrets.yaml up -d --force-recreate --wait server
           sudo rm -f "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
       - name: Verify strict Node TLS before browser security tests
