@@ -4,7 +4,7 @@ die(){ echo "cutover abort refused: $1" >&2;exit 1;}
 [[ $(id -u) -eq 0 && ( $# -eq 1 || $# -eq 4 ) && ${CANONICAL_STATE_RESOLVED:-} == true ]]||die "canonical root wrapper required"
 nonce=$1;shift;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P);root=$(CDPATH= cd -- "$script_dir/../.."&&pwd -P);source "$script_dir/host-trust-guard.sh"
 for name in PROMOTE_PGSERVICE PGSERVICEFILE PGPASSFILE PROMOTE_STATE_DIR;do [[ -n ${!name:-} ]]||die "$name required";done;backup_reject_libpq_overrides PROMOTE_PGSERVICE||die "libpq overrides";[[ $nonce =~ ^[a-f0-9]{64}$ ]]||die "nonce"
-row=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -AtF '|' -v nonce="$nonce" -c "select app_role,restore_target_id,system_identifier,database_name,ledger_rows,ledger_hash,ready_sha256,preflight_sha256 from restore_control.finalize_outbox where nonce=:'nonce' and state in ('connect-granted-pending-smoke','smoke-observed')");IFS='|' read -r role target system database rows ledger_hash ready_sha preflight_sha <<EOF
+row=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -AtF '|' -v nonce="$nonce" -f - <<<"select app_role,restore_target_id,system_identifier,database_name,ledger_rows,ledger_hash,ready_sha256,preflight_sha256 from restore_control.finalize_outbox where nonce=:'nonce' and state in ('connect-granted-pending-smoke','smoke-observed')");IFS='|' read -r role target system database rows ledger_hash ready_sha preflight_sha <<EOF
 $row
 EOF
 [[ $role =~ ^[a-z_][a-z0-9_]{0,62}$ && $database =~ ^[a-z_][a-z0-9_]{0,62}$ && $ledger_hash =~ ^[a-f0-9]{64}$ && $ready_sha =~ ^[a-f0-9]{64}$ && $preflight_sha =~ ^[a-f0-9]{64}$ ]]||die "authoritative abort capsule"
