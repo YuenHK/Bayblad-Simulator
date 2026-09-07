@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'printf "cutover receipt failed at line %s\n" "$LINENO" >&2' ERR
 die(){ echo "cutover receipt refused: $1" >&2;exit 1;}
 [[ $(id -u) -eq 0 && $# -eq 2 ]]||die "root and ready/receipt paths required"
 [[ ${CANONICAL_STATE_RESOLVED:-} == true ]]||die "canonical bootstrap state resolver required"
