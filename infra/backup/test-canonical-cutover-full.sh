@@ -35,7 +35,7 @@ NODE
   echo "canonical hook checkpoint: activation and signer removal"
   [[ $(realpath /opt/steam-top/current) == "/opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256" ]]||{ echo "runtime current mismatch" >&2;exit 1;}
   legacy_nonce=$(printf d%.0s {1..64});legacy_dir="$tmp/legacy";sudo install -d -o root -g root -m 0700 "$legacy_dir";sudo node - "$tmp/state/promotion-ready" "$legacy_dir/ready" "$legacy_nonce" <<'NODE'
-const fs=require("fs"),r=require(process.argv[2]);r.promotionNonce=process.argv[4];fs.writeFileSync(process.argv[3],JSON.stringify(r,null,2)+"\n");
+const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));r.promotionNonce=process.argv[4];fs.writeFileSync(process.argv[3],JSON.stringify(r,null,2)+"\n");
 NODE
   sed 's/^\[target\]/[cutover-ci]/' "$tmp/service"|sudo tee "$fixture/pg_service.conf" >/dev/null;sudo install -o root -g root -m 0400 "$tmp/pass" "$fixture/pgpass";sudo chown root:root "$fixture/pg_service.conf";sudo chmod 0400 "$fixture/pg_service.conf"
   legacy_ready_sha=$(sudo "$root/scripts/portable-sha256.sh" digest "$legacy_dir/ready");printf '%s\n' "$legacy_ready_sha"|sudo tee "$legacy_dir/ready.sha256" >/dev/null;legacy_rows=$(node -p 'require(process.argv[1]).ledgerRows' "$legacy_dir/ready");legacy_system=$(node -p 'require(process.argv[1]).systemIdentifier' "$legacy_dir/ready");legacy_role=$(node -p 'require(process.argv[1]).appRole' "$legacy_dir/ready");legacy_target=$(node -p 'require(process.argv[1]).restoreTargetId' "$legacy_dir/ready");legacy_db=$(node -p 'require(process.argv[1]).database' "$legacy_dir/ready")
