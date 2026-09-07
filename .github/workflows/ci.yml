@@ -175,6 +175,14 @@ jobs:
           set -euo pipefail
           ./scripts/install-canonical-ci-fixture.sh > "$RUNNER_TEMP/canonical-fixture.env"
           cat "$RUNNER_TEMP/canonical-fixture.env" >> "$GITHUB_ENV"
+          compose=(docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml -f compose.ci-secrets.yaml)
+          if ! pg_isready -h 127.0.0.1 -p 15432 -d "$POSTGRES_DB" -U "$POSTGRES_USER"; then
+            "${compose[@]}" ps -a
+            db_id=$("${compose[@]}" ps -a -q db)
+            test -z "$db_id" || docker inspect --format 'db state={{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} ports={{json .NetworkSettings.Ports}}' "$db_id"
+            "${compose[@]}" logs --no-color db
+            exit 1
+          fi
       - name: Run activate, promote, public probe, record and finalize through canonical wrappers
         shell: bash
         env:
