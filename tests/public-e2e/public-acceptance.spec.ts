@@ -144,6 +144,9 @@ test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原
       const timing=ownerTimings[attempt]!;
       expect(timing.durationMs).toBe(60000);
       expect(peerTimings[attempt]).toEqual(timing);
+      // Anchor the test clock to the rendered server-adjusted elapsed time.
+      // Comparing Date.now() directly to a remote server timestamp mixes clocks.
+      const localRoundStart = Date.now() - Number(await owner.page.getByTestId("cinematic-battle").getAttribute("data-elapsed-ms"));
       // Both clients independently reach the same phase on the shared server schedule.
       for (const phase of ["summon","strike","result"] as const) {
         const reached=await Promise.all(arenas.map(async arena=>{await expect(arena).toHaveAttribute("data-phase",phase,{timeout:phase === "summon" ? 52000 : 9000});return Date.now();}));
@@ -152,15 +155,15 @@ test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原
         expect(Math.abs(reached[0]!-reached[1]!)).toBeLessThan(2500);
         const boundary=phase === "summon" ? 48000 : phase === "strike" ? 54000 : 60000;
         // The test host and server are separate clocks; UI uses its measured server offset.
-        expect(Math.min(...reached)-timing.startsAtMs).toBeGreaterThanOrEqual(boundary-250);
+        expect(Math.min(...reached)-localRoundStart).toBeGreaterThanOrEqual(boundary-250);
         await Promise.all([owner.page,peer.page].map(async page => expect(Number(await page.getByTestId("cinematic-battle").getAttribute("data-elapsed-ms"))).toBeGreaterThanOrEqual(boundary)));
-        expect(Math.max(...reached)-timing.startsAtMs).toBeLessThan(boundary+2500);
+        expect(Math.max(...reached)-localRoundStart).toBeLessThan(boundary+2500);
         if (phase !== "result") {
           await Promise.all([owner.page,peer.page].map(async page=>{await expect(page.getByTestId("arena-victory")).toHaveCount(0);await expect(page.getByRole("heading",{name:"對戰結果"})).toHaveCount(0);}));
           await Promise.all(arenas.map(arena=>expect(arena.locator(".cinema-skill strong")).not.toBeEmpty()));
         } else {
           // No early completion: every played round must consume its entire minute.
-          expect(Math.min(...reached)-timing.startsAtMs).toBeGreaterThanOrEqual(60000-250);
+          expect(Math.min(...reached)-localRoundStart).toBeGreaterThanOrEqual(60000-250);
           await Promise.all([owner.page,peer.page].map(page=>expect(page.getByTestId("arena-victory")).toBeVisible()));
         }
       }
