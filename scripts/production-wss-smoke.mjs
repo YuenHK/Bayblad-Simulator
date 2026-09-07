@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import https from "node:https";
+import { pathToFileURL } from "node:url";
 import { io } from "socket.io-client";
 
+export const command = (type, fields = {}) => ({ type, ...(type === "protocol.hello" ? {} : { protocolVersion: 1 }), eventId: randomUUID(), ...fields });
+
+async function runSmoke() {
 const [origin, nonce] = process.argv.slice(2);
 if (!/^https:\/\//u.test(origin) || !/^[a-f0-9]{64}$/u.test(nonce)) process.exit(2);
 const publicUrl = new URL(origin);
@@ -15,7 +19,6 @@ const lookup = (_hostname, options, callback) => {
   else callback(null, "127.0.0.1", 4);
 };
 const agent = new https.Agent({ lookup, rejectUnauthorized: true });
-const command = (type, fields = {}) => ({ type, protocolVersion: 1, eventId: randomUUID(), ...fields });
 const wait = (socket, type, ms = 15_000) => new Promise((resolve, reject) => {
   const listener = (event) => {
     if (event.type !== type) return;
@@ -165,3 +168,6 @@ try {
 } finally {
   for (const socket of clients) socket.close();
 }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await runSmoke();

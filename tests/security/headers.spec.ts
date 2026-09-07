@@ -46,13 +46,17 @@ test("keeps API and Socket.IO available through HTTPS", async ({ request }) => {
   expect(identity.status()).toBe(200);
   const cookie = identity.headers()["set-cookie"]?.split(";", 1)[0];
   expect(cookie).toBeTruthy();
-  const pollingOpen = await request.get(`${httpsOrigin}/socket.io/?EIO=4&transport=polling`);
+  const missingOrigin = await request.get(`${httpsOrigin}/socket.io/?EIO=4&transport=polling`);
+  expect([400, 403]).toContain(missingOrigin.status());
+  const pollingOpen = await request.get(`${httpsOrigin}/socket.io/?EIO=4&transport=polling`, {
+    headers: { origin: httpsOrigin! },
+  });
   expect(pollingOpen.status()).toBe(200);
   const openingPacket = await pollingOpen.text();
   const sid = JSON.parse(openingPacket.slice(1)) as { sid: string };
   const pollingPost = await request.post(`${httpsOrigin}/socket.io/?EIO=4&transport=polling&sid=${encodeURIComponent(sid.sid)}`, {
     data: "40",
-    headers: { "content-type": "text/plain;charset=UTF-8" },
+    headers: { "content-type": "text/plain;charset=UTF-8", origin: httpsOrigin! },
   });
   expect(pollingPost.status()).toBe(200);
   const transport = await new Promise<string>((resolve, reject) => {
