@@ -10,7 +10,10 @@ const integration = process.env.SMOKE_INTEGRATION_MODE === "true";
 if (publicUrl.pathname !== "/" || (integration ? origin !== "https://steam-top.integration.test:18443" : Boolean(publicUrl.port))) process.exit(2);
 
 // Keep the public Host/SNI for certificate validation, but never use public DNS.
-const lookup = (_hostname, _options, callback) => callback(null, "127.0.0.1", 4);
+const lookup = (_hostname, options, callback) => {
+  if (options.all) callback(null, [{ address: "127.0.0.1", family: 4 }]);
+  else callback(null, "127.0.0.1", 4);
+};
 const agent = new https.Agent({ lookup, rejectUnauthorized: true });
 const command = (type, fields = {}) => ({ type, protocolVersion: 1, eventId: randomUUID(), ...fields });
 const wait = (socket, type, ms = 15_000) => new Promise((resolve, reject) => {
