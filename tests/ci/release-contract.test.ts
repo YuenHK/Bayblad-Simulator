@@ -256,7 +256,7 @@ describe("rollback deletion monotonicity", () => {
     expect(canonical).toContain('JSON.parse(fs.readFileSync(process.argv[2],"utf8"))');
     expect(canonical).not.toContain("require(process.argv[1]).ledgerRows");
     expect(canonical).toContain('JSON.parse(require("fs").readFileSync(p,"utf8"))');
-    expect(canonical).toContain("sudo sed 's/^\\[target\\]/[cutover-ci]/'");
+    expect(canonical).toContain('trust.json").cutoverPgService');
     expect(canonical).toContain('sudo test -f "$fixture/$key"||sudo ssh-keygen');
     expect(canonical).toContain("old ledger signer removal unexpectedly accepted");
     for(const wrapper of ["infra/bootstrap/import-legacy-cutover-current.sh","infra/bootstrap/confirm-cutover-current.sh"]){const text=read(wrapper);expect(text).toContain('runtime_sha=$(basename "$runtime")');expect(text).toContain('RUNTIME_INSTALL_MANIFEST_SHA256="$runtime_sha" "$runtime/scripts/verify-runtime-install.sh"');}
