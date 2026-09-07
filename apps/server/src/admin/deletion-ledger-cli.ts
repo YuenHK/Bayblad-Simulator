@@ -48,7 +48,7 @@ async function main(){
   const [command,path,...args]=process.argv.slice(2),ledger=new FileDeletionLedger(path??"");
   if(command==="snapshot"&&args.length===1){console.log(JSON.stringify(await ledger.snapshot(args[0]!,true)));return;}
   if(command==="validate"&&args.length===0){const content=await readFile(path!);validateLedgerContent(content,true);console.log(JSON.stringify({lines:content.toString("utf8").split("\n").filter(Boolean).length,sha256:createHash("sha256").update(content).digest("hex")}));return;}
-  if(command==="hold-lock"&&args.length===1){let release!:()=>void;const until=new Promise<void>(resolvePromise=>{release=resolvePromise;});process.once("SIGTERM",release);process.once("SIGINT",release);await ledger.holdLock(resolve(args[0]!),until);return;}
+  if(command==="hold-lock"&&args.length===1){let release!:()=>void;const until=new Promise<void>(resolvePromise=>{release=resolvePromise;}),keepAlive=setInterval(()=>{},60_000),stop=()=>{clearInterval(keepAlive);release();};process.once("SIGTERM",stop);process.once("SIGINT",stop);try{await ledger.holdLock(resolve(args[0]!),until);}finally{clearInterval(keepAlive);process.off("SIGTERM",stop);process.off("SIGINT",stop);}return;}
   if(command==="reconcile"&&(args.length===2||args.length===3)){
     if(process.env.DELETION_RECONCILE_AUTHORIZATION!=="AUTHORIZE_DELETION_LEDGER_RECONCILIATION")throw new Error("RECONCILIATION_AUTHORIZATION_REQUIRED");
     await assertSafeDatabaseEnvironment();
