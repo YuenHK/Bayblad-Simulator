@@ -250,6 +250,8 @@ describe("rollback deletion monotonicity", () => {
     expect(canonical).toContain("promotion_audit");
     expect(canonical).toContain("runtime current mismatch");
     expect(canonical).toContain("ledger-ci-old");
+    expect(canonical).toContain("hostReceiptOutbox");
+    expect(canonical).not.toContain("fixture=/run/steam-top-canonical-ci");
     expect(canonical).toContain("old ledger signer removal unexpectedly accepted");
     expect(read("compose.canonical-app.yaml")).toContain("steam_top_app");
     expect(read(".github/workflows/ci.yml")).toContain("--force-recreate --wait server");
