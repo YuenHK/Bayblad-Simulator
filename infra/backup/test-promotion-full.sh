@@ -17,7 +17,7 @@ sudo mkdir -m 700 "$tmp/state-inherited"
 if sudo env "${promote_env[@]}" PROMOTION_NONCE="$(printf 8%.0s {1..64})" PROMOTE_STATE_DIR="$tmp/state-inherited" "$script_dir/promote-restored-target.sh" "$backup";then fixture_fail "inherited role authority accepted";fi
 sudo test ! -e "$tmp/state-inherited/promotion-ready"||fixture_fail "inherited rejection published ready"
 inherited_post=$(psql "$url" -Atqc "select (select datallowconn from pg_database where datname=current_database())||'|'||(select environment from restore_control.deployment_environment where singleton)||'|'||has_database_privilege('$app_role',current_database(),'connect')")
-[[ $inherited_post == 't|test|t' ]]||fixture_fail "inherited rejection poststate $inherited_post"
+[[ $inherited_post == 'true|test|true' ]]||fixture_fail "inherited rejection poststate $inherited_post"
 psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -v db="$db" -v parent="$parent_role" -v app="$app_role" -Atf - <<<"select format('revoke %I from %I;',:'parent',:'app');select format('revoke connect on database %I from %I;',:'db',:'parent')"|psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1
 set +e
 sudo env "${promote_env[@]}" PROMOTE_STATE_DIR="$tmp/state" "$script_dir/promote-restored-target.sh" "$backup"
