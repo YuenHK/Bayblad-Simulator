@@ -119,7 +119,7 @@ jobs:
           sudo env CI=true BOOTSTRAP_TAR_VALIDATOR="$validator" BOOTSTRAP_TAR_VALIDATOR_SHA256="$validator_sha" EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$archive_sha" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-db/allowed ./infra/bootstrap/test-ceremony-installer-recovery.sh ./infra/bootstrap/install-bootstrap.sh "$archive" "$archive.sig" bootstrap-ci /run/steam-top-bootstrap-db/trust.json --install-systemd --initialize-first-deploy "$(printf %064d 27)"
           sudo /opt/steam-top-bootstrap/invoke-production-policy-signer.py --verify-install
           sudo "$GITHUB_WORKSPACE/scripts/verify-and-create-production-policy-entry.sh" --verify-install
-          sudo ln -sfn "/opt/steam-top/releases/$runtime_sha" /opt/steam-top/current
+          sudo ln -sfn "/opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256" /opt/steam-top/current
           sudo rm -rf /run/steam-top-bootstrap-db
       - name: Exercise signed first-deploy authority and inherited host lock
         shell: bash
