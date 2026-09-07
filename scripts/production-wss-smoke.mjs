@@ -97,11 +97,17 @@ try {
   await joined;
   const upload = async (client) => (await postJson("/api/designs", client.token, design())).designId;
   const [d1, d2] = await Promise.all([upload(a), upload(b)]);
-  const finishedA = waitWhere(a.socket, "match.finished", (event) => event.roomId === room.roomId, 60_000);
-  const finishedB = waitWhere(b.socket, "match.finished", (event) => event.roomId === room.roomId, 60_000);
+  // Each round consumes a full minute, in addition to the launch window.
+  const finishedA = waitWhere(a.socket, "match.finished", (event) => event.roomId === room.roomId, 300_000);
+  const finishedB = waitWhere(b.socket, "match.finished", (event) => event.roomId === room.roomId, 300_000);
   const rounds = [new Map(), new Map()];
+  const completedRounds = [new Map(), new Map()];
   const tap = async (client, event) => {
     if (event.roomId !== room.roomId || typeof event.roundId !== "string" || typeof event.nonce !== "string") throw new Error("schedule correlation invalid");
+    // The CI client and loopback server share a host clock; respect the countdown.
+    const delay = event.serverTargetTimeMs - Date.now();
+    if (!Number.isFinite(delay) || delay > 15_000) throw new Error("launch target invalid");
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, delay)));
     const request = command("launch.tap", { roomId: room.roomId, roundId: event.roundId, nonce: event.nonce, clientTimeMs: event.serverTargetTimeMs });
     const ack = waitWhere(client.socket, "command.ack", (reply) => reply.causedByEventId === request.eventId && reply.commandType === "launch.tap");
     const result = waitWhere(client.socket, "launch.result.private", (reply) => reply.roomId === room.roomId && reply.roundId === event.roundId);
@@ -112,6 +118,10 @@ try {
   };
   const handlers = [a, b].map((client, index) => (event) => {
     if (event.type === "launch.schedule") { if(rounds[index].has(event.roundId))throw new Error("duplicate launch schedule");rounds[index].set(event.roundId,tap(client, event)); }
+    if (event.type === "round.finished" && event.roomId === room.roomId) {
+      if (completedRounds[index].has(event.roundId)) throw new Error("duplicate round result");
+      completedRounds[index].set(event.roundId, { winner: event.winner, matchId: event.matchId });
+    }
   });
   [a, b].forEach((client,index)=>client.socket.on("server.event",handlers[index]));
   const readyA=command("player.ready",{roomId:room.roomId,designId:d1}),readyB=command("player.ready",{roomId:room.roomId,designId:d2});
@@ -119,8 +129,14 @@ try {
   a.socket.emit("client.event",readyA);b.socket.emit("client.event",readyB);await Promise.all([readyAcknowledge,readyBAcknowledge]);
   const [matchA, matchB] = await Promise.all([finishedA, finishedB]);
   if (matchA.matchId !== matchB.matchId || matchA.roomId !== room.roomId || matchA.roundWinners.length < 2) throw new Error("match correlation invalid");
-  const expectedRounds=new Set(matchA.roundWinners.map(value=>typeof value==="string"?value:value.roundId));
-  if(expectedRounds.size!==matchA.roundWinners.length)throw new Error("round winner set invalid");
+  // match.roundWinners contains player labels, not round IDs; draws are replayed.
+  const expectedRounds=new Set(completedRounds[0].keys());
+  if (expectedRounds.size < matchA.roundWinners.length || JSON.stringify(matchA.roundWinners) !== JSON.stringify(matchB.roundWinners)) throw new Error("round winner set invalid");
+  for (const completed of completedRounds) {
+    if (completed.size !== expectedRounds.size || [...completed].some(([id, result]) => !expectedRounds.has(id) || result.matchId !== matchA.matchId)) throw new Error("round result correlation invalid");
+    const winners = [...completed.values()].map(result => result.winner).filter(winner => winner !== "draw");
+    if (JSON.stringify(winners) !== JSON.stringify(matchA.roundWinners)) throw new Error("round result winners invalid");
+  }
   await new Promise((resolve,reject)=>{const deadline=Date.now()+15_000;const check=()=>{if(rounds.every(seen=>seen.size===expectedRounds.size&&[...expectedRounds].every(roundId=>seen.has(roundId))))return resolve();if(Date.now()>=deadline)return reject(new Error("rhythm coverage deadline"));setTimeout(check,25)};check()});
   [a,b].forEach((client,index)=>client.socket.off("server.event",handlers[index]));
   const sealedSubmissions=rounds.flatMap(seen=>[...expectedRounds].map(roundId=>seen.get(roundId)));const results=await Promise.all(sealedSubmissions);

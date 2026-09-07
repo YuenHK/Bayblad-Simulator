@@ -1,4 +1,5 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
+import { spawnSync } from "node:child_process";
 
 const adminUrl = "https://bayblad-simulator-api.onrender.com/admin/";
 const adminPassword = process.env.PUBLIC_ADMIN_PASSWORD ?? "REDACTED_EXPOSED_PASSWORD";
@@ -94,6 +95,15 @@ test("老師登入、統計篩選、排行榜及 Excel 匯出", async ({ page },
     expect(response.status()).toBe(200);
     const file = await download;
     expect(file.suggestedFilename()).toMatch(/\.xlsx$/u);
+    const path = await file.path();
+    expect(path).not.toBeNull();
+    // Check the downloaded workbook archive, without logging student cell values.
+    expect(spawnSync("unzip", ["-t", path!], { stdio: "ignore" }).status).toBe(0);
+    const workbookXml = spawnSync("unzip", ["-p", path!, "xl/workbook.xml"], { encoding: "utf8" });
+    expect(workbookXml.status).toBe(0);
+    for (const name of ["對戰紀錄", "逐輪結果", "陀螺參數", "身份及裝置狀態", "使用量統計", "參數分析"]) {
+      expect(workbookXml.stdout).toMatch(new RegExp(`<sheet\\b[^>]*\\bname="${name}"`));
+    }
   }
   expect(errors).toEqual([]);
   await page.getByRole("button", { name: "登出" }).click();

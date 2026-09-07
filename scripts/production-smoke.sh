@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "production smoke failed at line $LINENO" >&2' ERR
 [[ $# -eq 2 && -n ${ADMIN_SMOKE_SECRET_FILE:-} && -f $ADMIN_SMOKE_SECRET_FILE && ! -L $ADMIN_SMOKE_SECRET_FILE ]]||exit 2
 origin=$1;nonce=$2;[[ $nonce =~ ^[a-f0-9]{64}$ ]]||exit 2;script_dir=$(CDPATH= cd -- "$(dirname -- "$0")"&&pwd -P)
 if [[ ${SMOKE_INTEGRATION_MODE:-false} == true ]];then
@@ -9,13 +10,13 @@ else
 fi
 resolve_tls="${host}:${tls_port}:127.0.0.1";resolve_http="${host}:${http_port}:127.0.0.1";tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT
 curl --fail --silent --show-error --resolve "$resolve_http" -o /dev/null -D "$tmp/redirect" "http://$host:$http_port/";grep -Eiq '^location: https://' "$tmp/redirect"
-curl --fail --silent --show-error --resolve "$resolve_tls" "$origin/" >"$tmp/index";asset=$(node -e 'const s=require("fs").readFileSync(process.argv[1],"utf8"),m=s.match(/(?:src|href)="(\/assets\/[^"]+\.(?:js|css))"/);if(!m)process.exit(1);process.stdout.write(m[1])' "$tmp/index");curl --fail --silent --show-error --resolve "$resolve_tls" "$origin$asset" >/dev/null
+curl --fail --silent --show-error --resolve "$resolve_tls" "$origin/admin/" >"$tmp/index";asset=$(node -e 'const s=require("fs").readFileSync(process.argv[1],"utf8"),m=s.match(/(?:src|href)="(\/admin\/assets\/[^"]+\.(?:js|css))"/);if(!m)process.exit(1);process.stdout.write(m[1])' "$tmp/index");curl --fail --silent --show-error --resolve "$resolve_tls" "$origin$asset" >/dev/null
 curl --fail --silent --show-error --resolve "$resolve_tls" "$origin/health/ready" >/dev/null;node "$script_dir/production-wss-smoke.mjs" "$origin" "$nonce"
 node - "$ADMIN_SMOKE_SECRET_FILE" "$tmp/login.json" <<'NODE'
 const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));if(typeof x.username!=="string"||typeof x.password!=="string"||x.password.length<8)process.exit(1);fs.writeFileSync(process.argv[3],JSON.stringify(x),{mode:0o600});
 NODE
 curl --fail --silent --show-error --resolve "$resolve_tls" -c "$tmp/cookies" -H "Origin: $origin" -H 'Sec-Fetch-Site: same-origin' -H 'Content-Type: application/json' --data-binary @"$tmp/login.json" "$origin/api/admin/login" >/dev/null
-curl --fail --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" "$origin/api/admin/session" >"$tmp/session";csrf=$(node -e 'const x=require(process.argv[1]);if(typeof x.csrfToken!=="string")process.exit(1);process.stdout.write(x.csrfToken)' "$tmp/session")
+curl --fail --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" "$origin/api/admin/session" >"$tmp/session";csrf=$(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(typeof x.csrfToken!=="string")process.exit(1);process.stdout.write(x.csrfToken)' "$tmp/session")
 probe_code=$(curl --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" -o "$tmp/probe" -w '%{http_code}' "$origin/api/admin/deployment-probe/$nonce")
 if [[ $probe_code == 200 ]];then grep -Fq "$nonce" "$tmp/probe";second_probe_code=$(curl --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" -o /dev/null -w '%{http_code}' "$origin/api/admin/deployment-probe/$nonce");[[ $second_probe_code == 404 ]];elif [[ $probe_code != 404 || ${PRODUCTION_SMOKE_PROBE_ALREADY_OBSERVED:-false} != true ]];then exit 1;fi
 if [[ -n ${PRODUCTION_SMOKE_PROBE_OUTPUT:-} && $probe_code == 200 ]];then [[ $PRODUCTION_SMOKE_PROBE_OUTPUT == /* && ! -e $PRODUCTION_SMOKE_PROBE_OUTPUT ]]||exit 1;cp "$tmp/probe" "$PRODUCTION_SMOKE_PROBE_OUTPUT";chmod 400 "$PRODUCTION_SMOKE_PROBE_OUTPUT";fi
