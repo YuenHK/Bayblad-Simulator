@@ -39,8 +39,16 @@ sudo chmod 600 "$tmp/cutover-signing" "$tmp/cutover-signers"
 echo "promotion fixture checkpoint: cutover signer"
 cutover="$tmp/state/cutover.json";cutover_nonce=$(printf 3%.0s {1..64});manifest_sha=${CANONICAL_DEPLOYMENT_MANIFEST_SHA:-};[[ -n $manifest_sha ]]||manifest_sha=$(printf 1%.0s {1..64});system_id=$(psql "$url" -Atqc "select system_identifier from pg_control_system()");public_origin=${CANONICAL_PUBLIC_ORIGIN:-https://steam-top.test}
 echo "promotion fixture checkpoint: database identity"
-printf '%s\n' "$url"|sudo tee "$tmp/database-url" >/dev/null;printf '{"nonce":"%s","restoreTargetId":"%s","systemIdentifier":"%s","createdAt":"2026-01-01T00:00:00.000Z"}\n' "$cutover_nonce" "$target" "$system_id"|sudo tee "$tmp/probe.json" >/dev/null;sudo sh -c "printf 'PUBLIC_ORIGIN=%s\nDATABASE_URL=%s\n' '$public_origin' '$url' >'$tmp/production.env'";sudo chmod 600 "$tmp/database-url" "$tmp/probe.json" "$tmp/production.env"
-sudo node "$root/scripts/create-cutover-receipt.mjs" "$tmp/state/promotion-ready" "$tmp/database-url" "$public_origin" "$manifest_sha" "$cutover_nonce" "$tmp/probe.json" "$tmp/production.env" "$cutover";sudo ssh-keygen -Y sign -q -f "$tmp/cutover-signing" -n steam-top-cutover-preflight "$cutover";sudo chmod 400 "$cutover" "$cutover.sig"
+printf '%s\n' "$url"|sudo tee "$tmp/database-url" >/dev/null
+printf '{"nonce":"%s","restoreTargetId":"%s","systemIdentifier":"%s","createdAt":"2026-01-01T00:00:00.000Z"}\n' "$cutover_nonce" "$target" "$system_id"|sudo tee "$tmp/probe.json" >/dev/null
+sudo sh -c "printf 'PUBLIC_ORIGIN=%s\nDATABASE_URL=%s\n' '$public_origin' '$url' >'$tmp/production.env'"
+sudo chmod 600 "$tmp/database-url" "$tmp/probe.json" "$tmp/production.env"
+echo "promotion fixture checkpoint: cutover inputs"
+sudo node "$root/scripts/create-cutover-receipt.mjs" "$tmp/state/promotion-ready" "$tmp/database-url" "$public_origin" "$manifest_sha" "$cutover_nonce" "$tmp/probe.json" "$tmp/production.env" "$cutover"
+echo "promotion fixture checkpoint: cutover receipt"
+sudo ssh-keygen -Y sign -q -f "$tmp/cutover-signing" -n steam-top-cutover-preflight "$cutover"
+sudo chmod 400 "$cutover" "$cutover.sig"
+echo "promotion fixture checkpoint: cutover signature"
 sudo ssh-keygen -q -t ed25519 -N '' -f "$tmp/host-signing";host_signer=host@test;sudo sh -c "printf '%s %s\n' '$host_signer' \"\$(cat '$tmp/host-signing.pub')\" >'$tmp/host-signers'"
 sudo sh -c "printf 'PUBLIC_ORIGIN=%s\nDATABASE_URL=%s\n' '$public_origin' '$url' >'$tmp/production.env'"
 sudo node - "$tmp/protected-state.json" "$tmp/host-receipt.json" "$manifest_sha" "$cutover_nonce" "$target" "$system_id" <<'NODE'
