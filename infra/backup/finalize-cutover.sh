@@ -17,7 +17,7 @@ EOF
 ssh-keygen -Y verify -q -f "$HOST_RECEIPT_ALLOWED_SIGNERS_FILE" -I "$HOST_RECEIPT_SIGNER_ID" -n steam-top-production-deployment -s "$HOST_DEPLOYMENT_RECEIPT_SIGNATURE" <"$HOST_DEPLOYMENT_RECEIPT_FILE"||die "host receipt signature"
 ssh-keygen -Y verify -q -f "$PROTECTED_STATE_ALLOWED_SIGNERS_FILE" -I "$PROTECTED_STATE_SIGNER_ID" -n steam-top-protected-deployment-state -s "$PROTECTED_DEPLOYMENT_STATE_SIGNATURE" <"$PROTECTED_DEPLOYMENT_STATE_FILE"||die "bootstrap sealed production state"
 ssh-keygen -Y verify -q -f "$PROTECTED_STATE_ALLOWED_SIGNERS_FILE" -I "$PROTECTED_STATE_SIGNER_ID" -n steam-top-production-activation -s "$ACTIVATION_RECEIPT_SIGNATURE" <"$ACTIVATION_RECEIPT_FILE"||die "activation receipt signature";node - "$PROTECTED_DEPLOYMENT_STATE_FILE" "$ACTIVATION_RECEIPT_FILE" <<'NODE'
-const fs=require("fs"),crypto=require("crypto"),s=require(process.argv[2]),a=require(process.argv[3]),digest=crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex");if(a.schemaVersion!==1||a.purpose!=="production-activation-receipt"||a.deploymentId!==s.deploymentId||a.nonce!==s.nonce||a.stateDigest!==digest||a.activatedAt!==s.activatedAt)process.exit(1);
+const fs=require("fs"),crypto=require("crypto"),s=JSON.parse(require("fs").readFileSync(process.argv[2],"utf8")),a=JSON.parse(require("fs").readFileSync(process.argv[3],"utf8")),digest=crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex");if(a.schemaVersion!==1||a.purpose!=="production-activation-receipt"||a.deploymentId!==s.deploymentId||a.nonce!==s.nonce||a.stateDigest!==digest||a.activatedAt!==s.activatedAt)process.exit(1);
 NODE
 canonical_env=$(mktemp);trap 'rm -f "$canonical_env"' EXIT;node "$root/scripts/production-env.mjs" "$PRODUCTION_ENV_FILE" "$canonical_env"
 node - "$PROTECTED_DEPLOYMENT_STATE_FILE" "$HOST_DEPLOYMENT_RECEIPT_FILE" "$cutover" "$canonical_env" "${CANONICAL_DEPLOYMENT_PURPOSE:-production}" <<'NODE'
@@ -39,6 +39,6 @@ update restore_control.finalize_outbox set state='connect-granted-pending-smoke'
 commit;
 SQL
 provisional="$cutover.provisional";if [[ ! -e $provisional ]];then node - "$cutover" "$provisional" <<'NODE'
-const fs=require("fs"),p=require(process.argv[2]);fs.writeFileSync(process.argv[3],JSON.stringify({schemaVersion:1,purpose:"connect-granted-pending-smoke",promotionNonce:p.promotionNonce,restoreTargetId:p.restoreTargetId,systemIdentifier:p.systemIdentifier,createdAt:new Date().toISOString()},null,2)+"\n",{flag:"wx",mode:0o400});
+const fs=require("fs"),p=JSON.parse(require("fs").readFileSync(process.argv[2],"utf8"));fs.writeFileSync(process.argv[3],JSON.stringify({schemaVersion:1,purpose:"connect-granted-pending-smoke",promotionNonce:p.promotionNonce,restoreTargetId:p.restoreTargetId,systemIdentifier:p.systemIdentifier,createdAt:new Date().toISOString()},null,2)+"\n",{flag:"wx",mode:0o400});
 NODE
 fi;echo "cutover provisional connect granted; public smoke confirmation required"
