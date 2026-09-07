@@ -106,7 +106,7 @@ try {
   const b = await connect("b");
   clients.push(a.socket, b.socket);
   const created = wait(a.socket, "room.snapshot");
-  a.socket.emit("client.event", command("room.create", { name: `smoke-${nonce}` }));
+  a.socket.emit("client.event", command("room.create", { name: `smoke-${nonce.slice(0, 16)}` }));
   const room = await created;
   const joined = wait(b.socket, "room.snapshot");
   b.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
