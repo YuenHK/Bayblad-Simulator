@@ -254,6 +254,9 @@ describe("rollback deletion monotonicity", () => {
     expect(canonical).not.toContain("fixture=/run/steam-top-canonical-ci");
     expect(canonical).not.toContain("r=require(process.argv[2])");
     expect(canonical).toContain('JSON.parse(fs.readFileSync(process.argv[2],"utf8"))');
+    expect(canonical).not.toContain("require(process.argv[1]).ledgerRows");
+    expect(canonical).toContain('JSON.parse(require("fs").readFileSync(p,"utf8"))');
+    expect(canonical).toContain("sudo sed 's/^\\[target\\]/[cutover-ci]/'");
     expect(canonical).toContain('sudo test -f "$fixture/$key"||sudo ssh-keygen');
     expect(canonical).toContain("old ledger signer removal unexpectedly accepted");
     expect(read("compose.canonical-app.yaml")).toContain("steam_top_app");
