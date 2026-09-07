@@ -27,7 +27,9 @@ sudo install -o root -g root -m 0444 "$RUNNER_TEMP/canonical-bootstrap-allowed" 
 sudo install -o root -g root -m 0400 "$RUNNER_TEMP/canonical-bootstrap-trust.json" /run/steam-top-bootstrap-install-ci/trust.json
 first_deploy_nonce=$(printf '%064d' 29)
 install_trace="$RUNNER_TEMP/canonical-bootstrap-install.trace"
-if ! sudo env BOOTSTRAP_TAR_VALIDATOR="$validator" BOOTSTRAP_TAR_VALIDATOR_SHA256="$validator_sha" EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$archive_sha" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-install-ci/allowed PS4='+${LINENO}: ' timeout 180s bash -x "$root/infra/bootstrap/install-bootstrap.sh" "$archive" "$archive.sig" bootstrap-ci /run/steam-top-bootstrap-install-ci/trust.json --install-systemd --initialize-first-deploy "$first_deploy_nonce" 2>"$install_trace"; then
+install_stdout="$RUNNER_TEMP/canonical-bootstrap-install.stdout"
+if ! sudo env BOOTSTRAP_TAR_VALIDATOR="$validator" BOOTSTRAP_TAR_VALIDATOR_SHA256="$validator_sha" EXPECTED_BOOTSTRAP_ARCHIVE_SHA256="$archive_sha" BOOTSTRAP_ALLOWED_SIGNERS_FILE=/run/steam-top-bootstrap-install-ci/allowed PS4='+${LINENO}: ' timeout 180s bash -x "$root/infra/bootstrap/install-bootstrap.sh" "$archive" "$archive.sig" bootstrap-ci /run/steam-top-bootstrap-install-ci/trust.json --install-systemd --initialize-first-deploy "$first_deploy_nonce" >"$install_stdout" 2>"$install_trace"; then
+  tail -n 160 "$install_stdout" >&2 || true
   tail -n 160 "$install_trace" >&2 || true
   sudo systemctl --no-pager --full status steam-top-cutover-reaper.service steam-top-cutover-reaper.timer >&2 || true
   sudo journalctl --no-pager -u steam-top-cutover-reaper.service -n 100 >&2 || true

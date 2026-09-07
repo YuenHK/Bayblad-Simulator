@@ -38,15 +38,14 @@ for file in COMPLETE SIGNED-METADATA VERIFIED VERIFIED.sig checksum.sha256 delet
 "$script_dir/verify-backup-set.sh" "$snapshot" "$BACKUP_ALLOWED_SIGNERS_FILE" "$BACKUP_SIGNER_ID" "$ledger_cli" >/dev/null||die "signed immutable snapshot verification failed"
 "$script_dir/verify-rollback-preflight.sh" "$snapshot" "$DELETION_LEDGER_FILE" >/dev/null
 expected_rows=$(sed -n 's/^verification_rows=//p' "$snapshot/manifest");[[ $expected_rows =~ ^[0-9]+$ ]]||die "verification row metadata invalid"
-export PGSERVICE=$PROMOTE_PGSERVICE
-target=$(psql -X -v ON_ERROR_STOP=1 -Atqc 'select current_database()');[[ $target == "$PROMOTE_CONFIRM_DATABASE" ]]||die "target database confirmation mismatch"
-target_system=$(psql -X -v ON_ERROR_STOP=1 -Atqc 'select system_identifier from pg_control_system()')
+target=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -Atqc 'select current_database()');[[ $target == "$PROMOTE_CONFIRM_DATABASE" ]]||die "target database confirmation mismatch"
+target_system=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -Atqc 'select system_identifier from pg_control_system()')
 maintenance_check=$(PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_database="$PROMOTE_CONFIRM_DATABASE" -AtF '|' -f - <<<"select current_database()<>:'target_database',exists(select 1 from pg_database where datname=:'target_database'),(select system_identifier from pg_control_system()),(select rolsuper or pg_has_role(current_user,'pg_signal_backend','member') from pg_roles where rolname=current_user)")
 IFS='|' read -r maintenance_separate target_exists maintenance_system signal_privilege <<<"$maintenance_check"
 [[ $maintenance_separate == t && $target_exists == t && $maintenance_system == "$target_system" && $signal_privilege == t ]]||die "maintenance recovery preflight failed"
 PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v db="$PROMOTE_CONFIRM_DATABASE" -Atf - >"$ready_dir/original-allow" <<<"select datallowconn from pg_database where datname=:'db'";chmod 400 "$ready_dir/original-allow"
 touch "$ready_dir/connections-disabled";export ready_dir
-psql -X -v ON_ERROR_STOP=1 -v target_id="$RESTORE_ALLOWED_TARGET_ID" -v expected_rows="$expected_rows" -v app_role="$PROMOTE_APP_ROLE" -v nonce="$PROMOTION_NONCE" <<'SQL'
+PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_id="$RESTORE_ALLOWED_TARGET_ID" -v expected_rows="$expected_rows" -v app_role="$PROMOTE_APP_ROLE" -v nonce="$PROMOTION_NONCE" <<'SQL'
 \! PGSERVICE="$PROMOTE_MAINTENANCE_PGSERVICE" psql -X -v ON_ERROR_STOP=1 -c "alter database $PROMOTE_CONFIRM_DATABASE allow_connections false"
 select not datallowconn as connections_disabled from pg_database where datname=current_database() \gset
 \if :connections_disabled
