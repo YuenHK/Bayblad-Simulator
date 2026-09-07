@@ -162,7 +162,7 @@ jobs:
           test -s "$GITHUB_WORKSPACE/.ci/caddy-root.crt"
           curl --noproxy '*' --fail --silent --show-error --cacert "$GITHUB_WORKSPACE/.ci/caddy-root.crt" https://localhost/ >/dev/null
           sudo apt-get update
-          sudo apt-get install -y libnss3-tools
+          sudo apt-get install -y libnss3-tools age openssh-client postgresql-client
           sudo cp "$GITHUB_WORKSPACE/.ci/caddy-root.crt" /usr/local/share/ca-certificates/steam-top-ci.crt
           sudo update-ca-certificates
           mkdir -p "$HOME/.pki/nssdb"
