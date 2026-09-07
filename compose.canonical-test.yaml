@@ -5,3 +5,6 @@ services:
         published: "15432"
         host_ip: 127.0.0.1
         protocol: tcp
+networks:
+  database:
+    internal: false

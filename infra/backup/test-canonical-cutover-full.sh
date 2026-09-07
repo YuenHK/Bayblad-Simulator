@@ -34,7 +34,7 @@ NODE
   sudo cp "$fixture/ledger-allowed" "$fixture/ledger-allowed.with-old";sudo sed -i '/^ledger-ci-old /d' "$fixture/ledger-allowed";if sudo env PATH="$fixture/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "$activate" "$bundle" >/dev/null 2>&1;then echo "old ledger signer removal unexpectedly accepted" >&2;exit 1;fi;sudo mv "$fixture/ledger-allowed.with-old" "$fixture/ledger-allowed";sudo chown root:root "$fixture/ledger-allowed";sudo chmod 0444 "$fixture/ledger-allowed"
   echo "canonical hook checkpoint: activation and signer removal"
   [[ $(realpath /opt/steam-top/current) == "/opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256" ]]||{ echo "runtime current mismatch" >&2;exit 1;}
-  legacy_nonce=$(printf d%.0s {1..64});legacy_dir="$tmp/legacy";sudo install -d -o root -g root -m 0700 "$legacy_dir";sudo node - "$tmp/state/promotion-ready" "$legacy_dir/ready" "$legacy_nonce" <<'NODE'
+  legacy_nonce=$(printf d%.0s {1..64});legacy_dir="$fixture/legacy";sudo install -d -o root -g root -m 0700 "$legacy_dir";sudo node - "$tmp/state/promotion-ready" "$legacy_dir/ready" "$legacy_nonce" <<'NODE'
 const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));r.promotionNonce=process.argv[4];fs.writeFileSync(process.argv[3],JSON.stringify(r,null,2)+"\n");
 NODE
   sudo sed 's/^\[target\]/[cutover-ci]/' "$tmp/service"|sudo tee "$fixture/pg_service.conf" >/dev/null;sudo install -o root -g root -m 0400 "$tmp/pass" "$fixture/pgpass";sudo chown root:root "$fixture/pg_service.conf";sudo chmod 0400 "$fixture/pg_service.conf"
