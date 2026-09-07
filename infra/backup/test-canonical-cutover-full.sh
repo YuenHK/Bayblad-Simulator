@@ -24,7 +24,7 @@ NODE
   echo "canonical hook checkpoint: authorization bundle"
   sudo install -d -o root -g root -m 0555 "$fixture/bin";sudo node - "$fixture/bin/gh" "$cutover_nonce" "$manifest_sha" "${GITHUB_REPOSITORY:-school/steam-top}" <<'NODE'
 const fs=require("fs"),[out,nonce,manifest,repo]=process.argv.slice(2);fs.writeFileSync(out,`#!/usr/bin/env bash\nset -euo pipefail\n[[ \${GH_TOKEN:-} == functional-fixture && \$# -eq 4 && \$1 == api && \$2 == 'repos/${repo}/deployments?environment=production&per_page=1' && \$3 == --jq ]]||exit 64\nprintf '%s\\n' '1|${nonce}|${manifest}'\nprintf '%q ' \"\$@\" >>/run/steam-top-canonical-ci/gh.calls\nprintf '\\n' >>/run/steam-top-canonical-ci/gh.calls\n`,{mode:0o555});
-  NODE
+NODE
   sudo chown root:root "$fixture/bin/gh";sudo chmod 0555 "$fixture/bin/gh"
   echo "canonical hook checkpoint: gh fixture"
   sudo env PATH="$fixture/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "$activate" "$bundle" |sudo tee "$tmp/activation.frame" >/dev/null
