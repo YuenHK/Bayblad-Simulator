@@ -54,8 +54,8 @@ host_signer=host@test
 sudo sh -c "printf '%s %s\n' '$host_signer' \"\$(cat '$tmp/host-signing.pub')\" >'$tmp/host-signers'"
 echo "promotion fixture checkpoint: host signer"
 sudo sh -c "printf 'PUBLIC_ORIGIN=%s\nDATABASE_URL=%s\n' '$public_origin' '$url' >'$tmp/production.env'"
-sudo node - "$tmp/protected-state.json" "$tmp/host-receipt.json" "$manifest_sha" "$cutover_nonce" "$target" "$system_id" <<'NODE'
-const fs=require("fs"),[state,host,manifest,nonce,target,system]=process.argv.slice(2),commit="a".repeat(40),origin=process.env.CANONICAL_PUBLIC_ORIGIN||"https://steam-top.test";fs.writeFileSync(state,JSON.stringify({schemaVersion:4,purpose:"production",signerKeyId:"host@test",deploymentId:"1",activatedAt:"2026-01-01T00:00:00.000Z",smoke:{complete:true},manifestSha256:manifest,nonce,commit})+"\n");fs.writeFileSync(host,JSON.stringify({schemaVersion:4,purpose:"production",signerKeyId:"host@test",smoke:{complete:true},manifestDigest:manifest,nonce,commit,publicOrigin:origin,database:{systemIdentifier:system,restoreTargetId:target,markerEnvironment:"production",restoreAllowed:false}})+"\n");
+sudo node - "$tmp/protected-state.json" "$tmp/host-receipt.json" "$manifest_sha" "$cutover_nonce" "$target" "$system_id" "$public_origin" <<'NODE'
+const fs=require("fs"),[state,host,manifest,nonce,target,system,origin]=process.argv.slice(2),commit="a".repeat(40);fs.writeFileSync(state,JSON.stringify({schemaVersion:4,purpose:"production",signerKeyId:"host@test",deploymentId:"1",activatedAt:"2026-01-01T00:00:00.000Z",smoke:{complete:true},manifestSha256:manifest,nonce,commit})+"\n");fs.writeFileSync(host,JSON.stringify({schemaVersion:4,purpose:"production",signerKeyId:"host@test",smoke:{complete:true},manifestDigest:manifest,nonce,commit,publicOrigin:origin,database:{systemIdentifier:system,restoreTargetId:target,markerEnvironment:"production",restoreAllowed:false}})+"\n");
 NODE
 echo "promotion fixture checkpoint: host payloads"
 sudo ssh-keygen -Y sign -q -f "$tmp/host-signing" -n steam-top-production-deployment "$tmp/host-receipt.json"
