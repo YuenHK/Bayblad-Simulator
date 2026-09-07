@@ -7,6 +7,17 @@ const fs=require("fs"),u=new URL(process.argv[2]);fs.writeFileSync(process.argv[
 NODE
 export PGSERVICE=claim PGSERVICEFILE=$service;a=$(printf a%.0s {1..64});b=$(printf b%.0s {1..64});c=$(printf c%.0s {1..64});claim(){ "$root/scripts/claim-first-installation.sh" "$@";}
 psql "$url" -v ON_ERROR_STOP=1 -v app_password='test-app-password' -f "$root/scripts/provision-app-role.sql" >/dev/null
+psql "$url" -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
+BEGIN;
+SET LOCAL ROLE steam_top_app;
+SELECT public.steam_top_assert_battle_eligible_design_layers('00000000-0000-4000-8000-000000000001'::uuid);
+DO $$BEGIN
+  IF public.steam_top_current_delete_is_audited() THEN RAISE EXCEPTION 'unaudited delete permitted'; END IF;
+  IF encode(public.digest('abc'::text,'sha256'::text),'hex') <> 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' THEN RAISE EXCEPTION 'round hash helper failed'; END IF;
+  IF has_function_privilege(current_user,'public.digest(bytea,text)','EXECUTE') THEN RAISE EXCEPTION 'unexpected overload granted'; END IF;
+END$$;
+ROLLBACK;
+SQL
 [[ $(psql "$url" -Atqc "select has_database_privilege('steam_top_app',current_database(),'connect') and has_schema_privilege('steam_top_app','public','usage') and not has_schema_privilege('steam_top_app','public','create') and has_schema_privilege('steam_top_app','restore_control','usage') and not has_schema_privilege('steam_top_app','restore_control','create') and has_table_privilege('steam_top_app','public.app_schema_migrations','select') and not has_table_privilege('steam_top_app','public.app_schema_migrations','insert,update,delete,truncate,references,trigger') and has_table_privilege('steam_top_app','restore_control.deployment_environment','select') and not has_table_privilege('steam_top_app','restore_control.deployment_environment','insert,update,delete,truncate,references,trigger')") == t ]]
 [[ $(psql "$url" -Atqc "select bool_and(not has_database_privilege('steam_top_app',datname,'connect')) from pg_database where datname<>current_database()") == t ]]
 shared="shared_rejected_${RANDOM}_$$";createdb --maintenance-db="$maintenance" "$shared";before=$(psql "$url" -Atqc "select rolpassword from pg_authid where rolname='steam_top_app'");if psql "$url" -v ON_ERROR_STOP=1 -v app_password='must-not-apply' -f "$root/scripts/provision-app-role.sql" >/dev/null 2>&1;then exit 1;fi;after=$(psql "$url" -Atqc "select rolpassword from pg_authid where rolname='steam_top_app'");[[ $before == "$after" ]];dropdb --force --maintenance-db="$maintenance" "$shared"
