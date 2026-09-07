@@ -1,3 +1,7 @@
 services:
   db:
-    ports: !override ["127.0.0.1:15432:5432"]
+    ports: !override
+      - target: 5432
+        published: "15432"
+        host_ip: 127.0.0.1
+        protocol: tcp
