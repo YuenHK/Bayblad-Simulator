@@ -36,9 +36,25 @@ const waitWhere = (socket, type, predicate, ms = 15_000) => new Promise((resolve
 });
 
 async function connect(name) {
+  const cookie = await new Promise((resolve, reject) => {
+    const request = https.request({
+      agent, hostname: publicUrl.hostname, port: publicUrl.port || 443,
+      servername: publicUrl.hostname, path: "/api/identity", method: "GET",
+      headers: { host: publicUrl.host, origin },
+    }, response => {
+      response.resume();
+      const cookies = response.headers["set-cookie"] ?? [];
+      if (response.statusCode !== 200 || cookies.length === 0) return reject(new Error(`identity ${response.statusCode}`));
+      resolve(cookies.map(value => value.split(";", 1)[0]).join("; "));
+    });
+    request.setTimeout(10_000, () => request.destroy(new Error("identity timeout")));
+    request.on("error", reject); request.end();
+  });
   const socket = io(origin, {
     transports: ["websocket"], upgrade: false, rejectUnauthorized: true,
     transportOptions: { websocket: { lookup } },
+    extraHeaders: { origin, cookie },
+    forceNew: true, reconnection: false,
     auth: { displayName: `smoke-${nonce.slice(0, 8)}-${name}` }, timeout: 8_000,
   });
   await new Promise((resolve, reject) => {
@@ -57,7 +73,7 @@ function postJson(path, token, body) {
     const request = https.request({
       agent, hostname: publicUrl.hostname, port: publicUrl.port || 443, servername: publicUrl.hostname,
       path, method: "POST", headers: {
-        host: publicUrl.hostname, authorization: `Bearer ${token}`,
+        host: publicUrl.host, origin, authorization: `Bearer ${token}`,
         "content-type": "application/json", "content-length": payload.length,
       },
     }, (response) => {

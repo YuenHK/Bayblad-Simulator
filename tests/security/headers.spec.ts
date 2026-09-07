@@ -81,13 +81,18 @@ test("rejects an oversized API request at the public edge", async ({ request }) 
   expect(response.headers().server).toBeUndefined();
 });
 
-test("loads the app and real 3D view without CSP violations", async ({ page }) => {
+test("loads the deployed teacher app and handles login without CSP violations", async ({ page }) => {
   test.skip(!httpsOrigin, "requires a running production Compose stack");
   const violations: string[] = [];
   page.on("console", (message) => { if (/content security policy|refused to/iu.test(message.text())) violations.push(message.text()); });
   page.on("pageerror", (error) => { if (/content security policy|refused to/iu.test(error.message)) violations.push(error.message); });
-  await page.goto(httpsOrigin!);
-  await page.getByRole("tab", { name: "3D 預覽" }).click();
-  await expect(page.locator(".preview-stage canvas")).toBeVisible();
+  // The container serves the admin build; the student 3D app lives on Pages
+  // and has its own full public battle acceptance test.
+  await page.goto(`${httpsOrigin}/admin/`);
+  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
+  await page.getByLabel("帳號", { exact: true }).fill("security-nonexistent-user");
+  await page.getByLabel("密碼", { exact: true }).fill("security-invalid-password");
+  await page.getByRole("button", { name: "登入", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("帳號或密碼不正確");
   expect(violations).toEqual([]);
 });
