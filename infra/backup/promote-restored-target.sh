@@ -40,6 +40,16 @@ for file in COMPLETE SIGNED-METADATA VERIFIED VERIFIED.sig checksum.sha256 delet
 expected_rows=$(sed -n 's/^verification_rows=//p' "$snapshot/manifest");[[ $expected_rows =~ ^[0-9]+$ ]]||die "verification row metadata invalid"
 target=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -Atqc 'select current_database()');[[ $target == "$PROMOTE_CONFIRM_DATABASE" ]]||die "target database confirmation mismatch"
 target_system=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -Atqc 'select system_identifier from pg_control_system()')
+membership_count=$(PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v role="$PROMOTE_APP_ROLE" -Atf - <<'SQL'
+with recursive memberships(roleid) as (
+  select roleid from pg_auth_members where member=(select oid from pg_roles where rolname=:'role')
+  union
+  select parent.roleid from pg_auth_members parent join memberships child on parent.member=child.roleid
+)
+select count(*) from memberships;
+SQL
+)
+[[ $membership_count == 0 ]]||die "application role memberships forbidden"
 maintenance_check=$(PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_database="$PROMOTE_CONFIRM_DATABASE" -AtF '|' -f - <<<"select current_database()<>:'target_database',exists(select 1 from pg_database where datname=:'target_database'),(select system_identifier from pg_control_system()),(select rolsuper or pg_has_role(current_user,'pg_signal_backend','member') from pg_roles where rolname=current_user)")
 IFS='|' read -r maintenance_separate target_exists maintenance_system signal_privilege <<<"$maintenance_check"
 [[ $maintenance_separate == t && $target_exists == t && $maintenance_system == "$target_system" && $signal_privilege == t ]]||die "maintenance recovery preflight failed"

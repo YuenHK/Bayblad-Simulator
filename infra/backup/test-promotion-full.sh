@@ -14,11 +14,8 @@ PGSERVICE=target BACKUP_DIR="$tmp/backups" AGE_RECIPIENT="$recipient" DELETION_L
 promote_env=(APP_UID="$app_uid" PROMOTION_NONCE="$(printf 3%.0s {1..64})" PROMOTE_PGSERVICE=target PROMOTE_MAINTENANCE_PGSERVICE=maintenance PROMOTE_APP_ROLE="$app_role" PGSERVICEFILE="$tmp/service" PGPASSFILE="$tmp/pass" PROMOTE_CONFIRM_DATABASE="$db" RESTORE_ALLOWED_TARGET_ID="$target" DELETION_LEDGER_FILE="$tmp/ledger" BACKUP_ALLOWED_SIGNERS_FILE="$tmp/signers" BACKUP_SIGNER_ID="$signer" PROMOTE_CONFIRM=PROMOTE_VERIFIED_RESTORE_TO_PRODUCTION RUNTIME_INSTALL_MANIFEST_SHA256="$RUNTIME_INSTALL_MANIFEST_SHA256")
 psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -v db="$db" -v parent="$parent_role" -v app="$app_role" -Atf - <<<"select format('grant connect on database %I to %I;',:'db',:'parent');select format('grant %I to %I;',:'parent',:'app')"|psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1;sudo mkdir -m 700 "$tmp/state-inherited";if sudo env "${promote_env[@]}" PROMOTION_NONCE="$(printf 8%.0s {1..64})" PROMOTE_STATE_DIR="$tmp/state-inherited" "$script_dir/promote-restored-target.sh" "$backup";then exit 1;fi;sudo test ! -e "$tmp/state-inherited/promotion-ready";[[ $(psql "$url" -Atqc "select (select datallowconn from pg_database where datname=current_database())||'|'||(select environment from restore_control.deployment_environment where singleton)||'|'||has_database_privilege('$app_role',current_database(),'connect')") == 't|test|t' ]];psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -v db="$db" -v parent="$parent_role" -v app="$app_role" -Atf - <<<"select format('revoke %I from %I;',:'parent',:'app');select format('revoke connect on database %I from %I;',:'db',:'parent')"|psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1
 set +e
-PS4='+ promotion-fixture:${LINENO}: '
-set -x
 sudo env "${promote_env[@]}" PROMOTE_STATE_DIR="$tmp/state" "$script_dir/promote-restored-target.sh" "$backup"
 promote_rc=$?
-set +x
 set -e
 echo "promotion fixture checkpoint: promote rc=$promote_rc"
 [[ $promote_rc -eq 0 ]]||fixture_fail "promotion command returned $promote_rc"
