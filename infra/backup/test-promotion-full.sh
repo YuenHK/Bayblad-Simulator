@@ -49,17 +49,28 @@ echo "promotion fixture checkpoint: cutover receipt"
 sudo ssh-keygen -Y sign -q -f "$tmp/cutover-signing" -n steam-top-cutover-preflight "$cutover"
 sudo chmod 400 "$cutover" "$cutover.sig"
 echo "promotion fixture checkpoint: cutover signature"
-sudo ssh-keygen -q -t ed25519 -N '' -f "$tmp/host-signing";host_signer=host@test;sudo sh -c "printf '%s %s\n' '$host_signer' \"\$(cat '$tmp/host-signing.pub')\" >'$tmp/host-signers'"
+sudo ssh-keygen -q -t ed25519 -N '' -f "$tmp/host-signing"
+host_signer=host@test
+sudo sh -c "printf '%s %s\n' '$host_signer' \"\$(cat '$tmp/host-signing.pub')\" >'$tmp/host-signers'"
+echo "promotion fixture checkpoint: host signer"
 sudo sh -c "printf 'PUBLIC_ORIGIN=%s\nDATABASE_URL=%s\n' '$public_origin' '$url' >'$tmp/production.env'"
 sudo node - "$tmp/protected-state.json" "$tmp/host-receipt.json" "$manifest_sha" "$cutover_nonce" "$target" "$system_id" <<'NODE'
 const fs=require("fs"),[state,host,manifest,nonce,target,system]=process.argv.slice(2),commit="a".repeat(40),origin=process.env.CANONICAL_PUBLIC_ORIGIN||"https://steam-top.test";fs.writeFileSync(state,JSON.stringify({schemaVersion:4,purpose:"production",signerKeyId:"host@test",deploymentId:"1",activatedAt:"2026-01-01T00:00:00.000Z",smoke:{complete:true},manifestSha256:manifest,nonce,commit})+"\n");fs.writeFileSync(host,JSON.stringify({schemaVersion:4,purpose:"production",signerKeyId:"host@test",smoke:{complete:true},manifestDigest:manifest,nonce,commit,publicOrigin:origin,database:{systemIdentifier:system,restoreTargetId:target,markerEnvironment:"production",restoreAllowed:false}})+"\n");
 NODE
-sudo ssh-keygen -Y sign -q -f "$tmp/host-signing" -n steam-top-production-deployment "$tmp/host-receipt.json";sudo chmod 600 "$tmp/host-signing" "$tmp/host-signers" "$tmp/production.env" "$tmp/protected-state.json" "$tmp/host-receipt.json" "$tmp/host-receipt.json.sig"
-sudo ssh-keygen -Y sign -q -f "$tmp/host-signing" -n steam-top-protected-deployment-state "$tmp/protected-state.json";sudo chmod 600 "$tmp/protected-state.json.sig"
+echo "promotion fixture checkpoint: host payloads"
+sudo ssh-keygen -Y sign -q -f "$tmp/host-signing" -n steam-top-production-deployment "$tmp/host-receipt.json"
+sudo chmod 600 "$tmp/host-signing" "$tmp/host-signers" "$tmp/production.env" "$tmp/protected-state.json" "$tmp/host-receipt.json" "$tmp/host-receipt.json.sig"
+echo "promotion fixture checkpoint: host receipt signature"
+sudo ssh-keygen -Y sign -q -f "$tmp/host-signing" -n steam-top-protected-deployment-state "$tmp/protected-state.json"
+sudo chmod 600 "$tmp/protected-state.json.sig"
+echo "promotion fixture checkpoint: protected state signature"
 sudo node - "$tmp/protected-state.json" "$tmp/activation.json" <<'NODE'
 const fs=require("fs"),crypto=require("crypto"),s=require(process.argv[2]),digest=crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex");fs.writeFileSync(process.argv[3],JSON.stringify({schemaVersion:1,purpose:"production-activation-receipt",deploymentId:s.deploymentId,nonce:s.nonce,stateDigest:digest,activatedAt:s.activatedAt})+"\n");
 NODE
-sudo ssh-keygen -Y sign -q -f "$tmp/host-signing" -n steam-top-production-activation "$tmp/activation.json";sudo chmod 600 "$tmp/activation.json" "$tmp/activation.json.sig"
+echo "promotion fixture checkpoint: activation payload"
+sudo ssh-keygen -Y sign -q -f "$tmp/host-signing" -n steam-top-production-activation "$tmp/activation.json"
+sudo chmod 600 "$tmp/activation.json" "$tmp/activation.json.sig"
+echo "promotion fixture checkpoint: activation signature"
 probe_state=pending;psql "$url" -v ON_ERROR_STOP=1 -v nonce="$cutover_nonce" -v target="$target" -v system="$system_id" -v state="$probe_state" -f - <<<"create table if not exists restore_control.deployment_probe(nonce text primary key,restore_target_id uuid not null,system_identifier text not null,state text not null,created_at timestamptz not null default clock_timestamp(),observed_at timestamptz,receipt_signed_at timestamptz,consumed_at timestamptz);insert into restore_control.deployment_probe(nonce,restore_target_id,system_identifier,state) values(:'nonce',:'target'::uuid,:'system',:'state') on conflict(nonce) do update set state=excluded.state" >/dev/null;if [[ -z ${CANONICAL_CUTOVER_HOOK:-} ]];then psql "$url" -v nonce="$cutover_nonce" -v target="$target" -v role="$app_role" -v rows="$(wc -l <"$tmp/ledger"|tr -d ' ')" -f - <<<"create table if not exists restore_control.finalize_outbox(nonce text primary key,restore_target_id uuid not null,app_role text not null,ledger_rows bigint not null,state text not null,created_at timestamptz default clock_timestamp());insert into restore_control.finalize_outbox(nonce,restore_target_id,app_role,ledger_rows,ledger_hash,state,created_at) values(:'nonce',:'target'::uuid,:'role',:'rows',restore_control.deletion_audit_sha256(),'preflight-recorded',clock_timestamp())" >/dev/null;fi
 finalize_env=(CANONICAL_STATE_RESOLVED=true PROMOTE_PGSERVICE=target PGSERVICEFILE="$tmp/service" PGPASSFILE="$tmp/pass" CUTOVER_ALLOWED_SIGNERS_FILE="$tmp/cutover-signers" CUTOVER_SIGNER_ID="$cutover_signer" RUNTIME_INSTALL_MANIFEST_SHA256="$RUNTIME_INSTALL_MANIFEST_SHA256" PRODUCTION_ENV_FILE="$tmp/production.env" PROTECTED_DEPLOYMENT_STATE_FILE="$tmp/protected-state.json" PROTECTED_DEPLOYMENT_STATE_SIGNATURE="$tmp/protected-state.json.sig" PROTECTED_STATE_ALLOWED_SIGNERS_FILE="$tmp/host-signers" PROTECTED_STATE_SIGNER_ID="$host_signer" ACTIVATION_RECEIPT_FILE="$tmp/activation.json" ACTIVATION_RECEIPT_SIGNATURE="$tmp/activation.json.sig" HOST_DEPLOYMENT_RECEIPT_FILE="$tmp/host-receipt.json" HOST_DEPLOYMENT_RECEIPT_SIGNATURE="$tmp/host-receipt.json.sig" HOST_RECEIPT_ALLOWED_SIGNERS_FILE="$tmp/host-signers" HOST_RECEIPT_SIGNER_ID="$host_signer")
 if [[ -n ${CANONICAL_CUTOVER_HOOK:-} ]];then source "$CANONICAL_CUTOVER_HOOK" --hook;exit 0;fi
