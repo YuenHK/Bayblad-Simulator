@@ -27,7 +27,7 @@ const fs=require("fs"),[out,nonce,manifest,repo]=process.argv.slice(2);fs.writeF
 NODE
   sudo chown root:root "$fixture/bin/gh";sudo chmod 0555 "$fixture/bin/gh"
   echo "canonical hook checkpoint: gh fixture"
-  sudo env PATH="$fixture/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "$activate" "$bundle" |sudo tee "$tmp/activation.frame" >/dev/null
+  sudo env PS4='+activate:${LINENO}: ' PATH="$fixture/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash -x "$activate" "$bundle" |sudo tee "$tmp/activation.frame" >/dev/null
   sudo grep -Fq "deployments?environment=production" "$fixture/gh.calls"
   echo "canonical hook checkpoint: first activation"
   sudo cp "$fixture/ledger-allowed" "$fixture/ledger-allowed.with-old";sudo sed -i '/^ledger-ci-old /d' "$fixture/ledger-allowed";if sudo env PATH="$fixture/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "$activate" "$bundle" >/dev/null 2>&1;then echo "old ledger signer removal unexpectedly accepted" >&2;exit 1;fi;sudo mv "$fixture/ledger-allowed.with-old" "$fixture/ledger-allowed";sudo chown root:root "$fixture/ledger-allowed";sudo chmod 0444 "$fixture/ledger-allowed"
