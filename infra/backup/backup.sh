@@ -22,7 +22,7 @@ mkdir -p "$BACKUP_DIR";chmod 700 "$BACKUP_DIR";[[ -d $BACKUP_DIR && ! -L $BACKUP
 timestamp=$(date -u +%Y%m%dT%H%M%SZ);serial=$(printf '%06d' "$((($$+RANDOM)%1000000))");set_name="steam-top-${timestamp}-${serial}.backup";[[ $set_name =~ ^steam-top-[0-9]{8}T[0-9]{6}Z-[0-9]{6}\.backup$ ]]||die "unsafe set name"
 backup_id=$(node -e 'console.log(require("crypto").randomUUID())')
 staging=$(mktemp -d "$backup_dir/.staging-XXXXXX");chmod 700 "$staging";final="$backup_dir/$set_name";[[ ! -e $final ]]||die "backup collision"
-snapshot_meta="$staging/.snapshot";keeper_pid=""
+snapshot_meta="$staging/.snapshot";: >"$snapshot_meta";keeper_pid=""
 cleanup(){ if [[ -n $keeper_pid ]];then kill "$keeper_pid" >/dev/null 2>&1||true;wait "$keeper_pid" >/dev/null 2>&1||true;fi;[[ -n ${staging:-} && -d $staging && ! -L $staging ]]&&rm -rf "$staging";};trap cleanup EXIT;trap 'cleanup;exit 130' INT TERM
 ledger_metadata=$(node "$DELETION_LEDGER_CLI" snapshot "$DELETION_LEDGER_FILE" "$staging/deletion-ledger.log")
 ledger_lines=$(wc -l <"$staging/deletion-ledger.log"|tr -d ' ');if command -v sha256sum >/dev/null 2>&1;then ledger_sha256=$(sha256sum "$staging/deletion-ledger.log"|awk '{print $1}');else ledger_sha256=$(shasum -a 256 "$staging/deletion-ledger.log"|awk '{print $1}');fi
