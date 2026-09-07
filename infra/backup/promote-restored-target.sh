@@ -59,7 +59,7 @@ PGSERVICE=$PROMOTE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_id="$RESTORE_A
 \! PGSERVICE="$PROMOTE_MAINTENANCE_PGSERVICE" psql -X -v ON_ERROR_STOP=1 -c "alter database $PROMOTE_CONFIRM_DATABASE allow_connections false"
 select not datallowconn as connections_disabled from pg_database where datname=current_database() \gset
 \if :connections_disabled
-select pg_terminate_backend(pid) from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid();
+select pg_terminate_backend(pid, 5000) from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid();
 select not exists(select 1 from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid()) as isolated_ok \gset
 \if :isolated_ok
 begin;
@@ -77,28 +77,28 @@ insert into restore_control.promotion_outbox(nonce,restore_target_id,system_iden
 select not has_database_privilege('public',current_database(),'connect') and not has_database_privilege(:'app_role',current_database(),'connect') as acl_closed \gset
 \if :acl_closed
 \else
-\quit 5
+do $$begin raise exception 'promotion ACL closure failed';end$$;
 \endif
 select exists(select 1 from restore_control.deployment_environment where singleton=true and environment='production' and restore_allowed=false and restore_target_id=:'target_id'::uuid) as final_marker_ok \gset
 \if :final_marker_ok
 commit;
 \else
 rollback;
-\quit 4
+do $$begin raise exception 'promotion final marker invalid';end$$;
 \endif
 \else
 rollback;
-\quit 3
+do $$begin raise exception 'promotion ledger mismatch';end$$;
 \endif
 \else
 rollback;
-\quit 3
+do $$begin raise exception 'promotion restore marker invalid';end$$;
 \endif
 \else
-\quit 3
+do $$begin raise exception 'promotion connection isolation failed';end$$;
 \endif
 \else
-\quit 3
+do $$begin raise exception 'promotion connections not disabled';end$$;
 \endif
 SQL
 PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v target_database="$PROMOTE_CONFIRM_DATABASE" -Atf - <<<"select format('alter database %I allow_connections true', :'target_database')" | PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 >/dev/null
