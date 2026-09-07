@@ -149,6 +149,7 @@ test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原
       await expect(peerGrade).toBeVisible();
       const arenas = [owner.page,peer.page].map(page=>page.getByTestId("battle-arena-3d"));
       await Promise.all(arenas.map(async arena=>{await expect(arena.locator("canvas")).toBeVisible({timeout:30_000});await expect(arena).toHaveAttribute("data-phase","battle");}));
+      if (process.env.PUBLIC_CAPTURE_ARENA === "1") await testInfo.attach(`round-${attempt+1}-battle.png`, { body: await arenas[0]!.locator("canvas").screenshot(), contentType: "image/png" });
       await expect.poll(()=>ownerTimings.length).toBe(attempt+1);
       await expect.poll(()=>peerTimings.length).toBe(attempt+1);
       const timing=ownerTimings[attempt]!;
@@ -168,6 +169,7 @@ test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原
         expect(Math.min(...reached)-localRoundStart).toBeGreaterThanOrEqual(boundary-250);
         await Promise.all([owner.page,peer.page].map(async page => expect(Number(await page.getByTestId("cinematic-battle").getAttribute("data-elapsed-ms"))).toBeGreaterThanOrEqual(boundary)));
         expect(Math.max(...reached)-localRoundStart).toBeLessThan(boundary+2500);
+        if (process.env.PUBLIC_CAPTURE_ARENA === "1") await testInfo.attach(`round-${attempt+1}-${phase}.png`, { body: await arenas[0]!.locator("canvas").screenshot(), contentType: "image/png" });
         if (phase !== "result") {
           await Promise.all([owner.page,peer.page].map(async page=>{await expect(page.getByTestId("arena-victory")).toHaveCount(0);await expect(page.getByRole("heading",{name:"對戰結果"})).toHaveCount(0);}));
           await Promise.all(arenas.map(arena=>expect(arena.locator(".cinema-skill strong")).not.toBeEmpty()));
