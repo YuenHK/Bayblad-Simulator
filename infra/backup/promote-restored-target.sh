@@ -47,7 +47,9 @@ IFS='|' read -r maintenance_separate target_exists maintenance_system signal_pri
 PGSERVICE=$PROMOTE_MAINTENANCE_PGSERVICE psql -X -v ON_ERROR_STOP=1 -v db="$PROMOTE_CONFIRM_DATABASE" -Atf - >"$ready_dir/original-allow" <<<"select datallowconn from pg_database where datname=:'db'";chmod 400 "$ready_dir/original-allow"
 touch "$ready_dir/connections-disabled";export ready_dir
 psql -X -v ON_ERROR_STOP=1 -v target_id="$RESTORE_ALLOWED_TARGET_ID" -v expected_rows="$expected_rows" -v app_role="$PROMOTE_APP_ROLE" -v nonce="$PROMOTION_NONCE" <<'SQL'
-select format('alter database %I allow_connections false',current_database()) \gexec
+\! PGSERVICE="$PROMOTE_MAINTENANCE_PGSERVICE" psql -X -v ON_ERROR_STOP=1 -c "alter database $PROMOTE_CONFIRM_DATABASE allow_connections false"
+select not datallowconn as connections_disabled from pg_database where datname=current_database() \gset
+\if :connections_disabled
 select pg_terminate_backend(pid) from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid();
 select not exists(select 1 from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid()) as isolated_ok \gset
 \if :isolated_ok
@@ -81,6 +83,9 @@ rollback;
 \endif
 \else
 rollback;
+\quit 3
+\endif
+\else
 \quit 3
 \endif
 \else
