@@ -386,7 +386,7 @@ describe("persistent PostgreSQL schema", () => {
     expect(sql).not.toContain("identities_guest_display_name_uidx");
     expect(sql).toContain("ON DELETE set null");
     expect(sql).toContain("ON DELETE cascade");
-    expect(sql.toLowerCase()).not.toContain("REDACTED_EXPOSED_PASSWORD");
+    expect(sql.toLowerCase()).not.toContain("test-only-admin-password");
     expect(sql.toLowerCase()).not.toMatch(/mac[_ ]?address/);
 
     const config = readFileSync(

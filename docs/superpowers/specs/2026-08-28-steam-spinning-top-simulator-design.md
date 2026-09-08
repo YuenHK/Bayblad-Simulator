@@ -298,7 +298,7 @@
 ### 11.1 登入
 
 - 帳號：`admin`
-- 初始及持續可用密碼：`REDACTED_EXPOSED_PASSWORD`
+- 初始及持續可用密碼：`YOUR_PRIVATE_ADMIN_PASSWORD`
 - 不強制更改密碼
 - 學生網站及教師後台均可由互聯網公開存取
 

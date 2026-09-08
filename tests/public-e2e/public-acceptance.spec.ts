@@ -2,7 +2,7 @@ import { expect, test, type Browser, type BrowserContext, type Page } from "@pla
 import { spawnSync } from "node:child_process";
 
 const adminUrl = "https://bayblad-simulator-api.onrender.com/admin/";
-const adminPassword = process.env.PUBLIC_ADMIN_PASSWORD ?? "REDACTED_EXPOSED_PASSWORD";
+const adminPassword = process.env.PUBLIC_ADMIN_PASSWORD ?? "";
 
 async function waitConnected(page: Page) {
   await expect(page.getByText("已連線", { exact: true })).toBeVisible({ timeout: 30_000 });
@@ -69,6 +69,7 @@ test("學生設計、限制、預覽及響應式操作", async ({ page }, testIn
 });
 
 test("老師登入、統計篩選、排行榜及 Excel 匯出", async ({ page }, testInfo) => {
+  test.skip(!adminPassword, "Set PUBLIC_ADMIN_PASSWORD securely to run authenticated public tests");
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(adminUrl);

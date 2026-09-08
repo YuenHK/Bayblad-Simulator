@@ -207,7 +207,7 @@ git commit -m "feat: add iclass web clip identity adapter"
 
 ```ts
 it("logs in with configured admin credentials", async () => {
-  const response = await app.inject({ method: "POST", url: "/api/admin/login", payload: { username: "admin", password: "REDACTED_EXPOSED_PASSWORD" } });
+  const response = await app.inject({ method: "POST", url: "/api/admin/login", payload: { username: "admin", password: "YOUR_PRIVATE_ADMIN_PASSWORD" } });
   expect(response.statusCode).toBe(204);
   expect(response.cookies[0]).toMatchObject({ httpOnly: true, secure: true, sameSite: "Strict" });
 });

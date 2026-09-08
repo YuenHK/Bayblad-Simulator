@@ -1,6 +1,7 @@
 {
   "name": "steam-spinning-top-simulator",
   "private": true,
+  "license": "MIT",
   "packageManager": "pnpm@11.19.0",
   "engines": { "node": ">=24" },
   "scripts": {
