@@ -60,7 +60,7 @@ export class ClientClockEstimator {
 }
 
 export type RealtimeState = Readonly<{
-  identityStatus: "idle" | "loading" | "ready" | "unavailable";
+  identityStatus: "idle" | "loading" | "waking" | "ready" | "unavailable";
   identity: Readonly<{ id: string; status: "iclass" | "cookie" | "guest"; displayName: string }> | null;
   status: "offline" | "connecting" | "online" | "reconnecting";
   sessionStatus: "new" | "resumed" | "replaced" | null;
@@ -181,6 +181,7 @@ export class RealtimeClient {
   #lastErrorEventId: string | null = null;
   #startGeneration = 0;
   #identityController: AbortController | null = null;
+  #identityRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: Readonly<{ transport: RealtimeTransport; storage?: StorageAdapter; credentialStorage?: StorageAdapter; apiBase?: string; fetcher?: typeof fetch; now?: () => number; bootstrapIdentity?: boolean; identityTimeoutMs?: number }>) {
     this.#transport = options.transport;
@@ -223,36 +224,54 @@ export class RealtimeClient {
   retryIdentity(): void {
     if (!this.#started || !this.#bootstrapIdentity) return;
     const generation = ++this.#startGeneration;
+    if (this.#identityRetryTimer) clearTimeout(this.#identityRetryTimer);
+    this.#identityRetryTimer = null;
     this.#identityController?.abort();
     this.#set({ identityStatus: "loading", lastError: null, status: "connecting" });
     void this.#bootstrap(generation);
   }
 
-  async #bootstrap(generation: number, retried = false): Promise<void> {
-    this.#set({ identityStatus: "loading" });
+  async #bootstrap(generation: number, retried = false, attempt = 0): Promise<void> {
+    if (!this.#started || generation !== this.#startGeneration) return;
+    this.#set({ identityStatus: attempt ? "waking" : "loading" });
     this.#identityController?.abort(); const controller = new AbortController(); this.#identityController = controller;
     const timeout = setTimeout(() => controller.abort(new DOMException("辨識裝置逾時", "TimeoutError")), this.#identityTimeoutMs);
+    let transient = true;
     try {
       const credential = typeof this.#transport.auth.studentCredential === "string" ? this.#transport.auth.studentCredential : undefined;
       const response = await awaitWithAbort(this.#fetch(`${this.#apiBase}/api/identity`, { method: "GET", credentials: this.#apiBase.startsWith("http") ? "omit" : "include", cache: "no-store", headers: { accept: "application/json", ...(credential ? { authorization: `Bearer ${credential}` } : {}) }, signal: controller.signal }), controller.signal);
-      if (response.status === 401 && credential && !retried) { this.#credentialStorage.remove(STUDENT_CREDENTIAL_KEY); delete this.#transport.auth.studentCredential; await this.#bootstrap(generation, true); return; }
+      if (!this.#started || generation !== this.#startGeneration) return;
+      if (response.status === 401 && credential && !retried) { clearTimeout(timeout); this.#credentialStorage.remove(STUDENT_CREDENTIAL_KEY); delete this.#transport.auth.studentCredential; await this.#bootstrap(generation, true, attempt); return; }
+      transient = response.ok || response.status >= 500 || response.status === 408 || response.status === 429;
       if (!response.ok) throw new Error("IDENTITY_BOOTSTRAP_FAILED");
       const schema = z.strictObject({ id: z.uuid(), status: z.enum(["iclass", "cookie", "guest"]), displayName: z.string().min(1).max(80), studentCredential: z.string().regex(/^[A-Za-z0-9_.-]{80,2048}$/u).optional() });
-      const parsed = schema.parse(await awaitWithAbort(response.json() as Promise<unknown>, controller.signal));
+      const body = await awaitWithAbort(response.json() as Promise<unknown>, controller.signal);
+      transient = false;
+      const parsed = schema.parse(body);
       const { studentCredential, ...identity } = parsed;
       if (!this.#started || generation !== this.#startGeneration) return;
       if (studentCredential) { this.#credentialStorage.set(STUDENT_CREDENTIAL_KEY, studentCredential); this.#transport.auth.studentCredential = studentCredential; }
-      this.#set({ identityStatus: "ready", identity });
+      this.#set({ identityStatus: "ready", identity, lastError: null });
       this.#transport.connect();
     } catch {
       if (!this.#started || generation !== this.#startGeneration) return;
-      this.#set({ identityStatus: "unavailable", identity: null, status: "offline", lastError: "暫時未能辨識裝置，請重試；iClass 不可用時仍會以訪客身份進入。" });
+      if (transient && attempt < 5) {
+        this.#set({ identityStatus: "waking", status: "connecting", lastError: null });
+        this.#identityRetryTimer = setTimeout(() => {
+          this.#identityRetryTimer = null;
+          void this.#bootstrap(generation, retried, attempt + 1);
+        }, 2_000);
+      } else {
+        this.#set({ identityStatus: "unavailable", identity: null, status: "offline", lastError: "暫時無法連接伺服器。請檢查網絡或稍後按「重試連線」；這不代表裝置辨識失敗。" });
+      }
     } finally { clearTimeout(timeout); if (this.#identityController === controller) this.#identityController = null; }
   }
 
   stop(): void {
     if (!this.#started) return;
     this.#startGeneration += 1;
+    if (this.#identityRetryTimer) clearTimeout(this.#identityRetryTimer);
+    this.#identityRetryTimer = null;
     this.#identityController?.abort(); this.#identityController = null;
     for (const [event, listener] of this.#bound) this.#transport.off(event, listener);
     this.#bound.clear();

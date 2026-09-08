@@ -6,7 +6,7 @@ test("computer battle plays full 60 second 3D rounds and returns to same room fo
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(".");
-  await expect(page.getByText("已連線", { exact: true })).toBeVisible();
+  await expect(page.getByText("已連線", { exact: true })).toBeVisible({ timeout: 90_000 });
   await page.getByRole("button", { name: "對戰大廳", exact: true }).click();
   await page.getByLabel("房間名稱").fill("60秒生肖驗收");
   await page.getByRole("button", { name: "建立房間", exact: true }).click();

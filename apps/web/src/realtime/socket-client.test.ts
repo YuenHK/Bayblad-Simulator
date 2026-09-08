@@ -72,10 +72,40 @@ describe("RealtimeClient", () => {
         return { ok: true, json: () => new Promise<unknown>(() => undefined) } as Response;
       });
       const client = new RealtimeClient({ transport, fetcher, bootstrapIdentity: true, identityTimeoutMs: 100 }); client.start();
-      await vi.advanceTimersByTimeAsync(100); expect(client.getState()).toMatchObject({ identityStatus: "unavailable", status: "offline" });
-      client.retryIdentity(); await vi.advanceTimersByTimeAsync(100); expect(client.getState().identityStatus).toBe("unavailable");
+      await vi.advanceTimersByTimeAsync(100); expect(client.getState()).toMatchObject({ identityStatus: "waking", status: "connecting" });
+      client.retryIdentity(); await vi.advanceTimersByTimeAsync(100); expect(client.getState().identityStatus).toBe("waking");
       expect(transport.connect).not.toHaveBeenCalled(); client.stop();
+      await vi.advanceTimersByTimeAsync(120_000); expect(fetcher).toHaveBeenCalledTimes(2);
     } finally { vi.useRealTimers(); }
+  });
+  it("retries cold-start errors then connects without blaming device identity", async () => {
+    vi.useFakeTimers();
+    const transport = new FakeTransport();
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response("<html>Service waking up</html>"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: uuid(1), status: "guest", displayName: "訪客-TEST" })));
+    const client = new RealtimeClient({ transport, fetcher, bootstrapIdentity: true });
+    try {
+      client.start(); await vi.advanceTimersByTimeAsync(0);
+      expect(client.getState()).toMatchObject({ identityStatus: "waking", lastError: null });
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(fetcher).toHaveBeenCalledTimes(3); expect(transport.connect).toHaveBeenCalledTimes(1);
+      expect(client.getState().identityStatus).toBe("ready");
+    } finally { client.stop(); vi.useRealTimers(); }
+  });
+  it.each([503, 403])("bounds startup retries for HTTP %s", async (status) => {
+    vi.useFakeTimers();
+    const transport = new FakeTransport();
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(null, { status }));
+    const client = new RealtimeClient({ transport, fetcher, bootstrapIdentity: true });
+    try {
+      client.start(); await vi.advanceTimersByTimeAsync(120_000);
+      expect(fetcher).toHaveBeenCalledTimes(status === 503 ? 6 : 1);
+      expect(client.getState()).toMatchObject({ identityStatus: "unavailable", status: "offline" });
+      expect(client.getState().lastError).not.toContain("iClass");
+      expect(transport.connect).not.toHaveBeenCalled();
+    } finally { client.stop(); vi.useRealTimers(); }
   });
   it("在客戶端時鐘慢 5 秒與 50ms RTT 時收旂 offset，正確轉換 server target", () => {
     const estimator = new ClientClockEstimator();
