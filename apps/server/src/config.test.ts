@@ -9,7 +9,7 @@ const validEnvironment = (): NodeJS.ProcessEnv => ({
   STUDENT_ORIGIN: "https://school.github.io",
   COOKIE_SIGNING_KEY: secret("c"),
   ADMIN_USERNAME: "admin",
-  ADMIN_INITIAL_PASSWORD: "REDACTED_EXPOSED_PASSWORD",
+  ADMIN_INITIAL_PASSWORD: "EXAMPLE_PASSWORD_DO_NOT_USE",
   ADMIN_CSRF_SECRET: secret("a"),
   ADMIN_CSRF_KEY_ID: "primary",
   WEBCLIP_SIGNING_KEY: secret("w"),

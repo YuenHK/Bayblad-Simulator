@@ -1,7 +1,7 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 const adminUrl = "https://bayblad-simulator-api.onrender.com/admin/";
-const adminPassword = process.env.PUBLIC_ADMIN_PASSWORD ?? "REDACTED_EXPOSED_PASSWORD";
+const adminPassword = process.env.PUBLIC_ADMIN_PASSWORD ?? "EXAMPLE_PASSWORD_DO_NOT_USE";
 
 async function waitConnected(page: Page) {
   await expect(page.getByText("已連線", { exact: true })).toBeVisible({ timeout: 30_000 });
