@@ -10,7 +10,7 @@ test("project links are readable on desktop and mobile and open separately", asy
     for (const [name, href] of [
       ["專案介紹・GitHub", "https://github.com/YuenHK/Bayblad-Simulator#readme"],
       ["探索 ShapeCut", "https://yuenhk.github.io/ShapeCut/"],
-    ]) {
+    ] as const) {
       const link = footer.getByRole("link", { name, exact: true });
       await expect(link).toHaveAttribute("href", href!);
       await expect(link).toHaveAttribute("target", "_blank");
