@@ -24,6 +24,7 @@ export function LayerControls({
   return (
     <fieldset className="control-group">
       <legend>層板設定</legend>
+      <div className="control-grid">
       <label>
         形狀
         <select
@@ -44,7 +45,6 @@ export function LayerControls({
         </select>
       </label>
 
-      <div className="control-grid">
         <label>
           角數
           <NumericField

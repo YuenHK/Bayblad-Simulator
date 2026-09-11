@@ -24,7 +24,8 @@ export async function durableAudit(store: AdminStore, input: AuditInput): Promis
 export interface AdminStore {
   findUser(username: string): Promise<AdminUser | null>;
   createUserIfAbsent(input: Readonly<{ username: string; passwordHash: string }>): Promise<AdminUser>;
-  createSession(input: Omit<AdminSession, "id">): Promise<AdminSession>;
+  createSession(input: Omit<AdminSession, "id">, expectedPasswordHash?: string): Promise<AdminSession>;
+  rotatePassword(input: { adminUserId: string; sessionTokenHash: string; expectedPasswordHash: string; passwordHash: string; now: Date }): Promise<boolean>;
   findSession(hash: string): Promise<Readonly<{ session: AdminSession; user: AdminUser }> | null>;
   touchSession(hash: string, now: Date): Promise<Readonly<{ session: AdminSession; user: AdminUser }> | null>;
   revokeSession(hash: string, now: Date): Promise<boolean>;
@@ -46,7 +47,17 @@ export class InMemoryAdminStore implements AdminStore {
   get sessionCount() { return this.#sessions.size; }
   async findUser(username: string) { return this.#users.get(username.toLocaleLowerCase("en-US")) ?? null; }
   async createUserIfAbsent(input: { username: string; passwordHash: string }) { const key = input.username.toLocaleLowerCase("en-US"); const prior = this.#users.get(key); if (prior) return prior; const user = { id: crypto.randomUUID(), username: input.username, passwordHash: input.passwordHash, active: true } as const; this.#users.set(key, user); return user; }
-  async createSession(input: Omit<AdminSession, "id">) { const active = [...this.#users.values()].some((candidate) => candidate.id === input.adminUserId && candidate.active); if (!active) throw new Error("ADMIN_INACTIVE"); if (this.#sessions.has(input.tokenHash)) throw new Error("ADMIN_SESSION_TOKEN_CONFLICT"); const row = { ...input, id: crypto.randomUUID() }; this.#sessions.set(row.tokenHash, row); return row; }
+  async createSession(input: Omit<AdminSession, "id">, expectedPasswordHash?: string) { const active = [...this.#users.values()].some((candidate) => candidate.id === input.adminUserId && candidate.active && (expectedPasswordHash === undefined || candidate.passwordHash === expectedPasswordHash)); if (!active) throw new Error("ADMIN_INACTIVE"); if (this.#sessions.has(input.tokenHash)) throw new Error("ADMIN_SESSION_TOKEN_CONFLICT"); const row = { ...input, id: crypto.randomUUID() }; this.#sessions.set(row.tokenHash, row); return row; }
+  async rotatePassword(input: { adminUserId: string; sessionTokenHash: string; expectedPasswordHash: string; passwordHash: string; now: Date }) {
+    const entry = [...this.#users.entries()].find(([, user]) => user.id === input.adminUserId);
+    const session = this.#sessions.get(input.sessionTokenHash);
+    if (!entry || !entry[1].active || entry[1].passwordHash !== input.expectedPasswordHash || !session || session.adminUserId !== input.adminUserId || session.revokedAt || session.archivedAt || input.now >= session.absoluteExpiresAt || input.now.getTime() - session.lastSeenAt.getTime() >= ADMIN_IDLE_MS) return false;
+    this.#users.set(entry[0], { ...entry[1], passwordHash: input.passwordHash });
+    for (const [key, row] of this.#sessions) if (row.adminUserId === input.adminUserId) this.#sessions.set(key, { ...row, revokedAt: input.now, archivedAt: input.now });
+    for (const grant of this.#grants.values()) if (grant.adminUserId === input.adminUserId) grant.consumed = true;
+    this.auditEntries.push({ adminUserId: input.adminUserId, action: "admin.password.changed", outcome: "success" });
+    return true;
+  }
   async findSession(value: string) { const session = this.#sessions.get(value); if (!session || session.archivedAt) return null; const user = [...this.#users.values()].find((candidate) => candidate.id === session.adminUserId && candidate.active); return user ? { session, user } : null; }
   async touchSession(value: string, now: Date) { const found = await this.findSession(value); if (!found || found.session.revokedAt || now.getTime() >= found.session.absoluteExpiresAt.getTime() || now.getTime() - found.session.lastSeenAt.getTime() >= ADMIN_IDLE_MS) return null; const session = { ...found.session, lastSeenAt: now }; this.#sessions.set(value, session); return { session, user: found.user }; }
   async revokeSession(value: string, now: Date) { const prior = this.#sessions.get(value); if (!prior || prior.revokedAt) return false; this.#sessions.set(value, { ...prior, revokedAt: now, archivedAt: now }); return true; }
@@ -90,16 +101,24 @@ export class AdminAuthService {
     const accountHash = tokenHash(account); const clientHash = tokenHash(diagnostics.clientKey);
     const auditDiagnostics = { ...(diagnostics.ip ? { ip: diagnostics.ip } : {}), ...(diagnostics.userAgent ? { userAgent: diagnostics.userAgent } : {}) };
     if (!await this.store.admitLoginAttempt({ accountHash, clientHash }, now)) { await durableAudit(this.store, { action: "admin.login.locked", outcome: "denied", ...auditDiagnostics, details: { accountHash, clientHash } }); return { status: "locked" as const }; }
-    const user = await this.store.findUser(username.trim()); const valid = await this.verifyPassword(username, password);
+    const user = await this.store.findUser(username.trim()); const passwordValid = await this.#withArgon(async () => verify(user?.passwordHash ?? await this.#dummyHash, password)); const valid = Boolean(user?.active && passwordValid);
     if (!user || !valid) { const locked = await this.store.recordLoginFailureAndStatus({ accountHash, clientHash }, now); await durableAudit(this.store, { ...(user ? { adminUserId: user.id } : {}), action: "admin.login", outcome: "failure", ...auditDiagnostics, details: { accountHash, clientHash, ...(!user ? { unknownAccount: true } : {}) } }); return locked ? { status: "locked" as const } : { status: "invalid" as const }; }
     await this.store.resetLoginFailures({ accountHash, clientHash }, now); const raw = this.#tokens(); if (Buffer.from(raw, "base64url").length < 32) throw new Error("ADMIN_TOKEN_FACTORY_TOO_SHORT"); const csrf = csrfForSession(this.#csrfSecret, raw, this.#csrfKeyId);
-    const session = await this.store.createSession({ adminUserId: user.id, tokenHash: tokenHash(raw), csrfTokenHash: tokenHash(csrf), createdAt: now, lastSeenAt: now, absoluteExpiresAt: new Date(now.getTime() + ADMIN_ABSOLUTE_MS), ...(diagnostics.ip ? { lastIp: diagnostics.ip } : {}), ...(diagnostics.userAgent ? { userAgent: diagnostics.userAgent.slice(0, 512) } : {}) });
+    const session = await this.store.createSession({ adminUserId: user.id, tokenHash: tokenHash(raw), csrfTokenHash: tokenHash(csrf), createdAt: now, lastSeenAt: now, absoluteExpiresAt: new Date(now.getTime() + ADMIN_ABSOLUTE_MS), ...(diagnostics.ip ? { lastIp: diagnostics.ip } : {}), ...(diagnostics.userAgent ? { userAgent: diagnostics.userAgent.slice(0, 512) } : {}) }, user.passwordHash);
     await durableAudit(this.store, { adminUserId: user.id, adminSessionId: session.id, action: "admin.login", outcome: "success", ...auditDiagnostics, details: { accountHash, clientHash } }); return { status: "ok" as const, token: raw, session, user };
   }
   async authenticate(raw: string | undefined, touch = true) { if (!raw) return null; const hashed = tokenHash(raw); const now = this.#now(); const existing = await this.store.findSession(hashed); if (!existing || existing.session.revokedAt) return null; if (now.getTime() >= existing.session.absoluteExpiresAt.getTime() || now.getTime() - existing.session.lastSeenAt.getTime() >= ADMIN_IDLE_MS) { await this.store.revokeSession(hashed, now); await durableAudit(this.store, { adminUserId: existing.user.id, adminSessionId: existing.session.id, action: "admin.session.expired", outcome: "denied" }); return null; } const found = touch ? await this.store.touchSession(hashed, now) : existing; if (!found) return null; return { ...found, csrfToken: csrfForSession(this.#csrfSecret, raw, this.#csrfKeyId) }; }
   csrfMatches(raw: string, supplied: string | undefined, session: AdminSession): boolean { if (!supplied) return false; const expected = csrfForSession(this.#csrfSecret, raw, this.#csrfKeyId); return constantTokenEqual(expected, supplied) && constantTokenEqual(tokenHash(supplied), session.csrfTokenHash); }
   async reauthenticate(rawSession: string, csrf: string, password: string, purpose: string, diagnostics: { clientKey: string; ip?: string; userAgent?: string }) { const current = await this.authenticate(rawSession, false); if (!current || !this.csrfMatches(rawSession, csrf, current.session)) return null; const account = `reauth:${current.user.id}`; const now = this.#now(); const common = { adminUserId: current.user.id, adminSessionId: current.session.id, action: "admin.reauthenticate", ...(diagnostics.ip ? { ip: diagnostics.ip } : {}), ...(diagnostics.userAgent ? { userAgent: diagnostics.userAgent } : {}) }; if (this.#limiter.isLocked(account, diagnostics.clientKey, now.getTime())) { await durableAudit(this.store, { ...common, outcome: "denied" }); return null; } let valid = false; try { valid = await this.#withArgon(() => verify(current.user.passwordHash, password)); } catch (error) { this.report("argon.reauthenticate", error); throw error; } if (!valid) { this.#limiter.fail(account, diagnostics.clientKey, now.getTime()); await durableAudit(this.store, { ...common, outcome: "failure" }); return null; } this.#limiter.success(account, diagnostics.clientKey); const grant = this.#tokens(); await this.store.createReauthGrant({ tokenHash: tokenHash(grant), adminUserId: current.user.id, adminSessionId: current.session.id, purpose, expiresAt: new Date(now.getTime() + 5 * 60_000) }); await durableAudit(this.store, { ...common, outcome: "success", details: { purpose } }); return grant; }
   async consumeReauthGrant(rawSession: string, rawGrant: string, purpose: string) { const current = await this.authenticate(rawSession, false); if (!current) return false; return this.store.consumeReauthGrant({ tokenHash: tokenHash(rawGrant), adminUserId: current.user.id, adminSessionId: current.session.id, purpose, now: this.#now() }); }
+  async changePassword(raw: string, csrf: string, currentPassword: string, newPassword: string, client: { clientKey: string; ip?: string; userAgent?: string }) {
+    const current = await this.authenticate(raw, false);
+    if (!current || currentPassword === newPassword) return false;
+    const grant = await this.reauthenticate(raw, csrf, currentPassword, "password_change", client);
+    if (!grant || !await this.consumeReauthGrant(raw, grant, "password_change")) return false;
+    const passwordHash = await this.#withArgon(() => hash(newPassword, ARGON));
+    return this.store.rotatePassword({ adminUserId: current.user.id, sessionTokenHash: current.session.tokenHash, expectedPasswordHash: current.user.passwordHash, passwordHash, now: this.#now() });
+  }
   async pruneExpiredSessions(limit = 500) { return this.store.pruneExpiredSessions(this.#now(), limit); }
 }
 
@@ -127,6 +146,18 @@ export function registerAdminAuthRoutes(app: FastifyInstance, auth: AdminAuthSer
     if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) return reply.code(415).send({ error: "UNSUPPORTED_MEDIA_TYPE" });
     const parsed = loginSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "INVALID_REQUEST" });
     try { const result = await auth.login(parsed.data.username, parsed.data.password, diagnostics(request, clientResolver)); if (result.status === "locked") return reply.code(429).send({ error: "LOGIN_UNAVAILABLE" }); if (result.status === "invalid") return reply.code(401).send({ error: "INVALID_CREDENTIALS" }); setCookie(reply, auth, result.token, result.session.absoluteExpiresAt); return reply.code(204).send(); } catch (error) { auth.report("admin.login", error, request.id); return reply.code(503).send({ error: "ADMIN_STORE_UNAVAILABLE" }); }
+  });
+  app.post("/api/admin/password", async (request, reply) => {
+    const current = await authenticateAdminMutation(request, reply, auth, clientResolver);
+    if (!current) return;
+    const parsed = z.object({ currentPassword: loginSchema.shape.password, newPassword: z.string().min(12).max(1024).regex(/^[^\p{Cc}]+$/u) }).strict().safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_PASSWORD_REQUEST" });
+    try {
+      const changed = await auth.changePassword(request.cookies[ADMIN_COOKIE_NAME]!, current.csrfToken, parsed.data.currentPassword, parsed.data.newPassword, diagnostics(request, clientResolver));
+      if (!changed) return reply.code(403).send({ error: "PASSWORD_CHANGE_REJECTED" });
+      reply.clearCookie(ADMIN_COOKIE_NAME, { path: "/api/admin", httpOnly: true, secure: auth.secureCookies, sameSite: "strict" });
+      return reply.code(204).send();
+    } catch (error) { auth.report("admin.password", error, request.id); return reply.code(503).send({ error: "ADMIN_STORE_UNAVAILABLE" }); }
   });
   app.get("/api/admin/session", async (request, reply) => { const session = await authenticateAdminRead(request, reply, auth); if (!session) return; reply.header("Cache-Control", "no-store"); return { username: session.user.username, expiresAt: session.session.absoluteExpiresAt.toISOString(), csrfToken: session.csrfToken }; });
   app.post("/api/admin/logout", async (request, reply) => { const current = await authenticateAdminMutation(request, reply, auth, clientResolver); if (!current) return; try { await auth.store.revokeSession(current.session.tokenHash, new Date()); await durableAudit(auth.store, { adminUserId: current.user.id, adminSessionId: current.session.id, action: "admin.logout", outcome: "success" }); reply.clearCookie(ADMIN_COOKIE_NAME, { path: "/api/admin", httpOnly: true, secure: auth.secureCookies, sameSite: "strict" }); return reply.code(204).send(); } catch (error) { auth.report("admin.logout", error, request.id); return reply.code(503).send({ error: "ADMIN_STORE_UNAVAILABLE" }); } });

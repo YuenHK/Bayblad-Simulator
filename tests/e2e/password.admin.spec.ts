@@ -1,0 +1,31 @@
+import { expect, test } from "@playwright/test";
+
+test("teacher changes password and must sign in again", async ({ page }) => {
+  await page.goto(".");
+  const original = process.env.E2E_ADMIN_PASSWORD ?? "e2e-admin-only-password";
+  await page.getByLabel("密碼", { exact: true }).fill(original);
+  await page.getByRole("button", { name: "登入", exact: true }).click();
+  await page.getByRole("button", { name: "更改密碼", exact: true }).click({ timeout: 10000 });
+  const dialog = page.getByRole("dialog", { name: "更改管理員密碼" });
+  await dialog.getByLabel("目前密碼", { exact: true }).fill(original);
+  await dialog.getByLabel("新密碼", { exact: true }).fill("local-test-replacement-password");
+  await dialog.getByLabel("確認新密碼", { exact: true }).fill("mismatch-password");
+  await dialog.getByRole("button", { name: "儲存新密碼並登出" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("不一致");
+  await dialog.getByLabel("確認新密碼", { exact: true }).fill("local-test-replacement-password");
+  await dialog.getByRole("button", { name: "儲存新密碼並登出" }).click();
+  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
+  await page.getByLabel("密碼", { exact: true }).fill(original);
+  await page.getByRole("button", { name: "登入", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
+  await page.getByLabel("密碼", { exact: true }).fill("local-test-replacement-password");
+  await page.getByRole("button", { name: "登入", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
+  await page.getByRole("button", { name: "更改密碼", exact: true }).click();
+  await dialog.getByLabel("目前密碼", { exact: true }).fill("local-test-replacement-password");
+  await dialog.getByLabel("新密碼", { exact: true }).fill(original);
+  await dialog.getByLabel("確認新密碼", { exact: true }).fill(original);
+  await dialog.getByRole("button", { name: "儲存新密碼並登出" }).click();
+  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("local-test-replacement-password");
+});

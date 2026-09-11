@@ -351,6 +351,7 @@ export function DesignerPage({
             ))}
           </ol>
 
+          <div className="layer-selection-row">
           <label>
             目前編輯層
             <select
@@ -389,11 +390,13 @@ export function DesignerPage({
               下移
             </button>
           </div>
+          </div>
 
           <p className="sr-only" aria-live="polite">
             {reorderAnnouncement}
           </p>
 
+          <div className="designer-parameter-groups">
           <LayerControls
             layer={selectedLayer}
             dispatch={dispatch}
@@ -404,6 +407,7 @@ export function DesignerPage({
             dispatch={dispatch}
             onFieldValidityChange={updateFieldValidity}
           />
+          </div>
         </section>
 
         <aside id="workspace-panel-results" className={`panel results-panel workspace-panel${workspaceTab === "results" ? " is-active" : ""}`} aria-labelledby="results-heading" data-workspace-panel="results">

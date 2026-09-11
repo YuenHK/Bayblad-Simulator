@@ -24,6 +24,26 @@ async function fixture(now = Date.UTC(2026, 7, 29), clientResolver?: AdminClient
 const headers = { origin: ORIGIN, host: "tops.example.edu.hk", "sec-fetch-site": "same-origin", "content-type": "application/json" };
 
 describe("admin authentication", () => {
+  it("changes a password only with current password and CSRF, revoking every old session", async () => {
+    const { app, auth, store } = await fixture();
+    const first = await auth.login("admin", "test-password-2026", { clientKey: "rotation" });
+    const second = await auth.login("admin", "test-password-2026", { clientKey: "rotation" });
+    if (first.status !== "ok" || second.status !== "ok") throw new Error("login failed");
+    const current = (await auth.authenticate(first.token))!;
+    const rotationHeaders = { ...headers, cookie: `steam_top_admin=${first.token}`, "x-csrf-token": current.csrfToken };
+    const payload = { currentPassword: "test-password-2026", newPassword: "new-test-password-2026" };
+    expect((await app.inject({ method: "POST", url: "/api/admin/password", headers, payload })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/admin/password", headers: { ...rotationHeaders, "x-csrf-token": "wrong" }, payload })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: "/api/admin/password", headers: rotationHeaders, payload: { ...payload, currentPassword: "wrong-password" } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: "/api/admin/password", headers: rotationHeaders, payload: { ...payload, newPassword: "short" } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url: "/api/admin/password", headers: rotationHeaders, payload })).statusCode).toBe(204);
+    expect(await auth.verifyPassword("admin", payload.currentPassword)).toBe(false);
+    expect(await auth.verifyPassword("admin", payload.newPassword)).toBe(true);
+    expect(await auth.authenticate(first.token)).toBeNull();
+    expect(await auth.authenticate(second.token)).toBeNull();
+    expect(JSON.stringify(store.auditEntries)).not.toContain(payload.newPassword);
+    expect(JSON.stringify(store.auditEntries)).not.toContain(payload.currentPassword);
+  });
   it("requires a stable 256-bit production CSRF secret", async () => { await expect(createAdminComposition({ ADMIN_USERNAME: "admin", ADMIN_INITIAL_PASSWORD: "test-password" }, null as never, [ORIGIN])).rejects.toThrow("MISSING_ADMIN_CSRF_SECRET"); await expect(createAdminComposition({ ADMIN_USERNAME: "admin", ADMIN_INITIAL_PASSWORD: "test-password", ADMIN_CSRF_SECRET: Buffer.alloc(16).toString("base64url") }, null as never, [ORIGIN])).rejects.toThrow("INVALID_ADMIN_CSRF_SECRET"); });
   it("bootstraps once without overwriting an existing password", async () => {
     const { auth } = await fixture();

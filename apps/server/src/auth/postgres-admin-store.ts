@@ -21,7 +21,20 @@ export class PostgresAdminStore implements AdminStore {
       if (!created) throw new Error("ADMIN_BOOTSTRAP_FAILED"); return user(created);
     });
   }
-  async createSession(input: Omit<AdminSession, "id">) { return this.db.transaction(async (tx) => { const [owner] = await tx.select({ id: adminUsers.id }).from(adminUsers).where(and(eq(adminUsers.id, input.adminUserId), eq(adminUsers.active, true))).for("update").limit(1); if (!owner) throw new Error("ADMIN_INACTIVE"); const [row] = await tx.insert(adminSessions).values({ adminUserId: input.adminUserId, tokenHash: input.tokenHash, csrfTokenHash: input.csrfTokenHash, createdAt: input.createdAt, lastSeenAt: input.lastSeenAt, expiresAt: input.absoluteExpiresAt, revokedAt: input.revokedAt ?? null, archivedAt: input.archivedAt ?? null, lastIp: input.lastIp ?? null, userAgent: input.userAgent ?? null }).returning(); if (!row) throw new Error("ADMIN_SESSION_CREATE_FAILED"); await tx.update(adminUsers).set({ lastLoginAt: input.createdAt, updatedAt: input.createdAt }).where(eq(adminUsers.id, input.adminUserId)); return session(row); }); }
+  async createSession(input: Omit<AdminSession, "id">, expectedPasswordHash?: string) { return this.db.transaction(async (tx) => { const [owner] = await tx.select({ id: adminUsers.id, passwordHash: adminUsers.passwordHash }).from(adminUsers).where(and(eq(adminUsers.id, input.adminUserId), eq(adminUsers.active, true))).for("update").limit(1); if (!owner || (expectedPasswordHash !== undefined && owner.passwordHash !== expectedPasswordHash)) throw new Error("ADMIN_INACTIVE"); const [row] = await tx.insert(adminSessions).values({ adminUserId: input.adminUserId, tokenHash: input.tokenHash, csrfTokenHash: input.csrfTokenHash, createdAt: input.createdAt, lastSeenAt: input.lastSeenAt, expiresAt: input.absoluteExpiresAt, revokedAt: input.revokedAt ?? null, archivedAt: input.archivedAt ?? null, lastIp: input.lastIp ?? null, userAgent: input.userAgent ?? null }).returning(); if (!row) throw new Error("ADMIN_SESSION_CREATE_FAILED"); await tx.update(adminUsers).set({ lastLoginAt: input.createdAt, updatedAt: input.createdAt }).where(eq(adminUsers.id, input.adminUserId)); return session(row); }); }
+  async rotatePassword(input: { adminUserId: string; sessionTokenHash: string; expectedPasswordHash: string; passwordHash: string; now: Date }) {
+    return this.db.transaction(async (tx) => {
+      const [owner] = await tx.select().from(adminUsers).where(and(eq(adminUsers.id, input.adminUserId), eq(adminUsers.active, true))).for("update").limit(1);
+      if (!owner || owner.passwordHash !== input.expectedPasswordHash) return false;
+      const [activeSession] = await tx.select().from(adminSessions).where(and(eq(adminSessions.tokenHash, input.sessionTokenHash), eq(adminSessions.adminUserId, input.adminUserId), isNull(adminSessions.revokedAt), isNull(adminSessions.archivedAt), gt(adminSessions.expiresAt, input.now), gt(adminSessions.lastSeenAt, new Date(input.now.getTime() - ADMIN_IDLE_MS)))).for("update").limit(1);
+      if (!activeSession) return false;
+      await tx.update(adminUsers).set({ passwordHash: input.passwordHash, updatedAt: input.now }).where(eq(adminUsers.id, input.adminUserId));
+      await tx.update(adminSessions).set({ revokedAt: input.now, archivedAt: input.now, updatedAt: input.now }).where(and(eq(adminSessions.adminUserId, input.adminUserId), isNull(adminSessions.archivedAt)));
+      await tx.update(adminReauthGrants).set({ consumedAt: input.now }).where(and(eq(adminReauthGrants.adminUserId, input.adminUserId), isNull(adminReauthGrants.consumedAt)));
+      await tx.insert(adminAudit).values({ adminUserId: input.adminUserId, adminSessionId: activeSession.id, action: "admin.password.changed", outcome: "success" });
+      return true;
+    });
+  }
   async findSession(value: string) { const [row] = await this.db.select({ session: adminSessions, user: adminUsers }).from(adminSessions).innerJoin(adminUsers, eq(adminSessions.adminUserId, adminUsers.id)).where(and(eq(adminSessions.tokenHash, value), isNull(adminSessions.archivedAt), eq(adminUsers.active, true))).limit(1); return row ? { session: session(row.session), user: user(row.user) } : null; }
   async touchSession(value: string, now: Date) {
     return this.db.transaction(async (tx) => {

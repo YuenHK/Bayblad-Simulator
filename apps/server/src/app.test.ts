@@ -109,7 +109,7 @@ class RejectingClaimProjectionStore extends MemoryRoomProjectionStore {
   override async claimDue(): Promise<never> { this.started(); return new Promise<never>((_resolve, reject) => { this.reject = reject; }); }
 }
 
-function nextEvent(socket: Socket, type: ServerEvent["type"] | "protocol.unsupported", timeoutMs = 3_000): Promise<any> {
+function nextEvent(socket: Socket, type: ServerEvent["type"] | "protocol.unsupported", timeoutMs = 3_000, causedByEventId?: string): Promise<any> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       socket.off("server.event", listener);
@@ -117,6 +117,7 @@ function nextEvent(socket: Socket, type: ServerEvent["type"] | "protocol.unsuppo
     }, timeoutMs);
     const listener = (event: ServerEvent) => {
       if (event.type !== type) return;
+      if (causedByEventId && (event.type !== "command.ack" || event.causedByEventId !== causedByEventId)) return;
       clearTimeout(timeout);
       socket.off("server.event", listener);
       resolve(event);
@@ -151,8 +152,9 @@ describe("realtime app", () => {
     owner.socket.emit("client.event", command("room.create", { name: "CPU lifecycle" }));
     const room = await created;
     const toggle = async (enabled: boolean) => {
-      const ack = nextEvent(owner.socket, "command.ack");
-      owner.socket.emit("client.event", command("room.bot", { roomId: room.roomId, enabled }));
+      const event = command("room.bot", { roomId: room.roomId, enabled });
+      const ack = nextEvent(owner.socket, "command.ack", 3_000, event.eventId);
+      owner.socket.emit("client.event", event);
       await ack;
     };
     await toggle(true);

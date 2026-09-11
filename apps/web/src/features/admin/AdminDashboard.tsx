@@ -5,6 +5,7 @@ import {
   adminLeaderboardPageSchema,
 } from "@steam-top/protocol";
 import { AdminModal } from "./AdminModal";
+import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { AdminApiError, jsonHeaders, requestJson } from "./api";
 import { AnalyticsCharts } from "./AnalyticsCharts";
 import { DeleteDialog } from "./DeleteDialog";
@@ -82,6 +83,7 @@ export function AdminDashboard({
     [deleteOpen, setDeleteOpen] = useState(false),
     [exportStatus, setExportStatus] = useState("");
   const exportController = useRef<AbortController | null>(null);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const queryController = useRef<AbortController | null>(null);
   const queryGeneration = useRef(0);
   const guarded = useCallback(
@@ -272,6 +274,7 @@ export function AdminDashboard({
           <p>已登入：{session.username}</p>
         </div>
         <div className="admin-header-actions">
+          <button onClick={() => setPasswordOpen(true)}>更改密碼</button>
           <button
             disabled={Boolean(exportController.current)}
             onClick={exportXlsx}
@@ -286,6 +289,7 @@ export function AdminDashboard({
           </button>
         </div>
       </header>
+      {passwordOpen ? <ChangePasswordDialog fetcher={fetcher} session={session} onClose={() => setPasswordOpen(false)} onChanged={onUnauthorized} /> : null}
       <section
         className="panel admin-section admin-date-filter"
         aria-label="統一查詢日期"

@@ -10,6 +10,23 @@ import { postgresTestSchemaUrl } from "../postgres-test-url";
 
 const databaseUrl = process.env.TEST_DATABASE_URL; const schemaName = `admin_${randomUUID().replaceAll("-", "")}`; let client: DatabaseClient;
 function barrier(participants: number) { let arrived = 0; let release!: () => void; const ready = new Promise<void>((resolve) => { release = resolve; }); return async () => { arrived++; if (arrived === participants) release(); await ready; }; }
+it.skipIf(!databaseUrl)("rotates a durable password atomically and rejects sessions from the stale credential", async () => {
+  const store = new PostgresAdminStore(client.db);
+  const auth = new AdminAuthService(store, { allowedOrigins: ["https://example.test"] });
+  await auth.bootstrap("rotation-admin", "first-local-password");
+  const a = await auth.login("rotation-admin", "first-local-password", { clientKey: "rotation" });
+  const b = await auth.login("rotation-admin", "first-local-password", { clientKey: "rotation" });
+  if (a.status !== "ok" || b.status !== "ok") throw new Error("login failed");
+  const current = (await auth.authenticate(a.token))!;
+  expect(await auth.changePassword(a.token, current.csrfToken, "first-local-password", "second-local-password", { clientKey: "rotation" })).toBe(true);
+  expect(await auth.verifyPassword("rotation-admin", "first-local-password")).toBe(false);
+  expect(await auth.verifyPassword("rotation-admin", "second-local-password")).toBe(true);
+  expect(await auth.authenticate(a.token)).toBeNull();
+  expect(await auth.authenticate(b.token)).toBeNull();
+  await expect(store.createSession({ ...a.session, tokenHash: tokenHash(randomUUID()) }, a.user.passwordHash)).rejects.toThrow("ADMIN_INACTIVE");
+  const audit = await client.sql.unsafe("select action from admin_audit where admin_user_id=$1 and action='admin.password.changed'", [a.user.id]);
+  expect(audit).toHaveLength(1);
+});
 beforeAll(async () => { if (!databaseUrl) return; const local = /(?:localhost|127\.0\.0\.1)/u.test(databaseUrl); client = createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 20 }); await client.sql.unsafe(`create schema ${schemaName}`); await client.sql.unsafe(`set search_path to ${schemaName},public`); const directory = fileURLToPath(new URL("../../../../drizzle", import.meta.url)); for (const file of readdirSync(directory).filter((name) => name.endsWith(".sql")).sort()) for (const statement of readFileSync(`${directory}/${file}`, "utf8").split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement.replaceAll('"public".', `"${schemaName}".`).replaceAll("public.", `${schemaName}.`)); }, 30_000);
 afterAll(async () => { if (!client) return; await client.sql.unsafe("set search_path to public"); await client.sql.unsafe(`drop schema ${schemaName} cascade`); await client.close(); });
 
