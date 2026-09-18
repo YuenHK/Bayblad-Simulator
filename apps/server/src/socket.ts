@@ -1296,7 +1296,7 @@ export class RealtimeGateway {
           type: "battle.frame", roomId, matchId: match.matchId, roundId,
           sequence, ...frame, protocolVersion: PROTOCOL_VERSION,
           ...(this.#cinematicBattles ? { presentation: {
-            startsAtMs, durationMs: ROUND_DURATION_MS as 60000, elapsedMs,
+            startsAtMs, durationMs: ROUND_DURATION_MS, elapsedMs,
             zodiacIndex, skillName: ZODIAC_SKILLS[zodiacIndex]!,
             ...(elapsedMs >= SUMMON_AT_MS ? { finisher: result.outcome.winner } : {}),
           } } : {}),

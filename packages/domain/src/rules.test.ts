@@ -5,7 +5,7 @@ import { makeLayerVertices } from "./geometry";
 import { ASSEMBLY } from "./mass";
 import {
   calculateMinimumMaterialNeckMm,
-  validateDesign,
+  validateFabrication as validateDesign,
   validateHeightLimit,
   validateMassLimit,
   type RuleIssueCode,

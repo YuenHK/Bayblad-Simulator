@@ -209,9 +209,9 @@ describe("realtime app", () => {
     expect(await watcherGrade).toMatchObject({ roomId: room.roomId });
     expect(frames.length).toBeGreaterThan(2);
     expect(frames[0].presentation.elapsedMs).toBe(0);
-    expect(frames.at(-1).presentation.elapsedMs).toBe(60000);
-    expect(frames.filter(frame => frame.presentation.elapsedMs < 48000).every(frame => frame.presentation.finisher === undefined)).toBe(true);
-    expect(now).toBeGreaterThanOrEqual(frames[0].presentation.startsAtMs + 60000);
+    expect(frames.at(-1).presentation.elapsedMs).toBe(30000);
+    expect(frames.filter(frame => frame.presentation.elapsedMs < 24000).every(frame => frame.presentation.finisher === undefined)).toBe(true);
+    expect(now).toBeGreaterThanOrEqual(frames[0].presentation.startsAtMs + 30000);
   });
   it("throttles a thousand heartbeat pings but records immediately across HK midnight",()=>{
     const start=Date.parse("2026-08-31T15:59:59Z");let recorded=start,count=0;

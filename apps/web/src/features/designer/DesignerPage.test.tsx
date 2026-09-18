@@ -60,7 +60,7 @@ describe("DesignerPage", () => {
     expect(onUseDesign).toHaveBeenCalledOnce();
     expect(onUseDesign.mock.calls[0]![0]).toMatchObject({ name: "我的陀螺" });
 
-    await replaceNumber(user, "直徑（mm）", "61");
+    await replaceNumber(user, "直徑（mm）", "80");
     const blocked = screen.getByRole("button", { name: "規格未通過，請先修正" });
     expect(blocked).toBeDisabled();
     expect(onUseDesign).toHaveBeenCalledOnce();
@@ -125,20 +125,17 @@ describe("DesignerPage", () => {
     expect(screen.getAllByRole("option", { name: /頂層|中層|底層/ })).toHaveLength(3);
   });
 
-  it("輸入 61 mm 時立即顯示直徑警告並停用參戰", async () => {
+  it("輸入 61 mm 而重量合規時可參戰", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
     await user.selectOptions(screen.getByLabelText("目前編輯層"), "top");
     await replaceNumber(user, "直徑（mm）", "61");
 
-    expect(screen.getByText("最大直徑為 60 mm")).toBeVisible();
+    expect(screen.queryByText("最大直徑為 60 mm")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "規格未通過，請先修正" }),
-    ).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: "規格未通過，請先修正" }),
-    ).toHaveAttribute("aria-describedby", "validation-status");
+      screen.getByRole("button", { name: "規格通過，可參戰" }),
+    ).toBeEnabled();
   });
 
   it("可更新形狀、角數、直徑、圓角、旋轉及顏色", async () => {
@@ -324,7 +321,7 @@ describe("DesignerPage", () => {
     expect(addListener).toHaveBeenCalledWith("pointerup", expect.any(Function));
   });
 
-  it("只有一組共用螺絲控制並即時顯示違規", async () => {
+  it("共用螺絲孔位不再阻擋重量合規的設計", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
@@ -333,10 +330,10 @@ describe("DesignerPage", () => {
     expect(screen.getAllByLabelText("螺絲旋轉角度（度）")).toHaveLength(1);
     await replaceNumber(user, "螺絲半徑（mm）", "5");
 
-    expect(screen.getByText("螺絲孔與軸心重疊")).toBeVisible();
+    expect(screen.queryByText("螺絲孔與軸心重疊")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "規格未通過，請先修正" }),
-    ).toBeDisabled();
+      screen.getByRole("button", { name: "規格通過，可參戰" }),
+    ).toBeEnabled();
   });
 
   it("金屬碟只提供沒有或預設直徑並清楚交代裝配方式", async () => {

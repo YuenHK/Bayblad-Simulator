@@ -1,14 +1,27 @@
 import { expect, test } from "@playwright/test";
 
-test("computer battle plays full 60 second 3D rounds and returns to same room for rematch", async ({ page }, testInfo) => {
+test("computer battle plays full 30 second 3D rounds and returns to same room for rematch", async ({ page }, testInfo) => {
   test.setTimeout(350_000);
   test.skip(process.env.CINEMATIC_BATTLES !== "1", "Run with CINEMATIC_BATTLES=1 for full-length playback");
   const errors: string[] = [];
+  // Record transitions inside the page: software WebGL can delay test-driver
+  // round trips beyond the short three-second finisher window.
+  await page.addInitScript(() => {
+    const observations: { phase: string; shattered: string; elapsed: number }[] = [];
+    Object.assign(window, { cinematicObservations: observations });
+    new MutationObserver(() => {
+      const arena = document.querySelector('[data-testid="battle-arena-3d"]');
+      if (!arena) return;
+      const entry = { phase: arena.getAttribute("data-phase") ?? "", shattered: arena.getAttribute("data-shattered") ?? "none", elapsed: Number(arena.parentElement?.getAttribute("data-elapsed-ms")) };
+      const previous = observations.at(-1);
+      if (!previous || previous.phase !== entry.phase || previous.shattered !== entry.shattered) observations.push(entry);
+    }).observe(document, { subtree: true, attributes: true, childList: true });
+  });
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(".");
   await expect(page.getByText("已連線", { exact: true })).toBeVisible({ timeout: 90_000 });
   await page.getByRole("button", { name: "對戰大廳", exact: true }).click();
-  await page.getByLabel("房間名稱").fill("60秒生肖驗收");
+  await page.getByLabel("房間名稱").fill("30秒生肖驗收");
   await page.getByRole("button", { name: "建立房間", exact: true }).click();
   const code = await page.locator(".room-heading .eyebrow").textContent();
   await page.getByRole("button", { name: "加入電腦玩家", exact: true }).click();
@@ -25,18 +38,27 @@ test("computer battle plays full 60 second 3D rounds and returns to same room fo
     await expect(arena).toBeInViewport({ ratio: .5 });
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("battle.png") });
     await expect(arena).toHaveAttribute("data-phase", "summon", { timeout: 55_000 });
-    expect(Date.now()-began+initialElapsed).toBeGreaterThan(47_000);
+    expect(Date.now()-began+initialElapsed).toBeGreaterThan(23_000);
     await expect(page.locator(".cinema-skill strong")).toBeVisible();
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("summon.png") });
-    await expect(arena).toHaveAttribute("data-phase", "strike", { timeout: 10_000 });
+    await expect.poll(() => page.evaluate(() => (window as unknown as { cinematicObservations: {phase:string}[] }).cinematicObservations.filter((entry,index,entries) => entry.phase === "strike" && entries[index-1]?.phase !== "strike").length), { timeout: 10_000 }).toBe(round + 1);
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("strike.png") });
+    await expect.poll(()=>arena.getAttribute("data-shattered"),{timeout:7000}).toMatch(/^player[12]$/);
+    if (round === 0) await page.screenshot({ path: testInfo.outputPath("shatter.png") });
     await expect(arena).toHaveAttribute("data-phase", "result", { timeout: 10_000 });
-    expect(Date.now()-began+initialElapsed).toBeGreaterThan(59_000);
+    expect(Date.now()-began+initialElapsed).toBeGreaterThan(29_000);
+    if (round === 0) await page.screenshot({ path: testInfo.outputPath("result.png") });
     const finished = page.getByRole("heading", { name: "對戰結果" });
     await expect.poll(async () => await finished.isVisible() || !(await arena.isVisible()), { timeout: 15_000 }).toBe(true);
     if (await finished.isVisible()) break;
   }
   await expect(page.getByRole("heading", { name: "對戰結果" })).toBeVisible();
+  const observed = await page.evaluate(() => (window as unknown as { cinematicObservations: {phase:string;elapsed:number}[] }).cinematicObservations);
+  for (const entry of observed) {
+    if (entry.phase === "summon") expect(entry.elapsed).toBeGreaterThanOrEqual(24000);
+    if (entry.phase === "strike") expect(entry.elapsed).toBeGreaterThanOrEqual(27000);
+    if (entry.phase === "result") expect(entry.elapsed).toBe(30000);
+  }
   await page.getByRole("button", { name: "返回房間", exact: true }).click();
   await expect(page.locator(".room-heading .eyebrow")).toHaveText(code!);
   await expect(page.getByRole("heading", { name: "電腦玩家", exact: true })).toBeVisible();

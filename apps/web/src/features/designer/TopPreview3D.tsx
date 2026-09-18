@@ -32,7 +32,7 @@ import {
   type PreviewRotation,
 } from "./previewGestures";
 import {
-  makeAcrylicShape,
+  makeAcrylicShapes,
   makeSolidMetalDiscGeometry,
 } from "./preview3DGeometry";
 
@@ -75,7 +75,7 @@ export function canUseWebGL(): boolean {
 }
 
 function AcrylicLayer({ layer, design }: Readonly<{ layer: Layer; design: TopDesign }>) {
-  const shape = useMemo(() => makeAcrylicShape(layer, design), [layer, design.screwLayout]);
+  const shape = useMemo(() => makeAcrylicShapes(layer, design), [layer, design.screwLayout]);
   const geometry = useMemo(
     () => new ExtrudeGeometry(shape, {
       depth: MATERIALS.layerThicknessMm,

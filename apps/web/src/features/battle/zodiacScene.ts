@@ -1,11 +1,11 @@
 export const ZODIAC_NAMES = ["鼠", "牛", "虎", "兔", "龍", "蛇", "馬", "羊", "猴", "雞", "狗", "豬"] as const;
 export function zodiacNumber(index: number): number { return ((Math.trunc(Number.isFinite(index) ? index : 0) % 12) + 12) % 12; }
 export function cinematicPhase(elapsedMs: number): "battle" | "summon" | "strike" | "result" {
-  if (elapsedMs >= 60000) return "result";
-  if (elapsedMs >= 54000) return "strike";
-  return elapsedMs >= 48000 ? "summon" : "battle";
+  if (elapsedMs >= 30000) return "result";
+  if (elapsedMs >= 27000) return "strike";
+  return elapsedMs >= 24000 ? "summon" : "battle";
 }
-export function cinematicProgress(elapsedMs: number): number { return Math.max(0, Math.min(1, (elapsedMs - 54000) / 6000)); }
+export function cinematicProgress(elapsedMs: number): number { return Math.max(0, Math.min(1, (elapsedMs - 27000) / 3000)); }
 import { makeLayerVertices, type TopDesign } from "@steam-top/domain";
 import type { ArenaFrame } from "./BattleArena";
 export type ContactSpark = { id: string; x: number; y: number; rim: boolean };

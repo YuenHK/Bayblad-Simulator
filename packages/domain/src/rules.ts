@@ -244,7 +244,8 @@ export function calculateMinimumMaterialNeckMm(input: TopDesign): number {
   return minimumMaterialClearance(calculateMaterialClearances(design));
 }
 
-export function validateDesign(input: TopDesign): DesignValidation {
+/** Fabrication diagnostics only: these no longer gate participation. */
+export function validateFabrication(input: TopDesign): DesignValidation {
   const design = designSchema.parse(input);
   const massProperties = calculateMassProperties(design);
   const issues: RuleIssue[] = [];
@@ -358,4 +359,12 @@ export function validateDesign(input: TopDesign): DesignValidation {
     issues,
     massProperties,
   };
+}
+
+/** Game admission: finite, schema-valid geometry at no more than 60 g. */
+export function validateDesign(input: TopDesign): DesignValidation {
+  const design = designSchema.parse(input);
+  const massProperties = calculateMassProperties(design);
+  const issues = validateMassLimit(massProperties.totalMassG);
+  return { valid: issues.length === 0, issues, massProperties };
 }

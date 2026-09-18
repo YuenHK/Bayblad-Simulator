@@ -96,14 +96,14 @@ test("production 首屏不預載3D heavy chunk，選擇3D後才載入", async ({
   await expect.poll(() => page.evaluate((files) => { const loaded = performance.getEntriesByType("resource").map((entry) => new URL(entry.name).pathname); return files.every((file) => loaded.some((path) => path.endsWith(`/${file}`))); }, heavyFiles)).toBe(true);
 });
 
-test("60.00 mm is valid while 60.01 mm reaches the course boundary rule", async ({ page }) => {
+test("diameter beyond the former 60 mm rule remains eligible below 60 g", async ({ page }) => {
   await replaceNumber(page, "直徑（mm）", "60.00");
   await expect(page.getByText("最大直徑為 60 mm")).toHaveCount(0);
 
   await replaceNumber(page, "直徑（mm）", "60.01");
   await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveAttribute("aria-invalid", "false");
-  await expect(page.getByText("最大直徑為 60 mm")).toBeVisible();
-  await expect(page.getByRole("button", { name: "規格未通過，請先修正" })).toBeDisabled();
+  await expect(page.getByText("最大直徑為 60 mm")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "用此設計參戰" })).toBeEnabled();
 });
 
 test("a reproducible heavy UI design crosses 60 g", async ({ page }) => {
@@ -123,11 +123,12 @@ test("a reproducible heavy UI design crosses 60 g", async ({ page }) => {
   // Exact 60.01 g is covered by the domain unit boundary; UI presets prove the same crossing path.
 });
 
-test("a 55 mm metal disc outside the smaller bottom profile is rejected", async ({ page }) => {
+test("an oversized bottom disc is allowed when total weight is below 60 g", async ({ page }) => {
   await selectLayer(page, "bottom");
   await replaceNumber(page, "直徑（mm）", "40");
   await page.getByLabel("金屬碟直徑").selectOption("55");
-  await expect(page.getByText("金屬碟必須完整位於最底層下方")).toBeVisible();
+  await expect(page.getByText("金屬碟必須完整位於最底層下方")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "用此設計參戰" })).toBeEnabled();
 });
 
 test("real CDP touch input reorders complete layer records and announces the move", async ({ page, context }) => {

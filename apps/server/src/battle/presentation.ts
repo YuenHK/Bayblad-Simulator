@@ -1,7 +1,7 @@
 import type { BattleResult } from "./engine";
 
-export const ROUND_DURATION_MS = 60_000;
-export const SUMMON_AT_MS = 48_000;
+export const ROUND_DURATION_MS = 30_000;
+export const SUMMON_AT_MS = 24_000;
 export const ZODIAC_SKILLS = ["靈鼠・雷影穿梭", "神牛・撼地衝鋒", "猛虎・虎嘯風生", "玉兔・月影連擊", "天龍・龍騰九霄", "靈蛇・盤影破空", "天馬・奔雷踏星", "神羊・星角破陣", "靈猴・千影震天", "金雞・破曉烈光", "天犬・疾風追月", "戰豬・山嶽突進"] as const;
 
 /** Resample the authoritative trajectory for cinematic playback; never change its outcome. */

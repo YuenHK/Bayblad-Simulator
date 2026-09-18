@@ -103,7 +103,7 @@ const app = buildApp({
         error ? reject(error) : resolve();
       };
       const abort = () => finish(Object.assign(new Error("aborted"), { name: "AbortError" }));
-      const timer = setTimeout(() => finish(), 200);
+      const timer = setTimeout(() => finish(), process.env.CINEMATIC_BATTLES === "1" ? _delayMs : 200);
       signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
     });

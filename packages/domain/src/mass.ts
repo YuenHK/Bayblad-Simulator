@@ -1,5 +1,6 @@
 import {
   intersection,
+  difference,
   union,
   type MultiPolygon,
   type Polygon,
@@ -672,4 +673,10 @@ export function calculateMassProperties(input: TopDesign): MassProperties {
     centerOfMassMm,
     polarMomentGmm2: Math.max(0, polarMomentGmm2),
   };
+}
+
+/** Real material contours, including holes crossing the edge or one another. */
+export function makeLayerMaterialPolygons(layer: Layer, design: TopDesign): MultiPolygon {
+  const cutouts=[{center:{x:0,y:0},radiusMm:ASSEMBLY.axleHoleRadiusMm},...screwCutouts(design)];
+  return difference(polygonFromVertices(makeMassLayerVertices(layer)), ...cutouts.map(cutout=>circlePolygon(cutout)));
 }

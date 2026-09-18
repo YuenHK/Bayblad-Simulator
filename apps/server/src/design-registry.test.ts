@@ -23,6 +23,7 @@ describe("DesignRegistry", () => {
 
     const invalid = makeDefaultDesign();
     invalid.layers[1].diameterMm = 80;
+    invalid.layers[0].diameterMm = 80;
     expect(() => registry.register("session-a", invalid)).toThrowError(
       new DesignRegistryError("DESIGN_INVALID"),
     );

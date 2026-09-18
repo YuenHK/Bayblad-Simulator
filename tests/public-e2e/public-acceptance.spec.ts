@@ -48,11 +48,11 @@ test("學生設計、限制、預覽及響應式操作", async ({ page }, testIn
   await expect(page.getByRole("button", { name: "減少動態效果" })).toBeVisible();
   await page.getByRole("combobox", { name: "形狀" }).selectOption("star");
   await page.getByRole("spinbutton", { name: "角數" }).fill("7");
-  await page.getByRole("spinbutton", { name: "直徑（mm）" }).fill("80");
+  await page.getByRole("spinbutton", { name: "直徑（mm）" }).fill("61");
   await page.getByRole("combobox", { name: "金屬碟直徑" }).selectOption("30");
   if (testInfo.project.name === "chromium-phone") await page.getByRole("tab", { name: "預測結果" }).click();
-  await expect(page.getByText("最大直徑為 60 mm")).toBeVisible();
-  await expect(page.getByRole("button", { name: "規格未通過，請先修正" })).toBeDisabled();
+  await expect(page.getByText("最大直徑為 60 mm")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "用此設計參戰" })).toBeEnabled();
   if (testInfo.project.name === "chromium-phone") await page.getByRole("tab", { name: "控制台" }).click();
   await page.getByRole("spinbutton", { name: "直徑（mm）" }).fill("58");
   await page.getByRole("button", { name: "將目前層下移" }).click();
@@ -111,7 +111,7 @@ test("老師登入、統計篩選、排行榜及 Excel 匯出", async ({ page },
   await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
 });
 
-test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原房", async ({ browser, browserName }, testInfo) => {
+test("兩個獨立訪客完成同步 30 秒 3D 對戰、賽後計分及返回原房", async ({ browser, browserName }, testInfo) => {
   test.setTimeout(300_000);
   test.skip(browserName !== "chromium", "完整即時對戰只跑一次；其餘引擎測核心頁面與老師端");
   test.skip(testInfo.project.name !== "chromium-desktop", "兩真人時間軸在桌面 Chromium 驗收一次");
@@ -154,7 +154,7 @@ test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原
       await expect.poll(()=>ownerTimings.length).toBe(attempt+1);
       await expect.poll(()=>peerTimings.length).toBe(attempt+1);
       const timing=ownerTimings[attempt]!;
-      expect(timing.durationMs).toBe(60000);
+      expect(timing.durationMs).toBe(30000);
       expect(peerTimings[attempt]).toEqual(timing);
       // Anchor the test clock to the rendered server-adjusted elapsed time.
       // Comparing Date.now() directly to a remote server timestamp mixes clocks.
@@ -165,7 +165,7 @@ test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原
         // Both pages share the exact server schedule above. Locator polling is
         // single-threaded, so allow one polling cycle of observation skew.
         expect(Math.abs(reached[0]!-reached[1]!)).toBeLessThan(2500);
-        const boundary=phase === "summon" ? 48000 : phase === "strike" ? 54000 : 60000;
+        const boundary=phase === "summon" ? 24000 : phase === "strike" ? 27000 : 30000;
         // The test host and server are separate clocks; UI uses its measured server offset.
         expect(Math.min(...reached)-localRoundStart).toBeGreaterThanOrEqual(boundary-250);
         await Promise.all([owner.page,peer.page].map(async page => expect(Number(await page.getByTestId("cinematic-battle").getAttribute("data-elapsed-ms"))).toBeGreaterThanOrEqual(boundary)));
@@ -175,8 +175,8 @@ test("兩個獨立訪客完成同步 60 秒 3D 對戰、賽後計分及返回原
           await Promise.all([owner.page,peer.page].map(async page=>{await expect(page.getByTestId("arena-victory")).toHaveCount(0);await expect(page.getByRole("heading",{name:"對戰結果"})).toHaveCount(0);}));
           await Promise.all(arenas.map(arena=>expect(arena.locator(".cinema-skill strong")).not.toBeEmpty()));
         } else {
-          // No early completion: every played round must consume its entire minute.
-          expect(Math.min(...reached)-localRoundStart).toBeGreaterThanOrEqual(60000-250);
+          // No early completion: every played round must consume all 30 seconds.
+          expect(Math.min(...reached)-localRoundStart).toBeGreaterThanOrEqual(30000-250);
           await Promise.all([owner.page,peer.page].map(page=>expect(page.getByTestId("arena-victory")).toBeVisible()));
         }
       }

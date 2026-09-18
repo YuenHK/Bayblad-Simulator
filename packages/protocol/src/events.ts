@@ -658,7 +658,7 @@ export const battleFrameEventSchema = z
     tick: safeNonnegativeIntegerSchema,
     presentation: z.object({
       startsAtMs: safeNonnegativeIntegerSchema,
-      durationMs: z.literal(60000),
+      durationMs: z.union([z.literal(30000), z.literal(60000)]),
       elapsedMs: z.number().min(0).max(60000),
       zodiacIndex: z.number().int().min(0).max(11),
       skillName: z.string().min(1).max(40),
