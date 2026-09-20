@@ -18,6 +18,15 @@ class AppTransport implements RealtimeTransport {
 
 describe("App upload lifecycle", () => {
   afterEach(() => vi.useRealTimers());
+  it("uses the site icon instead of the circular brand marker", () => {
+    const client = new RealtimeClient({ transport: new AppTransport() });
+    const { container } = render(<App client={client} />);
+    const icon = container.querySelector('.app-brand img');
+    expect(icon).toHaveAttribute('src', `${import.meta.env.BASE_URL}icons/favicon.svg`);
+    expect(icon).toHaveAttribute('alt', '');
+    expect(container.querySelector('.brand-core')).toBeNull();
+    expect(container.querySelector('.brand-title')).toHaveTextContent('STEAM 陀螺');
+  });
   it("response.json卡住逾時後會清除busy並顯示穩定訊息", async () => {
     vi.useFakeTimers();
     const transport = new AppTransport();

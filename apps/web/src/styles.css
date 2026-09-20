@@ -178,7 +178,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .student-game .app-brand { display: grid; grid-template-columns: auto 1fr; column-gap: 9px; align-items: center; color: var(--game-text); letter-spacing: .045em; text-shadow: 0 0 18px rgb(84 232 255 / 45%); }
 .student-game .brand-title { grid-column: 2; min-width: 0; }
 .student-game .app-brand small { grid-column: 2; color: var(--game-cyan); font-size: .58rem; letter-spacing: .24em; }
-.brand-core { grid-row: 1 / 3; width: 20px; height: 20px; border: 3px solid var(--game-cyan); border-radius: 50%; box-shadow: 0 0 14px var(--game-cyan), inset 0 0 8px var(--game-blue); }
+.brand-icon { grid-row: 1 / 3; display: block; width: 28px; height: 28px; object-fit: contain; }
 .student-game .nav-actions { justify-self: center; padding: 4px; border: 1px solid var(--game-line); border-radius: 12px; background: rgb(10 18 39 / 72%); }
 .student-game .nav-actions button { color: var(--game-muted); border-radius: 8px; }
 .student-game .nav-actions button[aria-current="page"] { color: #fff; border-color: rgb(84 232 255 / 45%); background: linear-gradient(135deg,rgb(42 100 255 / 42%),rgb(133 66 255 / 32%)); box-shadow: inset 0 0 18px rgb(84 232 255 / 12%),0 0 18px rgb(62 132 255 / 14%); }

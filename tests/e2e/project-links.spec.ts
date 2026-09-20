@@ -2,9 +2,14 @@ import { expect, test } from "@playwright/test";
 
 test("project links are readable on desktop and mobile and open separately", async ({ page }, testInfo) => {
   await page.goto(".");
+  const brandIcon = page.locator('.app-brand img');
+  await expect(brandIcon).toBeVisible();
+  await expect(brandIcon).toHaveAttribute('src', /\/icons\/favicon\.svg$/);
+  await expect.poll(() => brandIcon.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
   const footer = page.getByRole("contentinfo", { name: "專案與更多作品" });
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
+    await expect(brandIcon).toBeVisible();
     await footer.scrollIntoViewIfNeeded({ timeout: 10_000 });
     await expect(footer).toBeVisible();
     for (const [name, href] of [
