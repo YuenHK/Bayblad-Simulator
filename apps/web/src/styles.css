@@ -23,6 +23,8 @@ button, input, select { font: inherit; }
 .designer-layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, .8fr); gap: 20px; align-items: start; }
 .designer-workspace-tabs { display: none; }
 .workspace-panel { min-width: 0; }
+.design-export-panel { margin-top: 12px; }
+.design-export-controls a { display: inline-flex; align-items: center; min-height: 44px; color: var(--game-cyan, #2858a5); text-underline-offset: 4px; }
 .panel { background: #fff; border: 1px solid #ccd5e3; border-radius: 12px; padding: 20px; }
 .panel h2 { margin-top: 0; }
 .preview-panel { grid-column: 1; grid-row: 1 / span 2; }

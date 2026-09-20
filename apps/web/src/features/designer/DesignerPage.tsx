@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import { AssemblyControls } from "./AssemblyControls";
+import { DesignExportControls } from "./DesignExportControls";
 import { ExplodedView } from "./ExplodedView";
 import { LayerControls } from "./LayerControls";
 import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
@@ -459,6 +460,9 @@ export function DesignerPage({
           </button>
         </aside>
       </div>
+      <section className="panel design-export-panel" aria-label="下載三層板材">
+        <DesignExportControls design={design} invalidFields={invalidFieldKeys.size > 0} />
+      </section>
     </main>
   );
 }
