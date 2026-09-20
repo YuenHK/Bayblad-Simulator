@@ -8,6 +8,9 @@ for (const [width, height] of [[1440, 900], [1024, 768]]) {
     await expect(page.getByRole("combobox", { name: "金屬碟直徑", exact: true })).toBeInViewport({ ratio: 1, timeout: 10000 });
     await expect(page.getByLabel("顏色", { exact: true })).toBeInViewport({ ratio: 1 });
     await expect(page.getByRole("button", { name: "用此設計參戰", exact: true })).toBeInViewport({ ratio: 1 });
+    // Leave room for platform-specific system-font metrics (Linux/iPad/macOS).
+    const actionBounds = await page.getByRole("button", { name: "用此設計參戰", exact: true }).boundingBox();
+    expect(actionBounds!.y + actionBounds!.height).toBeLessThanOrEqual(height! - 12);
     await page.getByRole("combobox", { name: "目前編輯層", exact: true }).selectOption("middle");
     await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveValue("55");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
