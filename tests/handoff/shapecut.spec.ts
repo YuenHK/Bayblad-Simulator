@@ -12,7 +12,7 @@ for (const width of [1280, 390]) test(`real STL transfers to ShapeCut material s
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('designer-actions.png'), fullPage: true });
   const popupPromise = page.waitForEvent('popup');
-  await page.getByRole('button', { name: '傳送至 ShapeCut', exact: true }).click();
+  await page.getByRole('button', { name: '傳送至 ShapeCut（供 雷射切割)', exact: true }).click();
   const receiver = await popupPromise;
   await expect(receiver.getByRole('button', { name: '開始製作', exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(receiver.getByText('bayblad-3layers-6mm-mm.stl', { exact: true }).first()).toBeVisible();

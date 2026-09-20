@@ -65,9 +65,9 @@ export function DesignExportControls({ design, invalidFields, children }: Readon
   return <div className="design-export-controls" aria-label="板材匯出">
     <div className="design-action-row">
       {children}
-      <button type="button" disabled={invalidFields || busy} onClick={() => void transfer()} aria-describedby="stl-export-note">傳送至 ShapeCut</button>
+      <button type="button" disabled={invalidFields || busy} onClick={() => void transfer()} aria-describedby="stl-export-note">傳送至 ShapeCut（供 雷射切割)</button>
       <button type="button" disabled={invalidFields || busy} onClick={() => void download()} aria-describedby="stl-export-note">
-        下載 STL（供 ShapeCut）
+        下載 STL（供 3D打印)
       </button>
       {busy && cancelTransfer.current ? <button type="button" onClick={() => cancelTransfer.current?.()}>停止等待</button> : null}
     </div>

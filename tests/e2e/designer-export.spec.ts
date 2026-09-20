@@ -8,7 +8,7 @@ test('downloads three-board STL lazily with exact thickness on desktop and narro
   await expect(page.getByRole('heading', { name: '陀螺設計器' })).toBeVisible();
   expect(wasmRequests).toHaveLength(0);
   const downloading = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載 STL（供 ShapeCut）' }).click();
+  await page.getByRole('button', { name: '下載 STL（供 3D打印)' }).click();
   const download = await downloading;
   expect(download.suggestedFilename()).toBe('bayblad-3layers-6mm-mm.stl');
   const output = testInfo.outputPath(download.suggestedFilename());
@@ -26,9 +26,9 @@ test('downloads three-board STL lazily with exact thickness on desktop and narro
   await expect(page.getByRole('alert')).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('tab', { name: '預測結果', exact: true }).click();
-  await expect(page.getByRole('button', { name: '下載 STL（供 ShapeCut）' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '下載 STL（供 3D打印)' })).toBeVisible();
   const secondDownload = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載 STL（供 ShapeCut）' }).click();
+  await page.getByRole('button', { name: '下載 STL（供 3D打印)' }).click();
   const narrowDownload = await secondDownload;
   const narrowOutput = testInfo.outputPath('narrow-screen.stl');
   await narrowDownload.saveAs(narrowOutput);
