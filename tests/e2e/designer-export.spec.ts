@@ -25,7 +25,7 @@ test('downloads three-board STL lazily with exact thickness on desktop and narro
   expect(wasmRequests.length).toBeGreaterThan(0);
   await expect(page.getByRole('alert')).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole('tab', { name: '模擬預覽', exact: true }).click();
+  await page.getByRole('tab', { name: '預測結果', exact: true }).click();
   await expect(page.getByRole('button', { name: '下載 STL（供 ShapeCut）' })).toBeVisible();
   const secondDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: '下載 STL（供 ShapeCut）' }).click();

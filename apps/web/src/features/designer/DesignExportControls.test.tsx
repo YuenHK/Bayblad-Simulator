@@ -35,5 +35,13 @@ it('shows an actionable failure and allows a second attempt to download', async 
   await waitFor(() => expect(clicked).toHaveLength(1));
   expect(clicked[0]!.download).toBe('bayblad-3layers-6mm-mm.stl');
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  expect(screen.getByRole('link', { name: '前往 ShapeCut 轉 DXF' })).toHaveAttribute('href','https://yuenhk.github.io/ShapeCut/');
+  expect(screen.getByRole('button', { name: '傳送至 ShapeCut' })).toBeEnabled();
+});
+
+it('offers a download fallback when the transfer popup is blocked', async () => {
+  vi.spyOn(window, 'open').mockReturnValue(null);
+  render(<DesignExportControls design={makeDefaultDesign()} invalidFields={false} />);
+  await userEvent.setup().click(screen.getByRole('button', { name: '傳送至 ShapeCut' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('新分頁');
+  expect(screen.getByRole('button', { name: '下載 STL（供 ShapeCut）' })).toBeEnabled();
 });

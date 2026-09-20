@@ -442,6 +442,7 @@ export function DesignerPage({
               </ul>
             ) : null}
           </div>
+          <DesignExportControls design={design} invalidFields={invalidFieldKeys.size > 0}>
           <button
             className="readiness-button"
             type="button"
@@ -458,11 +459,9 @@ export function DesignerPage({
           >
             {readinessValid && onUseDesign ? "用此設計參戰" : readinessValid ? "規格通過，可參戰" : "規格未通過，請先修正"}
           </button>
+          </DesignExportControls>
         </aside>
       </div>
-      <section className="panel design-export-panel" aria-label="下載三層板材">
-        <DesignExportControls design={design} invalidFields={invalidFieldKeys.size > 0} />
-      </section>
     </main>
   );
 }
