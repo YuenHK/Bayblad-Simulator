@@ -46,7 +46,10 @@ const stable = (value: unknown): string => {
 const canonical = (input: unknown): TopDesign => {
   const parsed = designSchema.parse(input);
   for (const layer of parsed.layers) {
-    if (layer.outline) layer.outline.vertices = canonicalizeOutline(layer.outline.vertices);
+    if (layer.outline) {
+      layer.outline.vertices = canonicalizeOutline(layer.outline.vertices);
+      layer.diameterMm = Number(layer.diameterMm.toFixed(3));
+    }
   }
   const validation = validateDesign(parsed);
   if (!validation.valid) throw new DesignPersistenceError("DESIGN_INVALID");

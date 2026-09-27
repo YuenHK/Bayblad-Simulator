@@ -33,6 +33,10 @@ describe("durable record contracts", () => {
     const custom = designSchema.parse({ ...base, layers: [{ ...base.layers[0], shape: "custom", diameterMm: Math.hypot(10, 10) * 2, outline: { version: 1, vertices: [...vertices.slice(2), ...vertices.slice(0, 2)].reverse(), mirror: "none" } }, ...base.layers.slice(1)] });
     const repository = new MemoryDesignRepository();
     const saved = await repository.saveBattleEligible(id(2), custom);
+    expect(saved.design.layers[0].diameterMm).toBe(28.284);
+    const persistedPrecision = structuredClone(custom);
+    persistedPrecision.layers[0].diameterMm = 28.284;
+    expect((await repository.saveBattleEligible(id(2), persistedPrecision)).designId).toBe(saved.designId);
     expect(saved.design.layers[0].outline?.vertices).toEqual(vertices);
     const loaded = await repository.getOwned(id(2), saved.designId);
     expect(loaded?.design.layers[0].outline?.vertices).toEqual(vertices);

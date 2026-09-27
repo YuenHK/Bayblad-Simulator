@@ -9,6 +9,14 @@
 
 ## 接駁稽核（2026-09-27）
 
+### 本機實作檢查點
+
+- 幾何、domain、公開輪廓協定、碰撞輪廓及編輯器已提交；編輯器提交為 `947bd60`，尚待瀏覽器及完整流程驗收。
+- 已修正正式 migration manifest 遺漏 0005，以及 custom 直徑需對齊 PostgreSQL numeric(7,3) 精度；新增回歸測試先失敗再通過。
+- **發佈阻擋項：** `restore_control.assert_pristine_platform_installation()` 在 0004 寫死五筆 migration ledger。新增 0005 後，首次 installation claim 會拒絕；需新增相容的函數定義及更新 claim 的 canonical hash 來源，不能修改既有已發佈 migration 或取消安全檢查。必須實際 PostgreSQL 驗證。
+- 教師統計／Excel 的造型類別及鏡像欄位已開始；教師記錄 SQL 與 UI 輪廓縮圖、客戶端版本相容提示、人氣設計 canonical signature、STL／ShapeCut／完整對戰驗收仍未完成。
+- 尚未 push 或部署本次功能；不可把局部單元測試結果視為全鏈路或公開網站驗收。
+
 - `apps/server/src/battle/collision-proxy.ts` 的 sensor outline 是徑向 star-shaped union，不能直接把 custom 傳入 `radialFactor`。須為含 custom 的設計採真實多邊形 union 外邊界；保留原有凸碰撞代理作近似剛體，不把它用作外觀或面積。
 - `apps/server/src/socket.ts:1100` 會拒絕雙方 performanceModelVersion 不同。新模型版本應為所有新計算統一升版，基本造型數值保持不變；不可只把 custom 升版令其無法與基本造型對戰。歷史紀錄不改，舊儲存設計參戰時產生新版本快照。
 - `layerSchema.extend/pick` 與 Zod object refinements 有相容限制；使用 `safeExtend` 或抽取共用 fields 後在各完整入口驗證，加入缺少輪廓不能透過 geometry pick 驗證的反例。
