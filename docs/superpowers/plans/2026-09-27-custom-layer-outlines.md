@@ -11,6 +11,8 @@
 
 ### 本機實作檢查點
 
+- 2026-09-27 19:48：4bdc9ef品質CI36313582772及PostgreSQL CI36313582931皆success。已加入左右／上下／4／6／8／12鏡射的真實滑鼠瀏覽器測試，驗證可套用及跨層草稿隔離／恢復；加上原有desktop/touch案例共8項通過，E2E typecheck通過。下一步可從 `playwright.handoff.config.ts` 和 `tests/support/shapecut-static-server.mjs` 開始 custom STL→真實ShapeCut接收測試；現有handoff只測基本造型及接收至材質選擇，不能當作custom切片驗收。握手相容、完整custom對戰及最終審查仍未完成，未部署。
+
 - 2026-09-27 18:46：5432e80的品質CI36310375030及PostgreSQL CI36310375044皆success。新增 `tests/e2e/custom-outline.spec.ts`：1440px真實滑鼠輸入及390px Chromium CDP touch輸入畫封閉輪廓、套用層板、無橫向溢出，兩項通過；E2E TypeScript檢查通過。這是模擬觸控，非實體iPad。尚需鏡射模式的瀏覽器案例、新舊客戶端相容、custom ShapeCut接收與完整對戰、審查及公開部署驗收。
 
 - 2026-09-27 17:45：f48615a 品質 CI36307250469 與 PostgreSQL CI36307250424 皆 success；包括compact Linux E2E。新增記憶體人氣設計 key 的 canonical 化：自定輪廓起點／順逆／鏡像編輯方式及無效的 points/roundness 不再拆分人氣；尺寸採持久化精度，旋轉／實際輪廓／裝配差異保留。先重現失敗再修正，完整server516 tests及typecheck通過。待審查和新CI。仍須處理新舊客戶端相容、custom畫布觸控E2E、ShapeCut接收、完整自定輪廓對戰及發佈驗收；不可因現有CI綠燈而跳過新增功能驗收。
