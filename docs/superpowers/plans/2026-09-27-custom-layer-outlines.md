@@ -1,0 +1,75 @@
+# 自定輪廓實作計劃
+
+> 面向 AI 工作者：使用 subagent-driven-development 逐項實作及兩階段審查。所有測試先觀察紅燈，再實作。不得把部分完成版本部署到公開網站。
+
+**目標：** 實作已批准的 `../specs/2026-09-27-custom-layer-outlines-design.md`。
+**架構：** 純幾何工具與輪廓驗證先獨立完成，再將 custom 分支接到 domain、資料庫／協定及介面。預覽、對戰與輸出共用同一輪廓；舊資料走原有分支。
+**技術棧：** TypeScript、Zod、React、SVG pointer events、Three.js、PostgreSQL、Vitest、Playwright。
+**工作位置：** `/Users/cywong/Documents/Codex/Bayblad-Simulator-20260911`，既有非 main 工作分支。不要使用過期的 adc8 checkout；不 push main，直至全鏈路驗收完成。
+
+## 任務 1：獨立輪廓工具
+
+新增 `packages/domain/src/customOutline.ts` 與 `customOutline.test.ts`，暫不增加任何 UI 入口或改動現有 design schema。
+
+API：`validateCustomOutline(points)` 回傳具體錯誤碼；`canonicalizeOutline(points)` 返回 CCW、從字典序最小座標開始的頂點陣列；`reflectOutlineStroke(stroke, mode)` 接受 none/leftRight/topBottom/4/6/8/12；多軸模式以第一個正角度扇區為輸入，交替反射。所有運算保留毫米座標及原點，不作質心置中或凸包。
+
+- [ ] 寫測試：矩形、含原點的凹形、偏心輪廓有效；bow-tie、自接觸、退化邊、NaN、超過 256 點、半徑超過 40、軸孔外露無效。軸孔半徑 3.25 mm，要求正的實心餘量。
+- [ ] 正規化測試：起點循環移動、順逆方向得到同結果，不改尺寸與偏心；不得改變原輸入。
+- [ ] 鏡像測試：左右、上下、4/6/8/12 扇區逐一檢查反射對應、接縫單點、相同半徑範圍；非法扇區／端點拒絕，不默默吸附遠離邊界的輸入。輸入端點吸附由 UI 負責。
+- [ ] `pnpm --filter @steam-top/domain exec vitest run src/customOutline.test.ts` 先驗證失敗，再最小實作，再確認通過；跑 domain 全測試及 typecheck。
+- [ ] 規格審查、品質審查、修正、commit。
+
+## 任務 2：共用設計、計算及協定
+
+修改 `packages/domain/src/design.ts`, `geometry.ts`, `performance.ts`, `index.ts`；擴充 `packages/protocol/src/events.ts` 的所有形狀投影，避免只改其中一份 enum。
+
+custom 分支採 `outline: { version: 1, vertices: {x:number,y:number}[], mirror: 'none'|'leftRight'|'topBottom'|4|6|8|12 }`。vertices 為旋轉前毫米座標；diameterMm 與最大半徑一致，變更尺寸由編輯器同步縮放座標。基本形狀無 outline；拒絕 custom 缺輪廓。保留 layerSchema 為可供現有 extend/pick 使用的 object，跨欄位 refine 確認不會被 pick 漏掉。
+
+- [ ] 先寫 design／geometry／mass／performance 測試，確認目前拒絕 custom。
+- [ ] `makeLayerVertices` 對 custom 驗證後旋轉真實輪廓，不做徑向重採樣。既有四種造型保持原結果。
+- [ ] 現有 neck 計算稽核所有徑向假設；custom 使用真實線段距離，不能只按角度排序。custom 的 roundness 不接受任意提高分數的客戶端宣告；採幾何推導或保守固定值，使用獨立模型版本並保留舊版結果。
+- [ ] 測試含孔凹形面積、質心、慣量解析例子，錯誤訊息具體。後端重算結果與前台一致。
+- [ ] 協定測試對戰視覺及教師投影 custom roundtrip，明確版本／能力不符提示。
+- [ ] 執行 domain、protocol 全測試與根目錄 `pnpm typecheck`，審查並 commit。
+
+## 任務 3：資料庫、紀錄及人氣設計
+
+修改 `packages/db/src/schema.ts`, `persistence.ts`, `apps/server/src/records/design-repository.ts`, `apps/server/src/battle/engine.ts`，增加下一個順序的 additive SQL migration 及配套 journal（遵循既有 migration 工具）。
+
+- [ ] DB roundtrip 測試先失敗：一份三層混合設計存入、讀出仍保留完整 outline。
+- [ ] 新增 custom enum 與 nullable JSONB outline 欄位；檢查既有 SQL triggers／約束，不破壞 draft→activate 流程。舊列保持 null。
+- [ ] persistence、load、snapshot、battle visual DTO 全部保留輪廓；儲存前重新驗證。
+- [ ] 人氣 fingerprint 納入 canonicalizeOutline 結果，不同形狀不合併，同形起點／順逆差異可合併；不得混淆有意旋轉與尺寸差異。
+- [ ] 在隔離測試 DB 驗證 migration、新舊混用及還原；不使用生產資料測試。單元及 PostgreSQL 測試通過後兩階段審查與 commit。
+
+## 任務 4：畫布及設計室
+
+新增 `apps/web/src/features/designer/CustomOutlineEditor.tsx`、`customOutlineDraft.ts` 及測試；修改 `LayerControls.tsx`, `useDesigner.ts`, `DesignerPage.tsx` 與必要局部 CSS。
+
+- [ ] reducer 先測草稿／已套用隔離、undo/redo、取消、類別切換保留草稿；只有有效套用修改 TopDesign。
+- [ ] SVG viewBox -44 -44 88 88，以 pointer capture 支援 mouse/touch/pen；用畫布矩陣轉換毫米座標，stroke 只存有限數值。畫布外不阻止頁面滑動。
+- [ ] 基礎／自定 tabs 保留既有參數工具。鏡像選單 none／左右／上下／4／6／8／12；半側或扇區內畫外邊界，端點顯示吸附到參考線，預覽完整反射結果。
+- [ ] raw stroke 與套用用的最多 256 點輪廓分離。可預覽簡化／平滑，禁止 silent truncation；顯示錯誤並保留最後有效設計。
+- [ ] 以 pointerup 或限頻更新幾何；按套用才重建計算與 3D。縮放及旋轉不自動置中。
+- [ ] 前端單元測試及 1440/1024/390 寬度 E2E，包含 touch 事件、錯誤修復及原有 compact 頁面；審查與 commit。
+
+## 任務 5：教師統計與 Excel
+
+修改 `apps/server/src/analytics/parameters.ts`, `parameter-usage.ts`, `usage.ts`, `admin/records-routes.ts`, `exports/workbook.ts` 及 `apps/web/src/features/admin` 相關呈現。
+
+- [ ] SQL／workbook fixtures 新增 custom，先確認現有 sides/lobes 邏輯錯誤。
+- [ ] 按層新增基礎／自定維度及 mirror 編輯方式；custom points 欄位 null／不適用。共同數值保持可比較，無鏡像的份數 null。
+- [ ] 設計紀錄保留完整輪廓及縮圖；Excel 用設計 ID 關聯，列出類別、鏡像及共同指標，不輸出龐大座標到一般數值欄。
+- [ ] 高分紀錄帶樣本數與模型版本，文案為歷史高分，不宣稱最佳解。日週月使用量定義不變。
+- [ ] 新舊 mixed fixtures 的 SQL integration／Excel／教師 UI 全測試，審查及 commit。
+
+## 任務 6：匯出、全鏈路及發佈
+
+測試／必要修正 `exportBoardsStl.ts`, `preview3DGeometry.ts`, 對戰視覺組件、`tests/handoff/shapecut.spec.ts`, `tests/e2e`。
+
+- [ ] 不對稱凹形輸出三層 6mm STL：檢查 bounding box、體積、封閉 manifold 與 normals；畫面／輸出點集相符。
+- [ ] ShapeCut 真實接收與切片測試，沿用 token/window/origin 防護。未驗收 receiver 之前不得宣稱可用。
+- [ ] 完整 30 秒人機及雙人 round，房間、準備、判定、結算、返回房間及再次準備；跨瀏覽器重現輪廓。
+- [ ] 執行 `pnpm typecheck`, `pnpm build`, 全部非生產單元／整合測試和相關 E2E。實體 iPad 未有證據則明確列為待實機測試。
+- [ ] 全體規格／品質審查及確認工作樹狀態。先備份，部署 additive DB／相容後端，再部署前端入口。發佈前確認實際登入與權限，不能把舊登入記錄當現時可部署證據。
+- [ ] 核實部署 SHA、公開 custom roundtrip／對戰／ShapeCut；記錄實際通過與未完成項目，停止任何失敗版本擴散。
