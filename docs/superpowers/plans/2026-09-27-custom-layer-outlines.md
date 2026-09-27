@@ -11,6 +11,8 @@
 
 ### 本機實作檢查點
 
+- 2026-09-28 00:47：已核實功能／測試版本 `c8b4950` 的品質 CI36331707681 及 PostgreSQL CI36331707693 皆完整 success；前版 d4e7fff 兩 CI 亦 success。工作樹原本乾淨。本輪不重跑已通過項目，不重試 Neon 登入，不部署。軟件本機／隔離 CI 驗收已具備，正式備份、部署及公開驗收仍未完成；等待使用者登入 Neon 的既有阻擋不變。後續心跳若無使用者登入通知或新失敗，保持安靜，不反覆產生同一狀態提交。
+
 - 2026-09-28 00:02：新增高分具體設計 e321959、完整孔位6506fd2、獨立錯誤提示d4e7fff，均推至驗證分支。按design ID＋雙模型分組、distinct場數／參賽次數／平均分、所有篩選與真total分頁，教師顯示輪廓及孔位，非最佳解／因果。規格審查及品質複查通過。e321959全pnpm test通過（191/99/198/21/519/211，32skip）；6506fd2 PostgreSQL run36331356101完整success；d4e7fff UI11 passed，最新品質run36331470637、DBrun36331470641仍待最終核實。教師E2E2passed，已看高分縮圖實際截圖。另補雙人完整30秒長播test（自定vs基本，兩訪客均Miss，雙方逐輪召喚/決勝/result30000ms、同房重賽準備，零pageerror）通過1.6分鐘；E2E typecheck通過。下一輪先核實最新CI並總驗收，不需重做已通過幾何／鏡像等工作。
   **正式發佈阻擋：** Render已透過既有GitHub登入，仍live c965b4e，Github main eb67049，啟動時先migrate；Neon控制台停在登入頁，需要使用者登入核實備份／可還原點，不重複嘗試此登入阻擋。只進行本機驗收與驗證分支CI，未部署或遷移正式DB。完整只讀部署核實見 `docs/operations/custom-outline-release-preflight.md`。仍須备份及相容順序部署、公開SHA/custom roundtrip/教師/ShapeCut/對戰驗收；實體iPad和試切未驗證。
 
