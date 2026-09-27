@@ -48,7 +48,14 @@ function radialDistanceToSegment(angle: number, start: Point, end: Point): numbe
 export function buildCollisionOutlineVertices(input: TopDesign): readonly Point[] {
   const design = designSchema.parse(input);
   if (design.layers.some(layer => layer.shape === "custom")) {
-    const polygons = design.layers.map(layer => [makeLayerVertices(layer).map(({ x, y }) => [x, y] as [number, number])]) as Polygon[];
+    const polygons = design.layers.map(layer => {
+      // Keep the existing adaptive contact accuracy for exposed basic layers.
+      // Repeating one basic layer retains the validated three-layer shape while
+      // selecting the basic-only path below; recursion is bounded to one level.
+      const vertices = layer.shape === "custom" ? makeLayerVertices(layer)
+        : buildCollisionOutlineVertices({ ...design, layers: design.layers.map(slot => ({ ...layer, id: slot.id, position: slot.position })) as TopDesign["layers"] });
+      return [vertices.map(({ x, y }) => [x, y] as [number, number])];
+    }) as Polygon[];
     const merged = union(polygons[0]!, ...polygons.slice(1));
     // Every validated board contains the axle, so their union is connected.
     // Internal voids are not external contact boundaries.
