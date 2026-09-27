@@ -16,8 +16,12 @@ function inspect(buffer: ArrayBuffer) {
 }
 
 describe('three-board STL', () => {
-  it('exports millimetres, 18 mm height, closed outward-oriented edges and no internal faces', () => {
+  it.each(['basic', 'custom'] as const)('exports %s millimetres, 18 mm height, closed outward-oriented edges and no internal faces', category => {
     const design = makeDefaultDesign();
+    if (category === 'custom') {
+      const vertices = [{ x: -18, y: -16 }, { x: 22, y: -16 }, { x: 22, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 20 }, { x: -18, y: 20 }];
+      design.layers[0] = { ...design.layers[0], shape: 'custom', diameterMm: 2 * Math.max(...vertices.map(p => Math.hypot(p.x, p.y))), outline: { version: 1, vertices, mirror: 'none' } };
+    }
     const buffer = buildBoardsStl(design, kernel);
     const view = new DataView(buffer);
     expect(buffer.byteLength).toBe(84 + view.getUint32(80, true) * 50);

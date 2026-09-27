@@ -11,6 +11,8 @@
 
 ### 本機實作檢查點
 
+- 2026-09-27 14:44：已把 c418659 推送至獨立遠端分支 `codex/custom-outline-validation`，非 main，沒有部署。GitHub PostgreSQL run `36300884707` 的 DB/server PostgreSQL、cutover migration、platform installation、build 步驟均成功；完整 job 尚在運行，下一輪須讀取最終結果及另一個 CI run `36300884651`。這是隔離 CI 證據，不是正式主機 bootstrap 驗收。新增不對稱凹形 custom STL 封閉邊／正向體積／內部面測試（7 項通過）；全前端測試發現 upload fixture 仍宣告舊模型 1.0.0，已更新至 1.1.0。新舊客戶端握手相容仍未實作，不能據此發佈。
+
 - 2026-09-27 13:42：新增 `0006_custom_outline_installation_guard.sql`，保留既有函數的所有 schema／ACL／空資料安全檢查，只將精確 ledger IDs／hashes 擴充至 0006。正式 runner、journal、claim 的函數 hash 來源及測試 fixture 已同步；既有 0000–0005 未修改。8 項 migration runner 及 21 項 DB 單元測試通過，shell syntax／diff check 通過。**仍未在 PostgreSQL 執行，不能視為已解除發佈阻擋**。下一步以隔離 PostgreSQL 或非部署分支 CI 驗證 fresh claim 和 upgrade，並審查新 migration；不可執行破壞性 fixture 於生產 DB。
 
 - 幾何、domain、公開輪廓協定、碰撞輪廓及編輯器已提交；編輯器提交為 `947bd60`，尚待瀏覽器及完整流程驗收。

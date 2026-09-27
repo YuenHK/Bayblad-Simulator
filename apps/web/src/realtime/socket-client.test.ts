@@ -28,7 +28,7 @@ class FakeTransport implements RealtimeTransport {
 }
 
 const uuid = (digit: number) => `${digit}0000000-0000-4000-8000-000000000000`;
-const uploadPayload = (designId: string) => ({ designId, massG: 25, performance: { speed: 70, spinDuration: 60, stability: 80, impactResistance: 50, modelVersion: "1.0.0" } });
+const uploadPayload = (designId: string) => ({ designId, massG: 25, performance: { speed: 70, spinDuration: 60, stability: 80, impactResistance: 50, modelVersion: "1.1.0" } });
 
 describe("RealtimeClient", () => {
   it("bootstraps the HttpOnly identity before opening the socket without storing PII", async () => {
