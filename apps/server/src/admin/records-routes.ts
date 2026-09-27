@@ -2,6 +2,8 @@ import type { DatabaseClient } from "@steam-top/db";
 import {
   adminRecordsPageSchema,
   adminLeaderboardPageSchema,
+  adminHighScoringDesignsPageSchema,
+  type AdminHighScoringDesignsPage,
   type AdminLeaderboardPage,
   type AdminRecordsPage,
 } from "@steam-top/protocol";
@@ -35,6 +37,7 @@ export type AdminRecordFilters = z.infer<typeof adminRecordFilters>;
 export interface AdminRecordsSource {
   query(filters: AdminRecordFilters): Promise<AdminRecordsPage>;
   queryLeaderboard?(filters: AdminRecordFilters): Promise<AdminLeaderboardPage>;
+  queryHighScoringDesigns?(filters: AdminRecordFilters): Promise<AdminHighScoringDesignsPage>;
 }
 const pattern = (value: string | undefined) =>
   value ? `%${value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%` : null;
@@ -45,6 +48,44 @@ export function adminRecordTimestamp(value: unknown): string {
 }
 export class PostgresAdminRecordsSource implements AdminRecordsSource {
   constructor(private readonly sql: DatabaseClient["sql"]) {}
+  async queryHighScoringDesigns(filters: AdminRecordFilters) {
+    const query = `with design_projection as materialized (
+      select d.id,jsonb_build_object('layers',jsonb_agg(
+        jsonb_build_object('position',l.position::text,'shape',l.shape::text,
+          'points',case when l.shape::text='custom' then null else l.points end,
+          'diameterMm',l.diameter_mm::float8,'actualAreaMm2',l.actual_area_mm2::float8,
+          'holeCount',d.screw_count,'rotationDeg',l.rotation_deg::float8,'cornerRoundness',l.corner_roundness::float8)
+        || case when l.outline is not null then jsonb_build_object('outline',l.outline) else '{}'::jsonb end order by l.layer_order),
+        'totalMassG',d.total_mass_g::float8,'metalDiscDiameterMm',d.metal_disc_diameter_mm::float8,
+        'centerOfMassOffsetMm',sqrt(d.center_of_mass_x_mm*d.center_of_mass_x_mm+d.center_of_mass_y_mm*d.center_of_mass_y_mm)::float8,
+        'momentOfInertiaGmm2',d.polar_moment_gmm2::float8) design
+      from designs d join design_layers l on l.design_id=d.id group by d.id
+    ), participants as materialized (
+      select m.id match_id,p.design_id,m.performance_model_version,m.physics_model_version,
+        coalesce(case when p.slot='player1' then m.player1_total else m.player2_total end,0)::float8 score
+      from matches m join match_participant_snapshots p on p.match_id=m.id
+      left join identities i on i.id=coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)
+      join design_projection dp on dp.id=p.design_id
+      where m.status='completed'
+        and ($1::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date >= $1::date)
+        and ($2::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date <= $2::date)
+        and ($3::text is null or coalesce(p.class_name_snapshot,i.class_name,'') ilike $3 escape '\\')
+        and ($4::text is null or coalesce(p.display_name_snapshot,i.display_name,'') ilike $4 escape '\\')
+        and ($5::text is null or coalesce(case when p.slot='player1' then m.player1_device_name else m.player2_device_name end,'') ilike $5 escape '\\')
+        and ($6::text is null or dp.design::text ilike $6 escape '\\')
+    ), aggregated as materialized (
+      select design_id,performance_model_version,physics_model_version,
+        count(distinct match_id)::integer sample_size,count(*)::integer observations,avg(score)::float8 average_score
+      from participants group by design_id,performance_model_version,physics_model_version
+    ), totals as (select count(*)::integer total from aggregated), paged as (
+      select * from aggregated order by average_score desc,sample_size desc,design_id,performance_model_version,physics_model_version limit $7 offset $8
+    ) select p.design_id "designId",p.performance_model_version "performanceModelVersion",p.physics_model_version "physicsModelVersion",
+      p.sample_size "sampleSize",p.observations "participantObservations",p.average_score "averageScore",dp.design,t.total
+      from totals t left join paged p on true left join design_projection dp on dp.id=p.design_id
+      order by p.average_score desc,p.sample_size desc,p.design_id,p.performance_model_version,p.physics_model_version`;
+    const raw = await this.sql.unsafe(query, [filters.from ?? null, filters.to ?? null, pattern(filters.className), pattern(filters.identity), pattern(filters.device), pattern(filters.parameter), filters.pageSize, (filters.page - 1) * filters.pageSize]) as readonly Record<string, unknown>[];
+    return adminHighScoringDesignsPageSchema.parse({ rows: raw.filter(row => row.designId !== null).map(({ total: _, ...row }) => row), total: Number(raw[0]?.total ?? 0), page: filters.page, pageSize: filters.pageSize });
+  }
   async query(filters: AdminRecordFilters) {
     const query = `with design_projection as materialized(select d.id,jsonb_build_object('layers',jsonb_agg(jsonb_build_object('position',l.position::text,'shape',l.shape::text,'points',case when l.shape::text='custom' then null else l.points end,'diameterMm',l.diameter_mm::float8,'actualAreaMm2',l.actual_area_mm2::float8,'holeCount',d.screw_count,'rotationDeg',l.rotation_deg::float8,'cornerRoundness',l.corner_roundness::float8) || case when l.outline is not null then jsonb_build_object('outline',l.outline) else '{}'::jsonb end order by l.layer_order),'totalMassG',d.total_mass_g::float8,'metalDiscDiameterMm',d.metal_disc_diameter_mm::float8,'centerOfMassOffsetMm',sqrt(d.center_of_mass_x_mm*d.center_of_mass_x_mm+d.center_of_mass_y_mm*d.center_of_mass_y_mm)::float8,'momentOfInertiaGmm2',d.polar_moment_gmm2::float8) design from designs d join design_layers l on l.design_id=d.id group by d.id),filtered as materialized(select concat(m.id,':',p.slot::text) "rowId",m.id "matchId",p.slot::text slot,m.completed_at "occurredAt",coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)::text "identityId",coalesce(p.class_name_snapshot,i.class_name) "className",coalesce(p.display_name_snapshot,i.display_name,'已刪除身份') identity,case when p.slot='player1' then m.player1_device_name else m.player2_device_name end "deviceName",dp.design,coalesce(case when p.slot='player1' then m.player1_total else m.player2_total end,0)::float8 "totalScore" from matches m join match_participant_snapshots p on p.match_id=m.id left join identities i on i.id=coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) join design_projection dp on dp.id=p.design_id where m.status='completed' and ($1::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date >= $1::date) and ($2::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date <= $2::date) and ($3::text is null or coalesce(p.class_name_snapshot,i.class_name,'') ilike $3 escape '\\') and ($4::text is null or coalesce(p.display_name_snapshot,i.display_name,'') ilike $4 escape '\\') and ($5::text is null or coalesce(case when p.slot='player1' then m.player1_device_name else m.player2_device_name end,'') ilike $5 escape '\\') and ($6::text is null or dp.design::text ilike $6 escape '\\')),totals as(select count(*)::integer total from filtered),paged as(select * from filtered order by "occurredAt" desc,"matchId",slot limit $7 offset $8) select p.*,t.total from totals t left join paged p on true`;
     const raw = (await this.sql.unsafe(query, [
@@ -101,6 +142,19 @@ export function registerAdminRecordRoutes(
   auth: AdminAuthService,
   source: AdminRecordsSource,
 ) {
+  app.get("/api/admin/high-scoring-designs", async (request, reply) => {
+    if (!(await authenticateAdminRead(request, reply, auth))) return;
+    const parsed = adminRecordFilters.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_RECORD_FILTERS" });
+    reply.header("Cache-Control", "private, no-store");
+    try {
+      if (!source.queryHighScoringDesigns) return reply.code(503).send({ error: "HIGH_SCORING_DESIGNS_UNAVAILABLE" });
+      return adminHighScoringDesignsPageSchema.parse(await source.queryHighScoringDesigns(parsed.data));
+    } catch (error) {
+      auth.report("admin.high_scoring_designs.query", error, request.id);
+      return reply.code(503).send({ error: "HIGH_SCORING_DESIGNS_UNAVAILABLE" });
+    }
+  });
   app.get("/api/admin/records", async (request, reply) => {
     if (!(await authenticateAdminRead(request, reply, auth))) return;
     const parsed = adminRecordFilters.safeParse(request.query);

@@ -1113,6 +1113,21 @@ export type AdminParameterPerformanceRow = z.infer<
 >;
 export type AdminRecordRow = z.infer<typeof adminRecordRowSchema>;
 export type AdminRecordsPage = z.infer<typeof adminRecordsPageSchema>;
+export const adminHighScoringDesignsPageSchema = z.object({
+  rows: z.array(z.object({
+    designId: z.uuid(),
+    performanceModelVersion: z.string().min(1),
+    physicsModelVersion: z.string().min(1),
+    sampleSize: z.number().int().positive(),
+    participantObservations: z.number().int().positive(),
+    averageScore: z.number(),
+    design: adminDesignParametersSchema,
+  }).strict()),
+  total: z.number().int().nonnegative(),
+  page: z.number().int().positive(),
+  pageSize: z.number().int().positive(),
+}).strict();
+export type AdminHighScoringDesignsPage = z.infer<typeof adminHighScoringDesignsPageSchema>;
 
 export const adminLeaderboardRowSchema = z.object({
   identityId: z.uuid(), displayName: z.string().min(1).max(80), className: z.string().max(30).nullable(),

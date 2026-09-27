@@ -13,7 +13,7 @@ async function confirmAction(page: Page) {
   await dialog.getByRole("button", { name: /^確定/u }).click();
   await expect(page.getByRole("dialog")).toBeHidden();
 }
-test("教師登入、房間確認、篩選、統計及刪除流程不外洩密碼", async ({ page }) => {
+test("教師登入、房間確認、篩選、統計及刪除流程不外洩密碼", async ({ page }, testInfo) => {
   await login(page);
   expect(page.url()).not.toContain(password);
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
@@ -21,6 +21,13 @@ test("教師登入、房間確認、篩選、統計及刪除流程不外洩密�
   );
   await expect(page.getByText("2 間房間")).toBeVisible();
   await expect(page.getByRole("heading", { name: "學生總分排行榜（只供教師查看）" })).toBeVisible();
+  const highDesigns = page.getByRole("region", { name: "歷史紀錄中的高分設計" });
+  await expect(highDesigns.getByText("表現 1／物理 2")).toBeVisible();
+  await expect(highDesigns.getByText("1 場／1 次")).toBeVisible();
+  await expect(highDesigns.getByText(/不代表最佳解或因果/)).toBeVisible();
+  await expect(highDesigns.getByRole("img", { name: "自定造型輪廓" })).toHaveCount(3);
+  await expect(highDesigns.getByRole("img", { name: "自定造型輪廓" }).first()).toBeVisible();
+  await highDesigns.screenshot({ path: testInfo.outputPath("high-scoring-designs.png") });
   await expect(page.getByText("發射判定分佈")).toBeVisible();
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "匯出 Excel" }).click();
@@ -51,6 +58,7 @@ test("教師登入、房間確認、篩選、統計及刪除流程不外洩密�
   expect(controlState.adminCommands.every((operation:{status:string})=>operation.status==="completed")).toBe(true);
   await page.getByLabel("班別").fill("2B");
   await expect(page.getByText("此頁沒有紀錄。")).toBeVisible();
+  await expect(highDesigns.getByText("目前篩選範圍沒有高分設計資料。")).toBeVisible();
   await page.getByLabel("班別").fill("1A");
   await expect(page.getByText("iPad-01")).toBeVisible();
   await page.getByRole("checkbox", { name: "選取 陳同學" }).check();
@@ -60,6 +68,7 @@ test("教師登入、房間確認、篩選、統計及刪除流程不外洩密�
   await page.getByRole("dialog").getByRole("button", { name: "繼續" }).click();
   await page.getByRole("button", { name: "確定永久刪除" }).click();
   await expect(page.getByText("0 筆紀錄")).toBeVisible();
+  await expect(highDesigns.getByText("目前篩選範圍沒有高分設計資料。")).toBeVisible();
   await page.getByRole("button", { name: "登出" }).click();
   await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
   await page.getByLabel("密碼").fill(password);

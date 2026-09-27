@@ -3,6 +3,8 @@ import {
   adminAnalyticsSummarySchema,
   adminRecordsPageSchema,
   adminLeaderboardPageSchema,
+  adminHighScoringDesignsPageSchema,
+  type AdminHighScoringDesignsPage,
 } from "@steam-top/protocol";
 import { AdminModal } from "./AdminModal";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
@@ -10,6 +12,7 @@ import { AdminApiError, jsonHeaders, requestJson } from "./api";
 import { AnalyticsCharts } from "./AnalyticsCharts";
 import { DeleteDialog } from "./DeleteDialog";
 import { LeaderboardTable } from "./LeaderboardTable";
+import { HighScoringDesigns } from "./HighScoringDesigns";
 import { filterParams, RecordsTable, type AdminFilters } from "./RecordsTable";
 import { RoomsPanel } from "./RoomsPanel";
 import type {
@@ -52,6 +55,7 @@ const emptyRecords: RecordsResponse = {
   page: 1,
   pageSize: 25,
 };
+const emptyDesigns: AdminHighScoringDesignsPage = { rows: [], total: 0, page: 1, pageSize: 25 };
 export function AdminDashboard({
   fetcher,
   session,
@@ -70,6 +74,9 @@ export function AdminDashboard({
     [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null),
     [filters, setFilters] = useState(initialFilters),
     [leaderboardPage,setLeaderboardPage]=useState(1),
+    [highScoringDesigns, setHighScoringDesigns] = useState<AdminHighScoringDesignsPage>(emptyDesigns),
+    [designPage, setDesignPage] = useState(1),
+    [designRefresh, setDesignRefresh] = useState(0),
     [selected, setSelected] = useState<Set<string>>(new Set()),
     [error, setError] = useState(""),
     [confirm, setConfirm] = useState<{
@@ -86,6 +93,7 @@ export function AdminDashboard({
   const [passwordOpen, setPasswordOpen] = useState(false);
   const queryController = useRef<AbortController | null>(null);
   const queryGeneration = useRef(0);
+  const designsController = useRef<AbortController | null>(null);
   const guarded = useCallback(
     async <T,>(operation: () => Promise<T>) => {
       try {
@@ -93,6 +101,8 @@ export function AdminDashboard({
       } catch (reason) {
         if (reason instanceof AdminApiError && reason.status === 401) {
           queryController.current?.abort();
+          designsController.current?.abort();
+          setHighScoringDesigns(emptyDesigns);
           setRecords(emptyRecords);
           setAnalytics(null);
           setRooms({ paused: false, rooms: [] });
@@ -159,6 +169,17 @@ export function AdminDashboard({
     return () => window.clearTimeout(timer);
   }, [filters, query]);
   useEffect(()=>setLeaderboardPage(1),[filters.from,filters.to,filters.className,filters.identity,filters.device,filters.parameter]);
+  useEffect(() => setDesignPage(1), [filters.from, filters.to, filters.className, filters.identity, filters.device, filters.parameter, filters.pageSize]);
+  useEffect(() => {
+    const controller = new AbortController();
+    designsController.current = controller;
+    setHighScoringDesigns({ ...emptyDesigns, page: designPage, pageSize: filters.pageSize });
+    const params = filterParams({ ...filters, page: designPage });
+    void guarded(() => requestJson(fetcher, `/api/admin/high-scoring-designs?${params}`, { signal: controller.signal }, adminHighScoringDesignsPageSchema))
+      .then(page => { if (!controller.signal.aborted) setHighScoringDesigns(page); })
+      .catch(reason => { if (!controller.signal.aborted && !(reason instanceof AdminApiError && reason.status === 401)) setError("高分設計暫時無法載入。"); });
+    return () => controller.abort();
+  }, [fetcher, filters.from, filters.to, filters.className, filters.identity, filters.device, filters.parameter, filters.pageSize, guarded, designPage, designRefresh]);
   useEffect(() => {
     const controller = new AbortController();
     const params = filterParams({ ...filters, page: leaderboardPage });
@@ -257,6 +278,8 @@ export function AdminDashboard({
       }));
       setRecords(emptyRecords);
       setLeaderboard({ rows: [], total: 0, page: 1, pageSize: 25 });
+      designsController.current?.abort();
+      setHighScoringDesigns(emptyDesigns);
       setAnalytics(null);
       setRooms({ paused: false, rooms: [] });
       setSelected(new Set());
@@ -349,6 +372,7 @@ export function AdminDashboard({
         }
       />
       <LeaderboardTable data={leaderboard} onPage={setLeaderboardPage} />
+      <HighScoringDesigns data={highScoringDesigns} onPage={setDesignPage} />
       {analytics ? (
         <AnalyticsCharts data={analytics} />
       ) : (
@@ -384,6 +408,7 @@ export function AdminDashboard({
           filters={filters}
           identities={records.rows.flatMap((row, index, rows) => row.identityId && selected.has(row.identityId) && rows.findIndex((candidate) => candidate.identityId === row.identityId) === index ? [{ id: row.identityId, displayName: row.identity, className: row.className, deviceName: row.deviceName }] : [])}
           onDeleted={async () => {
+            setDesignRefresh(value => value + 1);
             setRecords(emptyRecords);
             setAnalytics(null);
             setSelected(new Set());

@@ -26,3 +26,50 @@ it.skipIf(!databaseUrl)("merges canonical identities, uses the latest event labe
 it.skipIf(!databaseUrl)("applies date, class, identity, device and parameter filters to immutable participant events",async()=>{const base={page:1,pageSize:10};expect((await source.queryLeaderboard({...base,className:"1A"})).rows).toEqual([expect.objectContaining({identityId:ids.canonicalA,displayName:"Ada Old",className:"1A",totalScore:2.5})]);expect((await source.queryLeaderboard({...base,identity:"Ada Latest"})).rows).toEqual([expect.objectContaining({identityId:ids.canonicalA,totalScore:.5})]);expect((await source.queryLeaderboard({...base,device:"Mac-A"})).rows).toEqual([expect.objectContaining({identityId:ids.canonicalA,totalScore:.5})]);expect((await source.queryLeaderboard({...base,parameter:"star"})).rows).toEqual([expect.objectContaining({identityId:ids.canonicalA,totalScore:2.5})]);expect((await source.queryLeaderboard({...base,from:"2026-08-02",to:"2026-08-02",className:"2B",identity:"Latest",device:"Mac-A",parameter:"polygon"})).rows).toEqual([expect.objectContaining({identityId:ids.canonicalA,totalScore:.5})]);},30_000);
 
 it.skipIf(!databaseUrl)("keeps deterministic pages and the true total on an empty page",async()=>{const first=await source.queryLeaderboard({page:1,pageSize:2}),second=await source.queryLeaderboard({page:2,pageSize:2}),empty=await source.queryLeaderboard({page:3,pageSize:2});expect(first.rows.map(row=>row.displayName)).toEqual(["Ada Latest","Ben"]);expect(second.rows.map(row=>row.displayName)).toEqual(["Cara","Dion"]);expect(empty).toMatchObject({rows:[],total:4,page:3,pageSize:2});},30_000);
+
+it.skipIf(!databaseUrl)("ranks complete designs across all filtered records with stable pages and full parameters", async () => {
+  const base = { page: 1, pageSize: 10, from: "2026-08-01", to: "2026-08-04" };
+  const page = await source.queryHighScoringDesigns(base);
+  expect(page.total).toBe(4);
+  expect(page.rows[0]).toMatchObject({ designId: ids.star, averageScore: 2.5, sampleSize: 1, participantObservations: 1, performanceModelVersion: "perf-1", physicsModelVersion: "physics-1" });
+  expect(page.rows[0]!.design).toMatchObject({ totalMassG: 40, metalDiscDiameterMm: 30, centerOfMassOffsetMm: 0, momentOfInertiaGmm2: 12000 });
+  expect(page.rows[0]!.design.layers).toEqual(["top", "middle", "bottom"].map(position => expect.objectContaining({ position, shape: "star", holeCount: 6, rotationDeg: 0, cornerRoundness: .2 })));
+  expect(page.rows.slice(1, 3).map(row => row.designId)).toEqual([ids.hex, ids.circle].sort());
+  const first = await source.queryHighScoringDesigns({ ...base, pageSize: 2 });
+  const second = await source.queryHighScoringDesigns({ ...base, pageSize: 2, page: 2 });
+  expect([...first.rows, ...second.rows]).toEqual(page.rows);
+  expect(await source.queryHighScoringDesigns({ ...base, pageSize: 2, page: 3 })).toEqual({ rows: [], total: 4, page: 3, pageSize: 2 });
+  for (const filters of [{ className: "1A" }, { identity: "Ada Old" }, { device: "iPad-A" }, { parameter: "star" }]) {
+    expect((await source.queryHighScoringDesigns({ ...base, ...filters })).rows).toEqual([page.rows[0]]);
+  }
+  expect((await source.queryHighScoringDesigns({ ...base, from: "2026-08-02", to: "2026-08-02", className: "2B", identity: "Latest", device: "Mac-A", parameter: "polygon" })).rows).toEqual([expect.objectContaining({ designId: ids.triangle, averageScore: .5 })]);
+  expect((await source.queryHighScoringDesigns({ ...base, identity: "%" })).total).toBe(0);
+}, 30_000);
+
+it.skipIf(!databaseUrl)("counts distinct matches when both slots share a design and separates both model versions", async () => {
+  const base = { page: 1, pageSize: 10, from: "2026-09-01", to: "2026-09-04" };
+  for (let day = 1; day <= 4; day++) {
+    const at = `2026-09-0${day}T04:00:00Z`;
+    await addMatch({ at, p1: ids.oldA, p2: ids.b, d1: ids.star, d2: ids.star, n1: "Ada Old", n2: "Ben", c1: "1A", c2: "1B", device1: "iPad-A", device2: "iPad-B", challenge1: .5, challenge2: .5, status: "in_progress" });
+    await client.sql.unsafe("update matches set performance_model_version=$2,physics_model_version=$3,status='completed',player1_battle_points=2,player2_battle_points=0,player1_challenge_points=.5,player2_challenge_points=.5,player1_total=2.5,player2_total=.5,winner='player1',round_winners='[\"player1\",\"player1\"]',completed_at=$1::timestamptz where started_at=$1::timestamptz-interval '1 minute'", [at, day === 3 ? "perf-2" : "perf-1", day === 2 ? "physics-2" : "physics-1"]);
+  }
+  const page = await source.queryHighScoringDesigns(base);
+  expect(page.total).toBe(3);
+  expect(page.rows.map(row => [row.performanceModelVersion, row.physicsModelVersion, row.sampleSize, row.participantObservations, row.averageScore])).toEqual([
+    ["perf-1", "physics-1", 2, 4, 1.5], ["perf-1", "physics-2", 1, 2, 1.5], ["perf-2", "physics-1", 1, 2, 1.5],
+  ]);
+}, 30_000);
+
+it.skipIf(!databaseUrl)("preserves custom outlines and rotation in high-scoring design parameters", async () => {
+  const customId = randomUUID();
+  const outline = { version: 1, mirror: "leftRight", vertices: [{ x: -10, y: -10 }, { x: 10, y: -10 }, { x: 10, y: 10 }, { x: -10, y: 10 }] };
+  await client.sql.unsafe("insert into designs(id,logical_design_id,owner_identity_id,version,schema_version,name,screw_count,screw_radius_mm,screw_rotation_deg,metal_disc_diameter_mm,total_mass_g,polar_moment_gmm2,center_of_mass_x_mm,center_of_mass_y_mm,performance_speed,performance_spin_duration,performance_stability,performance_impact_resistance,performance_model_version,battle_eligible,validation_issues) values($1,$1,$2,1,'1','custom fixture',3,6,0,0,10,1000,0,0,60,60,60,60,'perf-1',false,'[]')", [customId, ids.oldA]);
+  for (const [order, position] of ["top", "middle", "bottom"].entries()) {
+    await client.sql.unsafe("insert into design_layers(design_id,source_layer_id,layer_order,position,shape,points,diameter_mm,actual_area_mm2,corner_roundness,rotation_deg,color,outline) values($1,$2,$3,$4,'custom',6,$5,400,0,30,'#123456',$6::jsonb)", [customId, `${customId}-${order}`, order, position, Math.hypot(10, 10) * 2, JSON.stringify(outline)]);
+  }
+  await client.sql`update designs set battle_eligible=true where id=${customId}`;
+  await addMatch({ at: "2026-09-05T04:00:00Z", p1: ids.oldA, p2: ids.b, d1: customId, d2: ids.hex, n1: "Ada Old", n2: "Ben", c1: "1A", c2: "1B", device1: "iPad-A", device2: "iPad-B", challenge1: .5, challenge2: .5 });
+  const page = await source.queryHighScoringDesigns({ page: 1, pageSize: 10, from: "2026-09-05", to: "2026-09-05", parameter: "leftRight" });
+  expect(page.total).toBe(1);
+  expect(page.rows[0]!.design.layers).toEqual(["top", "middle", "bottom"].map(position => expect.objectContaining({ position, shape: "custom", points: null, outline, rotationDeg: 30, holeCount: 3 })));
+}, 30_000);

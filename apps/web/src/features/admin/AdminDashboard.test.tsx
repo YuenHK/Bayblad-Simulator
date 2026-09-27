@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { expect, it, vi } from "vitest";
@@ -146,9 +146,45 @@ function authenticated(
       return json({ rows: [record], total: 1, page: 1, pageSize: 25 });
     if (url.pathname === "/api/admin/analytics") return json(analytics);
     if (url.pathname === "/api/admin/leaderboard") return json({ rows: [], total: 0, page: 1, pageSize: 25 });
+    if (url.pathname === "/api/admin/high-scoring-designs") return json({ rows: [{ designId: "550e8400-e29b-41d4-a716-446655440001", performanceModelVersion: "perf-1", physicsModelVersion: "physics-1", sampleSize: 3, participantObservations: 4, averageScore: 2.25, design: record.design }], total: 1, page: 1, pageSize: 25 });
     throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
   });
 }
+it("shows concrete historical designs with layers, sample count and model versions", async () => {
+  render(<AdminApp fetcher={authenticated()} />);
+  expect(await screen.findByRole("heading", { name: "歷史紀錄中的高分設計" })).toBeInTheDocument();
+  expect(await screen.findByText("表現 perf-1／物理 physics-1")).toBeInTheDocument();
+  expect(screen.getByText(/不代表最佳解或因果/)).toBeInTheDocument();
+  expect(screen.getByText("550e8400-e29b-41d4-a716-446655440001")).toBeInTheDocument();
+});
+it("ignores late design responses after filters change and paginates independently", async () => {
+  let resolveOld: (response: Response) => void = () => undefined;
+  const fetcher = authenticated(async url => {
+    if (url.pathname !== "/api/admin/high-scoring-designs") return;
+    if (!url.searchParams.get("className")) return new Promise<Response>(resolve => { resolveOld = resolve; });
+    const page = Number(url.searchParams.get("page"));
+    return json({ rows: [], total: 30, page, pageSize: 25 });
+  });
+  render(<AdminApp fetcher={fetcher} />);
+  const section = (await screen.findByRole("heading", { name: "歷史紀錄中的高分設計" })).closest("section")!;
+  await userEvent.type(screen.getByLabelText("班別"), "1A");
+  await waitFor(() => expect(within(section).getByText(/30 組設計及模型版本/)).toBeInTheDocument());
+  await act(async () => resolveOld(json({ rows: [], total: 999, page: 1, pageSize: 25 })));
+  expect(within(section).queryByText(/999 組/)).not.toBeInTheDocument();
+  await userEvent.click(within(section).getByRole("button", { name: "下一頁" }));
+  await waitFor(() => expect(within(section).getByText(/第 2／2 頁/)).toBeInTheDocument());
+  expect(fetcher.mock.calls.some(([input]) => input.toString().includes("/api/admin/high-scoring-designs?") && input.toString().includes("page=2"))).toBe(true);
+});
+it("clears historical designs when their request loses authentication", async () => {
+  const fetcher = authenticated(async url => {
+    if (url.pathname === "/api/admin/high-scoring-designs" && url.searchParams.get("className")) return json({ error: "UNAUTHORIZED" }, 401);
+  });
+  render(<AdminApp fetcher={fetcher} />);
+  await screen.findByText("550e8400-e29b-41d4-a716-446655440001");
+  await userEvent.type(screen.getByLabelText("班別"), "1");
+  await screen.findByRole("heading", { name: "教師登入" });
+  expect(screen.queryByText("550e8400-e29b-41d4-a716-446655440001")).not.toBeInTheDocument();
+});
 it("keeps login password out of URL and storage", async () => {
   const requests: Request[] = [];
   const fetcher = vi.fn(
