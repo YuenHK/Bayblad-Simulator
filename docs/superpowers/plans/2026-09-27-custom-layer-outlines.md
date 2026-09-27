@@ -7,6 +7,15 @@
 **技術棧：** TypeScript、Zod、React、SVG pointer events、Three.js、PostgreSQL、Vitest、Playwright。
 **工作位置：** `/Users/cywong/Documents/Codex/Bayblad-Simulator-20260911`，既有非 main 工作分支。不要使用過期的 adc8 checkout；不 push main，直至全鏈路驗收完成。
 
+## 接駁稽核（2026-09-27）
+
+- `apps/server/src/battle/collision-proxy.ts` 的 sensor outline 是徑向 star-shaped union，不能直接把 custom 傳入 `radialFactor`。須為含 custom 的設計採真實多邊形 union 外邊界；保留原有凸碰撞代理作近似剛體，不把它用作外觀或面積。
+- `apps/server/src/socket.ts:1100` 會拒絕雙方 performanceModelVersion 不同。新模型版本應為所有新計算統一升版，基本造型數值保持不變；不可只把 custom 升版令其無法與基本造型對戰。歷史紀錄不改，舊儲存設計參戰時產生新版本快照。
+- `layerSchema.extend/pick` 與 Zod object refinements 有相容限制；使用 `safeExtend` 或抽取共用 fields 後在各完整入口驗證，加入缺少輪廓不能透過 geometry pick 驗證的反例。
+- `design_layers` 啟用後資料不可修改的 trigger 應保留；migration 只新增 nullable 欄位，不改舊列。PG enum 新值的使用注意 transaction 可見性，以 `shape::text` 作新增 CHECK 比較或分隔 migration transaction。
+- 目前 `calculateMinimumMaterialNeckMm` 已用真實線段至孔位距離，適合凹形；另一路 `minRadialThickness` 不適用任意凹形，不應誤用於新功能。
+- STL 目前使用 Manifold 並將三層 union 成一個實心輸出；沿用既有行為，驗收每層截面，而非要求三個獨立 mesh。
+
 ## 任務 1：獨立輪廓工具
 
 新增 `packages/domain/src/customOutline.ts` 與 `customOutline.test.ts`，暫不增加任何 UI 入口或改動現有 design schema。
