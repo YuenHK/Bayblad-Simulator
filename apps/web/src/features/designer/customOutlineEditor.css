@@ -3,6 +3,16 @@
   gap: 0.5rem;
   min-width: 0;
 }
+.custom-outline-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+@media (min-width: 1000px) and (max-height: 800px) {
+  .game-designer fieldset.control-group { margin-top: 0; padding-block: 4px; }
+  .game-designer .control-group .control-grid { row-gap: 4px; }
+}
 .custom-outline-canvas {
   display: block;
   width: 100%;

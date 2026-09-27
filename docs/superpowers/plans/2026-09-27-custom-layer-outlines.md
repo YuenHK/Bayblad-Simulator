@@ -11,6 +11,8 @@
 
 ### 本機實作檢查點
 
+- 2026-09-27 16:47：4399dd5 的 PostgreSQL run36304002803 成功（包含 custom 重載及重存去重）；品質 run36304002783 單元測試通過，E2E 唯一失敗是1024×768參戰按鈕超出畫面。已重現並修正：造型切換置於 legend 同行，矮螢幕只縮間距，不改字體大小／顏色。重新建置後1440×900、1024×768兩項瀏覽器測試通過，34項編輯器／設計頁測試及web typecheck通過；已檢視1024截圖。仍須Linux CI驗證及自定畫布手機／觸控、握手相容、ShapeCut和對戰驗收。尚未部署。
+
 - 2026-09-27 15:44：PostgreSQL CI `36300884707` 最終 success；品質 CI `36300884651` 因舊 upload fixture 的 4 tests 失敗，修正已在 3e4e0a0。本輪根目錄 `pnpm test` 完整 exit 0：domain191、protocol98、web190、DB21、server514、integration/CI211，另32項跳過（不能當成通過）。新增 custom PostgreSQL reload／precision dedup regression，commit4399dd5 已推送獨立驗證分支，等待新 CI 結果；無正式部署。下一輪先查 `gh run list --branch codex/custom-outline-validation`，再處理握手能力相容、人氣 canonical signature、編輯器 E2E／ShapeCut／完整對戰及審查。
 
 - 2026-09-27 14:44：已把 c418659 推送至獨立遠端分支 `codex/custom-outline-validation`，非 main，沒有部署。GitHub PostgreSQL run `36300884707` 的 DB/server PostgreSQL、cutover migration、platform installation、build 步驟均成功；完整 job 尚在運行，下一輪須讀取最終結果及另一個 CI run `36300884651`。這是隔離 CI 證據，不是正式主機 bootstrap 驗收。新增不對稱凹形 custom STL 封閉邊／正向體積／內部面測試（7 項通過）；全前端測試發現 upload fixture 仍宣告舊模型 1.0.0，已更新至 1.1.0。新舊客戶端握手相容仍未實作，不能據此發佈。

@@ -86,8 +86,9 @@ export function LayerControls({
 
   return (
     <fieldset className="control-group">
-      <legend>層板設定</legend>
-      <div className="custom-outline-mode" role="group" aria-label="造型類型">
+      <legend className="custom-outline-legend">
+      <span>層板設定</span>
+      <span className="custom-outline-mode" role="group" aria-label="造型類型">
         <button
           type="button"
           aria-pressed={mode === "basic"}
@@ -121,7 +122,8 @@ export function LayerControls({
         >
           自定造型
         </button>
-      </div>
+      </span>
+      </legend>
       {mode === "custom" ? (
         <CustomOutlineEditor
           key={appliedLayer.id}
