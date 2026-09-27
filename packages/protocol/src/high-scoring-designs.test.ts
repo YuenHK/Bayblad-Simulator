@@ -12,3 +12,8 @@ it("preserves complete design geometry and model/sample semantics", () => {
     expect(adminHighScoringDesignsPageSchema.safeParse({ ...page, rows: [{ ...row, ...invalid }] }).success).toBe(false);
   }
 });
+it("accepts optional screw assembly radius and rotation including zero", () => {
+  const page = { rows: [{ ...row, design: { ...row.design, screwRadiusMm: 0, screwRotationDeg: 0 } }], total: 1, page: 1, pageSize: 25 };
+  expect(adminHighScoringDesignsPageSchema.safeParse(page).success).toBe(true);
+  expect(adminHighScoringDesignsPageSchema.parse(page)).toEqual(page);
+});

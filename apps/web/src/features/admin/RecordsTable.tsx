@@ -109,6 +109,8 @@ export function RecordsTable({
                     <p>
                       重心偏移 {row.design.centerOfMassOffsetMm}mm；轉動慣量{" "}
                       {row.design.momentOfInertiaGmm2} g·mm²
+                      {row.design.screwRadiusMm !== undefined && <>；螺絲孔半徑 {row.design.screwRadiusMm} mm</>}
+                      {row.design.screwRotationDeg !== undefined && <>；螺絲組旋轉 {row.design.screwRotationDeg}°</>}
                     </p>
                   </details>
                 </td>

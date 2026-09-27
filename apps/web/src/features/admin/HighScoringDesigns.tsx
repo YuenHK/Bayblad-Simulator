@@ -10,7 +10,10 @@ export function HighScoringDesigns({ data, onPage }: { data: AdminHighScoringDes
         <td><p>{row.designId}</p><p>表現 {row.performanceModelVersion}／物理 {row.physicsModelVersion}</p></td>
         <td>{row.averageScore.toFixed(2)}</td><td>{row.sampleSize} 場／{row.participantObservations} 次</td>
         <td><ul>{row.design.layers.map(layer => <li key={layer.position}><LayerRecord layer={layer} /></li>)}</ul>
-          <p>總重量 {row.design.totalMassG} g；金屬片直徑 {row.design.metalDiscDiameterMm} mm；重心偏移 {row.design.centerOfMassOffsetMm} mm；轉動慣量 {row.design.momentOfInertiaGmm2} g·mm²</p></td>
+          <p>總重量 {row.design.totalMassG} g；金屬片直徑 {row.design.metalDiscDiameterMm} mm；重心偏移 {row.design.centerOfMassOffsetMm} mm；轉動慣量 {row.design.momentOfInertiaGmm2} g·mm²
+            {row.design.screwRadiusMm !== undefined && <>；螺絲孔半徑 {row.design.screwRadiusMm} mm</>}
+            {row.design.screwRotationDeg !== undefined && <>；螺絲組旋轉 {row.design.screwRotationDeg}°</>}
+          </p></td>
       </tr>)}
     </tbody></table></div>
     {!data.rows.length ? <p className="empty-state">目前篩選範圍沒有高分設計資料。</p> : null}

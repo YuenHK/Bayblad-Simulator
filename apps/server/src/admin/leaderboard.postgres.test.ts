@@ -32,7 +32,8 @@ it.skipIf(!databaseUrl)("ranks complete designs across all filtered records with
   const page = await source.queryHighScoringDesigns(base);
   expect(page.total).toBe(4);
   expect(page.rows[0]).toMatchObject({ designId: ids.star, averageScore: 2.5, sampleSize: 1, participantObservations: 1, performanceModelVersion: "perf-1", physicsModelVersion: "physics-1" });
-  expect(page.rows[0]!.design).toMatchObject({ totalMassG: 40, metalDiscDiameterMm: 30, centerOfMassOffsetMm: 0, momentOfInertiaGmm2: 12000 });
+  expect(page.rows[0]!.design).toMatchObject({ totalMassG: 40, metalDiscDiameterMm: 30, centerOfMassOffsetMm: 0, momentOfInertiaGmm2: 12000, screwRadiusMm: 12, screwRotationDeg: 0 });
+  expect((await source.query({ ...base, parameter: "star" })).rows[0]!.design).toMatchObject({ screwRadiusMm: 12, screwRotationDeg: 0 });
   expect(page.rows[0]!.design.layers).toEqual(["top", "middle", "bottom"].map(position => expect.objectContaining({ position, shape: "star", holeCount: 6, rotationDeg: 0, cornerRoundness: .2 })));
   expect(page.rows.slice(1, 3).map(row => row.designId)).toEqual([ids.hex, ids.circle].sort());
   const first = await source.queryHighScoringDesigns({ ...base, pageSize: 2 });

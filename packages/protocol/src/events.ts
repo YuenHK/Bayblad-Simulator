@@ -1080,6 +1080,8 @@ export const adminDesignParametersSchema = z
     metalDiscDiameterMm: z.number(),
     centerOfMassOffsetMm: z.number(),
     momentOfInertiaGmm2: z.number(),
+    screwRadiusMm: z.number().optional(),
+    screwRotationDeg: z.number().optional(),
   })
   .strict();
 export const adminRecordRowSchema = z
