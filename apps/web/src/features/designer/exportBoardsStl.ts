@@ -21,6 +21,12 @@ export function buildBoardsStl(input: TopDesign, kernel: ManifoldToplevel): Arra
     }
     // Union removes coincident internal caps, rather than exporting overlapping shells.
     combined = kernel.Manifold.union(solids);
+    // Pointer coordinates can produce near-coincident vertices that collapse
+    // in STL's float32 coordinates. Simplify the solid before serialization,
+    // not by dropping triangles (which would leave holes in the exported mesh).
+    const simplified = combined.simplify(0.0001);
+    combined.delete();
+    combined = simplified;
     if (combined.status() !== 'NoError' || combined.isEmpty()) throw new Error('Invalid board solid');
     const mesh = combined.getMesh();
     const count = mesh.triVerts.length / 3;

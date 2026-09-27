@@ -16,10 +16,10 @@ function inspect(buffer: ArrayBuffer) {
 }
 
 describe('three-board STL', () => {
-  it.each(['basic', 'custom'] as const)('exports %s millimetres, 18 mm height, closed outward-oriented edges and no internal faces', category => {
+  it.each(['basic', 'custom', 'pointer-custom'] as const)('exports %s millimetres, 18 mm height, closed outward-oriented edges and no internal faces', category => {
     const design = makeDefaultDesign();
-    if (category === 'custom') {
-      const vertices = [{ x: -18, y: -16 }, { x: 22, y: -16 }, { x: 22, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 20 }, { x: -18, y: 20 }];
+    if (category !== 'basic') {
+      const vertices = category === 'pointer-custom' ? [{x:-18.000005212894617,y:-15.999993483881731},{x:22,y:-15.999993483881731},{x:22,y:8.000003909670966},{x:11.999998696776345,y:8.000003909670966},{x:11.999998696776345,y:20.000002606447307},{x:-18.000005212894617,y:20.000002606447307}] : [{ x: -18, y: -16 }, { x: 22, y: -16 }, { x: 22, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 20 }, { x: -18, y: 20 }];
       design.layers[0] = { ...design.layers[0], shape: 'custom', diameterMm: 2 * Math.max(...vertices.map(p => Math.hypot(p.x, p.y))), outline: { version: 1, vertices, mirror: 'none' } };
     }
     const buffer = buildBoardsStl(design, kernel);

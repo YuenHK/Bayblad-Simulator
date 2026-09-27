@@ -11,6 +11,8 @@
 
 ### 本機實作檢查點
 
+- 2026-09-27 20:54：真實ShapeCut接收測試發現pointer浮點輪廓導致STL `Degenerate STL face`。已用實際輪廓座標重現單元紅燈，匯出union後以Manifold.simplify(0.0001 mm)處理浮點退化，再保留status／正面積檢查；不是刪除三角面。8項STL封閉邊／正向體積／內部面測試及191項web tests通過。真實本機ShapeCut基本1280／390接收、自定凹形接收→選6mm材料→轉換完成→3切片→blob ZIP連結，共3項通過。接收端用 `/Users/cywong/Documents/Codex/ShapeCut-related-links`，先 `SHAPECUT_BASE_PATH=/ShapeCut/ npm run build`；sender用 `STEAM_TOP_PAGES_BASE=/steam-top/ pnpm --filter @steam-top/web build:student`，再 `SHAPECUT_DIST=/Users/cywong/Documents/Codex/ShapeCut-related-links/dist pnpm exec playwright test --config playwright.handoff.config.ts`。沒有修改ShapeCut源碼；未驗證實際切割。尚須客戶端握手相容、完整custom對戰、品質審查及正式部署驗收。
+
 - 2026-09-27 19:48：4bdc9ef品質CI36313582772及PostgreSQL CI36313582931皆success。已加入左右／上下／4／6／8／12鏡射的真實滑鼠瀏覽器測試，驗證可套用及跨層草稿隔離／恢復；加上原有desktop/touch案例共8項通過，E2E typecheck通過。下一步可從 `playwright.handoff.config.ts` 和 `tests/support/shapecut-static-server.mjs` 開始 custom STL→真實ShapeCut接收測試；現有handoff只測基本造型及接收至材質選擇，不能當作custom切片驗收。握手相容、完整custom對戰及最終審查仍未完成，未部署。
 
 - 2026-09-27 18:46：5432e80的品質CI36310375030及PostgreSQL CI36310375044皆success。新增 `tests/e2e/custom-outline.spec.ts`：1440px真實滑鼠輸入及390px Chromium CDP touch輸入畫封閉輪廓、套用層板、無橫向溢出，兩項通過；E2E TypeScript檢查通過。這是模擬觸控，非實體iPad。尚需鏡射模式的瀏覽器案例、新舊客戶端相容、custom ShapeCut接收與完整對戰、審查及公開部署驗收。

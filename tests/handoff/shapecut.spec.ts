@@ -1,8 +1,35 @@
 import { expect, test } from '@playwright/test';
 
-for (const width of [1280, 390]) test(`real STL transfers to ShapeCut material selection at ${width}px`, async ({ page }, testInfo) => {
+for (const [width, custom] of [[1280, false], [390, false], [1280, true]] as const) test(`real ${custom ? 'custom' : 'basic'} STL transfers to ShapeCut material selection at ${width}px`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 980 });
   await page.goto('.');
+  if (custom) {
+    await page.getByRole('button', { name: '自定造型', exact: true }).click();
+    const canvas = page.getByLabel('自定輪廓畫布', { exact: true });
+    await canvas.scrollIntoViewIfNeeded();
+    const box = (await canvas.boundingBox())!, size = Math.min(box.width, box.height);
+    const ring = [[-18,-16],[22,-16],[22,8],[12,8],[12,20],[-18,20],[-18,-16]];
+    for (let i=0;i<ring.length;i++) {
+      const [x,y]=ring[i]!;
+      await page.mouse.move(box.x+box.width/2+x!/88*size, box.y+box.height/2-y!/88*size, { steps: i ? 5 : 1 });
+      if (!i) await page.mouse.down();
+    }
+    await page.mouse.up();
+    await page.getByRole('button', { name: '套用自定造型', exact: true }).click();
+    await expect(page.locator('.layer-list')).toContainText('自定造型');
+    await testInfo.attach('custom-design.json', { body: await page.evaluate(() => localStorage.getItem('steam-top:designer-draft:v1') ?? ''), contentType: 'application/json' });
+    const exportCheck = await page.evaluate(async () => {
+      const manifest = await (await fetch('/steam-top/.vite/manifest.json')).json();
+      const moduleUrl = '/steam-top/' + manifest['src/features/designer/loadBoardsStl.ts'].file;
+      const exporter = await import(moduleUrl);
+      try {
+        const bytes = await exporter.exportBoardsStl(JSON.parse(localStorage.getItem('steam-top:designer-draft:v1')!).design);
+        return { bytes: bytes.byteLength, error: null };
+      } catch (error) { return { bytes: 0, error: String(error) }; }
+    });
+    expect(exportCheck.error).toBeNull();
+    expect(exportCheck.bytes).toBeGreaterThan(84);
+  }
   if (width < 1000) await page.getByRole('tab', { name: '預測結果', exact: true }).click();
   const buttons = page.locator('.design-action-row > button');
   const bounds = await buttons.evaluateAll(nodes => nodes.map(n => ({ height: n.getBoundingClientRect().height, x: n.getBoundingClientRect().x })));
@@ -20,5 +47,16 @@ for (const width of [1280, 390]) test(`real STL transfers to ShapeCut material s
   await receiver.screenshot({ path: testInfo.outputPath('shapecut-material.png'), fullPage: true });
   // No automatic conversion or download: the user retains control over fabrication.
   await expect(receiver.getByRole('button', { name: '開始製作', exact: true })).toBeEnabled();
+  if (custom) {
+    const material = receiver.getByRole('combobox', { name: '選擇製作材料' });
+    const sixMm = await material.locator('option').filter({ hasText: '(6 mm)' }).first().getAttribute('value');
+    expect(sixMm).toBeTruthy();
+    await material.selectOption(sixMm!);
+    await receiver.getByRole('button', { name: '開始製作', exact: true }).click();
+    await expect(receiver.getByRole('heading', { name: '轉換完成', exact: true })).toBeVisible({ timeout: 60_000 });
+    await expect(receiver.getByRole('link', { name: '下載 ZIP 製作套件', exact: true })).toHaveAttribute('href', /^blob:/);
+    await expect(receiver.getByRole('combobox', { name: '選擇預覽切片' }).locator('option')).toHaveCount(3);
+    await receiver.screenshot({ path: testInfo.outputPath('custom-shapecut-result.png'), fullPage: true });
+  }
   await receiver.close();
 });
