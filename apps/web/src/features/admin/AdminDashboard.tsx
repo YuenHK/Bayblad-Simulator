@@ -75,6 +75,7 @@ export function AdminDashboard({
     [filters, setFilters] = useState(initialFilters),
     [leaderboardPage,setLeaderboardPage]=useState(1),
     [highScoringDesigns, setHighScoringDesigns] = useState<AdminHighScoringDesignsPage>(emptyDesigns),
+    [highScoringError, setHighScoringError] = useState(""),
     [designPage, setDesignPage] = useState(1),
     [designRefresh, setDesignRefresh] = useState(0),
     [selected, setSelected] = useState<Set<string>>(new Set()),
@@ -103,6 +104,7 @@ export function AdminDashboard({
           queryController.current?.abort();
           designsController.current?.abort();
           setHighScoringDesigns(emptyDesigns);
+          setHighScoringError("");
           setRecords(emptyRecords);
           setAnalytics(null);
           setRooms({ paused: false, rooms: [] });
@@ -173,11 +175,12 @@ export function AdminDashboard({
   useEffect(() => {
     const controller = new AbortController();
     designsController.current = controller;
+    setHighScoringError("");
     setHighScoringDesigns({ ...emptyDesigns, page: designPage, pageSize: filters.pageSize });
     const params = filterParams({ ...filters, page: designPage });
     void guarded(() => requestJson(fetcher, `/api/admin/high-scoring-designs?${params}`, { signal: controller.signal }, adminHighScoringDesignsPageSchema))
       .then(page => { if (!controller.signal.aborted) setHighScoringDesigns(page); })
-      .catch(reason => { if (!controller.signal.aborted && !(reason instanceof AdminApiError && reason.status === 401)) setError("高分設計暫時無法載入。"); });
+      .catch(reason => { if (!controller.signal.aborted && !(reason instanceof AdminApiError && reason.status === 401)) setHighScoringError("高分設計暫時無法載入。"); });
     return () => controller.abort();
   }, [fetcher, filters.from, filters.to, filters.className, filters.identity, filters.device, filters.parameter, filters.pageSize, guarded, designPage, designRefresh]);
   useEffect(() => {
@@ -280,6 +283,7 @@ export function AdminDashboard({
       setLeaderboard({ rows: [], total: 0, page: 1, pageSize: 25 });
       designsController.current?.abort();
       setHighScoringDesigns(emptyDesigns);
+      setHighScoringError("");
       setAnalytics(null);
       setRooms({ paused: false, rooms: [] });
       setSelected(new Set());
@@ -372,7 +376,7 @@ export function AdminDashboard({
         }
       />
       <LeaderboardTable data={leaderboard} onPage={setLeaderboardPage} />
-      <HighScoringDesigns data={highScoringDesigns} onPage={setDesignPage} />
+      <HighScoringDesigns data={highScoringDesigns} onPage={setDesignPage} error={highScoringError} />
       {analytics ? (
         <AnalyticsCharts data={analytics} />
       ) : (

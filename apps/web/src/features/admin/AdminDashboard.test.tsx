@@ -185,6 +185,19 @@ it("clears historical designs when their request loses authentication", async ()
   await screen.findByRole("heading", { name: "教師登入" });
   expect(screen.queryByText("550e8400-e29b-41d4-a716-446655440001")).not.toBeInTheDocument();
 });
+it("keeps a fast high-scoring failure visible after the normal query debounce and clears it on retry", async () => {
+  const fetcher = authenticated(async url => {
+    if (url.pathname === "/api/admin/high-scoring-designs" && !url.searchParams.get("className")) return json({ error: "HIGH_SCORING_DESIGNS_UNAVAILABLE" }, 503);
+  });
+  render(<AdminApp fetcher={fetcher} />);
+  await screen.findByText("iPad-01");
+  const section = screen.getByRole("region", { name: "歷史紀錄中的高分設計" });
+  expect(within(section).getByRole("alert")).toHaveTextContent("高分設計暫時無法載入。");
+  expect(within(section).queryByText("目前篩選範圍沒有高分設計資料。")).not.toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText("班別"), "1A");
+  await within(section).findByText("550e8400-e29b-41d4-a716-446655440001");
+  expect(within(section).queryByRole("alert")).not.toBeInTheDocument();
+});
 it("keeps login password out of URL and storage", async () => {
   const requests: Request[] = [];
   const fetcher = vi.fn(

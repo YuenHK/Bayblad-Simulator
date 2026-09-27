@@ -1,10 +1,11 @@
 import type { AdminHighScoringDesignsPage } from "@steam-top/protocol";
 import { LayerRecord } from "./LayerRecord";
 
-export function HighScoringDesigns({ data, onPage }: { data: AdminHighScoringDesignsPage; onPage: (page: number) => void }) {
+export function HighScoringDesigns({ data, onPage, error = "" }: { data: AdminHighScoringDesignsPage; onPage: (page: number) => void; error?: string }) {
   return <section className="panel admin-section" aria-labelledby="high-scoring-designs-title">
     <h2 id="high-scoring-designs-title">歷史紀錄中的高分設計</h2>
     <p>依篩選範圍內所有已完成對戰的平均分排序；歷史相關不代表最佳解或因果。樣本數為不重複對戰場數，平均分按參賽次數計算，同一設計可在同場出現兩次。</p>
+    {error ? <p role="alert">{error}</p> : <>
     <div className="table-scroll"><table><thead><tr><th>設計 ID／模型版本</th><th>平均分</th><th>樣本數／參賽次數</th><th>三層設計及裝配</th></tr></thead><tbody>
       {data.rows.map(row => <tr key={`${row.designId}:${row.performanceModelVersion}:${row.physicsModelVersion}`}>
         <td><p>{row.designId}</p><p>表現 {row.performanceModelVersion}／物理 {row.physicsModelVersion}</p></td>
@@ -18,5 +19,6 @@ export function HighScoringDesigns({ data, onPage }: { data: AdminHighScoringDes
     </tbody></table></div>
     {!data.rows.length ? <p className="empty-state">目前篩選範圍沒有高分設計資料。</p> : null}
     <div className="pagination"><button disabled={data.page <= 1} onClick={() => onPage(data.page - 1)}>上一頁</button><span>{data.total} 組設計及模型版本，第 {data.page}／{Math.max(1, Math.ceil(data.total / data.pageSize))} 頁</span><button disabled={data.page * data.pageSize >= data.total} onClick={() => onPage(data.page + 1)}>下一頁</button></div>
+    </>}
   </section>;
 }
