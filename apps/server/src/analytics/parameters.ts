@@ -82,7 +82,7 @@ export async function parameterPerformance(db: PostgresJsDatabase<typeof schema>
       from filtered_participants p join rounds r on r.match_id=p.match_id group by p.match_id,p.design_id,p.side
     ), profiles as materialized (
       select d.id,string_agg(l.shape::text,'>' order by l.layer_order) layer_order,
-        jsonb_agg(jsonb_build_object('position',l.position::text,'shape',l.shape::text,'sidesLabel',case l.shape when 'circle' then 'NA' when 'polygon' then 'sides' when 'star' then 'points' else 'lobes' end,'sidesValue',case when l.shape='circle' then null else l.points end,'diameterMm',l.diameter_mm,'actualAreaMm2',l.actual_area_mm2) order by l.layer_order) layer_combination
+        jsonb_agg(jsonb_build_object('position',l.position::text,'shape',l.shape::text,'sidesLabel',case l.shape when 'circle' then 'NA' when 'custom' then 'NA' when 'polygon' then 'sides' when 'star' then 'points' else 'lobes' end,'sidesValue',case when l.shape::text in ('circle','custom') then null else l.points end,'diameterMm',l.diameter_mm,'actualAreaMm2',l.actual_area_mm2) order by l.layer_order) layer_combination
       from relevant_designs rd join designs d on d.id=rd.id join design_layers l on l.design_id=d.id group by d.id
     ), base as materialized (
       select p.*,lg.launch_grade,lo.perfect_count,lo.great_count,lo.good_count,lo.miss_count,d.total_mass_g,d.screw_count,d.metal_disc_diameter_mm,pr.layer_order,pr.layer_combination,
@@ -98,7 +98,9 @@ export async function parameterPerformance(db: PostgresJsDatabase<typeof schema>
       union all select b.*,'holes',jsonb_build_object('count',b.screw_count) from base b
       union all select b.*,'metalDiscDiameter',jsonb_build_object('diameterMm',b.metal_disc_diameter_mm,'none',b.metal_disc_diameter_mm=0) from base b
       union all select b.*,'layerShape',jsonb_build_object('position',l.position::text,'shape',l.shape::text) from base b join design_layers l on l.design_id=b.design_id
-      union all select b.*,'layerSides',jsonb_build_object('position',l.position::text,'shape',l.shape::text,'label',case l.shape when 'circle' then 'NA' when 'polygon' then 'sides' when 'star' then 'points' else 'lobes' end,'value',case when l.shape='circle' then null else l.points end) from base b join design_layers l on l.design_id=b.design_id
+      union all select b.*,'layerSides',jsonb_build_object('position',l.position::text,'shape',l.shape::text,'label',case l.shape when 'circle' then 'NA' when 'custom' then 'NA' when 'polygon' then 'sides' when 'star' then 'points' else 'lobes' end,'value',case when l.shape::text in ('circle','custom') then null else l.points end) from base b join design_layers l on l.design_id=b.design_id
+      union all select b.*,'shapeCategory',jsonb_build_object('position',l.position::text,'category',case when l.shape::text='custom' then 'custom' else 'basic' end) from base b join design_layers l on l.design_id=b.design_id
+      union all select b.*,'mirrorMode',jsonb_build_object('position',l.position::text,'mode',l.outline->'mirror') from base b join design_layers l on l.design_id=b.design_id where l.shape::text='custom'
       union all select b.*,'layerActualAreaBucket',jsonb_build_object('position',l.position::text,'fromMm2',floor(l.actual_area_mm2/100)*100,'toMm2',floor(l.actual_area_mm2/100)*100+100) from base b join design_layers l on l.design_id=b.design_id
     )
     select dimension,value,launch_grade::text "launchGrade",case when opponent_strength<40 then 'low' when opponent_strength<70 then 'medium' else 'high' end "opponentStrengthBand",

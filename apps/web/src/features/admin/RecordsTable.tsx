@@ -1,5 +1,5 @@
 import type { RecordsResponse } from "./types";
-import { localizeAdminValue } from "./localize";
+import { LayerRecord } from "./LayerRecord";
 export type AdminFilters = {
   from: string;
   to: string;
@@ -21,10 +21,6 @@ export const filterParams = (filters: AdminFilters) => {
     if (filters[key]) params.set(key, filters[key]);
   return params;
 };
-const layerLabel = (
-  layer: RecordsResponse["rows"][number]["design"]["layers"][number],
-) =>
-  `${localizeAdminValue(layer.position)}：${localizeAdminValue(layer.shape)} ${layer.points}角／${layer.diameterMm}mm／${layer.actualAreaMm2}mm²／${layer.holeCount}孔／旋轉${layer.rotationDeg}°／圓角${layer.cornerRoundness}`;
 export function RecordsTable({
   data,
   filters,
@@ -107,7 +103,7 @@ export function RecordsTable({
                     </summary>
                     <ul>
                       {row.design.layers.map((layer) => (
-                        <li key={layer.position}>{layerLabel(layer)}</li>
+                        <li key={layer.position}><LayerRecord layer={layer} /></li>
                       ))}
                     </ul>
                     <p>

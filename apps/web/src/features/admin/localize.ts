@@ -1,6 +1,8 @@
 const labels: Readonly<Record<string, string>> = {
   top: "上層", middle: "中層", bottom: "下層",
   circle: "圓形", polygon: "多邊形", star: "星形", wave: "波浪形",
+  custom: "自定造型", basic: "基礎造型", shapeCategory: "造型類別",
+  mirrorMode: "鏡像方式", mode: "方式", none: "無鏡像", leftRight: "左右鏡像", topBottom: "上下鏡像",
   layerShape: "形狀", layerSides: "邊／角數", layerActualArea: "面積",
   holes: "螺絲孔", weight: "重量", layerOrder: "三層排序",
   metalDiscDiameter: "金屬貼片直徑", totalMassGBucket: "總重量",

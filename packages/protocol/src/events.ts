@@ -984,6 +984,8 @@ export const adminParameterUsageRowSchema = z
   .object({
     scope: z.enum(["allEligibleDesigns", "completedMatchDesigns"]),
     dimension: z.enum([
+      "shapeCategory",
+      "mirrorMode",
       "layerShape",
       "layerSides",
       "layerActualArea",
@@ -1064,7 +1066,7 @@ export const adminDesignParametersSchema = z
             position: z.enum(["top", "middle", "bottom"]),
             shape: shapeSchema,
             outline: outlineSchema.optional(),
-            points: z.number().int(),
+            points: z.number().int().nullable(),
             diameterMm: z.number(),
             actualAreaMm2: z.number(),
             holeCount: z.number().int(),

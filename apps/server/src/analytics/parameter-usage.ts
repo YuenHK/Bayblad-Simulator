@@ -3,7 +3,7 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import * as schema from "@steam-top/db/schema";
 import { analyticsFiltersSchema, hongKongDateBounds, type AnalyticsFilters } from "./usage";
 
-export type ParameterUsageRow = Readonly<{ scope:"allEligibleDesigns"|"completedMatchDesigns";dimension: "layerShape" | "layerSides" | "layerActualArea" | "holes" | "weight" | "layerOrder" | "metalDiscDiameter"; value: Readonly<Record<string, string | number | boolean | null>>; count: number; proportion: number; performanceModelVersion: string;totalGroups:number;truncated:boolean;population:number }>;
+export type ParameterUsageRow = Readonly<{ scope:"allEligibleDesigns"|"completedMatchDesigns";dimension: "shapeCategory" | "mirrorMode" | "layerShape" | "layerSides" | "layerActualArea" | "holes" | "weight" | "layerOrder" | "metalDiscDiameter"; value: Readonly<Record<string, string | number | boolean | null>>; count: number; proportion: number; performanceModelVersion: string;totalGroups:number;truncated:boolean;population:number }>;
 type SqlRow = Readonly<{ scope:ParameterUsageRow["scope"];dimension: ParameterUsageRow["dimension"]; value: Record<string, string | number | boolean | null>; count: string | number; total: string | number; performanceModelVersion: string;totalGroups:string|number;truncated:boolean;population:string|number }>;
 
 export function normalizeParameterUsage(rows: readonly SqlRow[]): readonly ParameterUsageRow[] {
@@ -38,7 +38,9 @@ export async function parameterUsage(db: PostgresJsDatabase<typeof schema>, inpu
       from filtered_designs d join design_layers l on l.design_id=d.id group by d.id,d.performance_model_version
     ), observations as (
       select 'layerShape'::text dimension,jsonb_build_object('position',l.position::text,'shape',l.shape::text) value,d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id
-      union all select 'layerSides',jsonb_build_object('position',l.position::text,'label',case l.shape when 'circle' then 'NA' when 'polygon' then 'sides' when 'star' then 'points' else 'lobes' end,'value',case when l.shape='circle' then null else l.points end),d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id
+      union all select 'layerSides',jsonb_build_object('position',l.position::text,'label',case l.shape when 'circle' then 'NA' when 'custom' then 'NA' when 'polygon' then 'sides' when 'star' then 'points' else 'lobes' end,'value',case when l.shape::text in ('circle','custom') then null else l.points end),d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id
+      union all select 'shapeCategory',jsonb_build_object('position',l.position::text,'category',case when l.shape::text='custom' then 'custom' else 'basic' end),d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id
+      union all select 'mirrorMode',jsonb_build_object('position',l.position::text,'mode',l.outline->'mirror'),d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id where l.shape::text='custom'
       union all select 'layerActualArea',jsonb_build_object('position',l.position::text,'fromMm2',floor(l.actual_area_mm2/250)*250,'toMm2',floor(l.actual_area_mm2/250)*250+250),d.performance_model_version from filtered_designs d join design_layers l on l.design_id=d.id
       union all select 'holes',jsonb_build_object('count',d.screw_count),d.performance_model_version from filtered_designs d
       union all select 'weight',jsonb_build_object('fromG',floor(d.total_mass_g/5)*5,'toG',floor(d.total_mass_g/5)*5+5),d.performance_model_version from filtered_designs d
