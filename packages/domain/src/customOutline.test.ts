@@ -221,6 +221,35 @@ describe("custom outlines", () => {
       ).toBe(true);
     },
   );
+  it.each([4, 6, 8, 12] as const)(
+    "allows floating-point roundoff on reflected maximum-radius interior vertices for %s",
+    (n) => {
+      const boundaryPoint = { x: 39.89103972344628, y: 2.9504151881439586 };
+      const result = reflectOutlineStroke(
+        [polar(20, 0), boundaryPoint, polar(20, (2 * Math.PI) / n)],
+        n,
+      );
+      expect(result.valid).toBe(true);
+      if (!result.valid) return;
+      expect(result.points).toContainEqual(boundaryPoint);
+      expect(validateCustomOutline(result.points)).toEqual({ valid: true });
+      expect(
+        Math.max(...result.points.map((p) => Math.hypot(p.x, p.y))),
+      ).toBeLessThanOrEqual(40 + 1e-9);
+    },
+  );
+  it("rejects a material radius excess despite the floating-point guard", () => {
+    expect(validateCustomOutline([...square, { x: 40 + 1e-6, y: 0 }])).toEqual({
+      valid: false,
+      code: "radius_exceeded",
+    });
+    expect(
+      reflectOutlineStroke(
+        [polar(20, 0), polar(40 + 1e-6, 0.1), polar(20, Math.PI / 2)],
+        4,
+      ),
+    ).toEqual({ valid: false, code: "radius_exceeded" });
+  });
   it("rejects illegal mirror domains and endpoints without snapping", () => {
     expect(
       reflectOutlineStroke(

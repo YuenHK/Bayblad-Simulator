@@ -71,7 +71,9 @@ function checkCoordinates(
     return fail("vertex_count");
   if (points.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y)))
     return fail("non_finite");
-  if (points.some((p) => Math.hypot(p.x, p.y) > 40))
+  // Rotation/reflection may place a mathematical 40 mm point a few ULPs over
+  // the boundary. Reuse the numerical guard without moving any coordinates.
+  if (points.some((p) => Math.hypot(p.x, p.y) > 40 + EPS))
     return fail("radius_exceeded");
   for (let i = 0; i < points.length; i++)
     for (let j = i + 1; j < points.length; j++)
