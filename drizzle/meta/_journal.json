@@ -43,6 +43,13 @@
       "when": 1790467200000,
       "tag": "0005_custom_layer_outlines",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790467200001,
+      "tag": "0006_custom_outline_installation_guard",
+      "breakpoints": true
     }
   ]
 }

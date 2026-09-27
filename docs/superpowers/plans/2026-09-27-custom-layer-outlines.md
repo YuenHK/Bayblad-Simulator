@@ -11,6 +11,8 @@
 
 ### 本機實作檢查點
 
+- 2026-09-27 13:42：新增 `0006_custom_outline_installation_guard.sql`，保留既有函數的所有 schema／ACL／空資料安全檢查，只將精確 ledger IDs／hashes 擴充至 0006。正式 runner、journal、claim 的函數 hash 來源及測試 fixture 已同步；既有 0000–0005 未修改。8 項 migration runner 及 21 項 DB 單元測試通過，shell syntax／diff check 通過。**仍未在 PostgreSQL 執行，不能視為已解除發佈阻擋**。下一步以隔離 PostgreSQL 或非部署分支 CI 驗證 fresh claim 和 upgrade，並審查新 migration；不可執行破壞性 fixture 於生產 DB。
+
 - 幾何、domain、公開輪廓協定、碰撞輪廓及編輯器已提交；編輯器提交為 `947bd60`，尚待瀏覽器及完整流程驗收。
 - 已修正正式 migration manifest 遺漏 0005，以及 custom 直徑需對齊 PostgreSQL numeric(7,3) 精度；新增回歸測試先失敗再通過。
 - **發佈阻擋項：** `restore_control.assert_pristine_platform_installation()` 在 0004 寫死五筆 migration ledger。新增 0005 後，首次 installation claim 會拒絕；需新增相容的函數定義及更新 claim 的 canonical hash 來源，不能修改既有已發佈 migration 或取消安全檢查。必須實際 PostgreSQL 驗證。

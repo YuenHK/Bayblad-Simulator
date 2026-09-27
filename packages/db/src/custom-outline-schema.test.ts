@@ -20,6 +20,7 @@ describe("additive custom outline storage", () => {
     expect(sql).toContain('"shape"::text');
     expect(sql).not.toMatch(/\b(?:DELETE|DROP|UPDATE|TRUNCATE)\b/i);
     const journal = JSON.parse(readFileSync(new URL("../../../drizzle/meta/_journal.json", import.meta.url), "utf8"));
-    expect(journal.entries.at(-1).tag).toBe("0005_custom_layer_outlines");
+    expect(journal.entries).toEqual(expect.arrayContaining([expect.objectContaining({ tag: "0005_custom_layer_outlines" })]));
+    expect(journal.entries.at(-1).tag).toBe("0006_custom_outline_installation_guard");
   });
 });
