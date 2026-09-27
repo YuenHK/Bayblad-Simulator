@@ -51,6 +51,7 @@ function Performance({
                 <th>平均分</th>
                 <th>勝率</th>
                 <th>樣本</th>
+                <th>模型版本</th>
               </tr>
             </thead>
             <tbody>
@@ -64,6 +65,7 @@ function Performance({
                     <td>{row.averageScore.toFixed(2)}</td>
                     <td>{Math.round(row.winRate * 100)}%</td>
                     <td>{row.sampleSize}</td>
+                    <td>表現 {row.performanceModelVersion}／物理 {row.physicsModelVersion}</td>
                   </tr>
                 ))}
             </tbody>
@@ -131,7 +133,7 @@ export function AnalyticsCharts({ data }: { data: AnalyticsResponse }) {
               <tr
                 key={`${row.dimension}-${JSON.stringify(row.value)}-${index}`}
               >
-                <td>{names[row.dimension] ?? row.dimension}</td>
+                <td>{names[row.dimension] ?? localizeAdminKey(row.dimension)}</td>
                 <td>{valueLabel(row.value)}</td>
                 <td>{row.count}</td>
                 <td>{Math.round(row.proportion * 100)}%</td>
@@ -141,11 +143,11 @@ export function AnalyticsCharts({ data }: { data: AnalyticsResponse }) {
         </table>
       </div>
       <Performance
-        title="目前最高平均表現參數（樣本最少 10 場）"
+        title="歷史最高平均表現參數（樣本最少 10 場，非最佳解）"
         rows={data.rankings.top}
       />
       <Performance
-        title="目前最低平均表現參數（樣本最少 10 場）"
+        title="歷史最低平均表現參數（樣本最少 10 場）"
         rows={data.rankings.bottom}
       />
       <h3>發射判定分佈</h3>

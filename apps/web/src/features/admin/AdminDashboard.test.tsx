@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { expect, it, vi } from "vitest";
 import { AdminApp } from "./AdminApp";
+import { AnalyticsCharts } from "./AnalyticsCharts";
+import type { AnalyticsResponse } from "./types";
 vi.mock("recharts", () => {
   const Container = ({ children }: { children?: ReactNode }) => children;
   const Empty = () => null;
@@ -49,7 +51,7 @@ const record = {
   },
   totalScore: 2.5,
 };
-const analytics = {
+const analytics: AnalyticsResponse = {
   filters: { from: "2026-08-01", to: "2026-08-29" },
   filterApplicability: {},
   usage: [],
@@ -115,6 +117,13 @@ const analytics = {
   },
   refreshedAt: "2026-08-29T01:00:00.000Z",
 };
+it("labels historical performance with both model versions and sample size", () => {
+  render(<AnalyticsCharts data={analytics} />);
+  expect(screen.getByRole("heading", { name: /歷史最高平均表現/ })).toBeInTheDocument();
+  expect(screen.getByText("表現 1／物理 2")).toBeInTheDocument();
+  expect(screen.getByText("12")).toBeInTheDocument();
+});
+
 function authenticated(
   handler?: (url: URL, init?: RequestInit) => Promise<Response | undefined>,
 ) {

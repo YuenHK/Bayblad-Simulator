@@ -195,6 +195,8 @@ export class RealtimeClient {
     if (!Number.isSafeInteger(this.#identityTimeoutMs) || this.#identityTimeoutMs < 100 || this.#identityTimeoutMs > 60_000) throw new TypeError("identityTimeoutMs is invalid");
     this.#token = null;
     delete this.#transport.auth.displayName;
+    // Decoder capability, not an identity claim. Old clients retain the v1 refresh error envelope.
+    this.#transport.auth.customOutlineVersion = 1;
     const storedCredential = this.#credentialStorage.get(STUDENT_CREDENTIAL_KEY);
     if (storedCredential && /^[A-Za-z0-9_.-]{80,2048}$/u.test(storedCredential)) this.#transport.auth.studentCredential = storedCredential;
     else { this.#credentialStorage.remove(STUDENT_CREDENTIAL_KEY); delete this.#transport.auth.studentCredential; }

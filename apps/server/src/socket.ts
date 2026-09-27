@@ -627,14 +627,16 @@ export class RealtimeGateway {
           setTimeout(() => socket.disconnect(true), 0);
           return;
         }
-        if (!hello.data.supportedVersions.includes(PROTOCOL_VERSION)) {
+        if (!hello.data.supportedVersions.includes(PROTOCOL_VERSION) || auth.customOutlineVersion !== 1) {
           closingProtocol = true;
           this.#emit(socket, {
             type: "protocol.unsupported",
             serverEventId: this.#createServerEventId(),
             supportedVersions: [PROTOCOL_VERSION],
             causedByEventId: hello.data.eventId,
-            reason: "No mutually supported protocol version",
+            reason: !hello.data.supportedVersions.includes(PROTOCOL_VERSION)
+              ? "No mutually supported protocol version"
+              : "網頁版本已更新，請重新整理頁面後再進入對戰。",
           });
           setTimeout(() => socket.disconnect(true), 0);
           return;

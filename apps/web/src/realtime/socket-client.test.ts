@@ -31,6 +31,22 @@ const uuid = (digit: number) => `${digit}0000000-0000-4000-8000-000000000000`;
 const uploadPayload = (designId: string) => ({ designId, massG: 25, performance: { speed: 70, spinDuration: 60, stability: 80, impactResistance: 50, modelVersion: "1.1.0" } });
 
 describe("RealtimeClient", () => {
+  it("retains the legacy-compatible refresh reason after a server disconnect", () => {
+    const transport = new FakeTransport();
+    const client = new RealtimeClient({ transport });
+    client.start();
+    transport.fire("server.event", { type: "protocol.unsupported", serverEventId: uuid(1), causedByEventId: uuid(2), supportedVersions: [1], reason: "網頁版本已更新，請重新整理頁面後再進入對戰。" });
+    transport.fire("disconnect", "io server disconnect");
+    expect(client.getState().lastError).toBe("網頁版本已更新，請重新整理頁面後再進入對戰。");
+    client.stop();
+  });
+  it("advertises custom outline decoding before connecting", () => {
+    const transport = new FakeTransport();
+    const client = new RealtimeClient({ transport });
+    client.start();
+    expect(transport.auth.customOutlineVersion).toBe(1);
+    client.stop();
+  });
   it("bootstraps the HttpOnly identity before opening the socket without storing PII", async () => {
     const transport = new FakeTransport();
     const values = new Map<string, string>();

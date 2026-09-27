@@ -14,13 +14,13 @@ describe("socket identity binding", () => {
     await app.listen({ host: "127.0.0.1", port: 0 }); const address = app.server.address(); if (!address || typeof address === "string") throw new Error("address");
     const url = `http://127.0.0.1:${address.port}`;
     const firstIdentity = await app.inject({ method: "GET", url: "/api/identity" }); const firstCookie = `${firstIdentity.cookies[0]!.name}=${firstIdentity.cookies[0]!.value}`;
-    const first = io(url, { transports: ["websocket"], reconnection: false, extraHeaders: { cookie: firstCookie }, auth: { displayName: "偽造名稱" } }); closers.push(() => { first.close(); });
+    const first = io(url, { transports: ["websocket"], reconnection: false, extraHeaders: { cookie: firstCookie }, auth: { customOutlineVersion: 1, displayName: "偽造名稱" } }); closers.push(() => { first.close(); });
     await new Promise<void>((resolve) => first.once("connect", resolve)); const welcome = event(first, "protocol.welcome"); first.emit("client.event", { type: "protocol.hello", eventId: crypto.randomUUID(), supportedVersions: [1] }); const token = (await welcome).sessionToken;
     const room = event(first, "room.snapshot"); first.emit("client.event", { type: "room.create", protocolVersion: 1, eventId: crypto.randomUUID(), name: "Identity" });
     expect((await room).player1.displayName).toBe(firstIdentity.json().displayName);
 
     const secondIdentity = await app.inject({ method: "GET", url: "/api/identity" }); const secondCookie = `${secondIdentity.cookies[0]!.name}=${secondIdentity.cookies[0]!.value}`;
-    const second = io(url, { transports: ["websocket"], reconnection: false, extraHeaders: { cookie: secondCookie }, auth: { displayName: "另一個偽名", sessionToken: token } }); closers.push(() => { second.close(); });
+    const second = io(url, { transports: ["websocket"], reconnection: false, extraHeaders: { cookie: secondCookie }, auth: { customOutlineVersion: 1, displayName: "另一個偽名", sessionToken: token } }); closers.push(() => { second.close(); });
     await new Promise<void>((resolve) => second.once("connect", resolve)); const replaced = event(second, "protocol.welcome"); second.emit("client.event", { type: "protocol.hello", eventId: crypto.randomUUID(), supportedVersions: [1] });
     expect(await replaced).toMatchObject({ sessionStatus: "replaced" });
   });
@@ -28,7 +28,7 @@ describe("socket identity binding", () => {
   it("requires an HttpOnly identity cookie when a production identity resolver is composed", async () => {
     const app = buildApp({ battleEngine, identityResolver: new IdentityResolver(new InMemoryIdentityStore()), sweepIntervalMs: 0 }); closers.push(() => app.close());
     await app.listen({ host: "127.0.0.1", port: 0 }); const address = app.server.address(); if (!address || typeof address === "string") throw new Error("address");
-    const socket = io(`http://127.0.0.1:${address.port}`, { transports: ["websocket"], reconnection: false, auth: { displayName: "spoof" } }); closers.push(() => { socket.close(); });
+    const socket = io(`http://127.0.0.1:${address.port}`, { transports: ["websocket"], reconnection: false, auth: { customOutlineVersion: 1, displayName: "spoof" } }); closers.push(() => { socket.close(); });
     const required = await new Promise<Error & { data?: unknown }>((resolve) => socket.once("connect_error", resolve));
     expect(required).toMatchObject({ message: "IDENTITY_REQUIRED", data: { code: "IDENTITY_REQUIRED" } });
   });

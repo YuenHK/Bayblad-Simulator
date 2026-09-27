@@ -11,6 +11,10 @@
 
 ### 本機實作檢查點
 
+- 2026-09-27 22:57：28041ee 品質 CI36323710040、PostgreSQL CI36323710010 均 success。本輪加入 Socket auth `customOutlineVersion:1` 能力檢查，在 welcome／session／重播前拒絕舊 decoder；保留 protocol v1 的 unsupported envelope，中文要求重新整理。已觀察舊客戶端測試先紅（原本收到 welcome），修正後 server 36、client 36 通過；同步 load 與 production-wss-smoke 客戶端。教師高低分參數表新增表現／物理模型版本，標為歷史表現、非最佳解，修正類別翻譯。完整 pnpm test 通過（domain191、protocol98、web193、DB21、server517、integration/CI211；32 skipped），後加 refresh reason 測試及 smoke capability 測試分別通過；pnpm build、typecheck 通過；真 Socket 自定對基本三角色完整快測 28 秒通過。
+  **剩餘 Important 規格缺項：** 獨立審查確認目前沒有「歷史紀錄中的高分設計」列表／縮圖，只有參數群組統計及學生累積分排行榜。不是 `queryLeaderboard` 少 outline：該投影只作篩選，response 無 design。下一步新增小型高分設計來源與教師 UI，按 design ID＋表現／物理版本分組，列樣本數／平均分／完整幾何，重用 LayerRecord；不要以前端排序目前分頁冒充全體高分。之後最終驗收、實際 Render／備份／additive DB 後端優先部署、Pages 及公開驗收。無正式部署。
+  發佈順序注意：此 gate 是 decoder 能力，不是身份授權；後端切換後舊前端會被要求更新，須完成全部驗收再協調後端與 Pages 發佈，不單独把 gate 部署。實體 iPad／試切仍未驗證。
+
 - 2026-09-27 21:49：75a4d0d品質CI36320542863及PostgreSQL CI36320542864皆success。`CINEMATIC_BATTLES=1 ... playwright test tests/e2e/cinematic.spec.ts --grep 'custom computer'` 通過完整自定凹形人機對戰：30秒每輪、Miss最低力、召喚／決勝／粉碎／結算、返回同房再準備（約1.4分鐘）。新增basic/custom兩種cinematic案例，普通CI仍按原設定跳過完整長播，需上述指令明確執行。三角色真Socket測試改為自定對基本造型，完成讓位、觀眾可見兩人判定、玩家判定私隱、三輪結算及賽後分數，通過（此案例是快速測試引擎，不是30秒動畫證據）。E2E typecheck通過。下一步優先新舊客戶端相容及最終品質審查，再核實正式部署入口；仍未部署。
 
 - 2026-09-27 20:54：真實ShapeCut接收測試發現pointer浮點輪廓導致STL `Degenerate STL face`。已用實際輪廓座標重現單元紅燈，匯出union後以Manifold.simplify(0.0001 mm)處理浮點退化，再保留status／正面積檢查；不是刪除三角面。8項STL封閉邊／正向體積／內部面測試及191項web tests通過。真實本機ShapeCut基本1280／390接收、自定凹形接收→選6mm材料→轉換完成→3切片→blob ZIP連結，共3項通過。接收端用 `/Users/cywong/Documents/Codex/ShapeCut-related-links`，先 `SHAPECUT_BASE_PATH=/ShapeCut/ npm run build`；sender用 `STEAM_TOP_PAGES_BASE=/steam-top/ pnpm --filter @steam-top/web build:student`，再 `SHAPECUT_DIST=/Users/cywong/Documents/Codex/ShapeCut-related-links/dist pnpm exec playwright test --config playwright.handoff.config.ts`。沒有修改ShapeCut源碼；未驗證實際切割。尚須客戶端握手相容、完整custom對戰、品質審查及正式部署驗收。

@@ -1,8 +1,9 @@
 import { expect, it } from "vitest";
-import { command } from "../../scripts/production-wss-smoke.mjs";
+import { command, geometryCapabilities } from "../../scripts/production-wss-smoke.mjs";
 import { protocolHelloEventSchema, roomCreateEventSchema, launchTapEventSchema } from "../../packages/protocol/src/events";
 
 it("encodes the initial negotiation with the exact production handshake schema", () => {
+  expect(geometryCapabilities).toEqual({ customOutlineVersion: 1 });
   expect(protocolHelloEventSchema.safeParse(command("protocol.hello", { supportedVersions: [1] })).success).toBe(true);
 });
 

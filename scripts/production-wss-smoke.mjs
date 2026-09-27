@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { io } from "socket.io-client";
 
 export const command = (type, fields = {}) => ({ type, ...(type === "protocol.hello" ? {} : { protocolVersion: 1 }), eventId: randomUUID(), ...fields });
+export const geometryCapabilities = Object.freeze({ customOutlineVersion: 1 });
 
 async function runSmoke() {
 const [origin, nonce] = process.argv.slice(2);
@@ -61,7 +62,7 @@ async function connect(name) {
     transportOptions: { websocket: { lookup } },
     extraHeaders: { origin, cookie },
     forceNew: true, reconnection: false,
-    auth: { displayName: `smoke-${nonce.slice(0, 8)}-${name}` }, timeout: 8_000,
+    auth: { ...geometryCapabilities, displayName: `smoke-${nonce.slice(0, 8)}-${name}` }, timeout: 8_000,
   });
   await new Promise((resolve, reject) => {
     socket.once("connect", resolve);

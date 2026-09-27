@@ -127,7 +127,7 @@ function nextEvent(socket: Socket, type: ServerEvent["type"] | "protocol.unsuppo
 }
 
 async function connect(url: string, displayName: string, sessionToken?: string) {
-  const socket = io(url, { transports: ["websocket"], auth: { displayName, ...(sessionToken ? { sessionToken } : {}) } });
+  const socket = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName, ...(sessionToken ? { sessionToken } : {}) } });
   await new Promise<void>((resolve, reject) => {
     socket.once("connect", resolve);
     socket.once("connect_error", reject);
@@ -327,7 +327,7 @@ describe("realtime app", () => {
     const departure = await departed;
     expect(departure).toMatchObject({ roomId: room.roomId, reason: "left", departureId: expect.any(String) });
     peer.socket.close();
-    const resumedSocket = io(url, { transports: ["websocket"], auth: { displayName: "Peer", sessionToken: peer.token } });
+    const resumedSocket = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "Peer", sessionToken: peer.token } });
     await new Promise<void>((resolve) => resumedSocket.once("connect", resolve));
     const resumedWelcome = nextEvent(resumedSocket, "protocol.welcome");
     const replayedDeparture = nextEvent(resumedSocket, "room.departed");
@@ -481,7 +481,7 @@ describe("realtime app", () => {
     if (!address || typeof address === "string") throw new Error("No address");
     const url = `http://127.0.0.1:${address.port}`;
 
-    const pending = io(url, { transports: ["websocket"], auth: { displayName: "Pending" } });
+    const pending = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "Pending" } });
     await new Promise<void>((resolve) => pending.once("connect", resolve));
     expect(app.realtimeGateway.debugCounts.sessions).toBe(0);
     await new Promise<void>((resolve) => pending.once("disconnect", () => resolve()));
@@ -515,7 +515,7 @@ describe("realtime app", () => {
       method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${other.token}` }, payload: { padding: "x".repeat(8_192) },
     })).statusCode).toBe(413);
 
-    const oversized = io(url, { transports: ["websocket"], auth: { displayName: "Oversized" } });
+    const oversized = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "Oversized" } });
     closers.push(() => { oversized.close(); });
     await new Promise<void>((resolve) => oversized.once("connect", resolve));
     oversized.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
@@ -550,7 +550,7 @@ describe("realtime app", () => {
     const first = await connect(url, "Burst 1");
     const second = await connect(url, "Burst 2");
     closers.push(() => { first.socket.close(); }, () => { second.socket.close(); });
-    const blocked = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: "Burst blocked" } });
+    const blocked = io(url, { transports: ["websocket"], reconnection: false, auth: { customOutlineVersion: 1, displayName: "Burst blocked" } });
     closers.push(() => { blocked.close(); });
     await new Promise<void>((resolve) => blocked.once("connect", resolve));
     const limited = nextEvent(blocked, "error");
@@ -575,7 +575,7 @@ describe("realtime app", () => {
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("No address");
     const url = `http://127.0.0.1:${address.port}`;
-    const unsupported = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: "Unsupported" } });
+    const unsupported = io(url, { transports: ["websocket"], reconnection: false, auth: { customOutlineVersion: 1, displayName: "Unsupported" } });
     await new Promise<void>((resolve) => unsupported.once("connect", resolve));
     const unsupportedEvents: any[] = [];
     unsupported.on("server.event", (event) => unsupportedEvents.push(event));
@@ -645,7 +645,7 @@ describe("realtime app", () => {
     const joined = nextEvent(p2.socket, "room.snapshot");
     p2.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
     await joined;
-    const blocked = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: "Blocked" } });
+    const blocked = io(url, { transports: ["websocket"], reconnection: false, auth: { customOutlineVersion: 1, displayName: "Blocked" } });
     closers.push(() => { blocked.close(); });
     await new Promise<void>((resolve) => blocked.once("connect", resolve));
     const capacity = nextEvent(blocked, "error");
@@ -701,7 +701,7 @@ describe("realtime app", () => {
     if (!address || typeof address === "string") throw new Error("No address");
     const url = `http://127.0.0.1:${address.port}`;
     const make = (key: string) => io(url, {
-      transports: ["websocket"], reconnection: false, extraHeaders: { "x-student-device": key }, auth: { displayName: key },
+      transports: ["websocket"], reconnection: false, extraHeaders: { "x-student-device": key }, auth: { customOutlineVersion: 1, displayName: key },
     });
     const first = make("device-a");
     const second = make("device-b");
@@ -728,16 +728,16 @@ describe("realtime app", () => {
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("No address");
     const url = `http://127.0.0.1:${address.port}`;
-    const allowed = io(url, { transports: ["websocket"], extraHeaders: { Origin: "https://school.example" }, auth: { displayName: "Allowed" } });
+    const allowed = io(url, { transports: ["websocket"], extraHeaders: { Origin: "https://school.example" }, auth: { customOutlineVersion: 1, displayName: "Allowed" } });
     closers.push(() => { allowed.close(); });
     await new Promise<void>((resolve, reject) => { allowed.once("connect", resolve); allowed.once("connect_error", reject); });
-    const rejected = io(url, { transports: ["websocket"], reconnection: false, extraHeaders: { Origin: "https://evil.example" }, auth: { displayName: "Rejected" } });
+    const rejected = io(url, { transports: ["websocket"], reconnection: false, extraHeaders: { Origin: "https://evil.example" }, auth: { customOutlineVersion: 1, displayName: "Rejected" } });
     closers.push(() => { rejected.close(); });
     await new Promise<void>((resolve, reject) => {
       rejected.once("connect_error", () => resolve());
       rejected.once("connect", () => reject(new Error("Rejected origin connected")));
     });
-    const missing = io(url, { transports: ["websocket"], reconnection: false, auth: { displayName: "Missing" } });
+    const missing = io(url, { transports: ["websocket"], reconnection: false, auth: { customOutlineVersion: 1, displayName: "Missing" } });
     closers.push(() => { missing.close(); });
     await new Promise<void>((resolve, reject) => {
       missing.once("connect_error", () => resolve());
@@ -764,6 +764,20 @@ describe("realtime app", () => {
     expect(logged).toHaveLength(1);
   });
 
+  it("rejects legacy geometry clients before welcome with a refresh instruction", async () => {
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    const socket = io(`http://127.0.0.1:${address.port}`, { transports: ["websocket"], reconnection: false, auth: { displayName: "Legacy" } });
+    closers.push(() => { socket.close(); });
+    await new Promise<void>((resolve) => socket.once("connect", resolve));
+    const firstEvent = new Promise<ServerEvent>((resolve) => socket.once("server.event", resolve));
+    socket.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [1] });
+    expect(await firstEvent).toMatchObject({ type: "protocol.unsupported", supportedVersions: [1], reason: "網頁版本已更新，請重新整理頁面後再進入對戰。" });
+  });
+
   it("serves health and rejects unsupported or malformed protocol events without crashing", async () => {
     const app = buildApp({ battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 });
     closers.push(() => app.close());
@@ -771,7 +785,7 @@ describe("realtime app", () => {
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("No address");
-    const raw = io(`http://127.0.0.1:${address.port}`, { transports: ["websocket"], auth: { displayName: "  學生 A  " } });
+    const raw = io(`http://127.0.0.1:${address.port}`, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "  學生 A  " } });
     closers.push(() => { raw.close(); });
     await new Promise<void>((resolve) => raw.once("connect", resolve));
     const unsupported = nextEvent(raw, "protocol.unsupported");
@@ -779,7 +793,7 @@ describe("realtime app", () => {
     raw.emit("client.event", { type: "protocol.hello", eventId: uuid(), supportedVersions: [9] });
     expect((await unsupported).supportedVersions).toEqual([1]);
     await unsupportedDisconnected;
-    const malformed = io(`http://127.0.0.1:${address.port}`, { transports: ["websocket"], auth: { displayName: "學生 B" } });
+    const malformed = io(`http://127.0.0.1:${address.port}`, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "學生 B" } });
     closers.push(() => { malformed.close(); });
     await new Promise<void>((resolve) => malformed.once("connect", resolve));
     const error = nextEvent(malformed, "error");
@@ -981,7 +995,7 @@ describe("realtime app", () => {
     expect((await p2OwnBeforeDisconnect).participantId).toBe(started.player2.participantId);
     p2Socket.close();
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    const resumedSocket = io(url, { transports: ["websocket"], auth: { displayName: "P2 renamed", sessionToken: p2.token } });
+    const resumedSocket = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "P2 renamed", sessionToken: p2.token } });
     await new Promise<void>((resolve) => resumedSocket.once("connect", resolve));
     const resumeWelcome = nextEvent(resumedSocket, "protocol.welcome");
     const resumeSnapshot = nextEvent(resumedSocket, "room.snapshot");
@@ -1036,7 +1050,7 @@ describe("realtime app", () => {
     reconnectingSpectator.socket.close();
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     now = finishedAt + 30_000;
-    const restoredSpectator = io(url, { transports: ["websocket"], auth: { displayName: "Watcher 1", sessionToken: reconnectingSpectator.token } });
+    const restoredSpectator = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "Watcher 1", sessionToken: reconnectingSpectator.token } });
     await new Promise<void>((resolve) => restoredSpectator.once("connect", resolve));
     closers.push(() => { restoredSpectator.close(); });
     const spectatorWelcome = nextEvent(restoredSpectator, "protocol.welcome");
@@ -1061,7 +1075,7 @@ describe("realtime app", () => {
       p2Socket.close();
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       now = finishedAt + elapsedMs;
-      const socket = io(url, { transports: ["websocket"], auth: { displayName: "P2", sessionToken: p2.token } });
+      const socket = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "P2", sessionToken: p2.token } });
       await new Promise<void>((resolve) => socket.once("connect", resolve));
       const welcome = nextEvent(socket, "protocol.welcome");
       const restoredStarted = nextEvent(socket, "battle.started");
@@ -1274,7 +1288,7 @@ describe("realtime app", () => {
     owner.socket.close();
 
     now += 60_000;
-    const resumedSocket = io(url, { transports: ["websocket"], auth: { displayName: "Attempted Rename", sessionToken: owner.token } });
+    const resumedSocket = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "Attempted Rename", sessionToken: owner.token } });
     await new Promise<void>((resolve) => resumedSocket.once("connect", resolve));
     const resumedWelcome = nextEvent(resumedSocket, "protocol.welcome");
     const restoredPromise = nextEvent(resumedSocket, "room.snapshot");
@@ -1296,7 +1310,7 @@ describe("realtime app", () => {
     expect(removalDelta.patch.ownerParticipantId).toBeDefined();
     expect((await sweptLobby).rooms[0].player1.displayName).toBeNull();
 
-    const replacementSocket = io(url, { transports: ["websocket"], auth: { displayName: "Replacement", sessionToken: owner.token } });
+    const replacementSocket = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "Replacement", sessionToken: owner.token } });
     await new Promise<void>((resolve) => replacementSocket.once("connect", resolve));
     closers.push(() => { replacementSocket.close(); });
     const replacementWelcome = nextEvent(replacementSocket, "protocol.welcome");
