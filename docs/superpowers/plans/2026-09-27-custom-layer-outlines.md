@@ -11,6 +11,9 @@
 
 ### 本機實作檢查點
 
+- 2026-09-28 00:02：新增高分具體設計 e321959、完整孔位6506fd2、獨立錯誤提示d4e7fff，均推至驗證分支。按design ID＋雙模型分組、distinct場數／參賽次數／平均分、所有篩選與真total分頁，教師顯示輪廓及孔位，非最佳解／因果。規格審查及品質複查通過。e321959全pnpm test通過（191/99/198/21/519/211，32skip）；6506fd2 PostgreSQL run36331356101完整success；d4e7fff UI11 passed，最新品質run36331470637、DBrun36331470641仍待最終核實。教師E2E2passed，已看高分縮圖實際截圖。另補雙人完整30秒長播test（自定vs基本，兩訪客均Miss，雙方逐輪召喚/決勝/result30000ms、同房重賽準備，零pageerror）通過1.6分鐘；E2E typecheck通過。下一輪先核實最新CI並總驗收，不需重做已通過幾何／鏡像等工作。
+  **正式發佈阻擋：** Render已透過既有GitHub登入，仍live c965b4e，Github main eb67049，啟動時先migrate；Neon控制台停在登入頁，需要使用者登入核實備份／可還原點，不重複嘗試此登入阻擋。只進行本機驗收與驗證分支CI，未部署或遷移正式DB。完整只讀部署核實見 `docs/operations/custom-outline-release-preflight.md`。仍須备份及相容順序部署、公開SHA/custom roundtrip/教師/ShapeCut/對戰驗收；實體iPad和試切未驗證。
+
 - 2026-09-27 22:57：28041ee 品質 CI36323710040、PostgreSQL CI36323710010 均 success。本輪加入 Socket auth `customOutlineVersion:1` 能力檢查，在 welcome／session／重播前拒絕舊 decoder；保留 protocol v1 的 unsupported envelope，中文要求重新整理。已觀察舊客戶端測試先紅（原本收到 welcome），修正後 server 36、client 36 通過；同步 load 與 production-wss-smoke 客戶端。教師高低分參數表新增表現／物理模型版本，標為歷史表現、非最佳解，修正類別翻譯。完整 pnpm test 通過（domain191、protocol98、web193、DB21、server517、integration/CI211；32 skipped），後加 refresh reason 測試及 smoke capability 測試分別通過；pnpm build、typecheck 通過；真 Socket 自定對基本三角色完整快測 28 秒通過。
   **剩餘 Important 規格缺項：** 獨立審查確認目前沒有「歷史紀錄中的高分設計」列表／縮圖，只有參數群組統計及學生累積分排行榜。不是 `queryLeaderboard` 少 outline：該投影只作篩選，response 無 design。下一步新增小型高分設計來源與教師 UI，按 design ID＋表現／物理版本分組，列樣本數／平均分／完整幾何，重用 LayerRecord；不要以前端排序目前分頁冒充全體高分。之後最終驗收、實際 Render／備份／additive DB 後端優先部署、Pages 及公開驗收。無正式部署。
   發佈順序注意：此 gate 是 decoder 能力，不是身份授權；後端切換後舊前端會被要求更新，須完成全部驗收再協調後端與 Pages 發佈，不單独把 gate 部署。實體 iPad／試切仍未驗證。
