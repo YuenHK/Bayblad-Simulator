@@ -29,6 +29,7 @@ const SHAPE_LABELS = {
   polygon: "多邊形",
   star: "星形",
   wave: "波浪形",
+  custom: "自定造型",
 } as const;
 
 const ISSUE_LABELS: Record<RuleIssueCode, string> = {
@@ -400,6 +401,7 @@ export function DesignerPage({
           <div className="designer-parameter-groups">
           <LayerControls
             layer={selectedLayer}
+            screwLayout={design.screwLayout}
             dispatch={dispatch}
             onFieldValidityChange={updateFieldValidity}
           />

@@ -1,4 +1,5 @@
 import {
+  designSchema,
   predictDesignPerformance,
   validateDesign,
   type DesignValidation,
@@ -15,6 +16,7 @@ type LayerField = Exclude<keyof Layer, "id" | "position">;
 type ScrewField = keyof TopDesign["screwLayout"];
 
 export type DesignerAction =
+  | Readonly<{ type: "replace-layer"; layer: Layer }>
   | Readonly<{
       type: "update-layer";
       position: LayerPosition;
@@ -69,13 +71,38 @@ function replaceLayer(
   field: LayerField,
   value: Layer[LayerField],
 ): TopDesign {
-  const nextLayers = design.layers.map((layer) =>
-    layer.position === position ? { ...layer, [field]: value } : layer,
-  );
-  return {
+  const nextLayers = design.layers.map((layer) => {
+    if (layer.position !== position) return layer;
+    if (
+      field === "diameterMm" &&
+      layer.shape === "custom" &&
+      layer.outline &&
+      typeof value === "number"
+    ) {
+      const scale = value / layer.diameterMm;
+      return {
+        ...layer,
+        diameterMm: value,
+        outline: {
+          ...layer.outline,
+          vertices: layer.outline.vertices.map((p) => ({
+            x: p.x * scale,
+            y: p.y * scale,
+          })),
+        },
+      };
+    }
+    if (field === "shape" && value !== "custom") {
+      const { outline: _outline, ...basic } = layer;
+      return { ...basic, shape: value as Layer["shape"] };
+    }
+    return { ...layer, [field]: value };
+  });
+  const candidate = {
     ...design,
     layers: positionLayers(nextLayers),
   };
+  return designSchema.safeParse(candidate).success ? candidate : design;
 }
 
 function moveLayer(
@@ -117,15 +144,26 @@ function reorderLayer(
   };
 }
 
-function designerReducer(design: TopDesign, action: DesignerAction): TopDesign {
+export function designerReducer(
+  design: TopDesign,
+  action: DesignerAction,
+): TopDesign {
   switch (action.type) {
+    case "replace-layer": {
+      const candidate = {
+        ...design,
+        layers: positionLayers(
+          design.layers.map((layer) =>
+            layer.id === action.layer.id
+              ? { ...action.layer, position: layer.position }
+              : layer,
+          ),
+        ),
+      };
+      return designSchema.safeParse(candidate).success ? candidate : design;
+    }
     case "update-layer":
-      return replaceLayer(
-        design,
-        action.position,
-        action.field,
-        action.value,
-      );
+      return replaceLayer(design, action.position, action.field, action.value);
     case "move-layer":
       return moveLayer(design, action.position, action.direction);
     case "reorder-layer":
@@ -146,13 +184,14 @@ function designerReducer(design: TopDesign, action: DesignerAction): TopDesign {
 export function useDesigner(): DesignerState & {
   dispatch: React.Dispatch<DesignerAction>;
 } {
-  const [design, dispatch] = useReducer(designerReducer, undefined, loadDesignerDraft);
+  const [design, dispatch] = useReducer(
+    designerReducer,
+    undefined,
+    loadDesignerDraft,
+  );
   useEffect(() => saveDesignerDraft(design), [design]);
   const validation = useMemo(() => validateDesign(design), [design]);
-  const prediction = useMemo(
-    () => predictDesignPerformance(design),
-    [design],
-  );
+  const prediction = useMemo(() => predictDesignPerformance(design), [design]);
 
   return { design, validation, prediction, dispatch };
 }
