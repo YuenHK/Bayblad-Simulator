@@ -11,6 +11,8 @@
 
 ### 本機實作檢查點
 
+- 2026-09-27 18:46：5432e80的品質CI36310375030及PostgreSQL CI36310375044皆success。新增 `tests/e2e/custom-outline.spec.ts`：1440px真實滑鼠輸入及390px Chromium CDP touch輸入畫封閉輪廓、套用層板、無橫向溢出，兩項通過；E2E TypeScript檢查通過。這是模擬觸控，非實體iPad。尚需鏡射模式的瀏覽器案例、新舊客戶端相容、custom ShapeCut接收與完整對戰、審查及公開部署驗收。
+
 - 2026-09-27 17:45：f48615a 品質 CI36307250469 與 PostgreSQL CI36307250424 皆 success；包括compact Linux E2E。新增記憶體人氣設計 key 的 canonical 化：自定輪廓起點／順逆／鏡像編輯方式及無效的 points/roundness 不再拆分人氣；尺寸採持久化精度，旋轉／實際輪廓／裝配差異保留。先重現失敗再修正，完整server516 tests及typecheck通過。待審查和新CI。仍須處理新舊客戶端相容、custom畫布觸控E2E、ShapeCut接收、完整自定輪廓對戰及發佈驗收；不可因現有CI綠燈而跳過新增功能驗收。
 
 - 2026-09-27 16:47：4399dd5 的 PostgreSQL run36304002803 成功（包含 custom 重載及重存去重）；品質 run36304002783 單元測試通過，E2E 唯一失敗是1024×768參戰按鈕超出畫面。已重現並修正：造型切換置於 legend 同行，矮螢幕只縮間距，不改字體大小／顏色。重新建置後1440×900、1024×768兩項瀏覽器測試通過，34項編輯器／設計頁測試及web typecheck通過；已檢視1024截圖。仍須Linux CI驗證及自定畫布手機／觸控、握手相容、ShapeCut和對戰驗收。尚未部署。
