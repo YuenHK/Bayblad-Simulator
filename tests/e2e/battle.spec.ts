@@ -1,10 +1,17 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
+import { makeDefaultDesign } from "../../packages/domain/src/index";
 
 const CONTROL_SECRET = "steam-top-e2e-only";
 const REALTIME_URL = `http://127.0.0.1:${Number(process.env.E2E_REALTIME_PORT ?? 4174)}`;
 
-async function openGuest(browser: Browser): Promise<{ context: BrowserContext; page: Page }> {
+async function openGuest(browser: Browser, custom = false): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true, reducedMotion: "reduce" });
+  if (custom) {
+    const design = makeDefaultDesign();
+    const vertices = [{ x: -18, y: -16 }, { x: 22, y: -16 }, { x: 22, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 20 }, { x: -18, y: 20 }];
+    design.layers[0] = { ...design.layers[0], shape: "custom", diameterMm: 2 * Math.max(...vertices.map(p => Math.hypot(p.x, p.y))), outline: { version: 1, vertices, mirror: "none" } };
+    await context.addInitScript(design => localStorage.setItem("steam-top:designer-draft:v1", JSON.stringify({ version: 1, design })), design);
+  }
   const page = await context.newPage();
   page.on("requestfailed", (request) => console.info(`[requestfailed] ${request.method()} ${request.url()} ${request.failure()?.errorText}`));
   await page.goto(".");
@@ -55,10 +62,10 @@ async function launchRound(player1: Page, player2: Page, spectator?: Page, round
   console.info(`[battle-e2e] round ${round} launch accepted`);
 }
 
-test("真實 Socket 三角色完成讓位、觀戰、三輪內對戰及賽後計分", async ({ browser, request }) => {
+test("真實 Socket 自定對基本造型三角色完成讓位、觀戰、三輪內對戰及賽後計分", async ({ browser, request }) => {
   test.setTimeout(240_000);
   const owner = await openGuest(browser);
-  const playerA = await openGuest(browser);
+  const playerA = await openGuest(browser, true);
   const playerB = await openGuest(browser);
   try {
     await chooseDesign(owner.page, "40");
@@ -69,6 +76,7 @@ test("真實 Socket 三角色完成讓位、觀戰、三輪內對戰及賽後計
     await owner.page.getByRole("button", { name: "轉到觀賽區" }).click();
     await expect(owner.page.getByRole("heading", { name: "等待玩家" }).first()).toBeVisible();
 
+    await expect(playerA.page.locator(".layer-list")).toContainText("自定造型");
     await chooseDesign(playerA.page, "41");
     await joinByCode(playerA.page, code!, "player");
     await chooseDesign(playerB.page, "42");

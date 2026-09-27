@@ -1,9 +1,16 @@
 import { expect, test } from "@playwright/test";
+import { makeDefaultDesign } from "../../packages/domain/src/index";
 
-test("computer battle plays full 30 second 3D rounds and returns to same room for rematch", async ({ page }, testInfo) => {
+for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle plays full 30 second 3D rounds and returns to same room for rematch`, async ({ page }, testInfo) => {
   test.setTimeout(350_000);
   test.skip(process.env.CINEMATIC_BATTLES !== "1", "Run with CINEMATIC_BATTLES=1 for full-length playback");
   const errors: string[] = [];
+  if (shape === "custom") {
+    const design = makeDefaultDesign();
+    const vertices = [{ x: -18, y: -16 }, { x: 22, y: -16 }, { x: 22, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 20 }, { x: -18, y: 20 }];
+    design.layers[0] = { ...design.layers[0], shape: "custom", diameterMm: 2 * Math.max(...vertices.map(p => Math.hypot(p.x, p.y))), outline: { version: 1, vertices, mirror: "none" } };
+    await page.addInitScript(design => localStorage.setItem("steam-top:designer-draft:v1", JSON.stringify({ version: 1, design })), design);
+  }
   // Record transitions inside the page: software WebGL can delay test-driver
   // round trips beyond the short three-second finisher window.
   await page.addInitScript(() => {
@@ -20,6 +27,7 @@ test("computer battle plays full 30 second 3D rounds and returns to same room fo
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(".");
   await expect(page.getByText("已連線", { exact: true })).toBeVisible({ timeout: 90_000 });
+  if (shape === "custom") await expect(page.locator(".layer-list")).toContainText("自定造型");
   await page.getByRole("button", { name: "對戰大廳", exact: true }).click();
   await page.getByLabel("房間名稱").fill("30秒生肖驗收");
   await page.getByRole("button", { name: "建立房間", exact: true }).click();

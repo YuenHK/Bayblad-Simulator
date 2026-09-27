@@ -11,6 +11,8 @@
 
 ### 本機實作檢查點
 
+- 2026-09-27 21:49：75a4d0d品質CI36320542863及PostgreSQL CI36320542864皆success。`CINEMATIC_BATTLES=1 ... playwright test tests/e2e/cinematic.spec.ts --grep 'custom computer'` 通過完整自定凹形人機對戰：30秒每輪、Miss最低力、召喚／決勝／粉碎／結算、返回同房再準備（約1.4分鐘）。新增basic/custom兩種cinematic案例，普通CI仍按原設定跳過完整長播，需上述指令明確執行。三角色真Socket測試改為自定對基本造型，完成讓位、觀眾可見兩人判定、玩家判定私隱、三輪結算及賽後分數，通過（此案例是快速測試引擎，不是30秒動畫證據）。E2E typecheck通過。下一步優先新舊客戶端相容及最終品質審查，再核實正式部署入口；仍未部署。
+
 - 2026-09-27 20:54：真實ShapeCut接收測試發現pointer浮點輪廓導致STL `Degenerate STL face`。已用實際輪廓座標重現單元紅燈，匯出union後以Manifold.simplify(0.0001 mm)處理浮點退化，再保留status／正面積檢查；不是刪除三角面。8項STL封閉邊／正向體積／內部面測試及191項web tests通過。真實本機ShapeCut基本1280／390接收、自定凹形接收→選6mm材料→轉換完成→3切片→blob ZIP連結，共3項通過。接收端用 `/Users/cywong/Documents/Codex/ShapeCut-related-links`，先 `SHAPECUT_BASE_PATH=/ShapeCut/ npm run build`；sender用 `STEAM_TOP_PAGES_BASE=/steam-top/ pnpm --filter @steam-top/web build:student`，再 `SHAPECUT_DIST=/Users/cywong/Documents/Codex/ShapeCut-related-links/dist pnpm exec playwright test --config playwright.handoff.config.ts`。沒有修改ShapeCut源碼；未驗證實際切割。尚須客戶端握手相容、完整custom對戰、品質審查及正式部署驗收。
 
 - 2026-09-27 19:48：4bdc9ef品質CI36313582772及PostgreSQL CI36313582931皆success。已加入左右／上下／4／6／8／12鏡射的真實滑鼠瀏覽器測試，驗證可套用及跨層草稿隔離／恢復；加上原有desktop/touch案例共8項通過，E2E typecheck通過。下一步可從 `playwright.handoff.config.ts` 和 `tests/support/shapecut-static-server.mjs` 開始 custom STL→真實ShapeCut接收測試；現有handoff只測基本造型及接收至材質選擇，不能當作custom切片驗收。握手相容、完整custom對戰及最終審查仍未完成，未部署。
