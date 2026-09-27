@@ -12,6 +12,14 @@ const custom = (vertices = rectangle) => ({
 });
 
 describe("custom outline domain integration", () => {
+  it("returns validation failures without throwing for huge or malformed outline arrays", () => {
+    const layer = custom();
+    for (const vertices of [Array.from({ length: 150_000 }, () => ({ x: 10, y: 10 })), null, [null, {}, "point"], [{ x: NaN, y: 0 }, ...rectangle]]) {
+      let result: ReturnType<typeof domain.layerSchema.safeParse> | undefined;
+      expect(() => { result = domain.layerSchema.safeParse({ ...layer, outline: { ...layer.outline, vertices } }); }).not.toThrow();
+      expect(result?.success).toBe(false);
+    }
+  });
   it("accepts and preserves versioned custom outlines, including mirror metadata", () => {
     for (const mirror of ["none", "leftRight", "topBottom", 4, 6, 8, 12]) {
       const layer = { ...custom(), outline: { ...custom().outline, mirror } };

@@ -32,7 +32,15 @@ export const geometryInputSchema = z.object(geometryFields).superRefine((input, 
     context.addIssue({ code: "custom", path: ["outline"], message: "Custom layers require an outline" });
     return;
   }
-  const diameter = 2 * Math.max(...input.outline.vertices.map(p => Math.hypot(p.x, p.y)));
+  // Array size failures are continuable in Zod, so parent refinements may still
+  // run. Do not calculate derived geometry for a child already outside bounds.
+  // Invalid point structures abort the child parse before this refinement.
+  const vertices = input.outline.vertices;
+  if (vertices.length < 3 || vertices.length > 256) return;
+  const diameter = 2 * vertices.reduce(
+    (radius, point) => Math.max(radius, Math.hypot(point.x, point.y)),
+    0,
+  );
   if (Math.abs(input.diameterMm - diameter) > CUSTOM_DIAMETER_TOLERANCE_MM + 1e-9) {
     context.addIssue({ code: "custom", path: ["diameterMm"], message: "Diameter must match twice the maximum outline radius" });
   }
