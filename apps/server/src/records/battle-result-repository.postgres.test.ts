@@ -38,6 +38,23 @@ function leaseClient(): DatabaseClient {
   return createDatabaseClient({ url: postgresTestSchemaUrl(databaseUrl!, schemaName), ssl: local ? false : "require", allowInsecure: local, maxConnections: 1, idleTimeoutSeconds: 1, connectTimeoutSeconds: 1 });
 }
 
+it.skipIf(!databaseUrl)("roundtrips custom outlines and reuses the persisted numeric precision across repository restarts", async () => {
+  const ownerIdentityId = randomUUID();
+  await client.db.insert(identities).values({ id: ownerIdentityId, status: "guest", displayName: "Custom outline fixture" });
+  const design = makeDefaultDesign();
+  const vertices = [{ x: -10, y: -10 }, { x: 10, y: -10 }, { x: 10, y: 10 }, { x: -10, y: 10 }];
+  design.layers[0] = { ...design.layers[0], shape: "custom", diameterMm: 2 * Math.hypot(10, 10), outline: { version: 1, vertices, mirror: "none" } };
+  const first = new PostgresDesignRepository(client.db);
+  const saved = await first.saveBattleEligible(ownerIdentityId, design);
+  const restarted = new PostgresDesignRepository(client.db);
+  const loaded = await restarted.getOwned(ownerIdentityId, saved.designId);
+  expect(loaded?.design.layers[0].outline).toEqual(design.layers[0].outline);
+  expect(loaded?.design.layers[0].diameterMm).toBe(28.284);
+  const resaved = await restarted.saveBattleEligible(ownerIdentityId, design);
+  expect(resaved.designId).toBe(saved.designId);
+  expect(resaved.version).toBe(saved.version);
+});
+
 // postgres.js 3.4.9 throws asynchronously from nextWrite after a test forcibly
 // terminates its own reserved backend. The takeover SQL and lost-lease cleanup
 // remain covered by deterministic repository tests without crashing Vitest.
