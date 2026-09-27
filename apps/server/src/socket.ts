@@ -17,6 +17,7 @@ import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import { DesignRegistry } from "./design-registry";
 import type { DesignRepository } from "./records/design-repository";
+import { designPopularityKey } from "./records/design-popularity";
 import { completedMatchFingerprint, type CompletedMatchRecord, type MatchRepository } from "./records/match-repository";
 import type { RoomParticipantRecord, RoomRecordRepository } from "./records/room-repository";
 import { RoomProjectionCoordinator } from "./records/room-projection-coordinator";
@@ -1344,7 +1345,7 @@ export class RealtimeGateway {
         for (const player of match.players) {
           if (this.#sessionsById.get(player.sessionId)?.isComputer) continue;
           const design = this.#designs.requireOwned(player.sessionId, player.designId).design;
-          const key = JSON.stringify({ layers: design.layers.map(({ id: _id, color: _color, ...layer }) => layer), screws: design.screwLayout, metal: design.metalDiscDiameterMm });
+          const key = designPopularityKey(design);
           const current = this.#popularDesigns.get(key);
           this.#popularDesigns.set(key, { design, uses: (current?.uses ?? 0) + 1 });
           if (this.#popularDesigns.size > 2_000) this.#popularDesigns.delete(this.#popularDesigns.keys().next().value!);

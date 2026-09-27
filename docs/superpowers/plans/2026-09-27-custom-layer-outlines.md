@@ -11,6 +11,8 @@
 
 ### 本機實作檢查點
 
+- 2026-09-27 17:45：f48615a 品質 CI36307250469 與 PostgreSQL CI36307250424 皆 success；包括compact Linux E2E。新增記憶體人氣設計 key 的 canonical 化：自定輪廓起點／順逆／鏡像編輯方式及無效的 points/roundness 不再拆分人氣；尺寸採持久化精度，旋轉／實際輪廓／裝配差異保留。先重現失敗再修正，完整server516 tests及typecheck通過。待審查和新CI。仍須處理新舊客戶端相容、custom畫布觸控E2E、ShapeCut接收、完整自定輪廓對戰及發佈驗收；不可因現有CI綠燈而跳過新增功能驗收。
+
 - 2026-09-27 16:47：4399dd5 的 PostgreSQL run36304002803 成功（包含 custom 重載及重存去重）；品質 run36304002783 單元測試通過，E2E 唯一失敗是1024×768參戰按鈕超出畫面。已重現並修正：造型切換置於 legend 同行，矮螢幕只縮間距，不改字體大小／顏色。重新建置後1440×900、1024×768兩項瀏覽器測試通過，34項編輯器／設計頁測試及web typecheck通過；已檢視1024截圖。仍須Linux CI驗證及自定畫布手機／觸控、握手相容、ShapeCut和對戰驗收。尚未部署。
 
 - 2026-09-27 15:44：PostgreSQL CI `36300884707` 最終 success；品質 CI `36300884651` 因舊 upload fixture 的 4 tests 失敗，修正已在 3e4e0a0。本輪根目錄 `pnpm test` 完整 exit 0：domain191、protocol98、web190、DB21、server514、integration/CI211，另32項跳過（不能當成通過）。新增 custom PostgreSQL reload／precision dedup regression，commit4399dd5 已推送獨立驗證分支，等待新 CI 結果；無正式部署。下一輪先查 `gh run list --branch codex/custom-outline-validation`，再處理握手能力相容、人氣 canonical signature、編輯器 E2E／ShapeCut／完整對戰及審查。
