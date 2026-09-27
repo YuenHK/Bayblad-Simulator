@@ -56,6 +56,9 @@ importers:
       planck:
         specifier: 1.5.0
         version: 1.5.0(stage-js@1.0.2)
+      polygon-clipping:
+        specifier: 0.15.7
+        version: 0.15.7
       postgres:
         specifier: 3.4.9
         version: 3.4.9
@@ -192,6 +195,9 @@ importers:
 
   packages/protocol:
     dependencies:
+      '@steam-top/domain':
+        specifier: workspace:*
+        version: link:../domain
       zod:
         specifier: 4.4.3
         version: 4.4.3

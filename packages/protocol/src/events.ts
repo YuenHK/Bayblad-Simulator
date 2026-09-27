@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { geometryInputSchema, shapeSchema, outlineSchema } from "@steam-top/domain";
 
 export const PROTOCOL_VERSION = 1 as const;
 
@@ -529,15 +530,10 @@ export const launchScheduleEventSchema = z
   })
   .strict();
 
-const publicBattleLayerSchema = z
-  .object({
+const publicBattleLayerSchema = geometryInputSchema
+  .safeExtend({
     id: correlationIdSchema,
     position: z.enum(["top", "middle", "bottom"]),
-    shape: z.enum(["circle", "polygon", "star", "wave"]),
-    points: z.number().int().min(3).max(16),
-    diameterMm: z.number().finite().min(20).max(80),
-    cornerRoundness: z.number().finite().min(0).max(1),
-    rotationDeg: z.number().finite().min(0).max(359),
     color: z.string().regex(/^#[0-9a-f]{6}$/i),
   })
   .strict();
@@ -545,9 +541,9 @@ const publicBattleLayerSchema = z
 export const publicBattleDesignSchema = z
   .object({
     layers: z.tuple([
-      publicBattleLayerSchema.extend({ position: z.literal("top") }),
-      publicBattleLayerSchema.extend({ position: z.literal("middle") }),
-      publicBattleLayerSchema.extend({ position: z.literal("bottom") }),
+      publicBattleLayerSchema.safeExtend({ position: z.literal("top") }),
+      publicBattleLayerSchema.safeExtend({ position: z.literal("middle") }),
+      publicBattleLayerSchema.safeExtend({ position: z.literal("bottom") }),
     ]),
     screwLayout: z
       .object({
@@ -1066,7 +1062,8 @@ export const adminDesignParametersSchema = z
         z
           .object({
             position: z.enum(["top", "middle", "bottom"]),
-            shape: z.enum(["circle", "polygon", "star", "wave"]),
+            shape: shapeSchema,
+            outline: outlineSchema.optional(),
             points: z.number().int(),
             diameterMm: z.number(),
             actualAreaMm2: z.number(),

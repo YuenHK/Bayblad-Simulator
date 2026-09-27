@@ -661,6 +661,7 @@ function physicalPlayerKey(designInput: TopDesign, launch: LaunchJudgement): str
       diameterMm: layer.diameterMm,
       cornerRoundness: layer.cornerRoundness,
       rotationDeg: layer.rotationDeg,
+      ...(layer.outline ? { outline: layer.outline } : {}),
     })),
     screwLayout: design.screwLayout,
     metalDiscDiameterMm: design.metalDiscDiameterMm,

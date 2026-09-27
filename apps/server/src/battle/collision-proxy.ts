@@ -5,6 +5,7 @@ import {
   type Point,
   type TopDesign,
 } from "@steam-top/domain";
+import { union, type Polygon } from "polygon-clipping";
 
 export const MAX_COLLISION_PROXY_VERTICES = 8;
 export const COLLISION_OUTLINE_MAX_ERROR_MM = 0.35;
@@ -17,6 +18,7 @@ function normaliseAngle(angle: number): number {
 
 function radiusForDesign(design: TopDesign, angle: number): number {
   return Math.max(...design.layers.map((layer) => {
+    if (layer.shape === "custom") throw new TypeError("Custom layers require polygon contact geometry");
     const rotation = layer.rotationDeg * Math.PI / 180;
     return layer.diameterMm / 2 * radialFactor(
       layer.shape,
@@ -45,6 +47,14 @@ function radialDistanceToSegment(angle: number, start: Point, end: Point): numbe
 /** Adaptive star-shaped union outline in millimetres for sensor-only top contact. */
 export function buildCollisionOutlineVertices(input: TopDesign): readonly Point[] {
   const design = designSchema.parse(input);
+  if (design.layers.some(layer => layer.shape === "custom")) {
+    const polygons = design.layers.map(layer => [makeLayerVertices(layer).map(({ x, y }) => [x, y] as [number, number])]) as Polygon[];
+    const merged = union(polygons[0]!, ...polygons.slice(1));
+    // Every validated board contains the axle, so their union is connected.
+    // Internal voids are not external contact boundaries.
+    if (merged.length !== 1 || !merged[0]?.[0]) throw new RangeError("Disconnected collision outline");
+    return Object.freeze(merged[0][0].slice(0, -1).map(([x, y]) => Object.freeze({ x, y })));
+  }
   const candidateAngles = new Set<number>();
   for (const layer of design.layers) {
     const rotation = layer.rotationDeg * Math.PI / 180;

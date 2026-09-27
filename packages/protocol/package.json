@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@steam-top/domain": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {

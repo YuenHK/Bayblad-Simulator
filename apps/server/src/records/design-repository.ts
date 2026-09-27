@@ -5,13 +5,14 @@ import { buildDesignSnapshotRows } from "@steam-top/db/persistence";
 import { designEventSnapshots, designLayers, designs, identities } from "@steam-top/db/schema";
 import {
   designSchema,
+  canonicalizeOutline,
   predictDesignPerformance,
   validateDesign,
   type PerformancePrediction,
   type TopDesign,
 } from "@steam-top/domain";
 
-export const DESIGN_SCHEMA_VERSION = "1.0.0" as const;
+export const DESIGN_SCHEMA_VERSION = "2.0.0" as const;
 
 export type PersistedDesign = Readonly<{
   designId: string;
@@ -44,6 +45,9 @@ const stable = (value: unknown): string => {
 
 const canonical = (input: unknown): TopDesign => {
   const parsed = designSchema.parse(input);
+  for (const layer of parsed.layers) {
+    if (layer.outline) layer.outline.vertices = canonicalizeOutline(layer.outline.vertices);
+  }
   const validation = validateDesign(parsed);
   if (!validation.valid) throw new DesignPersistenceError("DESIGN_INVALID");
   return parsed;
@@ -108,7 +112,7 @@ export class PostgresDesignRepository implements DesignRepository {
       ), shapes as (
         select d.id, d.owner_identity_id owner,
           jsonb_build_array(d.screw_count, d.screw_radius_mm, d.screw_rotation_deg, d.metal_disc_diameter_mm,
-            (select jsonb_agg(jsonb_build_array(l.position,l.shape,l.points,l.diameter_mm,l.corner_roundness,l.rotation_deg) order by l.layer_order)
+            (select jsonb_agg(jsonb_build_array(l.position,l.shape,case when l.shape::text='custom' then null else l.points end,l.diameter_mm,case when l.shape::text='custom' then 0 else l.corner_roundness end,l.rotation_deg,l.outline->'vertices') order by l.layer_order)
              from design_layers l where l.design_id=d.id)) signature,
           count(*) uses
         from usage u join designs d on d.id=u.id where d.battle_eligible=true
@@ -181,6 +185,7 @@ export class PostgresDesignRepository implements DesignRepository {
         id: layer.sourceLayerId,
         position: layer.position,
         shape: layer.shape,
+        ...(layer.outline ? { outline: layer.outline } : {}),
         points: layer.points,
         diameterMm: layer.diameterMm,
         cornerRoundness: layer.cornerRoundness,

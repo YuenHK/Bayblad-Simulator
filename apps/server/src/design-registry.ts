@@ -12,9 +12,9 @@ import type { PublicBattleDesign } from "@steam-top/protocol";
 const strictLayerSchema = layerSchema.strict();
 const strictDesignSchema = designSchema.extend({
   layers: z.tuple([
-    strictLayerSchema.extend({ position: z.literal("top") }),
-    strictLayerSchema.extend({ position: z.literal("middle") }),
-    strictLayerSchema.extend({ position: z.literal("bottom") }),
+    strictLayerSchema.safeExtend({ position: z.literal("top") }),
+    strictLayerSchema.safeExtend({ position: z.literal("middle") }),
+    strictLayerSchema.safeExtend({ position: z.literal("bottom") }),
   ]).superRefine((layers, context) => {
     if (new Set(layers.map(({ id }) => id)).size !== layers.length) {
       context.addIssue({ code: "custom", message: "Layer ids must be unique" });

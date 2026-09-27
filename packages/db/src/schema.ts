@@ -1,4 +1,5 @@
 import { relations, sql } from "drizzle-orm";
+import type { CustomOutline } from "@steam-top/domain";
 import {
   bigint,
   bigserial,
@@ -42,6 +43,7 @@ export const topShapeEnum = pgEnum("top_shape", [
   "polygon",
   "star",
   "wave",
+  "custom",
 ]);
 export const metalDiscPlacementEnum = pgEnum("metal_disc_placement", [
   "under_bottom",
@@ -454,6 +456,7 @@ export const designLayers = pgTable(
     layerOrder: smallint("layer_order").notNull(),
     position: topLayerPositionEnum("position").notNull(),
     shape: topShapeEnum("shape").notNull(),
+    outline: jsonb("outline").$type<CustomOutline>(),
     points: smallint("points").notNull(),
     diameterMm: numeric("diameter_mm", {
       precision: 7,
@@ -474,6 +477,10 @@ export const designLayers = pgTable(
     color: varchar("color", { length: 7 }).notNull(),
   },
   (table) => [
+    check(
+      "design_layers_outline_matches_shape",
+      sql`((${table.shape}::text = 'custom' and ${table.outline} is not null and jsonb_typeof(${table.outline}) = 'object' and ${table.outline}->'version' = '1'::jsonb and jsonb_typeof(${table.outline}->'vertices') = 'array' and case when jsonb_typeof(${table.outline}->'vertices') = 'array' then jsonb_array_length(${table.outline}->'vertices') between 3 and 256 else false end and ${table.outline}->'mirror' in ('"none"'::jsonb,'"leftRight"'::jsonb,'"topBottom"'::jsonb,'4'::jsonb,'6'::jsonb,'8'::jsonb,'12'::jsonb)) or (${table.shape}::text <> 'custom' and ${table.outline} is null)) is true`,
+    ),
     uniqueIndex("design_layers_design_order_uidx").on(
       table.designId,
       table.layerOrder,

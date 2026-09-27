@@ -1,4 +1,4 @@
-import { makeDefaultDesign } from "@steam-top/domain";
+import { makeDefaultDesign, designSchema } from "@steam-top/domain";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryDesignRepository } from "./design-repository";
 import { completedMatchFingerprint, completedMatchRecordSchema, MatchPersistenceConflictError, MemoryMatchRepository, type CompletedMatchRecord } from "./match-repository";
@@ -27,6 +27,16 @@ const fixture = (): CompletedMatchRecord => {
 };
 
 describe("durable record contracts", () => {
+  it("canonicalizes custom rings for stored replay without moving the axle", async () => {
+    const vertices = [{ x: -10, y: -10 }, { x: 10, y: -10 }, { x: 10, y: 10 }, { x: -10, y: 10 }];
+    const base = makeDefaultDesign();
+    const custom = designSchema.parse({ ...base, layers: [{ ...base.layers[0], shape: "custom", diameterMm: Math.hypot(10, 10) * 2, outline: { version: 1, vertices: [...vertices.slice(2), ...vertices.slice(0, 2)].reverse(), mirror: "none" } }, ...base.layers.slice(1)] });
+    const repository = new MemoryDesignRepository();
+    const saved = await repository.saveBattleEligible(id(2), custom);
+    expect(saved.design.layers[0].outline?.vertices).toEqual(vertices);
+    const loaded = await repository.getOwned(id(2), saved.designId);
+    expect(loaded?.design.layers[0].outline?.vertices).toEqual(vertices);
+  });
   it("durably keeps only the newest room projection across coordinator restarts", async () => {
     const store = new MemoryRoomProjectionStore({ maxEntries: 2, leaseMs: 1_000, now: () => new Date("2026-08-29T00:00:00Z") });
     const applied: number[] = [];

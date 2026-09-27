@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { designSchema, PERFORMANCE_MODEL_VERSION } from "@steam-top/domain";
 
 import {
   buildCompletedMatchRow,
@@ -19,6 +20,15 @@ const design: Parameters<typeof buildDesignSnapshotRows>[0]["design"] = {
 };
 
 describe("authoritative persistence builders", () => {
+  it("preserves a custom outline in its authoritative layer snapshot", () => {
+    const vertices = [{ x: -10, y: -10 }, { x: 10, y: -10 }, { x: 10, y: 10 }, { x: -10, y: 10 }];
+    const outline = { version: 1, vertices, mirror: "none" };
+    const custom = designSchema.parse({ ...design, layers: [{ ...design.layers[0], shape: "custom", diameterMm: Math.hypot(10, 10) * 2, outline }, ...design.layers.slice(1)] });
+    const rows = buildDesignSnapshotRows({ snapshotId: "20000000-0000-4000-8000-000000000031", ownerIdentityId: null, version: 1, schemaVersion: "2", design: custom });
+    expect(rows.layers[0]).toMatchObject({ shape: "custom", outline });
+    expect(rows.layers[1]?.outline ?? null).toBeNull();
+    expect(rows.design.performanceModelVersion).toBe(PERFORMANCE_MODEL_VERSION);
+  });
   it("parses one canonical design and derives the design and three layer rows", () => {
     const rows = buildDesignSnapshotRows({
       snapshotId: "20000000-0000-4000-8000-000000000001",
@@ -31,7 +41,7 @@ describe("authoritative persistence builders", () => {
       logicalDesignId: design.id,
       name: "測試陀螺",
       battleEligible: false,
-      performanceModelVersion: "1.0.0",
+      performanceModelVersion: PERFORMANCE_MODEL_VERSION,
     });
     expect(rows.activateBattleEligible).toBe(true);
     expect(rows.layers.map(({ position }) => position)).toEqual([

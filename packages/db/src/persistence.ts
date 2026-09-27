@@ -73,6 +73,7 @@ export function buildDesignSnapshotRows(
     layerOrder,
     position: layer.position,
     shape: layer.shape,
+    outline: layer.shape === "custom" ? layer.outline : null,
     points: layer.points,
     diameterMm: layer.diameterMm,
     actualAreaMm2: Math.abs(polygonArea(makeMassLayerVertices(layer))),

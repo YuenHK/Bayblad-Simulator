@@ -36,6 +36,13 @@
       "when": 1788319200000,
       "tag": "0004_scoped_readiness_acl",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790467200000,
+      "tag": "0005_custom_layer_outlines",
+      "breakpoints": true
     }
   ]
 }
