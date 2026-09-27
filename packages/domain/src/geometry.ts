@@ -1,19 +1,11 @@
-import { layerSchema, type Layer } from "./design";
+import { geometryInputSchema, type Layer } from "./design";
 
 export type Point = Readonly<{ x: number; y: number }>;
 
 type GeometryInput = Pick<
   Layer,
-  "shape" | "points" | "diameterMm" | "cornerRoundness" | "rotationDeg"
+  "shape" | "points" | "diameterMm" | "cornerRoundness" | "rotationDeg" | "outline"
 >;
-
-const geometryInputSchema = layerSchema.pick({
-  shape: true,
-  points: true,
-  diameterMm: true,
-  cornerRoundness: true,
-  rotationDeg: true,
-});
 
 const FULL_TURN = Math.PI * 2;
 
@@ -37,7 +29,7 @@ function finiteResult(value: number): number {
 }
 
 export function radialFactor(
-  shape: Layer["shape"],
+  shape: Exclude<Layer["shape"], "custom">,
   points: number,
   angle: number,
   cornerRoundness: number,
@@ -92,13 +84,22 @@ export function makeLayerVertices(input: GeometryInput): Point[] {
     parsed.shape === "circle" ? 64 : Math.max(parsed.points * 8, 32);
   const outerRadius = parsed.diameterMm / 2;
   const rotation = (parsed.rotationDeg * Math.PI) / 180;
+  if (parsed.shape === "custom") {
+    // The schema guarantees the outline exists. Preserve the actual ring and
+    // axle-relative coordinates; only the requested layer rotation is applied.
+    return parsed.outline!.vertices.map(({ x, y }) => ({
+      x: x * Math.cos(rotation) - y * Math.sin(rotation),
+      y: x * Math.sin(rotation) + y * Math.cos(rotation),
+    }));
+  }
+  const shape = parsed.shape;
 
   return Array.from({ length: count }, (_, index) => {
     const localAngle = (index / count) * FULL_TURN;
     const radius =
       outerRadius *
       radialFactor(
-        parsed.shape,
+        shape,
         parsed.points,
         localAngle,
         parsed.cornerRoundness,

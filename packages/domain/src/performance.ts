@@ -1,7 +1,7 @@
 import type { Layer, TopDesign } from "./design";
 import { calculateMinimumMaterialNeckMm, validateDesign } from "./rules";
 
-export const PERFORMANCE_MODEL_VERSION = "1.0.0" as const;
+export const PERFORMANCE_MODEL_VERSION = "1.1.0" as const;
 export const MAX_SCHEMA_RADIUS_MM = 40;
 
 const MAX_CANONICAL_NECK_MM = 80;
@@ -92,7 +92,7 @@ export function scoreStability({
 export function effectiveLayerRoundness(
   layer: Pick<Layer, "shape" | "cornerRoundness">,
 ): number {
-  return layer.shape === "circle" ? 1 : layer.cornerRoundness;
+  return layer.shape === "circle" ? 1 : layer.shape === "custom" ? 0 : layer.cornerRoundness;
 }
 
 function normalizedRadiusOfGyration(input: PerformanceInput): number {

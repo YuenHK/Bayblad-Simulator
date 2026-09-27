@@ -268,8 +268,8 @@ function expectScoresInRange(prediction: PerformancePrediction): void {
 }
 
 describe("performance model contract", () => {
-  it("exposes readonly input and prediction fields with model version 1.0.0", () => {
-    expect(PERFORMANCE_MODEL_VERSION).toBe("1.0.0");
+  it("exposes readonly input and prediction fields with model version 1.1.0", () => {
+    expect(PERFORMANCE_MODEL_VERSION).toBe("1.1.0");
     expectTypeOf<PerformanceInput>().toEqualTypeOf<
       Readonly<{
         totalMassG: number;
@@ -285,7 +285,7 @@ describe("performance model contract", () => {
         spinDuration: number;
         stability: number;
         impactResistance: number;
-        modelVersion: "1.0.0";
+        modelVersion: "1.1.0";
       }>
     >();
   });
@@ -332,7 +332,7 @@ describe("performance model contract", () => {
         fixture.expectedEffectiveRoundness,
         12,
       );
-      expect(prediction.modelVersion).toBe("1.0.0");
+      expect(prediction.modelVersion).toBe("1.1.0");
       expect(prediction.speed).toBeGreaterThanOrEqual(
         fixture.expectedSpeedRange[0],
       );

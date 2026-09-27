@@ -80,7 +80,11 @@ describe("custom outlines", () => {
     const original = square.map((p) => ({ x: p.x + 4, y: p.y + 2 }));
     const saved = structuredClone(original);
     const shifted = [...original.slice(2), ...original.slice(0, 2)].reverse();
+    const shiftedSnapshot = structuredClone(shifted);
+    shifted.forEach(Object.freeze);
+    Object.freeze(shifted);
     expect(canonicalizeOutline(shifted)).toEqual(original);
+    expect(shifted).toEqual(shiftedSnapshot);
     expect(original).toEqual(saved);
     expect(canonicalizeOutline(original)[0]).not.toBe(original[0]);
   });
