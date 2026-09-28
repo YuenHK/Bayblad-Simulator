@@ -21,9 +21,11 @@ describe("App upload lifecycle", () => {
   it("places the teacher entry alongside project and ShapeCut links without embedding credentials", () => {
     render(<App client={new RealtimeClient({ transport: new AppTransport() })} />);
     const footer = within(screen.getByRole("contentinfo", { name: "專案與更多作品" }));
-    expect(footer.getByRole("link", { name: "專案介紹・GitHub" })).toBeVisible();
-    expect(footer.getByRole("link", { name: "探索 ShapeCut" })).toBeVisible();
-    const link = footer.getByRole("link", { name: "進入教師後台" });
+    expect(footer.getByText("專案與工具")).toBeVisible();
+    expect(footer.getByRole("link", { name: "了解這個專案" })).toHaveAttribute("href", "https://github.com/YuenHK/Bayblad-Simulator#readme");
+    expect(footer.getByRole("link", { name: "ShapeCut" })).toHaveAttribute("href", "https://yuenhk.github.io/ShapeCut/");
+    expect(footer.getByText("我的另一個作品 · 雷射切割工具")).toBeVisible();
+    const link = footer.getByRole("link", { name: "教師後台" });
     expect(link).toHaveAttribute("href", "https://bayblad-simulator-api.onrender.com/admin/");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");

@@ -20,27 +20,27 @@ for (const viewport of viewports) {
   });
 }
 
-test("phone switches between control, preview and prediction tabs without losing inputs", async ({ page }) => {
+test("phone switches between shape, preview and assembly tabs without losing inputs", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("designer");
   const tabs = page.getByRole("tablist", { name: "設計室區域" });
   await expect(tabs).toBeVisible();
-  await page.getByLabel("直徑（mm）", { exact: true }).fill("58");
-  await page.getByRole("tab", { name: "模擬預覽" }).click();
+  await page.getByRole("spinbutton", { name: "直徑（mm）", exact: true }).fill("58");
+  await page.getByRole("tab", { name: "預覽", exact: true }).click();
   await expect(page.getByRole("heading", { name: "即時預覽" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "層板設計" })).toBeHidden();
-  await page.getByRole("tab", { name: "預測結果" }).click();
+  await expect(page.getByRole("heading", { name: /層板設計/ })).toBeHidden();
+  await page.getByRole("tab", { name: "裝配", exact: true }).click();
   await expect(page.getByRole("heading", { name: "即時計算" })).toBeVisible();
-  await page.getByRole("tab", { name: "控制台" }).click();
-  await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveValue("58");
+  await page.getByRole("tab", { name: "造型", exact: true }).click();
+  await expect(page.getByRole("spinbutton", { name: "直徑（mm）", exact: true })).toHaveValue("58");
 });
 
 test("tablet and desktop display every design region without mobile tabs", async ({ page }) => {
-  for (const viewport of [{ width: 768, height: 1024 }, { width: 1440, height: 900 }]) {
+  for (const viewport of [{ width: 1024, height: 768 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
     await page.goto("designer");
     await expect(page.getByRole("tablist", { name: "設計室區域" })).toBeHidden();
-    await expect(page.getByRole("heading", { name: "層板設計" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /層板設計/ })).toBeVisible();
     await expect(page.getByRole("heading", { name: "即時預覽" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "即時計算" })).toBeVisible();
   }

@@ -5,13 +5,14 @@ import { resolve } from "node:path";
 const DRAFT_KEY = "steam-top:designer-draft:v1";
 
 async function replaceNumber(page: Page, label: string, value: string): Promise<void> {
-  const input = page.getByLabel(label, { exact: true });
+  if (label.startsWith("螺絲")) await page.getByRole("tab", { name: "共用裝配", exact: true }).click();
+  const input = page.getByRole("spinbutton", { name: label, exact: true });
   await input.fill(value);
   await expect(input).toHaveValue(String(Number(value)));
 }
 
 async function selectLayer(page: Page, position: "top" | "middle" | "bottom"): Promise<void> {
-  await page.getByLabel("目前編輯層").selectOption(position);
+  await page.getByRole("button", { name: `編輯${{top:"頂層",middle:"中層",bottom:"底層"}[position]}` }).click();
 }
 
 async function touch(
@@ -37,7 +38,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("iPad student creates a legal three-layer design and loads the real 3D chunk", async ({ page, browser }) => {
-  await page.getByLabel("形狀").selectOption("star");
+  await page.getByRole("combobox", { name: "形狀", exact: true }).selectOption("star");
   await replaceNumber(page, "角數", "6");
   await replaceNumber(page, "直徑（mm）", "58");
   await replaceNumber(page, "圓角程度", "0.7");
@@ -101,7 +102,7 @@ test("diameter beyond the former 60 mm rule remains eligible below 60 g", async 
   await expect(page.getByText("最大直徑為 60 mm")).toHaveCount(0);
 
   await replaceNumber(page, "直徑（mm）", "60.01");
-  await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveAttribute("aria-invalid", "false");
+  await expect(page.getByRole("spinbutton", { name: "直徑（mm）", exact: true })).toHaveAttribute("aria-invalid", "false");
   await expect(page.getByText("最大直徑為 60 mm")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "用此設計參戰" })).toBeEnabled();
 });
@@ -109,9 +110,10 @@ test("diameter beyond the former 60 mm rule remains eligible below 60 g", async 
 test("a reproducible heavy UI design crosses 60 g", async ({ page }) => {
   for (const position of ["top", "middle", "bottom"] as const) {
     await selectLayer(page, position);
-    await page.getByLabel("形狀").selectOption("circle");
+    await page.getByRole("combobox", { name: "形狀", exact: true }).selectOption("circle");
     await replaceNumber(page, "直徑（mm）", "80");
   }
+  await page.getByRole("tab", { name: "共用裝配", exact: true }).click();
   await page.getByLabel("金屬碟直徑").selectOption("55");
 
   await expect(page.getByText("總重量不可超過 60 g")).toBeVisible();
@@ -126,6 +128,7 @@ test("a reproducible heavy UI design crosses 60 g", async ({ page }) => {
 test("an oversized bottom disc is allowed when total weight is below 60 g", async ({ page }) => {
   await selectLayer(page, "bottom");
   await replaceNumber(page, "直徑（mm）", "40");
+  await page.getByRole("tab", { name: "共用裝配", exact: true }).click();
   await page.getByLabel("金屬碟直徑").selectOption("55");
   await expect(page.getByText("金屬碟必須完整位於最底層下方")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "用此設計參戰" })).toBeEnabled();
@@ -133,7 +136,7 @@ test("an oversized bottom disc is allowed when total weight is below 60 g", asyn
 
 test("real CDP touch input reorders complete layer records and announces the move", async ({ page, context }) => {
   await selectLayer(page, "middle");
-  await page.getByLabel("形狀").selectOption("star");
+  await page.getByRole("combobox", { name: "形狀", exact: true }).selectOption("star");
   await replaceNumber(page, "角數", "9");
   await replaceNumber(page, "直徑（mm）", "42");
   const source = page.getByRole("button", { name: "拖動中層以重新排序" });
@@ -147,10 +150,10 @@ test("real CDP touch input reorders complete layer records and announces the mov
   await touch(session, "touchEnd", []);
 
   await expect(page.getByText("中層層板已移至頂層")).toBeAttached();
-  await expect(page.getByLabel("目前編輯層")).toHaveValue("top");
-  await expect(page.getByLabel("形狀")).toHaveValue("star");
-  await expect(page.getByLabel("角數")).toHaveValue("9");
-  await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveValue("42");
+  await expect(page.getByRole("button", { name: "編輯頂層" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("combobox", { name: "形狀", exact: true })).toHaveValue("star");
+  await expect(page.getByRole("spinbutton", { name: "角數", exact: true })).toHaveValue("9");
+  await expect(page.getByRole("spinbutton", { name: "直徑（mm）", exact: true })).toHaveValue("42");
   const ids = await page.locator(".layer-list [data-layer-id]").evaluateAll((items) =>
     items.map((item) => (item as HTMLElement).dataset.layerId));
   expect(ids).toHaveLength(3);
@@ -159,11 +162,12 @@ test("real CDP touch input reorders complete layer records and announces the mov
 
 test("draft reload preserves design only and corrupt storage falls back safely", async ({ page }) => {
   await selectLayer(page, "middle");
-  await page.getByLabel("形狀").selectOption("star");
+  await page.getByRole("combobox", { name: "形狀", exact: true }).selectOption("star");
   await replaceNumber(page, "角數", "9");
   await replaceNumber(page, "直徑（mm）", "42");
   await replaceNumber(page, "螺絲數量", "6");
   await replaceNumber(page, "螺絲半徑（mm）", "18");
+  await page.getByRole("tab", { name: "共用裝配", exact: true }).click();
   await page.getByLabel("金屬碟直徑").selectOption("30");
   await page.getByRole("button", { name: "將目前層上移" }).click();
   const idsBefore = await page.locator(".layer-list [data-layer-id]").evaluateAll((items) =>
@@ -177,28 +181,30 @@ test("draft reload preserves design only and corrupt storage falls back safely",
   expect(raw.toLowerCase()).not.toMatch(/identity|student|class|device|\bip\b|\bmac\b|cookie/);
 
   await page.reload();
-  await expect(page.getByLabel("目前編輯層")).toHaveValue("top");
-  await expect(page.getByLabel("形狀")).toHaveValue("star");
-  await expect(page.getByLabel("角數")).toHaveValue("9");
-  await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveValue("42");
+  await expect(page.getByRole("button", { name: "編輯頂層" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("combobox", { name: "形狀", exact: true })).toHaveValue("star");
+  await expect(page.getByRole("spinbutton", { name: "角數", exact: true })).toHaveValue("9");
+  await expect(page.getByRole("spinbutton", { name: "直徑（mm）", exact: true })).toHaveValue("42");
+  await page.getByRole("tab", { name: "共用裝配", exact: true }).click();
   await expect(page.getByLabel("螺絲數量")).toHaveValue("6");
   await expect(page.getByLabel("螺絲半徑（mm）")).toHaveValue("18");
   await expect(page.getByLabel("金屬碟直徑")).toHaveValue("30");
   expect(await page.locator(".layer-list [data-layer-id]").evaluateAll((items) =>
     items.map((item) => (item as HTMLElement).dataset.layerId))).toEqual(idsBefore);
 
+  await page.getByRole("tab", { name: "層板造型", exact: true }).click();
   const validDraft = await page.evaluate((key) => localStorage.getItem(key), DRAFT_KEY);
-  await page.getByLabel("直徑（mm）", { exact: true }).fill("");
-  await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveAttribute("aria-invalid", "true");
+  await page.getByRole("spinbutton", { name: "直徑（mm）", exact: true }).fill("");
+  await expect(page.getByRole("spinbutton", { name: "直徑（mm）", exact: true })).toHaveAttribute("aria-invalid", "true");
   expect(await page.evaluate((key) => localStorage.getItem(key), DRAFT_KEY)).toBe(validDraft);
   await page.reload();
-  await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveValue("42");
+  await expect(page.getByRole("spinbutton", { name: "直徑（mm）", exact: true })).toHaveValue("42");
 
   await page.evaluate((key) => localStorage.setItem(key, "{corrupt"), DRAFT_KEY);
   await page.reload();
-  await expect(page.getByLabel("目前編輯層")).toHaveValue("top");
-  await expect(page.getByLabel("形狀")).toHaveValue("circle");
-  await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveValue("40");
+  await expect(page.getByRole("button", { name: "編輯頂層" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("combobox", { name: "形狀", exact: true })).toHaveValue("circle");
+  await expect(page.getByRole("spinbutton", { name: "直徑（mm）", exact: true })).toHaveValue("40");
 });
 
 test("real touch gestures update 3D status and WebGL context loss falls back without disabling edits", async ({ page, context }) => {
@@ -240,7 +246,7 @@ test("real touch gestures update 3D status and WebGL context loss falls back wit
   await expect(page.getByRole("img", { name: "陀螺分解圖" })).toBeVisible();
   await expect(canvas).toHaveCount(0);
   await replaceNumber(page, "直徑（mm）", "41");
-  await expect(page.getByLabel("直徑（mm）", { exact: true })).toHaveValue("41");
+  await expect(page.getByRole("spinbutton", { name: "直徑（mm）", exact: true })).toHaveValue("41");
 });
 
 test("iPad viewport has no horizontal overflow, 44 px controls, and keyboard tabs", async ({ page }) => {

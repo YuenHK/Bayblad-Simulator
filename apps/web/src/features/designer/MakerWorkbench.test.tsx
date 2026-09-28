@@ -1,0 +1,71 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import { DesignerPage } from "./DesignerPage";
+
+describe("創客工作台", () => {
+  it("切換工具不會清除無效裝配輸入，能回到錯誤欄位", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage onUseDesign={vi.fn()} />);
+    await user.click(screen.getByRole("tab", { name: "共用裝配" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "螺絲數量" }), { target: { value: "9" } });
+    await user.click(screen.getByRole("tab", { name: "層板造型" }));
+    expect(screen.getByRole("button", { name: "規格未通過，請先修正" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /下載 STL/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "前往共用裝配修正" }));
+    expect(screen.getByRole("spinbutton", { name: "螺絲數量" })).toHaveValue(9);
+    expect(screen.getByRole("spinbutton", { name: "螺絲數量" })).toHaveAttribute("aria-invalid", "true");
+  });
+  it("按層 ID 保留無效數字、顏色，重排不會丟失", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+    fireEvent.change(screen.getByRole("spinbutton", { name: "直徑（mm）" }), { target: { value: "81" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "顏色" }), { target: { value: "#123" } });
+    await user.click(screen.getByRole("button", { name: "編輯中層" }));
+    expect(screen.getByRole("button", { name: "規格未通過，請先修正" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "前往頂層修正" }));
+    await user.click(screen.getByRole("button", { name: "將目前層下移" }));
+    expect(screen.getByRole("button", { name: "編輯中層" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("spinbutton", { name: "直徑（mm）" })).toHaveValue(81);
+    expect(screen.getByRole("textbox", { name: "顏色" })).toHaveValue("#123");
+  });
+  it("中央輪廓畫布與未套用草稿在選層、工具切換及重排後保留", async () => {
+    const user = userEvent.setup();
+    const onUseDesign = vi.fn();
+    render(<DesignerPage onUseDesign={onUseDesign} />);
+    await user.click(screen.getByRole("button", { name: "自定造型" }));
+    const canvas = screen.getByRole("img", { name: "自定輪廓畫布" });
+    expect(canvas.closest(".preview-panel")).not.toBeNull();
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 88, height: 88, right: 88, bottom: 88, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.pointerDown(canvas, { pointerId: 7, button: 0, clientX: 24, clientY: 64 });
+    for (const [x,y] of [[64,64],[64,24],[24,24]]) fireEvent.pointerMove(canvas, { pointerId: 7, clientX: x, clientY: y });
+    fireEvent.pointerUp(canvas, { pointerId: 7, clientX: 24, clientY: 64 });
+    const points = canvas.querySelector("polyline")?.getAttribute("points");
+    await user.click(screen.getByRole("tab", { name: "共用裝配" }));
+    await user.click(screen.getByRole("button", { name: "編輯中層" }));
+    await user.click(screen.getByRole("button", { name: "編輯頂層" }));
+    await user.click(screen.getByRole("button", { name: "將目前層下移" }));
+    expect(screen.getByRole("img", { name: "自定輪廓畫布" })).toBe(canvas);
+    expect(canvas.querySelector("polyline")).toHaveAttribute("points", points);
+    await user.click(screen.getByRole("button", { name: "用此設計參戰" }));
+    expect(onUseDesign.mock.calls[0]![0].layers[1].shape).toBe("circle");
+    await user.click(screen.getByRole("button", { name: "套用自定造型" }));
+    await user.click(screen.getByRole("button", { name: "用此設計參戰" }));
+    expect(onUseDesign.mock.calls[1]![0].layers[1].shape).toBe("custom");
+  });
+  it("工具分頁可用方向鍵、Home、End 操作", async () => {
+    const user = userEvent.setup();
+    render(<DesignerPage />);
+    const tabs = within(screen.getByRole("tablist", { name: "工作台工具" }));
+    expect(screen.getByRole("tabpanel", { name: "層板造型" })).toBeVisible();
+    tabs.getByRole("tab", { name: "層板造型" }).focus();
+    await user.keyboard("{End}");
+    expect(tabs.getByRole("tab", { name: "共用裝配" })).toHaveFocus();
+    expect(screen.getByRole("spinbutton", { name: "螺絲數量" })).toBeVisible();
+    expect(screen.getByRole("tabpanel", { name: "共用裝配" })).toBeVisible();
+    await user.keyboard("{ArrowRight}");
+    expect(tabs.getByRole("tab", { name: "層板造型" })).toHaveFocus();
+    await user.keyboard("{End}{Home}");
+    expect(tabs.getByRole("tab", { name: "層板造型" })).toHaveAttribute("aria-selected", "true");
+  });
+});

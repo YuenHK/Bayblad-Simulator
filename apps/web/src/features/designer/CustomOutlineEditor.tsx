@@ -5,7 +5,7 @@ import type {
   TopDesign,
 } from "@steam-top/domain";
 import { ASSEMBLY } from "@steam-top/domain";
-import { useMemo, useRef, useState, type PointerEvent } from "react";
+import { useId, useMemo, useRef, useState, type PointerEvent } from "react";
 import {
   MAX_RAW_POINTS,
   previewOutline,
@@ -16,6 +16,7 @@ import {
   type OutlineDraft,
 } from "./customOutlineDraft";
 import "./customOutlineEditor.css";
+import { createPortal } from "react-dom";
 
 type Props = {
   draft: OutlineDraft;
@@ -23,6 +24,7 @@ type Props = {
   onApply: (outline: CustomOutline, diameterMm: number) => void;
   screwLayout?: TopDesign["screwLayout"] | undefined;
   rotationDeg?: number;
+  canvasHost?: HTMLElement | null | undefined;
 };
 const coordinates = (points: readonly Point[]) =>
   points.map((p) => `${p.x},${p.y}`).join(" ");
@@ -32,7 +34,9 @@ export function CustomOutlineEditor({
   onApply,
   screwLayout,
   rotationDeg = 0,
+  canvasHost,
 }: Props) {
+  const guideId = useId();
   const active = useRef<{
     id: number;
     points: Point[];
@@ -100,44 +104,12 @@ export function CustomOutlineEditor({
     if (event.currentTarget.hasPointerCapture?.(event.pointerId))
       event.currentTarget.releasePointerCapture(event.pointerId);
   };
-  return (
-    <section className="custom-outline-editor" aria-label="自定造型編輯器">
-      <p>
-        固定軸心 (0, 0)，單位
-        mm。單一封閉外框，可凹入及偏心，不可自行加孔。此處編輯未旋轉的原始輪廓。
-      </p>
-      <label>
-        鏡射方式
-        <select
-          aria-label="鏡射方式"
-          value={mode}
-          onChange={(e) =>
-            onChange({
-              ...draft,
-              mirror: (/^\d+$/.test(e.target.value)
-                ? Number(e.target.value)
-                : e.target.value) as OutlineMirrorMode,
-            })
-          }
-        >
-          <option value="none">無鏡射（完整輪廓）</option>
-          <option value="leftRight">左右鏡射</option>
-          <option value="topBottom">上下鏡射</option>
-          {[4, 6, 8, 12].map((n) => (
-            <option key={n} value={n}>
-              {n} 等分鏡射
-            </option>
-          ))}
-        </select>
-      </label>
-      <p id="custom-outline-guide">
-        {guide} 放開指標後顯示吸附端點；內部筆劃不會自動搬移。
-      </p>
+  const canvas = (
       <svg
         className="custom-outline-canvas"
         viewBox="-44 -44 88 88"
         aria-label="自定輪廓畫布"
-        aria-describedby="custom-outline-guide"
+        aria-describedby={guideId}
         role="img"
         onPointerDown={(event) => {
           if (active.current || event.button !== 0) return;
@@ -235,6 +207,41 @@ export function CustomOutlineEditor({
           +y
         </text>
       </svg>
+  );
+  return (
+    <section className="custom-outline-editor" aria-label="自定造型編輯器">
+      <p>
+        固定軸心 (0, 0)，單位
+        mm。單一封閉外框，可凹入及偏心，不可自行加孔。此處編輯未旋轉的原始輪廓。
+      </p>
+      <label>
+        鏡射方式
+        <select
+          aria-label="鏡射方式"
+          value={mode}
+          onChange={(e) =>
+            onChange({
+              ...draft,
+              mirror: (/^\d+$/.test(e.target.value)
+                ? Number(e.target.value)
+                : e.target.value) as OutlineMirrorMode,
+            })
+          }
+        >
+          <option value="none">無鏡射（完整輪廓）</option>
+          <option value="leftRight">左右鏡射</option>
+          <option value="topBottom">上下鏡射</option>
+          {[4, 6, 8, 12].map((n) => (
+            <option key={n} value={n}>
+              {n} 等分鏡射
+            </option>
+          ))}
+        </select>
+      </label>
+      <p id={guideId}>
+        {guide} 放開指標後顯示吸附端點；內部筆劃不會自動搬移。
+      </p>
+      {canvasHost ? createPortal(canvas, canvasHost) : canvas}
       <div className="custom-outline-settings">
         <label>
           簡化程度（mm）

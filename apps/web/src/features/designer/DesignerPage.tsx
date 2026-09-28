@@ -10,6 +10,10 @@ import {
   type ComponentType,
 } from "react";
 
+import { LayerRail } from "./LayerRail";
+import { WorkbenchTabs } from "./WorkbenchTabs";
+import { OutlineCanvasHost } from "./OutlineCanvasHost";
+import "./makerWorkbench.css";
 import { AssemblyControls } from "./AssemblyControls";
 import { DesignExportControls } from "./DesignExportControls";
 import { ExplodedView } from "./ExplodedView";
@@ -24,14 +28,6 @@ const POSITION_LABELS = {
   bottom: "底層",
 } as const;
 
-const SHAPE_LABELS = {
-  circle: "圓形",
-  polygon: "多邊形",
-  star: "星形",
-  wave: "波浪形",
-  custom: "自定造型",
-} as const;
-
 const ISSUE_LABELS: Record<RuleIssueCode, string> = {
   DIAMETER_OVER_60: "最大直徑為 60 mm",
   HEIGHT_OVER_40: "總高度不可超過 40 mm",
@@ -44,13 +40,18 @@ const ISSUE_LABELS: Record<RuleIssueCode, string> = {
 
 type Position = keyof typeof POSITION_LABELS;
 type PreviewMode = "top" | "exploded" | "3d";
-type WorkspaceTab = "controls" | "preview" | "results";
+type WorkspaceTab = "preview" | "shape" | "assembly";
+type ToolTab = "shape" | "assembly";
 
-const WORKSPACE_TABS: ReadonlyArray<Readonly<{ tab: WorkspaceTab; label: string }>> = [
-  { tab: "controls", label: "控制台" },
-  { tab: "preview", label: "模擬預覽" },
-  { tab: "results", label: "預測結果" },
-];
+const WORKSPACE_TABS = [
+  { id: "preview", label: "預覽", panelId: "workspace-panel-preview" },
+  { id: "shape", label: "造型", panelId: "workspace-panel-shape" },
+  { id: "assembly", label: "裝配", panelId: "workspace-panel-assembly" },
+] as const;
+const TOOL_TABS = [
+  { id: "shape", label: "層板造型", panelId: "workspace-panel-shape" },
+  { id: "assembly", label: "共用裝配", panelId: "workspace-panel-assembly" },
+] as const;
 
 const PREVIEW_TABS: ReadonlyArray<Readonly<{ mode: PreviewMode; label: string }>> = [
   { mode: "top", label: "俯視圖" },
@@ -88,7 +89,28 @@ export function DesignerPage({
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("top");
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("controls");
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("shape");
+  const [tool, setTool] = useState<ToolTab>("shape");
+  const [layerModes, setLayerModes] = useState<Record<string, "basic" | "custom">>({});
+  const [canvasHosts, setCanvasHosts] = useState<Record<string, HTMLDivElement | null>>({});
+  const [outlineSurface, setOutlineSurface] = useState(true);
+  const controlsRef = useRef<HTMLElement>(null);
+  const setCanvasHost = useCallback((id: string, node: HTMLDivElement | null) => {
+    setCanvasHosts((previous) => previous[id] === node ? previous : { ...previous, [id]: node });
+  }, []);
+  const onModeChange = useCallback((id: string, mode: "basic" | "custom") => {
+    setLayerModes((previous) => previous[id] === mode ? previous : { ...previous, [id]: mode });
+  }, []);
+  const changeWorkspace = (tab: WorkspaceTab) => {
+    setWorkspaceTab(tab);
+    if (tab !== "preview") setTool(tab);
+  };
+  const selectLayer = (id: string) => {
+    setSelectedLayerId(id);
+    setTool("shape");
+    setWorkspaceTab("shape");
+    setOutlineSurface(true);
+  };
   const [previewLoadAttempt, setPreviewLoadAttempt] = useState(0);
   const LazyTopPreview3D = useMemo(
     () => lazy(load3DPreview),
@@ -230,46 +252,39 @@ export function DesignerPage({
     };
   }, [draggingLayerId]);
 
+  const customMode = (layerModes[selectedLayerId] ?? (selectedLayer.shape === "custom" ? "custom" : "basic")) === "custom";
+  const showingOutline = customMode && tool === "shape" && outlineSurface;
+  const openCanvas = () => { setOutlineSurface(true); setWorkspaceTab("preview"); };
+  const invalidScopes = [
+    ...design.layers.filter((layer) => [...invalidFieldKeys].some((key) => key.startsWith(layer.id + ":")))
+      .map((layer) => ({ id: layer.id, label: POSITION_LABELS[layer.position] })),
+    ...([...invalidFieldKeys].some((key) => key.startsWith("assembly:")) ? [{ id: "assembly", label: "共用裝配" }] : []),
+  ];
+  const showInvalidScope = (id: string) => {
+    if (id === "assembly") changeWorkspace("assembly"); else selectLayer(id);
+    requestAnimationFrame(() => {
+      controlsRef.current?.querySelector<HTMLElement>('[data-tool-panel]:not([hidden]) [data-layer-controls]:not([hidden]) [aria-invalid="true"], [data-tool-panel="assembly"]:not([hidden]) [aria-invalid="true"]')?.focus();
+    });
+  };
   const readinessValid = validation.valid && invalidFieldKeys.size === 0;
 
   return (
-    <main className="designer-shell game-designer">
+    <main className="designer-shell game-designer maker-workbench" data-workspace={workspaceTab}>
       <header className="page-heading">
         <p className="eyebrow">STEAM 陀螺</p>
         <h1>陀螺設計器</h1>
         <p>調整三層層板與共用裝配設定，數值會即時重新計算。</p>
       </header>
 
-      <div className="designer-workspace-tabs" role="tablist" aria-label="設計室區域">
-        {WORKSPACE_TABS.map(({ tab, label }, index) => <button
-          key={tab}
-          id={`workspace-tab-${tab}`}
-          type="button"
-          role="tab"
-          aria-selected={workspaceTab === tab}
-          aria-controls={`workspace-panel-${tab}`}
-          tabIndex={workspaceTab === tab ? 0 : -1}
-          onClick={() => setWorkspaceTab(tab)}
-          onKeyDown={(event) => {
-            let nextIndex = index;
-            if (event.key === "ArrowRight") nextIndex = (index + 1) % WORKSPACE_TABS.length;
-            else if (event.key === "ArrowLeft") nextIndex = (index - 1 + WORKSPACE_TABS.length) % WORKSPACE_TABS.length;
-            else if (event.key === "Home") nextIndex = 0;
-            else if (event.key === "End") nextIndex = WORKSPACE_TABS.length - 1;
-            else return;
-            event.preventDefault();
-            const next = WORKSPACE_TABS[nextIndex]!.tab;
-            setWorkspaceTab(next);
-            requestAnimationFrame(() => document.getElementById(`workspace-tab-${next}`)?.focus());
-          }}
-        >{label}</button>)}
-      </div>
+      <WorkbenchTabs items={WORKSPACE_TABS} value={workspaceTab} onChange={changeWorkspace} label="設計室區域" idPrefix="workspace-tab" className="workbench-mobile-tabs" />
 
       <div className="designer-layout">
+        <LayerRail layers={design.layers} selectedId={selectedLayerId} draggingId={draggingLayerId} dragOverId={dragOverLayerId}
+          onSelect={selectLayer} onMove={moveSelected} onDragStart={beginDrag} onDragMove={moveCapturedPointer} onDragEnd={endDrag} announcement={reorderAnnouncement} />
         <section id="workspace-panel-preview" className={`panel preview-panel workspace-panel${workspaceTab === "preview" ? " is-active" : ""}`} aria-labelledby="preview-heading" data-workspace-panel="preview">
           <div className="preview-heading-row">
             <h2 id="preview-heading">即時預覽</h2>
-            <div className="preview-tabs" role="tablist" aria-label="預覽模式">
+            <div className="preview-tabs" hidden={showingOutline} role="tablist" aria-label="預覽模式">
               {PREVIEW_TABS.map(({ mode, label }, index) => (
                 <button
                   key={mode}
@@ -298,7 +313,17 @@ export function DesignerPage({
               ))}
             </div>
           </div>
+          {customMode && tool === "shape" ? <div className="outline-surface-tabs" role="group" aria-label="輪廓工作區">
+            <button type="button" aria-pressed={outlineSurface} onClick={() => setOutlineSurface(true)}>編輯輪廓</button>
+            <button type="button" aria-pressed={!outlineSurface} onClick={() => setOutlineSurface(false)}>預覽成品</button>
+          </div> : null}
+          <div className="workbench-canvas-area" hidden={!showingOutline}>
+            <p className="field-note">輪廓草稿 · 套用後才更新成品</p>
+            {design.layers.map((layer) => <OutlineCanvasHost key={layer.id} layerId={layer.id} hidden={layer.id !== selectedLayerId} onHost={setCanvasHost} />)}
+            <button type="button" className="return-outline-tools" onClick={() => changeWorkspace("shape")}>返回造型工具</button>
+          </div>
           <div
+            hidden={showingOutline}
             id="preview-tabpanel"
             className="preview-stage hologram-stage"
             role="tabpanel"
@@ -316,104 +341,23 @@ export function DesignerPage({
           </div>
         </section>
 
-        <section id="workspace-panel-controls" className={`panel controls-panel workspace-panel${workspaceTab === "controls" ? " is-active" : ""}`} aria-labelledby="layer-heading" data-workspace-panel="controls">
-          <h2 id="layer-heading">層板設計</h2>
-          <ol className="layer-list" aria-label="三層排列">
-            {design.layers.map((layer) => (
-              <li
-                key={layer.id}
-                data-layer-id={layer.id}
-                className={[
-                  draggingLayerId === layer.id ? "is-dragging" : "",
-                  draggingLayerId !== null && dragOverLayerId === layer.id
-                    ? "is-drag-target"
-                    : "",
-                ].filter(Boolean).join(" ")}
-              >
-                <div className="layer-summary">
-                  <strong>{POSITION_LABELS[layer.position]}</strong>
-                  <span>{SHAPE_LABELS[layer.shape]}</span>
-                  <span>{layer.diameterMm} mm</span>
-                </div>
-                <button
-                  type="button"
-                  className="drag-handle"
-                  data-source-layer-id={layer.id}
-                  aria-label={`拖動${POSITION_LABELS[layer.position]}以重新排序`}
-                  aria-pressed={draggingLayerId === layer.id}
-                  onPointerDown={(event) => beginDrag(event, layer.id)}
-                  onPointerMove={moveCapturedPointer}
-                  onPointerUp={endDrag}
-                  onPointerCancel={endDrag}
-                  onClick={(event) => event.preventDefault()}
-                >
-                  <span aria-hidden="true">↕</span>
-                </button>
-              </li>
-            ))}
-          </ol>
-
-          <div className="layer-selection-row">
-          <label>
-            目前編輯層
-            <select
-              value={selectedLayer.position}
-              onChange={(event) => {
-                const position = event.currentTarget.value as Position;
-                const layer = design.layers.find(
-                  (candidate) => candidate.position === position,
-                );
-                if (layer !== undefined) setSelectedLayerId(layer.id);
-              }}
-            >
-              {design.layers.map((layer) => (
-                <option key={layer.id} value={layer.position}>
-                  {POSITION_LABELS[layer.position]}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <div className="move-actions" aria-label="調整層次順序">
-            <button
-              type="button"
-              onClick={() => moveSelected("up")}
-              disabled={selectedIndex === 0}
-              aria-label="將目前層上移"
-            >
-              上移
-            </button>
-            <button
-              type="button"
-              onClick={() => moveSelected("down")}
-              disabled={selectedIndex === design.layers.length - 1}
-              aria-label="將目前層下移"
-            >
-              下移
-            </button>
+        <section ref={controlsRef} className="panel controls-panel" aria-label="工作台工具面板">
+          <WorkbenchTabs items={TOOL_TABS} value={tool} onChange={changeWorkspace} label="工作台工具" idPrefix="tool-tab" className="workbench-tool-tabs" />
+          <div id="workspace-panel-shape" role="tabpanel" aria-labelledby="tool-tab-shape" data-tool-panel="shape" hidden={tool !== "shape"}>
+            <h2>層板設計 · {POSITION_LABELS[selectedLayer.position]}</h2>
+            {design.layers.map((layer) => <div key={layer.id} data-layer-controls={layer.id} hidden={selectedLayerId !== layer.id}>
+              <LayerControls layer={layer} screwLayout={design.screwLayout} dispatch={dispatch}
+                onFieldValidityChange={updateFieldValidity} canvasHost={canvasHosts[layer.id]}
+                onModeChange={onModeChange} onOpenCanvas={openCanvas} />
+            </div>)}
           </div>
-          </div>
-
-          <p className="sr-only" aria-live="polite">
-            {reorderAnnouncement}
-          </p>
-
-          <div className="designer-parameter-groups">
-          <LayerControls
-            layer={selectedLayer}
-            screwLayout={design.screwLayout}
-            dispatch={dispatch}
-            onFieldValidityChange={updateFieldValidity}
-          />
-          <AssemblyControls
-            design={design}
-            dispatch={dispatch}
-            onFieldValidityChange={updateFieldValidity}
-          />
+          <div id="workspace-panel-assembly" role="tabpanel" aria-labelledby="tool-tab-assembly" data-tool-panel="assembly" hidden={tool !== "assembly"}>
+            <h2>共用裝配</h2>
+            <AssemblyControls design={design} dispatch={dispatch} onFieldValidityChange={updateFieldValidity} />
           </div>
         </section>
 
-        <aside id="workspace-panel-results" className={`panel results-panel workspace-panel${workspaceTab === "results" ? " is-active" : ""}`} aria-labelledby="results-heading" data-workspace-panel="results">
+        <aside id="workspace-panel-results" className="panel results-panel" aria-labelledby="results-heading" data-workspace-panel="results">
           <h2 id="results-heading">即時計算</h2>
           <dl className="metrics ability-grid" role="group" aria-label="陀螺能力值">
             <div><dt>重量</dt><dd>{format(validation.massProperties.totalMassG)} g</dd></div>
@@ -430,7 +374,9 @@ export function DesignerPage({
 
           <div id="validation-status" className="validation" aria-live="polite">
             {invalidFieldKeys.size > 0 ? (
-              <p className="issue-message">請先修正標示的數值欄位。</p>
+              <div><p className="issue-message">請先修正標示的數值欄位。</p>
+                <div className="invalid-scope-links">{invalidScopes.map(({ id, label }) => <button key={id} type="button" onClick={() => showInvalidScope(id)}>前往{label}修正</button>)}</div>
+              </div>
             ) : null}
             {validation.valid && invalidFieldKeys.size === 0 ? (
               <p className="valid-message">設計符合課堂規格</p>

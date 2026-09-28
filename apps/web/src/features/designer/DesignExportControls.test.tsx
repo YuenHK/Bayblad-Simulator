@@ -13,7 +13,7 @@ it('disables download for invalid visible fields in the designer', async () => {
   render(<DesignerPage />);
   const user = userEvent.setup();
   expect(screen.getByRole('button', { name: '下載 STL（供 3D打印)' })).toBeEnabled();
-  await user.clear(screen.getByLabelText('直徑（mm）'));
+  await user.clear(screen.getByRole('spinbutton', { name: '直徑（mm）' }));
   expect(screen.getByRole('button', { name: '下載 STL（供 3D打印)' })).toBeDisabled();
 });
 

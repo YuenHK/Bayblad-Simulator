@@ -20,7 +20,7 @@ async function openGuest(browser: Browser, custom = false): Promise<{ context: B
 }
 
 async function chooseDesign(page: Page, diameter: string): Promise<void> {
-  await page.getByLabel("直徑（mm）", { exact: true }).fill(diameter);
+  await page.getByRole("spinbutton", { name: "直徑（mm）", exact: true }).fill(diameter);
   await page.getByRole("button", { name: "用此設計參戰" }).click();
   await expect(page.getByRole("heading", { name: "對戰大廳" })).toBeVisible();
 }

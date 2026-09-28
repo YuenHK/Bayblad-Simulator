@@ -37,29 +37,30 @@ async function joinRoom(page: Page, code: string) {
   await expect(page.getByText(`房間碼 ${code}`, { exact: true })).toBeVisible();
 }
 
-test("學生設計、限制、預覽及響應式操作", async ({ page }, testInfo) => {
+test("學生設計、限制、預覽及響應式操作", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
   await page.goto(".");
   await waitConnected(page);
   await expect(page.locator(".student-game")).toBeVisible();
-  await expect(page.getByRole("contentinfo", { name: "專案與更多作品" }).getByRole("link", { name: "進入教師後台" })).toHaveAttribute("href", adminUrl);
+  await expect(page.getByRole("contentinfo", { name: "專案與更多作品" }).getByRole("link", { name: "教師後台" })).toHaveAttribute("href", adminUrl);
   await expect(page.getByRole("button", { name: "關閉音效" })).toBeVisible();
   await expect(page.getByRole("button", { name: "減少動態效果" })).toBeVisible();
   await page.getByRole("combobox", { name: "形狀" }).selectOption("star");
   await page.getByRole("spinbutton", { name: "角數" }).fill("7");
   await page.getByRole("spinbutton", { name: "直徑（mm）" }).fill("61");
+  const narrowTools = await page.getByRole("tablist", { name: "設計室區域" }).isVisible();
+  await page.getByRole("tab", { name: narrowTools ? "裝配" : "共用裝配", exact: true }).click();
   await page.getByRole("combobox", { name: "金屬碟直徑" }).selectOption("30");
-  if (testInfo.project.name === "chromium-phone") await page.getByRole("tab", { name: "預測結果" }).click();
   await expect(page.getByText("最大直徑為 60 mm")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "用此設計參戰" })).toBeEnabled();
-  if (testInfo.project.name === "chromium-phone") await page.getByRole("tab", { name: "控制台" }).click();
+  await page.getByRole("tab", { name: narrowTools ? "造型" : "層板造型", exact: true }).click();
   await page.getByRole("spinbutton", { name: "直徑（mm）" }).fill("58");
   await page.getByRole("button", { name: "將目前層下移" }).click();
-  if (testInfo.project.name === "chromium-phone") {
+  if (narrowTools) {
     await expect(page.getByRole("tablist", { name: "設計室區域" })).toBeVisible();
-    await page.getByRole("tab", { name: "模擬預覽" }).click();
+    await page.getByRole("tab", { name: "預覽", exact: true }).click();
   }
   await page.getByRole("tab", { name: "分解圖" }).click();
   await expect(page.getByRole("img", { name: "陀螺分解圖" })).toBeVisible();

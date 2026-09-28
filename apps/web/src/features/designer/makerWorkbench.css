@@ -1,0 +1,77 @@
+/* Layout only: use the application's existing typography and game palette. */
+.game-designer.maker-workbench [hidden] { display: none !important; }
+.game-designer.maker-workbench .designer-layout { grid-template-columns: 132px minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.game-designer.maker-workbench .preview-panel { grid-column: 2; grid-row: 1; align-self: stretch; display: flex; flex-direction: column; min-width: 0; }
+.game-designer.maker-workbench .controls-panel { grid-column: 3; grid-row: 1; min-width: 0; }
+.game-designer.maker-workbench .results-panel { grid-column: 1 / -1; grid-row: 2; display: block; position: static; }
+.game-designer.maker-workbench .results-panel h2 { margin-bottom: 12px; }
+.game-designer.maker-workbench .metrics { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; }
+.game-designer.maker-workbench .metrics div { display: grid; align-content: start; justify-content: start; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.game-designer.maker-workbench .validation { padding: 0; margin-top: 8px; }
+.game-designer.maker-workbench .design-export-controls { margin-top: 12px; border-top: 1px solid var(--game-line, #ccd5e3); padding-top: 12px; }
+.game-designer.maker-workbench .design-action-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.game-designer.maker-workbench .design-action-row .readiness-button { order: 3; margin: 0 0 0 auto; width: auto; }
+.game-designer.maker-workbench .preview-heading-row { flex-direction: column; align-items: stretch; gap: 10px; }
+.game-designer.maker-workbench .preview-stage { flex: 1; min-height: 330px; }
+.game-designer.maker-workbench .preview-3d-controls, .game-designer.maker-workbench .exploded-view-svg { height: clamp(330px, 45vh, 460px); }
+.game-designer.maker-workbench .top-view-svg { width: 100%; height: clamp(280px, 36vh, 360px); max-height: 360px; }
+.game-designer.maker-workbench .control-group { min-width: 0; margin-top: 12px; }
+.game-designer.maker-workbench .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.game-designer.maker-workbench .control-grid label { min-width: 0; }
+.game-designer.maker-workbench .workbench-layer-rail { min-width: 0; grid-column: 1; grid-row: 1; }
+.game-designer.maker-workbench .layer-list { display: grid; grid-template-columns: 1fr; gap: 10px; padding: 0; margin: 0; }
+.game-designer.maker-workbench .layer-list li { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 0; padding: 0; min-width: 0; overflow: hidden; }
+.game-designer.maker-workbench .layer-select { display: grid; min-width: 0; width: 100%; padding: 8px; border: 0; border-radius: 0; text-align: left; gap: 6px; }
+.game-designer.maker-workbench .layer-select[aria-pressed="true"] { background: rgb(42 91 180 / 42%); box-shadow: inset 3px 0 var(--game-cyan, #2858a5); }
+.game-designer.maker-workbench .layer-select svg { width: 100%; height: 52px; }
+.game-designer.maker-workbench .layer-summary { display: grid; grid-template-columns: 1fr; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.game-designer.maker-workbench .layer-summary strong { grid-row: auto; }
+.game-designer.maker-workbench .drag-handle { align-self: stretch; width: 44px; padding: 0; border: 0; border-radius: 0; }
+.game-designer.maker-workbench .move-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+.game-designer.maker-workbench .move-actions button { padding-inline: 4px; min-width: 0; }
+.game-designer.maker-workbench .workbench-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-bottom: 16px; }
+.game-designer.maker-workbench .workbench-tabs button { min-width: 0; padding-inline: 6px; }
+.game-designer.maker-workbench .workbench-tabs button[aria-selected="true"], .game-designer.maker-workbench .outline-surface-tabs button[aria-pressed="true"] { border-color: var(--game-cyan, #2858a5); background: rgb(42 91 180 / 42%); }
+.game-designer.maker-workbench .workbench-mobile-tabs { display: none; }
+.game-designer.maker-workbench .outline-surface-tabs, .game-designer.maker-workbench .invalid-scope-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.game-designer.maker-workbench .workbench-canvas-area { min-width: 0; flex: 1; }
+.game-designer.maker-workbench .custom-outline-canvas { width: 100%; max-height: 460px; border-color: var(--game-line, #ccd5e3); border-radius: 8px; }
+.game-designer.maker-workbench .return-outline-tools { display: none; }
+.game-designer.maker-workbench .custom-outline-mode { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+.game-designer.maker-workbench .custom-outline-mode button { padding-inline: 4px; }
+.game-designer.maker-workbench .custom-outline-legend { max-width: 100%; }
+.game-designer.maker-workbench .custom-outline-editor { margin-top: 10px; }
+@media (min-width: 900px) and (max-width: 1099px) {
+  .game-designer.maker-workbench .designer-layout { grid-template-columns: 112px minmax(0, 1fr) 300px; gap: 10px; }
+  .game-designer.maker-workbench .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (min-width: 900px) {
+  .game-designer.maker-workbench .results-panel { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 16px; }
+  .game-designer.maker-workbench .results-panel h2 { grid-column: 1; grid-row: 1; margin: 0; }
+  .game-designer.maker-workbench .metrics { grid-column: 2; grid-row: 1; margin: 0; }
+  .game-designer.maker-workbench .validation { grid-column: 1 / -1; grid-row: 2; margin: 0; }
+  .game-designer.maker-workbench .design-export-controls { grid-column: 1 / -1; grid-row: 3; margin-top: 0; }
+}
+@media (max-width: 899px) {
+  .game-designer.maker-workbench .designer-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .game-designer.maker-workbench .workbench-layer-rail { grid-column: 1; grid-row: 1; }
+  .game-designer.maker-workbench .layer-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .game-designer.maker-workbench .layer-list li { grid-template-columns: minmax(0, 1fr); }
+  .game-designer.maker-workbench .layer-select { padding: 8px; gap: 4px; }
+  .game-designer.maker-workbench .layer-select svg { height: 36px; }
+  .game-designer.maker-workbench .drag-handle { width: 100%; min-height: 44px; }
+  .game-designer.maker-workbench .move-actions { display: flex; justify-content: flex-end; }
+  .game-designer.maker-workbench .move-actions button { padding-inline: 14px; }
+  .game-designer.maker-workbench .workbench-mobile-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); position: static; }
+  .game-designer.maker-workbench .workbench-tool-tabs { display: none; }
+  .game-designer.maker-workbench .preview-panel, .game-designer.maker-workbench .controls-panel { grid-column: 1; grid-row: 2; }
+  .game-designer.maker-workbench[data-workspace="preview"] .controls-panel { display: none; }
+  .game-designer.maker-workbench:not([data-workspace="preview"]) .preview-panel { display: none; }
+  .game-designer.maker-workbench[data-workspace="preview"] .preview-panel { display: flex; }
+  .game-designer.maker-workbench .results-panel { grid-column: 1; grid-row: 3; }
+  .game-designer.maker-workbench .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .game-designer.maker-workbench .return-outline-tools { display: inline-flex; }
+  .game-designer.maker-workbench .preview-stage { min-height: 280px; }
+  .game-designer.maker-workbench .design-action-row > button { width: 100%; }
+  .game-designer.maker-workbench .design-action-row .readiness-button { order: -1; margin: 0; width: 100%; }
+}

@@ -1,3 +1,4 @@
+import { ProjectResources } from "./features/project/ProjectResources";
 import type { TopDesign } from "@steam-top/domain";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { DesignerPage } from "./features/designer/DesignerPage";
@@ -84,23 +85,6 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
       frames: state.frames, roundWinner: state.roundFinished?.winner, clockOffsetMs: state.clockOffsetMs,
       matchFinished: state.matchFinished ?? undefined, cancelledReason: state.cancelledReason ?? undefined,
     }} /> : null}
-    {page !== "room" ? <footer className="project-footer designer-shell" aria-label="專案與更多作品">
-      <section className="panel">
-        <h2>了解這個專案</h2>
-        <p>探索 STEAM 陀螺模擬器的功能、運算原理與 MIT 開源程式。</p>
-        <a href="https://github.com/YuenHK/Bayblad-Simulator#readme" target="_blank" rel="noopener noreferrer">專案介紹・GitHub</a>
-      </section>
-      <section className="panel">
-        <h2>我的另一個作品・ShapeCut</h2>
-        <p>把 3D STL 模型轉成雷射切割平面切片，延伸你的 Maker 創作。</p>
-        <a href="https://yuenhk.github.io/ShapeCut/" target="_blank" rel="noopener noreferrer">探索 ShapeCut</a>
-      </section>
-      <section className="panel">
-        <h2>教師後台</h2>
-        <p>查看對戰紀錄、學生排行榜、歷史設計與使用統計。</p>
-        <a href="https://bayblad-simulator-api.onrender.com/admin/" target="_blank" rel="noopener noreferrer">進入教師後台</a>
-      </section>
-      <small>連結會在新分頁開啟，保留你目前的設計與連線。</small>
-    </footer> : null}
+    {page !== "room" ? <ProjectResources /> : null}
   </div>;
 }

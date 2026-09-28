@@ -17,12 +17,17 @@ function stubElementFromPoint(
   });
 }
 
+function control(name: string) {
+  const role = name === "顏色" ? "textbox" : name === "形狀" || name === "金屬碟直徑" ? "combobox" : "spinbutton";
+  return screen.getByRole(role, { name });
+}
+
 async function replaceNumber(
   user: ReturnType<typeof userEvent.setup>,
   label: string,
   value: string,
 ): Promise<void> {
-  const input = screen.getByLabelText(label);
+  const input = control(label);
   await user.clear(input);
   await user.type(input, value);
 }
@@ -37,19 +42,19 @@ describe("DesignerPage", () => {
     expect(screen.getByText("抗撞能力")).toBeVisible();
   });
 
-  it("提供三個設計室頁籤並可用方向鍵切換而不重設輸入", async () => {
+  it("提供預覽、造型、裝配三頁籤並可用方向鍵切換而不重設輸入", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
     const tabs = screen.getByRole("tablist", { name: "設計室區域" });
     expect(within(tabs).getAllByRole("tab")).toHaveLength(3);
     await replaceNumber(user, "直徑（mm）", "58");
-    const controls = screen.getByRole("tab", { name: "控制台" });
+    const controls = screen.getByRole("tab", { name: "造型" });
     controls.focus();
     await user.keyboard("{ArrowRight}");
-    expect(screen.getByRole("tab", { name: "模擬預覽" })).toHaveAttribute("aria-selected", "true");
-    await user.click(screen.getByRole("tab", { name: "預測結果" }));
+    expect(screen.getByRole("tab", { name: "裝配" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("tab", { name: "預覽" }));
     await user.click(controls);
-    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(58);
+    expect(control("直徑（mm）")).toHaveValue(58);
   });
 
   it("只有合規設計可以交給對戰流程，無效設計不會上載", async () => {
@@ -122,14 +127,14 @@ describe("DesignerPage", () => {
       screen.getByRole("button", { name: "規格通過，可參戰" }),
     ).toBeEnabled();
     expect(screen.getByText("設計符合課堂規格")).toBeVisible();
-    expect(screen.getAllByRole("option", { name: /頂層|中層|底層/ })).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: /^編輯(頂|中|底)層$/ })).toHaveLength(3);
   });
 
   it("輸入 61 mm 而重量合規時可參戰", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "top");
+    await user.click(screen.getByRole("button", { name: "編輯頂層" }));
     await replaceNumber(user, "直徑（mm）", "61");
 
     expect(screen.queryByText("最大直徑為 60 mm")).not.toBeInTheDocument();
@@ -142,29 +147,29 @@ describe("DesignerPage", () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
-    await user.selectOptions(screen.getByLabelText("形狀"), "star");
+    await user.selectOptions(control("形狀"), "star");
     await replaceNumber(user, "角數", "9");
     await replaceNumber(user, "直徑（mm）", "58");
     await replaceNumber(user, "圓角程度", "0.25");
     await replaceNumber(user, "旋轉角度（度）", "45");
-    await user.click(screen.getByLabelText("顏色"));
-    await user.clear(screen.getByLabelText("顏色"));
-    await user.type(screen.getByLabelText("顏色"), "#123456");
+    await user.click(control("顏色"));
+    await user.clear(control("顏色"));
+    await user.type(control("顏色"), "#123456");
 
-    expect(screen.getByLabelText("形狀")).toHaveValue("star");
-    expect(screen.getByLabelText("角數")).toHaveValue(9);
-    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(58);
-    expect(screen.getByLabelText("圓角程度")).toHaveValue(0.25);
-    expect(screen.getByLabelText("旋轉角度（度）")).toHaveValue(45);
-    expect(screen.getByLabelText("顏色")).toHaveValue("#123456");
+    expect(control("形狀")).toHaveValue("star");
+    expect(control("角數")).toHaveValue(9);
+    expect(control("直徑（mm）")).toHaveValue(58);
+    expect(control("圓角程度")).toHaveValue(0.25);
+    expect(control("旋轉角度（度）")).toHaveValue(45);
+    expect(control("顏色")).toHaveValue("#123456");
   });
 
   it("圓形明示角數及圓角無作用", () => {
     render(<DesignerPage />);
 
-    expect(screen.getByLabelText("角數")).toBeDisabled();
-    expect(screen.getByLabelText("圓角程度")).toBeDisabled();
-    expect(screen.getByText("圓形不使用角數及圓角程度。")).toBeVisible();
+    expect(control("角數")).toBeDisabled();
+    expect(control("圓角程度")).toBeDisabled();
+    expect(screen.getAllByText("圓形不使用角數及圓角程度。").filter((node) => !node.closest("[hidden]"))).toHaveLength(1);
   });
 
   it("重排完整層資料並同步頂中底位置", async () => {
@@ -174,14 +179,14 @@ describe("DesignerPage", () => {
     const idsBefore = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
     );
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+    await user.click(screen.getByRole("button", { name: "編輯中層" }));
     await replaceNumber(user, "直徑（mm）", "42");
     await user.click(screen.getByRole("button", { name: "將目前層上移" }));
 
     const summaries = screen.getAllByRole("listitem");
     expect(within(summaries[0]!).getByText("頂層")).toBeVisible();
     expect(within(summaries[0]!).getByText("42 mm")).toBeVisible();
-    expect(screen.getByLabelText("目前編輯層")).toHaveValue("top");
+    expect(screen.getByRole("button", { name: "編輯頂層" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("中層層板已移至頂層")).toHaveAttribute(
       "aria-live",
       "polite",
@@ -202,7 +207,7 @@ describe("DesignerPage", () => {
       item.getAttribute("data-layer-id"),
     );
 
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+    await user.click(screen.getByRole("button", { name: "編輯中層" }));
     await replaceNumber(user, "直徑（mm）", "42");
     const targetLayer = screen.getAllByRole("listitem")[0]!;
     const sourceHandle = screen.getByRole("button", {
@@ -222,8 +227,8 @@ describe("DesignerPage", () => {
 
     const summaries = screen.getAllByRole("listitem");
     expect(within(summaries[0]!).getByText("42 mm")).toBeVisible();
-    expect(screen.getByLabelText("目前編輯層")).toHaveValue("top");
-    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(42);
+    expect(screen.getByRole("button", { name: "編輯頂層" })).toHaveAttribute("aria-pressed", "true");
+    expect(control("直徑（mm）")).toHaveValue(42);
     const idsAfter = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
     );
@@ -268,7 +273,7 @@ describe("DesignerPage", () => {
     const addListener = vi.spyOn(window, "addEventListener");
     const removeListener = vi.spyOn(window, "removeEventListener");
     const { container } = render(<DesignerPage />);
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+    await user.click(screen.getByRole("button", { name: "編輯中層" }));
 
     const idsBefore = Array.from(container.querySelectorAll(".layer-list [data-layer-id]"), (item) =>
       item.getAttribute("data-layer-id"),
@@ -325,6 +330,7 @@ describe("DesignerPage", () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
+    await user.click(screen.getByRole("tab", { name: "共用裝配" }));
     expect(screen.getAllByLabelText("螺絲數量")).toHaveLength(1);
     expect(screen.getAllByLabelText("螺絲半徑（mm）")).toHaveLength(1);
     expect(screen.getAllByLabelText("螺絲旋轉角度（度）")).toHaveLength(1);
@@ -340,7 +346,8 @@ describe("DesignerPage", () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
-    const metalDisc = screen.getByLabelText("金屬碟直徑");
+    await user.click(screen.getByRole("tab", { name: "共用裝配" }));
+    const metalDisc = control("金屬碟直徑");
     expect(within(metalDisc).getAllByRole("option")).toHaveLength(7);
     expect(within(metalDisc).getByRole("option", { name: "沒有" })).toBeVisible();
     for (const diameter of [10, 20, 30, 40, 50, 55]) {
@@ -371,11 +378,11 @@ describe("DesignerPage", () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
-    await user.clear(screen.getByLabelText("直徑（mm）"));
+    await user.clear(control("直徑（mm）"));
 
     expect(screen.getByRole("heading", { name: "陀螺設計器" })).toBeVisible();
-    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(null);
-    expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
+    expect(control("直徑（mm）")).toHaveValue(null);
+    expect(control("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByText("請輸入 20 至 80、每格 0.01 的有效數值")).toBeVisible();
     expect(
       screen.getByRole("button", { name: "規格未通過，請先修正" }),
@@ -388,8 +395,8 @@ describe("DesignerPage", () => {
 
     await replaceNumber(user, "直徑（mm）", "999");
 
-    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(999);
-    expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
+    expect(control("直徑（mm）")).toHaveValue(999);
+    expect(control("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByText("請輸入 20 至 80、每格 0.01 的有效數值")).toBeVisible();
     expect(
       screen.getByRole("button", { name: "規格未通過，請先修正" }),
@@ -399,46 +406,46 @@ describe("DesignerPage", () => {
   it("角數不接受小數或 step mismatch", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
-    await user.selectOptions(screen.getByLabelText("形狀"), "polygon");
+    await user.selectOptions(control("形狀"), "polygon");
 
-    fireEvent.change(screen.getByLabelText("角數"), {
+    fireEvent.change(control("角數"), {
       target: { value: "3.5" },
     });
 
-    expect(screen.getByLabelText("角數")).toHaveValue(3.5);
-    expect(screen.getByLabelText("角數")).toHaveAttribute("aria-invalid", "true");
+    expect(control("角數")).toHaveValue(3.5);
+    expect(control("角數")).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByText("請輸入 3 至 16 的有效整數")).toBeVisible();
     expect(
       screen.getByRole("button", { name: "規格未通過，請先修正" }),
     ).toBeDisabled();
   });
 
-  it("切換至 canonical value 相同的另一層會重設 draft 並清除舊錯誤", async () => {
+  it("切換至相同 canonical value 的另一層不混淆草稿，隱藏錯誤仍阻止參戰", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
     await replaceNumber(user, "直徑（mm）", "55");
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
-    await user.clear(screen.getByLabelText("直徑（mm）"));
-    expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
+    await user.click(screen.getByRole("button", { name: "編輯中層" }));
+    await user.clear(control("直徑（mm）"));
+    expect(control("直徑（mm）")).toHaveAttribute("aria-invalid", "true");
 
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "top");
+    await user.click(screen.getByRole("button", { name: "編輯頂層" }));
 
-    expect(screen.getByLabelText("直徑（mm）")).toHaveValue(55);
-    expect(screen.getByLabelText("直徑（mm）")).toHaveAttribute("aria-invalid", "false");
-    expect(screen.queryByText("請輸入 20 至 80、每格 0.01 的有效數值")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "規格通過，可參戰" }),
-    ).toBeEnabled();
+    expect(control("直徑（mm）")).toHaveValue(55);
+    expect(control("直徑（mm）")).toHaveAttribute("aria-invalid", "false");
+    expect(screen.getByText("請輸入 20 至 80、每格 0.01 的有效數值")).not.toBeVisible();
+    expect(screen.getByRole("button", { name: "規格未通過，請先修正" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "前往中層修正" }));
+    expect(control("直徑（mm）")).toHaveValue(null);
   });
 
   it("清空顏色會標示格式錯誤並停用參戰", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
-    await user.clear(screen.getByLabelText("顏色"));
+    await user.clear(control("顏色"));
 
-    expect(screen.getByLabelText("顏色")).toHaveValue("");
-    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "true");
+    expect(control("顏色")).toHaveValue("");
+    expect(control("顏色")).toHaveAttribute("aria-invalid", "true");
     expect(
       screen.getByText("請輸入 #RRGGBB 格式的顏色，例如 #2563EB"),
     ).toBeVisible();
@@ -451,11 +458,11 @@ describe("DesignerPage", () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
-    await user.clear(screen.getByLabelText("顏色"));
-    await user.type(screen.getByLabelText("顏色"), invalidColor);
+    await user.clear(control("顏色"));
+    await user.type(control("顏色"), invalidColor);
 
-    expect(screen.getByLabelText("顏色")).toHaveValue(invalidColor);
-    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "true");
+    expect(control("顏色")).toHaveValue(invalidColor);
+    expect(control("顏色")).toHaveAttribute("aria-invalid", "true");
     expect(
       screen.getByRole("button", { name: "規格未通過，請先修正" }),
     ).toBeDisabled();
@@ -464,52 +471,50 @@ describe("DesignerPage", () => {
   it("修正為合法 #RRGGBB 後恢復並寫入 design", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
-    await user.clear(screen.getByLabelText("顏色"));
-    await user.type(screen.getByLabelText("顏色"), "#123");
+    await user.clear(control("顏色"));
+    await user.type(control("顏色"), "#123");
 
-    await user.clear(screen.getByLabelText("顏色"));
-    await user.type(screen.getByLabelText("顏色"), "#ABCDEF");
+    await user.clear(control("顏色"));
+    await user.type(control("顏色"), "#ABCDEF");
 
-    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "false");
+    expect(control("顏色")).toHaveAttribute("aria-invalid", "false");
     expect(
       screen.queryByText("請輸入 #RRGGBB 格式的顏色，例如 #2563EB"),
     ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "規格通過，可參戰" }),
     ).toBeEnabled();
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "top");
-    expect(screen.getByLabelText("顏色")).toHaveValue("#ABCDEF");
+    await user.click(screen.getByRole("button", { name: "編輯中層" }));
+    await user.click(screen.getByRole("button", { name: "編輯頂層" }));
+    expect(control("顏色")).toHaveValue("#ABCDEF");
   });
 
-  it("切換至 canonical 顏色相同的另一層會重設並清除舊顏色錯誤", async () => {
+  it("切換至相同 canonical 顏色的另一層不混淆草稿，隱藏顏色錯誤仍阻止參戰", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
-    await user.clear(screen.getByLabelText("顏色"));
-    await user.type(screen.getByLabelText("顏色"), "#2563eb");
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "top");
-    await user.clear(screen.getByLabelText("顏色"));
-    await user.type(screen.getByLabelText("顏色"), "#123");
-    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "true");
+    await user.click(screen.getByRole("button", { name: "編輯中層" }));
+    await user.clear(control("顏色"));
+    await user.type(control("顏色"), "#2563eb");
+    await user.click(screen.getByRole("button", { name: "編輯頂層" }));
+    await user.clear(control("顏色"));
+    await user.type(control("顏色"), "#123");
+    expect(control("顏色")).toHaveAttribute("aria-invalid", "true");
 
-    await user.selectOptions(screen.getByLabelText("目前編輯層"), "middle");
+    await user.click(screen.getByRole("button", { name: "編輯中層" }));
 
-    expect(screen.getByLabelText("顏色")).toHaveValue("#2563eb");
-    expect(screen.getByLabelText("顏色")).toHaveAttribute("aria-invalid", "false");
-    expect(
-      screen.queryByText("請輸入 #RRGGBB 格式的顏色，例如 #2563EB"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "規格通過，可參戰" }),
-    ).toBeEnabled();
+    expect(control("顏色")).toHaveValue("#2563eb");
+    expect(control("顏色")).toHaveAttribute("aria-invalid", "false");
+    expect(screen.getByText("請輸入 #RRGGBB 格式的顏色，例如 #2563EB")).not.toBeVisible();
+    expect(screen.getByRole("button", { name: "規格未通過，請先修正" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "前往頂層修正" }));
+    expect(control("顏色")).toHaveValue("#123");
   });
 
-  it("主要控制都有可存取標籤及鍵盤按鈕", () => {
+  it("主要控制都有可存取標籤及鍵盤按鈕", async () => {
+    const user = userEvent.setup();
     render(<DesignerPage />);
 
     for (const label of [
-      "目前編輯層",
       "形狀",
       "角數",
       "直徑（mm）",
@@ -521,7 +526,8 @@ describe("DesignerPage", () => {
       "螺絲旋轉角度（度）",
       "金屬碟直徑",
     ]) {
-      expect(screen.getByLabelText(label)).toBeVisible();
+      if (label === "螺絲數量") await user.click(screen.getByRole("tab", { name: "共用裝配" }));
+      expect(control(label)).toBeVisible();
     }
     expect(screen.getByRole("button", { name: "將目前層上移" })).toBeVisible();
     expect(screen.getByRole("button", { name: "將目前層下移" })).toBeVisible();

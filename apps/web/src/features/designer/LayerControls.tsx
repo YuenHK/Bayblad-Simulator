@@ -1,6 +1,6 @@
 import type { Layer, TopDesign } from "@steam-top/domain";
 import { layerSchema } from "@steam-top/domain";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ColorField } from "./ColorField";
 import { NumericField, type FieldValidityChange } from "./NumericField";
@@ -13,6 +13,9 @@ type LayerControlsProps = Readonly<{
   dispatch: React.Dispatch<DesignerAction>;
   onFieldValidityChange: FieldValidityChange;
   screwLayout?: TopDesign["screwLayout"];
+  canvasHost?: HTMLElement | null | undefined;
+  onModeChange?: ((id: string, mode: "basic" | "custom") => void) | undefined;
+  onOpenCanvas?: (() => void) | undefined;
 }>;
 
 export function LayerControls({
@@ -20,6 +23,9 @@ export function LayerControls({
   dispatch: applyDispatch,
   onFieldValidityChange,
   screwLayout,
+  canvasHost,
+  onModeChange,
+  onOpenCanvas,
 }: LayerControlsProps) {
   const [modes, setModes] = useState<Record<string, "basic" | "custom">>({});
   const [drafts, setDrafts] = useState<Record<string, OutlineDraft>>({});
@@ -28,6 +34,7 @@ export function LayerControls({
   const mode =
     modes[appliedLayer.id] ??
     (appliedLayer.shape === "custom" ? "custom" : "basic");
+  useEffect(() => { onModeChange?.(appliedLayer.id, mode); }, [appliedLayer.id, mode, onModeChange]);
   const { outline: _outline, ...basicFields } = appliedLayer;
   const layer =
     mode === "basic" && appliedLayer.shape === "custom"
@@ -124,9 +131,11 @@ export function LayerControls({
         </button>
       </span>
       </legend>
+      {mode === "custom" && onOpenCanvas ? <button type="button" className="open-outline-canvas" onClick={onOpenCanvas}>前往畫布</button> : null}
       {mode === "custom" ? (
         <CustomOutlineEditor
           key={appliedLayer.id}
+          canvasHost={canvasHost}
           draft={draft}
           screwLayout={screwLayout}
           rotationDeg={appliedLayer.rotationDeg}
