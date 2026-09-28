@@ -8,11 +8,29 @@
 
 ## 2026-09-28 本機實作與驗收紀錄
 
+### 最新檢查點：公開部署及教師／學生驗收完成
+
+- 使用者已明確回覆「確認公開部署」，共用存取部署授權已解除，不需再次詢問。
+- 2026-09-28 12:02 HKT：Render `dep-dasuc3npn0mc73a41pg0` 標示 `0435c9d` Live，建置產物為 `index-D3gwp0Bp.js`；但公開 `/admin/` 實際仍回傳 `index-FuFJ4NX8.js`，新資產 404，單一口令登入 HTTP 400。公開教師測試第一項失敗於仍顯示舊帳密介面，已停止其餘測試；不能宣稱新版本驗收成功。
+- 12:05 重新啟動已記錄於 Render Events；其後短暫 suspend/resume 已恢復服務，仍回傳舊版本。未刪資料、未變更環境憑證、未推 main。
+- 第二次指定部署 `dep-dasug9bbc2fs73aeec10` 於 12:08:58 HKT Live，公开 `/admin/` 已回傳 `index-D3gwp0Bp.js`／`index-YRWdMXh2.css`，ready/database/migration 均正常，版本不一致已解除。未確認供應商內部根因，不推斷是應用程式錯誤。
+- 正式教師測試 Chromium 桌面、Firefox 桌面、WebKit iPad 模擬、Chromium 手機模擬 **4/4 passed（1.0 分鐘）**：錯誤口令、共用登入、四頁籤、三類歷史靜態 3D、無改密碼及刪除按鈕、登出、空日期範圍六工作表 Excel 均通過。沒有匯出學生內容或刪資料。
+- `0435c9d` 已 fast-forward 推送 main；Pages `36376599095` build/deploy 全部 success。發佈後學生設計／限制／3D 預覽／響應式四個瀏覽器項目 **4/4 passed（50.3 秒）**。實體 iPad／雷射試切不在此公開軟件驗收證據內。
+- 收尾例外：嘗試停用原 `automation` 未成功；工具 view 只回傳渲染卡片，update 要求 name/prompt/rrule 完整原設定，但本機 automations 目錄沒有此設定檔。沒有捏造排程或建立重複任務，不可宣稱已停用。功能及公開部署均已完成，後續 heartbeat 不應重做部署；只需處理原排程停用。
+- 公開登入截圖（忽略於 Git）：`test-results-public-shared-console/shared-login-public.png`。
+
+以下為先前驗證紀錄，部署前等待確認狀態已被上述最新檢查點取代。
+
+- 已提交並推送 `codex/shared-teacher-console-validation`：`0435c9dafe9e8dcc9cec0af71cf1f2dc6a577b9e`。
+- 完整本機測試通過：domain 191、protocol 101、web 203、db 21、server 523、integration/CI 212；32 個需特定環境的案例本機略過。typecheck、lint、build 通過。
+- GitHub Actions `36373977929` 的 quality 與 production-security 全部 success；真 PostgreSQL workflow `36373977812` success。
+- 共用存取的風險已獲使用者在部署前明確確認：知道網址及口令的人能查看及匯出既有學生資料。已完成正式部署及上述公開教師測試。
+
 - 工作 1–3 已實作：共用口令、停用改密碼與永久刪除端點、歷史完整幾何／顏色、篩選後的最高分設計、四頁籤、懶載入靜態 SVG 立體縮圖。沒有資料庫結構變更或刪除學生資料。
 - 新增 auth、protocol、歷史 projection、靜態幾何及 UI 回歸測試，先觀察失敗再實作；原有 session／CSRF／限流／來源檢查保留。
 - `pnpm typecheck`、`pnpm lint`、`pnpm build` 通過。Playwright admin 5/5 通過（33.9 秒）；1440px／390px 四區截圖已檢查，頁面無水平溢出，篩選預設折疊。
 - 獨立程式審查指出兩處 CI smoke 登入 payload 及公開測試匯出後日期未還原，均已修正；新增 CI payload 回歸。安全 writer 校驗只更新已審核的兩個工作雜湊，權限／授權守衛／互斥鎖未改。
-- 下一步：全套回歸通過後提交驗證分支；真 PostgreSQL／CI／正式部署／公開教師验收尚未完成，不能視為已上線。
+- 全套回歸、真 PostgreSQL、CI、正式 Render 部署及公開教師驗收均已完成；Pages 收尾狀態見頂部最新檢查點。
 
 以下保留原始逐項驗收清單；最終勾選以完整 CI 與公開驗收證據為準。
 

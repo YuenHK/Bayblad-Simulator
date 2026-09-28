@@ -1,5 +1,7 @@
 # 自定輪廓實作計劃
 
+> 最新接續狀態（2026-09-28）：使用者已「確認公開部署」。共用教師控制台 `0435c9d` 已由 Render `dep-dasug9bbc2fs73aeec10` 正式上線，公開版本不一致已解除，ready 正常；main 同一 SHA，Pages `36376599095` success。正式教師 4/4（1.0 分鐘）及學生設計室 4/4（50.3 秒）驗收通過；原自定輪廓／STL→ShapeCut／完整雙人及人機對戰證據仍有效，軟件部署驗收完成，未刪学生資料。詳見 `2026-09-28-shared-teacher-console.md`。唯一收尾例外：原 automation 停用因讀不到完整設定而未成功；後續不得重做已完成的功能及部署，只處理停用排程。實體 iPad／試切仍未驗證。
+
 > 面向 AI 工作者：使用 subagent-driven-development 逐項實作及兩階段審查。所有測試先觀察紅燈，再實作。不得把部分完成版本部署到公開網站。
 
 **目標：** 實作已批准的 `../specs/2026-09-27-custom-layer-outlines-design.md`。
