@@ -23,3 +23,9 @@
 已觀察新增前端及 API 測試紅燈，再完成實作。相關 API 6/6、UI 14/14；完整 `pnpm test` 重跑成功（domain 191、protocol 101、web 204、db 21、server 524、整合 212，32 項特定環境略過）；typecheck、lint、build 通過。首次與瀏覽器並行的效能測試得到 100.5ms 超過 100ms，移除並行負載後完整重跑通過，未修改測試上限。
 
 教師 E2E 5/5、頁尾桌面／手機 E2E 2/2 通過，已檢視 1440px／390px 截圖。只讀獨立審查無 Critical／Important／Minor；未修改 CSS、登入機制、資料庫或學生資料。下一步驗證分支 CI，通過後正式部署及公開頁面驗收。
+
+## 部署接續點
+
+程式提交 `1a238b6ec81bd5d1578629345975b8fb44c3c5d9` 已推 `codex/teacher-entry-validation`，尚未推 main。PostgreSQL `36378076732` success；品質流程 `36378076779` 最後核實仍在 `pnpm test:e2e`，須讀取最終結果及後續安全 job。
+
+Render 曾開啟指定提交搜尋視窗，但未按 Deploy Commit。Chrome 控制逾時後連線消失：瀏覽器清單只剩內置瀏覽器，原 Chrome ID 2 不可用。沒有切換登入方式、讀取憑證或繞過控制限制。待使用者重新連接 Chrome，先核實 CI 完整通過，部署指定提交並驗收教師端無平台控制，再推 main／核實 Pages 及公開頁尾新連結。正式網站仍為前一版本，不能宣稱本次已上線。
