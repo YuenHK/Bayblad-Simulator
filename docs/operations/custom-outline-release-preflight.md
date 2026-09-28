@@ -1,5 +1,13 @@
 # 自定造型發佈前檢查
 
+## 2026-09-28 11:02 最新交接
+
+- 正式後端已更新785cb5d：Render `dep-daste5vpn0mc739vtpt0` Deploy succeeded / Live，全部 migration already-applied，readiness ready/database ok/migration ok。GitHub main=785cb5d；Pages36371787616 success，前台程式內容與c8b4950相同（修正只在後端儲存驗證）。
+- 以 `CINEMATIC_BATTLES=1 pnpm exec playwright test --config playwright.cinematic-public.config.ts --grep 'two guests|custom computer' --output test-results-public-fixed-cinematic` 重跑公開網站：**2/2 passed，4.4分鐘**。自定對基本雙人2.3分鐘、人機2.1分鐘，完整30秒回合、Miss最低力、召喚／決勝、結算及返回同房再準備。已查看實際神獸演出截圖。
+- 前述結算驗證錯誤已由回歸、PG CI及公开完整對戰共同證明修復。首次失敗測試紀錄及原有學生資料均保留，沒有刪除或偽造完成紀錄。
+- **唯一登入阻擋：** 公開教師頁仍需使用者登入。Chrome 已保留 `https://bayblad-simulator-api.onrender.com/admin/`，使用者不需把密碼傳給代理。登入後才能做正式高分縮圖／篩選／統計／Excel驗收；本機教師2項E2E及PG已通過不能替代此公開驗收。
+- 不需重做已通過的Neon備份、遷移、學生畫布8項、ShapeCut3項、公開完整雙人／人機。沒有新登入通知或新失敗時保持安靜，勿反覆嘗試同一登入。所有公開驗收完成後才停用automation；實體iPad與雷射試切仍屬硬件驗收邊界。
+
 ## 2026-09-28 10:43 公開驗收與修正
 
 - 後續核實：785cb5d 品質／安全 CI36370870991、PostgreSQL CI36370870996 均完整 success；已提交 Render 修正版部署，仍須公開長播重驗。人機 observer 測試本機通過（1.7分鐘）；公開基本ShapeCut桌面1280／手機390兩項亦通過。教師端仍停在登入頁。
