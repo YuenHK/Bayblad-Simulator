@@ -26,6 +26,22 @@
 
 ## 部署閘門
 
-本機完整驗收已完成，尚未部署。必須通過 GitHub CI 安全及 PostgreSQL 閘門後，才推進 main／GitHub Pages。此輪不需要重新部署 Render。
+功能版本 `079c089fa9d002fa8e4944abb69b66155c137f5d` 已部署。
 
-公開版本識別、跨引擎及 ShapeCut 真實收件結果待部署後補記。沒有進行實體製造或課堂驗收。
+- CI `36382188568`：quality／production-security 均 success；PostgreSQL schema `36382188557` success。先核實成功，才 fast-forward main。
+- Pages `36383221294`：success，head SHA 與上述版本一致。
+- 公開 `assets/index-CHoKnQYz.js` 與 Pages artifact 的 SHA-256 同為 `f5b896feb82e28b08d3f41115dc521169f55f2fb6fee4fd0f45f6ff439a6dd20`，公開主頁亦引用此檔案。
+- 公開 Chrome、Firefox、WebKit iPad 模擬、Chrome 手機模擬：4/4 通過（52.3 秒）。
+- 公開 STL 下載：11,984 個三角面、二進位長度正確、Z 範圍 0–18mm；ShapeCut 實際接收 `bayblad-3layers-6mm-mm.stl` 並進入材料選擇頁，原設計仍為 44mm、無 pageerror。三個頁尾資源 URL／新分頁契約通過。
+- 公開兩位訪客完整對戰：Apple M1／Metal 正常視窗 1/1 通過（2.3 分鐘），涵蓋 30 秒、雙方同步、技能／可見勝負畫面、計分、返回原房及再準備。
+- 本輪沒有操作 Render 部署、暫停平台或刪除學生資料。
+
+## 測試環境限制與修正
+
+額外公開對戰的 SwiftShader 軟件 GPU 雙視窗測試未全部通過，不能稱為該環境已驗收：
+
+1. 原測試用 Node 收到 locator 回應的時間當畫面時間，兩次召喚階段分別記成 28.504／27.733 秒，超過 26.5 秒門檻。trace 顯示第一次瀏覽器實際已在約 25.4／25.9 秒辨識召喚，但傳回／後續讀取延遲約 2–4 秒。
+2. 改用每頁 MutationObserver 記錄畫面轉換的一刻，仍保留原 2,500ms 同步與階段界線、30 秒、技能及每位玩家每輪勝負可見性。沒有放寬限制或修改正式對戰程式。
+3. 軟件 GPU 重測末段仍曾耗 33.645 秒，超過 32.5 秒門檻；此性能限制如實保留。以 `PUBLIC_HARDWARE_GPU=1` 使用正常硬件加速後，完整公開驗收通過。
+
+後續測試工具變更只影響公開驗收腳本及 opt-in 硬件設定，不改部署的前台產物。最後 typecheck 通過；唯讀複核確認未弱化可見性或時間斷言。沒有進行實體 iPad、製造或課堂驗收。

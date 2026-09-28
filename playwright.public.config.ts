@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Opt-in physical desktop GPU acceptance; keep software rendering as the default.
+const hardwareGpu = process.env.PUBLIC_HARDWARE_GPU === "1";
+
 export default defineConfig({
   testDir: "./tests/public-e2e",
   timeout: 90_000,
@@ -14,7 +17,7 @@ export default defineConfig({
     video: "retain-on-failure",
   },
   projects: [
-    { name: "chromium-desktop", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 }, launchOptions: { args: ["--enable-webgl", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] } } },
+    { name: "chromium-desktop", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 }, launchOptions: { headless: !hardwareGpu, args: hardwareGpu ? ["--enable-webgl", ...(process.platform === "darwin" ? ["--use-angle=metal"] : [])] : ["--enable-webgl", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] } } },
     { name: "firefox-desktop", use: { ...devices["Desktop Firefox"], viewport: { width: 1440, height: 900 } } },
     { name: "webkit-ipad", use: { ...devices["iPad (gen 7) landscape"] } },
     { name: "chromium-phone", use: { ...devices["Pixel 7"], launchOptions: { args: ["--enable-webgl", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] } } },

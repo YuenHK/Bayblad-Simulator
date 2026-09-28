@@ -9,9 +9,34 @@ async function waitConnected(page: Page) {
 }
 
 type RoundTiming = { roundId: string; startsAtMs: number; durationMs: number };
+type PhaseObservation = { round: number; phase: string; elapsed: number; observedAt: number; roundStartAt: number; victory: boolean; victoryVisible: boolean; resultHeading: boolean; skill: string };
 async function openIsolatedGuest(browser: Browser, timings: RoundTiming[] = []): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true });
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    const observations: PhaseObservation[] = [];
+    Object.assign(window, { publicPhaseObservations: observations });
+    let round = 0, previousPhase = "", roundStartAt = 0;
+    new MutationObserver(() => {
+      const arena = document.querySelector('[data-testid="battle-arena-3d"]');
+      if (!arena) return;
+      const phase = arena.getAttribute("data-phase") ?? "";
+      const elapsed = Number(document.querySelector('[data-testid="cinematic-battle"]')?.getAttribute("data-elapsed-ms"));
+      const observedAt = Date.now();
+      if (phase === "battle" && previousPhase !== "battle") { round++; roundStartAt = observedAt - elapsed; }
+      previousPhase = phase;
+      if (!round) return;
+      const victory = document.querySelector('[data-testid="arena-victory"]');
+      const victoryBounds = victory?.getBoundingClientRect();
+      const entry = { round, phase, elapsed, observedAt, roundStartAt,
+        victory: Boolean(victory),
+        victoryVisible: Boolean(victory && victoryBounds && victoryBounds.width > 0 && victoryBounds.height > 0 && !["hidden", "collapse"].includes(getComputedStyle(victory).visibility)),
+        resultHeading: [...document.querySelectorAll("h1,h2,h3")].some(node => node.textContent === "對戰結果"),
+        skill: arena.querySelector(".cinema-skill strong")?.textContent ?? "" };
+      const previous = observations.at(-1);
+      if (!previous || previous.round !== round || previous.phase !== phase || previous.victory !== entry.victory || previous.victoryVisible !== entry.victoryVisible || previous.resultHeading !== entry.resultHeading || previous.skill !== entry.skill) observations.push(entry);
+    }).observe(document, { subtree: true, attributes: true, childList: true, characterData: true });
+  });
   page.on("websocket", (socket) => socket.on("framereceived", ({ payload }) => {
     // Retain only timing metadata; never log full protocol messages or student records.
     const frame = String(payload);
@@ -176,28 +201,30 @@ test("兩個獨立訪客完成同步 30 秒 3D 對戰、賽後計分及返回原
       const timing=ownerTimings[attempt]!;
       expect(timing.durationMs).toBe(30000);
       expect(peerTimings[attempt]).toEqual(timing);
-      // Anchor the test clock to the rendered server-adjusted elapsed time.
-      // Comparing Date.now() directly to a remote server timestamp mixes clocks.
-      const localRoundStart = Date.now() - Number(await owner.page.getByTestId("cinematic-battle").getAttribute("data-elapsed-ms"));
-      // Both clients independently reach the same phase on the shared server schedule.
+      // Timestamp transitions inside each page. Software WebGL/trace transport
+      // can delay a successful locator response by seconds, after the phase occurred.
+      // Preserve the same 2500ms bounds; do not count driver round-trip latency.
       for (const phase of ["summon","strike","result"] as const) {
-        const reached=await Promise.all(arenas.map(async arena=>{await expect(arena).toHaveAttribute("data-phase",phase,{timeout:phase === "summon" ? 52000 : 9000});return Date.now();}));
-        // Both pages share the exact server schedule above. Locator polling is
-        // single-threaded, so allow one polling cycle of observation skew.
-        expect(Math.abs(reached[0]!-reached[1]!)).toBeLessThan(2500);
+        const reached = await Promise.all([owner.page, peer.page].map(async page => {
+          const read = () => page.evaluate(({ round, phase }) =>
+            (window as unknown as { publicPhaseObservations: PhaseObservation[] }).publicPhaseObservations.find(entry => entry.round === round && entry.phase === phase && (phase !== "result" || entry.victoryVisible)), { round: attempt + 1, phase });
+          await expect.poll(read, { timeout: phase === "summon" ? 52000 : 9000 }).toBeTruthy();
+          return (await read())!;
+        }));
+        expect(Math.abs(reached[0]!.observedAt-reached[1]!.observedAt)).toBeLessThan(2500);
         const boundary=phase === "summon" ? 24000 : phase === "strike" ? 27000 : 30000;
-        // The test host and server are separate clocks; UI uses its measured server offset.
-        expect(Math.min(...reached)-localRoundStart).toBeGreaterThanOrEqual(boundary-250);
-        await Promise.all([owner.page,peer.page].map(async page => expect(Number(await page.getByTestId("cinematic-battle").getAttribute("data-elapsed-ms"))).toBeGreaterThanOrEqual(boundary)));
-        expect(Math.max(...reached)-localRoundStart).toBeLessThan(boundary+2500);
+        for (const entry of reached) {
+          expect(entry.elapsed).toBeGreaterThanOrEqual(boundary);
+          expect(entry.elapsed).toBeLessThan(boundary+2500);
+          expect(entry.observedAt-entry.roundStartAt).toBeGreaterThanOrEqual(boundary-250);
+          expect(entry.observedAt-entry.roundStartAt).toBeLessThan(boundary+2500);
+        }
         if (process.env.PUBLIC_CAPTURE_ARENA === "1") await testInfo.attach(`round-${attempt+1}-${phase}.png`, { body: await arenas[0]!.locator("canvas").screenshot(), contentType: "image/png" });
         if (phase !== "result") {
-          await Promise.all([owner.page,peer.page].map(async page=>{await expect(page.getByTestId("arena-victory")).toHaveCount(0);await expect(page.getByRole("heading",{name:"對戰結果"})).toHaveCount(0);}));
-          await Promise.all(arenas.map(arena=>expect(arena.locator(".cinema-skill strong")).not.toBeEmpty()));
+          for (const entry of reached) { expect(entry.victory).toBe(false); expect(entry.resultHeading).toBe(false); expect(entry.skill).not.toBe(""); }
         } else {
           // No early completion: every played round must consume all 30 seconds.
-          expect(Math.min(...reached)-localRoundStart).toBeGreaterThanOrEqual(30000-250);
-          await Promise.all([owner.page,peer.page].map(page=>expect(page.getByTestId("arena-victory")).toBeVisible()));
+          for (const entry of reached) { expect(entry.elapsed).toBe(30000); expect(entry.victory).toBe(true); expect(entry.victoryVisible).toBe(true); }
         }
       }
       await expect.poll(async()=>await resultHeading.isVisible() || !(await ownerGrade.isVisible()),{timeout:10000}).toBe(true);
