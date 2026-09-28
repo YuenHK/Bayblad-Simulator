@@ -1,4 +1,5 @@
-import { makeDefaultDesign, designSchema } from "@steam-top/domain";
+import { makeDefaultDesign, designSchema, validateDesign } from "@steam-top/domain";
+import { scoreMatch } from "../battle/scoring";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryDesignRepository } from "./design-repository";
 import { completedMatchFingerprint, completedMatchRecordSchema, MatchPersistenceConflictError, MemoryMatchRepository, type CompletedMatchRecord } from "./match-repository";
@@ -27,6 +28,26 @@ const fixture = (): CompletedMatchRecord => {
 };
 
 describe("durable record contracts", () => {
+  it.each([false, true])("persists the authoritative milligram challenge score for custom versus basic masses (swapped=%s)", async (swapped) => {
+    const basic = makeDefaultDesign();
+    const custom = structuredClone(basic);
+    const vertices = [{ x: -18, y: -16 }, { x: 22, y: -16 }, { x: 22, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 20 }, { x: -18, y: 20 }];
+    custom.layers[0] = { ...custom.layers[0], shape: "custom", diameterMm: 2 * Math.max(...vertices.map(p => Math.hypot(p.x, p.y))), outline: { version: 1, vertices, mirror: "none" } };
+    const record = fixture();
+    record.player1.massG = validateDesign(swapped ? basic : custom).massProperties.totalMassG;
+    record.player2.massG = validateDesign(swapped ? custom : basic).massProperties.totalMassG;
+    const scores = scoreMatch({ player1MassG: record.player1.massG, player2MassG: record.player2.massG, roundWinners: record.roundWinners });
+    record.player1.score = scores.player1;
+    record.player2.score = scores.player2;
+    const { idempotencyFingerprint: _, ...base } = record;
+    record.idempotencyFingerprint = completedMatchFingerprint(base);
+    expect(() => completedMatchRecordSchema.parse(record)).not.toThrow();
+    await expect(new MemoryMatchRepository().queueCompletion(record)).resolves.toBeDefined();
+    const tampered = structuredClone(record);
+    tampered.player2.score.challengePoints += 0.00005;
+    tampered.player2.score.total += 0.00005;
+    expect(completedMatchRecordSchema.safeParse(tampered).success).toBe(false);
+  });
   it("canonicalizes custom rings for stored replay without moving the axle", async () => {
     const vertices = [{ x: -10, y: -10 }, { x: 10, y: -10 }, { x: 10, y: 10 }, { x: -10, y: 10 }];
     const base = makeDefaultDesign();

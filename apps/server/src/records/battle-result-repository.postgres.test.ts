@@ -5,6 +5,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "@steam-top/db";
 import { makeDefaultDesign } from "@steam-top/domain";
 import { simulateMatchRound } from "../battle/engine";
+import { scoreMatch } from "../battle/scoring";
 import { PostgresBattleResultRepository } from "./battle-result-repository";
 import { PostgresDesignRepository } from "./design-repository";
 import { completedMatchFingerprint, MatchPersistenceConflictError, PostgresMatchRepository, type CompletedMatchRecord } from "./match-repository";
@@ -228,14 +229,19 @@ it.skipIf(!databaseUrl)("atomically reuses a canonical owned design and reads it
   await expect(new PostgresDesignRepository(client.db).getOwned(randomUUID(), left.designId)).resolves.toBeUndefined();
 });
 
-it.skipIf(!databaseUrl)("persists an exact authoritative round set and rejects a composite collision", async () => {
+it.skipIf(!databaseUrl).each([false, true])("persists an exact authoritative round set and rejects a composite collision (custom=%s)", async (custom) => {
   const player1IdentityId = randomUUID(); const player2IdentityId = randomUUID();
   await client.db.insert(identities).values([
     { id: player1IdentityId, status: "guest", displayName: "Player 1" },
     { id: player2IdentityId, status: "guest", displayName: "Player 2" },
   ]);
   const designs = new PostgresDesignRepository(client.db);
-  const player1Design = await designs.saveBattleEligible(player1IdentityId, makeDefaultDesign());
+  const player1Input = makeDefaultDesign();
+  if (custom) {
+    const vertices = [{ x: -18, y: -16 }, { x: 22, y: -16 }, { x: 22, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 20 }, { x: -18, y: 20 }];
+    player1Input.layers[0] = { ...player1Input.layers[0], shape: "custom", diameterMm: 2 * Math.max(...vertices.map(p => Math.hypot(p.x, p.y))), outline: { version: 1, vertices, mirror: "none" } };
+  }
+  const player1Design = await designs.saveBattleEligible(player1IdentityId, player1Input);
   const player2Design = await designs.saveBattleEligible(player2IdentityId, makeDefaultDesign());
   const matchId = randomUUID(); const startedAt = new Date("2026-08-29T00:00:00Z");
   const repository = new PostgresMatchRepository(client.db);
@@ -252,10 +258,11 @@ it.skipIf(!databaseUrl)("persists an exact authoritative round set and rejects a
   expect(Buffer.byteLength(JSON.stringify(authoritativeRounds[0]!.battleResult), "utf8")).toBeLessThan(2_097_152);
   for (const round of authoritativeRounds) await repository.saveRoundAttempt(matchId, round);
   await expect(repository.saveRoundAttempt(matchId, { ...authoritativeRounds[0]!, battleResult: { ...authoritativeRounds[0]!.battleResult, seed: 61 } })).rejects.toBeInstanceOf(MatchPersistenceConflictError);
+  const scores = scoreMatch({ player1MassG: player1Design.massG, player2MassG: player2Design.massG, roundWinners: ["player1", "player1"] });
   const base = {
     id: matchId, roomId: null,
-    player1: { identityId: player1IdentityId, identitySource: "guest" as const, deviceName: null, ip: null, userAgent: null, designId: player1Design.designId, massG: player1Design.massG, score: { battlePoints: 2, challengePoints: 0, total: 2 } },
-    player2: { identityId: player2IdentityId, identitySource: "guest" as const, deviceName: null, ip: null, userAgent: null, designId: player2Design.designId, massG: player2Design.massG, score: { battlePoints: 0, challengePoints: 0, total: 0 } },
+    player1: { identityId: player1IdentityId, identitySource: "guest" as const, deviceName: null, ip: null, userAgent: null, designId: player1Design.designId, massG: player1Design.massG, score: scores.player1 },
+    player2: { identityId: player2IdentityId, identitySource: "guest" as const, deviceName: null, ip: null, userAgent: null, designId: player2Design.designId, massG: player2Design.massG, score: scores.player2 },
     roundWinners: ["player1", "player1"] as Array<"player1" | "player2">, rounds: authoritativeRounds,
     performanceModelVersion: player1Design.performance.modelVersion, physicsModelVersion: "2.0.0", protocolVersion: 1, spectatorCount: 0,
     startedAt, completedAt: new Date(startedAt.getTime() + 3_000),

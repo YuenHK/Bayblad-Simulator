@@ -5,6 +5,7 @@ import { buildCompletedMatchRow, buildRoundRow } from "@steam-top/db/persistence
 import { identities, matchParticipantSnapshots, matchPersistenceJobs, matches, rounds } from "@steam-top/db/schema";
 import { z } from "zod";
 import { battleResultSchema } from "./battle-result-repository";
+import { challengePoints } from "../battle/scoring";
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const diagnosticSchema = z.object({
@@ -44,8 +45,10 @@ export const completedMatchRecordSchema = z.object({
   const wins2 = value.roundWinners.length - wins1;
   if ((wins1 !== 2 && wins2 !== 2) || value.player1.score.battlePoints !== wins1 || value.player2.score.battlePoints !== wins2) context.addIssue({ code: "custom", message: "scores must match completed best-of-three winners" });
   for (const player of [value.player1, value.player2]) if (Math.abs(player.score.total - player.score.battlePoints - player.score.challengePoints) > 1e-9) context.addIssue({ code: "custom", message: "score total mismatch" });
-  const expectedChallenge1 = value.player1.massG < value.player2.massG ? Math.min((value.player2.massG - value.player1.massG) * .05, .5) : 0;
-  const expectedChallenge2 = value.player2.massG < value.player1.massG ? Math.min((value.player1.massG - value.player2.massG) * .05, .5) : 0;
+  // Match the authoritative scorer's 1 mg quantisation, including custom
+  // outlines whose simulated masses have sub-milligram precision.
+  const expectedChallenge1 = value.player1.massG < value.player2.massG ? challengePoints(value.player2.massG - value.player1.massG) : 0;
+  const expectedChallenge2 = value.player2.massG < value.player1.massG ? challengePoints(value.player1.massG - value.player2.massG) : 0;
   if (Math.abs(value.player1.score.challengePoints - expectedChallenge1) > 1e-9 || Math.abs(value.player2.score.challengePoints - expectedChallenge2) > 1e-9) context.addIssue({ code: "custom", message: "challenge points must belong only to the lighter top" });
   let logicalRound = 1; let attempt = 1;
   const ids = new Set<string>(); const tuples = new Set<string>();
