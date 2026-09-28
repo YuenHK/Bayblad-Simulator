@@ -75,14 +75,14 @@ for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle
   // Record transitions inside the page: software WebGL can delay test-driver
   // round trips beyond the short three-second finisher window.
   await page.addInitScript(() => {
-    const observations: { phase: string; shattered: string; elapsed: number }[] = [];
+    const observations: { phase: string; shattered: string; elapsed: number; winnerText: string }[] = [];
     Object.assign(window, { cinematicObservations: observations });
     new MutationObserver(() => {
       const arena = document.querySelector('[data-testid="battle-arena-3d"]');
       if (!arena) return;
-      const entry = { phase: arena.getAttribute("data-phase") ?? "", shattered: arena.getAttribute("data-shattered") ?? "none", elapsed: Number(arena.parentElement?.getAttribute("data-elapsed-ms")) };
+      const entry = { phase: arena.getAttribute("data-phase") ?? "", shattered: arena.getAttribute("data-shattered") ?? "none", elapsed: Number(arena.parentElement?.getAttribute("data-elapsed-ms")), winnerText: arena.querySelector(".cinema-result strong")?.textContent ?? "" };
       const previous = observations.at(-1);
-      if (!previous || previous.phase !== entry.phase || previous.shattered !== entry.shattered) observations.push(entry);
+      if (!previous || previous.phase !== entry.phase || previous.shattered !== entry.shattered || previous.winnerText !== entry.winnerText) observations.push(entry);
     }).observe(document, { subtree: true, attributes: true, childList: true });
   });
   page.on("pageerror", error => errors.push(error.message));
@@ -96,7 +96,7 @@ for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle
   await page.getByRole("button", { name: "加入電腦玩家", exact: true }).click();
   await expect(page.getByRole("heading", { name: "電腦玩家", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "上載當前設計並準備", exact: true }).click();
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 8; round++) {
     // Intentionally do not tap: deadline must launch at the minimum force.
     await expect(page.getByText("你的判定：Miss", { exact: true })).toBeVisible({ timeout: 15_000 });
     const arena = page.getByTestId("battle-arena-3d");
@@ -112,9 +112,13 @@ for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("summon.png") });
     await expect.poll(() => page.evaluate(() => (window as unknown as { cinematicObservations: {phase:string}[] }).cinematicObservations.filter((entry,index,entries) => entry.phase === "strike" && entries[index-1]?.phase !== "strike").length), { timeout: 10_000 }).toBe(round + 1);
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("strike.png") });
-    await expect.poll(()=>arena.getAttribute("data-shattered"),{timeout:7000}).toMatch(/^player[12]$/);
-    if (round === 0) await page.screenshot({ path: testInfo.outputPath("shatter.png") });
-    await expect(arena).toHaveAttribute("data-phase", "result", { timeout: 10_000 });
+    // Observe in-page rather than missing the short shatter/result window while
+    // screenshots are written. Real physics may also produce a draw/replay.
+    await expect.poll(() => page.evaluate(() => (window as unknown as { cinematicObservations: { phase: string; winnerText: string }[] }).cinematicObservations.filter(entry => entry.phase === "result" && entry.winnerText !== "").length), { timeout: 10_000 }).toBe(round + 1);
+    const completedRound = await page.evaluate(() => (window as unknown as { cinematicObservations: { phase: string; winnerText: string; shattered: string; elapsed: number }[] }).cinematicObservations.filter(entry => entry.phase === "result" && entry.winnerText !== "").at(-1)!);
+    expect(completedRound.elapsed).toBe(30000);
+    expect(completedRound.winnerText).toMatch(/^(平手|玩家一勝出|玩家二勝出)$/u);
+    expect(completedRound.shattered).toBe(completedRound.winnerText === "平手" ? "none" : completedRound.winnerText === "玩家一勝出" ? "player2" : "player1");
     expect(Date.now()-began+initialElapsed).toBeGreaterThan(29_000);
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("result.png") });
     const finished = page.getByRole("heading", { name: "對戰結果" });

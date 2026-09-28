@@ -1,5 +1,26 @@
 # 自定造型發佈前檢查
 
+## 2026-09-28 10:43 公開驗收與修正
+
+- 後續核實：785cb5d 品質／安全 CI36370870991、PostgreSQL CI36370870996 均完整 success；已提交 Render 修正版部署，仍須公開長播重驗。人機 observer 測試本機通過（1.7分鐘）；公開基本ShapeCut桌面1280／手機390兩項亦通過。教師端仍停在登入頁。
+
+- Render c8b4950 已確認 Deploy succeeded / Live；0005、0006 migration applied，其餘 already-applied。readiness 為 ready/database ok/migration ok。正式庫只讀核對仍為 51 matches、291 design_layers，outline 欄位存在。
+- GitHub main 已 fast-forward 至 c8b4950；Pages run36370225083 build/deploy success。公開 Chrome 已見自定造型／鏡射並成功連線。
+- 公開畫布驗收 8/8 通過：左右、上下、4/6/8/12 鏡射及 per-layer 草稿、1440px 滑鼠／390px 模擬觸控。公開自定凹形 STL 實際下載 → ShapeCut 接收 → 6mm 材料 → 3 切片／ZIP 連結，1/1 通過，已查看結果截圖；不是實體試切。
+- 公開雙人對戰動畫後結算未出現；Render 同時間三次 ZodError。已以相同 custom/basic 真實重量重現 completedMatchRecordSchema 的 challenge score 驗證失敗：scorer 採 1mg 量化，validator 卻採原始差值。修正共用 challengePoints，保留嚴格容差和篡改拒絕；含 swapped 案例及新增 PostgreSQL basic/custom 完成／重試 fixture。修正版785cb5d只推驗證分支，待 CI，再部署重驗。測試建立的失敗紀錄沒有刪除。
+- 人機長播測試會錯過短暫粉碎視窗，已改頁內 observer 驗證 result=30000ms、明確勝方及對應碎裂／平手；需重跑確認，不以測試修改代表功能通過。
+- 完整 pnpm test exit0：domain191、protocol100、web199、db21、server521、integration/CI211，32skip；typecheck exit0。獨立修正審查無重要問題。
+- 公開教師端需要登入，已保留 Chrome 登入頁並通知使用者；沒有取用或重設密碼。登入後仍須驗收教師高分縮圖、統計與 Excel。
+
+## 2026-09-28 10:30 更新（部署進行中）
+
+- 使用者已登入 Neon；已核實 `bayblad-simulator` 的 production 分支、Singapore、Free plan，history retention 為 6 小時。
+- 已於 10:28 建立同專案的 `pre-custom-outline-20260928` 資料與 schema 備份分支，來源 production，Expires=Never。這是部署前分支副本，不是已完成還原演練，亦不會涵蓋建立後的新寫入；未刪除或覆寫正式資料。
+- Render Auto-Deploy=Off，指定 commit 功能支援任意分支。重新核實 c8b4950 的品質 CI36331707681、PostgreSQL CI36331707693 皆 success。
+- 部署前公開 readiness 為 ready/database ok/migration ok，學生大廳成功連線並顯示沒有房間。
+- 10:30 已手動提交 c8b4950 後端部署 `dep-dast2h7pn0mc739uc2pg`，初始狀態 Building。尚未宣稱部署成功；GitHub main／Pages 未更新，待後端結果通過才更新。
+- 備份分支 SQL 只讀驗證成功：51 場 matches、291 列 design_layers，outline 欄位仍不存在，符合遷移前版本；沒有讀出個別學生資料。10:31 Render Docker build 已完成，進入 Deploying，仍待啟動／readiness。
+
 ## 2026-09-27 現況（只讀核實，未部署）
 
 - GitHub `main`：`eb67049289cded879ad9dcc71d062b69324a2a82`。

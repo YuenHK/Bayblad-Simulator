@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { stat } from 'node:fs/promises';
 
 for (const [width, custom] of [[1280, false], [390, false], [1280, true]] as const) test(`real ${custom ? 'custom' : 'basic'} STL transfers to ShapeCut material selection at ${width}px`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 980 });
@@ -18,17 +19,14 @@ for (const [width, custom] of [[1280, false], [390, false], [1280, true]] as con
     await page.getByRole('button', { name: '套用自定造型', exact: true }).click();
     await expect(page.locator('.layer-list')).toContainText('自定造型');
     await testInfo.attach('custom-design.json', { body: await page.evaluate(() => localStorage.getItem('steam-top:designer-draft:v1') ?? ''), contentType: 'application/json' });
-    const exportCheck = await page.evaluate(async () => {
-      const manifest = await (await fetch('/steam-top/.vite/manifest.json')).json();
-      const moduleUrl = '/steam-top/' + manifest['src/features/designer/loadBoardsStl.ts'].file;
-      const exporter = await import(moduleUrl);
-      try {
-        const bytes = await exporter.exportBoardsStl(JSON.parse(localStorage.getItem('steam-top:designer-draft:v1')!).design);
-        return { bytes: bytes.byteLength, error: null };
-      } catch (error) { return { bytes: 0, error: String(error) }; }
-    });
-    expect(exportCheck.error).toBeNull();
-    expect(exportCheck.bytes).toBeGreaterThan(84);
+    const downloaded = page.waitForEvent('download');
+    await page.getByRole('button', { name: '下載 STL（供 3D打印)', exact: true }).click();
+    const stl = await downloaded;
+    expect(await stl.failure()).toBeNull();
+    expect(stl.suggestedFilename()).toMatch(/\.stl$/u);
+    const stlPath = await stl.path();
+    expect(stlPath).not.toBeNull();
+    expect((await stat(stlPath!)).size).toBeGreaterThan(84);
   }
   if (width < 1000) await page.getByRole('tab', { name: '預測結果', exact: true }).click();
   const buttons = page.locator('.design-action-row > button');

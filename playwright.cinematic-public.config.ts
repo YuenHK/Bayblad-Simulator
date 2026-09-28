@@ -3,7 +3,7 @@ import base from "./playwright.config";
 
 export default defineConfig({
   ...base,
-  testMatch: /cinematic\.spec\.ts/u,
+  testMatch: /(?:cinematic|custom-outline)\.spec\.ts/u,
   webServer: [],
   outputDir: "test-results-public-cinematic",
   expect: { timeout: 60_000 },
