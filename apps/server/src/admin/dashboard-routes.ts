@@ -13,14 +13,6 @@ import { AdminCommandExecutor } from "./command-executor";
 const actionSchema = z.discriminatedUnion("action", [
   z
     .object({
-      action: z.literal("platform.pause"),
-      paused: z.boolean(),
-      confirmed: z.literal(true),
-      operationId: z.uuid(),
-    })
-    .strict(),
-  z
-    .object({
       action: z.literal("room.close"),
       roomId: z.string().min(1).max(128),
       confirmed: z.literal(true),
@@ -70,20 +62,14 @@ export function registerAdminDashboardRoutes(
       return reply.code(400).send({ error: "INVALID_ADMIN_ROOM_ACTION" });
     const command = parsed.data;
     const priorOperation = await commandStore.get(command.operationId);
-    if (!priorOperation && command.action !== "platform.pause") {
+    if (!priorOperation) {
       const room = rooms.adminRooms().find((candidate) => candidate.roomId === command.roomId);
       if (!room) return reply.code(404).send({ error: "ROOM_NOT_FOUND" });
       if (command.action === "room.remove" && !room.players.concat(room.spectators).some((participant) => participant.id === command.participantId))
         return reply.code(404).send({ error: "PARTICIPANT_NOT_FOUND" });
     }
     const details =
-      command.action === "platform.pause"
-        ? {
-            operationId: command.operationId,
-            action: command.action,
-            paused: command.paused,
-          }
-        : command.action === "room.close"
+      command.action === "room.close"
           ? {
               operationId: command.operationId,
               action: command.action,
@@ -95,7 +81,7 @@ export function registerAdminDashboardRoutes(
               roomId: command.roomId,
               participantId: command.participantId,
             };
-    const accepted = await commandStore.accept({operationId:command.operationId,payloadHash:adminCommandPayloadHash(details),action:command.action,target:command.action==="platform.pause"?"platform":command.roomId,payload:details,adminUserId:current.user.id,adminSessionId:current.session.id});
+    const accepted = await commandStore.accept({operationId:command.operationId,payloadHash:adminCommandPayloadHash(details),action:command.action,target:command.roomId,payload:details,adminUserId:current.user.id,adminSessionId:current.session.id});
     if ("conflict" in accepted) return reply.code(409).send({ error: "OPERATION_ID_CONFLICT" });
     await executor.pump();
     const outcome=await commandStore.get(command.operationId);

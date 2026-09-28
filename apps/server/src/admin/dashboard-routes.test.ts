@@ -101,7 +101,7 @@ describe("admin dashboard routes", () => {
       ),
     ).toBe(true);
   });
-  it("pauses new room admission", async () => {
+  it.each([true, false])("rejects removed platform controls (paused=%s) without changing platform state", async (paused) => {
     const f = await fixture();
     apps.push(f.app);
     expect(
@@ -112,16 +112,18 @@ describe("admin dashboard routes", () => {
           headers: { ...headers, cookie: f.cookie, "x-csrf-token": f.csrf },
           payload: {
           action: "platform.pause",
-          paused: true,
+          paused,
           confirmed: true,
           operationId: "550e8400-e29b-41d4-a716-446655440001",
           },
         })
       ).statusCode,
-    ).toBe(200);
+    ).toBe(400);
+    expect(f.rooms.platformPaused).toBe(false);
     expect(() =>
       f.rooms.create({ id: "u2", displayName: "學生" }, "另一房"),
-    ).toThrow("PLATFORM_PAUSED");
+    ).not.toThrow();
+    expect(f.store.auditEntries.some(x => x.action === "admin.platform.pause")).toBe(false);
   });
   it("rejects nonexistent close and remove targets before accepting an operation", async () => {
     const f = await fixture(); apps.push(f.app);
@@ -132,8 +134,8 @@ describe("admin dashboard routes", () => {
   it("requires an explicit second-stage confirmation without accepting a password field", async () => {
     const f = await fixture(); apps.push(f.app);
     const request = (payload: object) => f.app.inject({ method: "POST", url: "/api/admin/rooms/actions", headers: { ...headers, cookie: f.cookie, "x-csrf-token": f.csrf }, payload });
-    expect((await request({ action:"platform.pause",paused:true,operationId:"550e8400-e29b-41d4-a716-446655440005" })).statusCode).toBe(400);
-    expect((await request({ action:"platform.pause",paused:true,confirmed:true,password:"test-password-2026",operationId:"550e8400-e29b-41d4-a716-446655440005" })).statusCode).toBe(400);
+    expect((await request({ action:"room.close",roomId:f.room.roomId,operationId:"550e8400-e29b-41d4-a716-446655440005" })).statusCode).toBe(400);
+    expect((await request({ action:"room.close",roomId:f.room.roomId,confirmed:true,password:"test-password-2026",operationId:"550e8400-e29b-41d4-a716-446655440005" })).statusCode).toBe(400);
   });
   it("keeps a room open while a spectator remains after the last player is removed", async () => {
     const f = await fixture(); apps.push(f.app);

@@ -44,6 +44,7 @@ test("學生設計、限制、預覽及響應式操作", async ({ page }, testIn
   await page.goto(".");
   await waitConnected(page);
   await expect(page.locator(".student-game")).toBeVisible();
+  await expect(page.getByRole("contentinfo", { name: "專案與更多作品" }).getByRole("link", { name: "進入教師後台" })).toHaveAttribute("href", adminUrl);
   await expect(page.getByRole("button", { name: "關閉音效" })).toBeVisible();
   await expect(page.getByRole("button", { name: "減少動態效果" })).toBeVisible();
   await page.getByRole("combobox", { name: "形狀" }).selectOption("star");
@@ -82,6 +83,8 @@ test("老師登入、統計篩選、排行榜及 Excel 匯出", async ({ page },
   await page.getByRole("button", { name: "進入控制台" }).click();
   await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("tab",{name:"總覽"})).toBeVisible();
+  await expect(page.getByRole("button", {name:"暫停平台"})).toHaveCount(0);
+  await expect(page.getByRole("button", {name:"恢復平台"})).toHaveCount(0);
   await expect(page.getByText("發射判定分佈")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   if (testInfo.project.name === "chromium-desktop") {

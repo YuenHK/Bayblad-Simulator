@@ -135,10 +135,10 @@ function authenticated(
         expiresAt: "2026-08-30T00:00:00.000Z",
         csrfToken: "csrf",
       });
-    if (url.pathname === "/api/admin/rooms")
-      return json({ paused: false, rooms: [] });
     const handled = await handler?.(url, init);
     if (handled) return handled;
+    if (url.pathname === "/api/admin/rooms")
+      return json({ paused: false, rooms: [] });
     if (
       url.pathname === "/api/admin/records" &&
       (!init?.method || init.method === "GET")
@@ -253,6 +253,7 @@ it("shows an error instead of rendering invalid legacy analytics", async () => {
 it("requires two confirmations for room operations and sends no password", async () => {
   const calls: unknown[] = [];
   const fetcher = authenticated(async (url, init) => {
+    if (url.pathname === "/api/admin/rooms") return json({ paused: false, rooms: [{ roomId: "room-1", roomCode: "ABC123", name: "測試房", status: "waiting", players: [], spectators: [] }] });
     if (url.pathname === "/api/admin/rooms/actions" && init?.method === "POST") {
       calls.push(JSON.parse(String(init.body)));
       return json({ operationId: "550e8400-e29b-41d4-a716-446655440000", status: "completed" });
@@ -261,20 +262,22 @@ it("requires two confirmations for room operations and sends no password", async
   });
   render(<AdminApp fetcher={fetcher} />);
   await screen.findByRole("heading", { name: "教師控制台" });
-  await userEvent.click(screen.getByRole("button", { name: "暫停平台" }));
+  await userEvent.click(await screen.findByRole("button", { name: "強制關房" }));
   expect(calls).toHaveLength(0);
   expect(screen.queryByLabelText("再次輸入管理員密碼")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "繼續" }));
   expect(calls).toHaveLength(0);
-  await userEvent.click(screen.getByRole("button", { name: "確定暫停平台" }));
+  await userEvent.click(screen.getByRole("button", { name: "確定關閉房間 ABC123" }));
   await waitFor(() => expect(calls).toHaveLength(1));
-  expect(calls[0]).toMatchObject({ action: "platform.pause", paused: true, confirmed: true });
+  expect(calls[0]).toMatchObject({ action: "room.close", roomId: "room-1", confirmed: true });
   expect(calls[0]).not.toHaveProperty("password");
 });
 it("has no deletion or password-change controls in the shared dashboard", async () => {
   const fetcher = authenticated();
   render(<AdminApp fetcher={fetcher} />);
   await screen.findByRole("tab",{name:"總覽"});
+  expect(screen.queryByRole("button",{name:"暫停平台"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("button",{name:"恢復平台"})).not.toBeInTheDocument();
   expect(screen.queryByRole("button",{name:"刪除紀錄"})).not.toBeInTheDocument();
   expect(screen.queryByRole("button",{name:"更改密碼"})).not.toBeInTheDocument();
   expect(fetcher.mock.calls.some(([,init])=>init?.method==="DELETE")).toBe(false);

@@ -39,15 +39,13 @@ test("共用入口、四區預覽、房間確認、篩選及匯出", async ({ pa
   const download = await downloadPromise, stream = await download.createReadStream();
   const first = await new Promise<Buffer>((resolve, reject) => stream.once("data", resolve).once("error", reject));
   expect(first.subarray(0, 2).toString()).toBe("PK");
-  await page.getByRole("button", { name: "暫停平台" }).click();
+  await expect(page.getByRole("button", { name: "暫停平台" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "恢復平台" })).toHaveCount(0);
+  const closeControl = page.getByRole("button", { name: "強制關房" }).first();
+  await closeControl.click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "暫停平台" })).toBeFocused();
-  await page.getByRole("button", { name: "暫停平台" }).click();
-  await confirmAction(page);
-  await expect(page.getByRole("button", { name: "恢復平台" })).toBeVisible();
-  await page.getByRole("button", { name: "恢復平台" }).click();
-  await confirmAction(page);
+  await expect(closeControl).toBeFocused();
   const leeRoom = page.locator("article").filter({ hasText: "1B 李同學" });
   await leeRoom.getByRole("button", { name: "移除 1B 李同學" }).click();
   await confirmAction(page);
@@ -58,8 +56,9 @@ test("共用入口、四區預覽、房間確認、篩選及匯出", async ({ pa
   await expect(page.getByText("0 間房間")).toBeVisible();
   const stats = await page.request.get("/__test/stats", { headers: { "x-test-secret": "steam-top-e2e-only" } });
   const controlState=await stats.json();
-  expect(controlState.adminAudits).toEqual(expect.arrayContaining(["admin.platform.pause", "admin.room.remove", "admin.room.close"]));
-  expect(controlState.adminCommands).toHaveLength(4);
+  expect(controlState.adminAudits).toEqual(expect.arrayContaining(["admin.room.remove", "admin.room.close"]));
+  expect(controlState.adminAudits).not.toContain("admin.platform.pause");
+  expect(controlState.adminCommands).toHaveLength(2);
   expect(controlState.adminCommands.every((operation:{status:string})=>operation.status==="completed")).toBe(true);
   await page.getByRole("tab",{name:"對戰紀錄"}).click();
   await expect(page.getByRole("img",{name:"歷史陀螺靜態 3D"})).toBeVisible();
@@ -84,14 +83,11 @@ test.describe("iPad 與減少動態效果", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     const undersized = await page.locator("button, input, select").evaluateAll(elements => elements.filter(element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && (rect.height < 44 || rect.width < 44); }).length);
     expect(undersized).toBe(0);
-    const opener = page.getByRole("button", {name:"暫停平台"});
-    await opener.click();
-    await expect(page.getByRole("dialog")).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(opener).toBeFocused();
-    // With no rooms, pause is the final focusable control in this section.
-    await page.keyboard.press("Shift+Tab");
-    await expect(page.getByRole("tab", {name:"高分設計"})).toBeFocused();
+    await expect(page.getByRole("button", {name:"暫停平台"})).toHaveCount(0);
+    const records = page.getByRole("tab", {name:"對戰紀錄"});
+    await records.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("tabpanel", {name:"對戰紀錄"})).toBeVisible();
   });
 });
 

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { RealtimeClient, type RealtimeTransport } from "./realtime/socket-client";
@@ -18,6 +18,16 @@ class AppTransport implements RealtimeTransport {
 
 describe("App upload lifecycle", () => {
   afterEach(() => vi.useRealTimers());
+  it("places the teacher entry alongside project and ShapeCut links without embedding credentials", () => {
+    render(<App client={new RealtimeClient({ transport: new AppTransport() })} />);
+    const footer = within(screen.getByRole("contentinfo", { name: "專案與更多作品" }));
+    expect(footer.getByRole("link", { name: "專案介紹・GitHub" })).toBeVisible();
+    expect(footer.getByRole("link", { name: "探索 ShapeCut" })).toBeVisible();
+    const link = footer.getByRole("link", { name: "進入教師後台" });
+    expect(link).toHaveAttribute("href", "https://bayblad-simulator-api.onrender.com/admin/");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
   it("uses the site icon instead of the circular brand marker", () => {
     const client = new RealtimeClient({ transport: new AppTransport() });
     const { container } = render(<App client={client} />);

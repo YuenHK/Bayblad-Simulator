@@ -95,6 +95,11 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
         <p>把 3D STL 模型轉成雷射切割平面切片，延伸你的 Maker 創作。</p>
         <a href="https://yuenhk.github.io/ShapeCut/" target="_blank" rel="noopener noreferrer">探索 ShapeCut</a>
       </section>
+      <section className="panel">
+        <h2>教師後台</h2>
+        <p>查看對戰紀錄、學生排行榜、歷史設計與使用統計。</p>
+        <a href="https://bayblad-simulator-api.onrender.com/admin/" target="_blank" rel="noopener noreferrer">進入教師後台</a>
+      </section>
       <small>連結會在新分頁開啟，保留你目前的設計與連線。</small>
     </footer> : null}
   </div>;

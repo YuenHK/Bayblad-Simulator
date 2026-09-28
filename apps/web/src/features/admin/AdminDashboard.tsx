@@ -353,7 +353,7 @@ export function AdminDashboard({
       </div>
       <div role="tabpanel" id={`admin-panel-${section}`} aria-labelledby={`admin-tab-${section}`}>
         {section === "overview" && <>
-          <RoomsPanel rooms={rooms.rooms} paused={rooms.paused} mutate={mutate} />
+          <RoomsPanel rooms={rooms.rooms} mutate={mutate} />
           {analytics ? <AnalyticsCharts data={analytics} /> : <p role="status">正在載入統計……</p>}
         </>}
         {section === "records" && <RecordsTable data={records} filters={filters} onFilters={setFilters} />}
