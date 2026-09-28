@@ -239,6 +239,8 @@ const defaultResolver: AdminClientResolver = (request) => ({ clientKey: request.
 const previewTtlMs = 5 * 60_000;
 
 export function registerDeleteRecordRoutes(app: FastifyInstance, auth: AdminAuthService, store: DeletionStore, clientResolver: AdminClientResolver = defaultResolver): void {
+  // Shared console deliberately has no destructive HTTP endpoints.
+  if (auth.sharedAccess) return;
   app.post("/api/admin/records/deletion-preview", async (request, reply) => {
     const current = await authenticateAdminMutation(request, reply, auth, clientResolver); if (!current) return;
     const parsed = deletionFilterSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "INVALID_FILTERS" });

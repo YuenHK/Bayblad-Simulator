@@ -4,7 +4,6 @@ import { z } from "zod";
 const secretNames = [
   "DATABASE_URL",
   "COOKIE_SIGNING_KEY",
-  "ADMIN_INITIAL_PASSWORD",
   "ADMIN_CSRF_SECRET",
   "WEBCLIP_SIGNING_KEY",
   "WEBCLIP_EXCHANGE_KEY",
@@ -81,7 +80,6 @@ export function loadConfig(
   for (const name of ["COOKIE_SIGNING_KEY", "ADMIN_CSRF_SECRET", "WEBCLIP_SIGNING_KEY", "WEBCLIP_EXCHANGE_KEY", "ANALYTICS_CURSOR_SECRET", "STUDENT_CREDENTIAL_KEY"] as const) {
     canonicalSecret(secrets[name], name);
   }
-  z.string().min(8, "ADMIN_INITIAL_PASSWORD must contain at least 8 characters").parse(secrets.ADMIN_INITIAL_PASSWORD);
   const publicOrigin = new URL(parsed.PUBLIC_ORIGIN);
   const studentOrigin = new URL(parsed.STUDENT_ORIGIN);
   if (publicOrigin.pathname !== "/" || publicOrigin.search || publicOrigin.hash || publicOrigin.username || publicOrigin.password) throw new Error("PUBLIC_ORIGIN must contain only scheme and authority");
@@ -106,7 +104,7 @@ export function loadConfig(
     studentOrigin: studentOrigin.origin,
     cookieSigningKey: secrets.COOKIE_SIGNING_KEY,
     adminUsername: parsed.ADMIN_USERNAME,
-    adminInitialPassword: secrets.ADMIN_INITIAL_PASSWORD,
+    adminInitialPassword: "", // Deprecated: shared console does not bootstrap account passwords.
     adminCsrfSecret: secrets.ADMIN_CSRF_SECRET,
     adminCsrfKeyId: parsed.ADMIN_CSRF_KEY_ID,
     webclipSigningKey: secrets.WEBCLIP_SIGNING_KEY,

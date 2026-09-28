@@ -1,11 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-const password = process.env.E2E_ADMIN_PASSWORD ?? "e2e-admin-only-password";
+const password = "admin";
 async function login(page: Page) {
   await page.goto(".");
-  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
-  await page.getByLabel("密碼").fill(password);
-  await page.getByRole("button", { name: "登入" }).press("Enter");
   await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
+  await page.getByLabel("口令").fill(password);
+  await page.getByRole("button", { name: "進入控制台" }).press("Enter");
+  await expect(page.getByRole("tab", { name: "總覽" })).toBeVisible();
 }
 async function confirmAction(page: Page) {
   const dialog = page.getByRole("dialog");
@@ -13,21 +13,26 @@ async function confirmAction(page: Page) {
   await dialog.getByRole("button", { name: /^確定/u }).click();
   await expect(page.getByRole("dialog")).toBeHidden();
 }
-test("教師登入、房間確認、篩選、統計及刪除流程不外洩密碼", async ({ page }, testInfo) => {
+test("共用入口、四區預覽、房間確認、篩選及匯出", async ({ page }, testInfo) => {
   await login(page);
-  expect(page.url()).not.toContain(password);
+  expect(page.url()).not.toContain("passphrase=");
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
     password,
   );
   await expect(page.getByText("2 間房間")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "學生總分排行榜（只供教師查看）" })).toBeVisible();
+  await page.getByRole("tab",{name:"學生排行榜"}).click();
+  await expect(page.getByRole("img",{name:"歷史陀螺靜態 3D"})).toBeVisible();
+  await page.getByRole("tab",{name:"高分設計"}).click();
   const highDesigns = page.getByRole("region", { name: "歷史紀錄中的高分設計" });
   await expect(highDesigns.getByText("表現 1／物理 2")).toBeVisible();
   await expect(highDesigns.getByText("1 場／1 次")).toBeVisible();
   await expect(highDesigns.getByText(/不代表最佳解或因果/)).toBeVisible();
+  await expect(highDesigns.getByRole("img", { name: "歷史陀螺靜態 3D" })).toBeVisible();
+  await highDesigns.locator("summary").click();
   await expect(highDesigns.getByRole("img", { name: "自定造型輪廓" })).toHaveCount(3);
   await expect(highDesigns.getByRole("img", { name: "自定造型輪廓" }).first()).toBeVisible();
   await highDesigns.screenshot({ path: testInfo.outputPath("high-scoring-designs.png") });
+  await page.getByRole("tab",{name:"總覽"}).click();
   await expect(page.getByText("發射判定分佈")).toBeVisible();
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "匯出 Excel" }).click();
@@ -56,23 +61,19 @@ test("教師登入、房間確認、篩選、統計及刪除流程不外洩密�
   expect(controlState.adminAudits).toEqual(expect.arrayContaining(["admin.platform.pause", "admin.room.remove", "admin.room.close"]));
   expect(controlState.adminCommands).toHaveLength(4);
   expect(controlState.adminCommands.every((operation:{status:string})=>operation.status==="completed")).toBe(true);
+  await page.getByRole("tab",{name:"對戰紀錄"}).click();
+  await expect(page.getByRole("img",{name:"歷史陀螺靜態 3D"})).toBeVisible();
+  await page.getByText("篩選條件",{exact:true}).click();
   await page.getByLabel("班別").fill("2B");
   await expect(page.getByText("此頁沒有紀錄。")).toBeVisible();
-  await expect(highDesigns.getByText("目前篩選範圍沒有高分設計資料。")).toBeVisible();
+
   await page.getByLabel("班別").fill("1A");
   await expect(page.getByText("iPad-01")).toBeVisible();
-  await page.getByRole("checkbox", { name: "選取 陳同學" }).check();
-  await page.getByRole("button", { name: "刪除紀錄" }).click();
-  await page.getByRole("button", { name: "預覽刪除範圍" }).click();
-  await expect(page.getByText(/1 個身份、2 個設計、3 場對戰/)).toBeVisible();
-  await page.getByRole("dialog").getByRole("button", { name: "繼續" }).click();
-  await page.getByRole("button", { name: "確定永久刪除" }).click();
-  await expect(page.getByText("0 筆紀錄")).toBeVisible();
-  await expect(highDesigns.getByText("目前篩選範圍沒有高分設計資料。")).toBeVisible();
+  await expect(page.getByRole("button",{name:"刪除紀錄"})).toHaveCount(0);
   await page.getByRole("button", { name: "登出" }).click();
-  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
-  await page.getByLabel("密碼").fill(password);
-  await page.getByRole("button", { name: "登入" }).click();
+  await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
+  await page.getByLabel("口令").fill(password);
+  await page.getByRole("button", { name: "進入控制台" }).click();
   await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
 });
 test.describe("iPad 與減少動態效果", () => {
@@ -83,14 +84,30 @@ test.describe("iPad 與減少動態效果", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     const undersized = await page.locator("button, input, select").evaluateAll(elements => elements.filter(element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && (rect.height < 44 || rect.width < 44); }).length);
     expect(undersized).toBe(0);
-    const opener = page.getByRole("button", { name: "刪除紀錄" });
+    const opener = page.getByRole("button", {name:"暫停平台"});
     await opener.click();
-    await expect(page.getByLabel("刪除範圍")).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(page.locator(":focus")).toBeVisible();
+    await expect(page.getByRole("dialog")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(opener).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(page.locator(":focus")).toBeVisible();
+    // With no rooms, pause is the final focusable control in this section.
+    await page.keyboard.press("Shift+Tab");
+    await expect(page.getByRole("tab", {name:"高分設計"})).toBeFocused();
   });
 });
+
+for (const width of [1440, 390]) {
+  test(`四個頁籤及靜態設計在 ${width}px 可讀`, async ({page}, testInfo) => {
+    await page.setViewportSize({width,height:900});
+    await login(page);
+    for (const name of ["總覽","對戰紀錄","學生排行榜","高分設計"]) {
+      await page.getByRole("tab",{name}).click();
+      await expect(page.getByRole("tabpanel",{name})).toBeVisible();
+      if(name!=="總覽") {
+        await page.locator(".admin-design-preview").first().scrollIntoViewIfNeeded();
+        await expect(page.getByRole("img",{name:"歷史陀螺靜態 3D"}).first()).toBeVisible();
+      }
+      expect(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth)).toBe(true);
+      await page.screenshot({path:testInfo.outputPath(`${width}-${name}.png`),fullPage:true});
+    }
+  });
+}

@@ -23,7 +23,7 @@ const validEnvironment = (): NodeJS.ProcessEnv => ({
 });
 
 describe("production environment contract", () => {
-  it.each(["DATABASE_URL", "COOKIE_SIGNING_KEY", "ADMIN_INITIAL_PASSWORD", "WEBCLIP_SIGNING_KEY"])(
+  it.each(["DATABASE_URL", "COOKIE_SIGNING_KEY", "WEBCLIP_SIGNING_KEY"])(
     "refuses to boot without %s",
     (key) => {
       const environment = validEnvironment();
@@ -35,7 +35,7 @@ describe("production environment contract", () => {
   it("requires HTTPS and production-strength secrets", () => {
     expect(() => loadConfig({ ...validEnvironment(), PUBLIC_ORIGIN: "http://tops.school.example" })).toThrow("PUBLIC_ORIGIN");
     expect(() => loadConfig({ ...validEnvironment(), COOKIE_SIGNING_KEY: "too-short" })).toThrow("COOKIE_SIGNING_KEY");
-    expect(() => loadConfig({ ...validEnvironment(), ADMIN_INITIAL_PASSWORD: "short" })).toThrow("ADMIN_INITIAL_PASSWORD");
+    expect(() => loadConfig({ ...validEnvironment(), ADMIN_INITIAL_PASSWORD: undefined, ADMIN_USERNAME: undefined })).not.toThrow();
     expect(() => loadConfig({ ...validEnvironment(), COOKIE_SIGNING_KEY: "!".repeat(48) })).toThrow("base64url");
     expect(() => loadConfig({ ...validEnvironment(), PUBLIC_ORIGIN: "https://tops.school.example:8443" })).toThrow("default HTTPS port");
     expect(() => loadConfig({ ...validEnvironment(), STUDENT_ORIGIN: "http://school.github.io" })).toThrow("STUDENT_ORIGIN");

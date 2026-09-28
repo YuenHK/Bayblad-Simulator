@@ -152,6 +152,7 @@ function authenticated(
 }
 it("shows concrete historical designs with layers, sample count and model versions", async () => {
   render(<AdminApp fetcher={authenticated()} />);
+  await userEvent.click(await screen.findByRole("tab", {name:"高分設計"}));
   expect(await screen.findByRole("heading", { name: "歷史紀錄中的高分設計" })).toBeInTheDocument();
   expect(await screen.findByText("表現 perf-1／物理 physics-1")).toBeInTheDocument();
   expect(screen.getByText(/不代表最佳解或因果/)).toBeInTheDocument();
@@ -166,7 +167,9 @@ it("ignores late design responses after filters change and paginates independent
     return json({ rows: [], total: 30, page, pageSize: 25 });
   });
   render(<AdminApp fetcher={fetcher} />);
+  await userEvent.click(await screen.findByRole("tab", {name:"高分設計"}));
   const section = (await screen.findByRole("heading", { name: "歷史紀錄中的高分設計" })).closest("section")!;
+  await userEvent.click(screen.getByText("篩選條件",{exact:true}));
   await userEvent.type(screen.getByLabelText("班別"), "1A");
   await waitFor(() => expect(within(section).getByText(/30 組設計及模型版本/)).toBeInTheDocument());
   await act(async () => resolveOld(json({ rows: [], total: 999, page: 1, pageSize: 25 })));
@@ -180,9 +183,11 @@ it("clears historical designs when their request loses authentication", async ()
     if (url.pathname === "/api/admin/high-scoring-designs" && url.searchParams.get("className")) return json({ error: "UNAUTHORIZED" }, 401);
   });
   render(<AdminApp fetcher={fetcher} />);
+  await userEvent.click(await screen.findByRole("tab", {name:"高分設計"}));
   await screen.findByText("550e8400-e29b-41d4-a716-446655440001");
+  await userEvent.click(screen.getByText("篩選條件",{exact:true}));
   await userEvent.type(screen.getByLabelText("班別"), "1");
-  await screen.findByRole("heading", { name: "教師登入" });
+  await screen.findByRole("heading", { name: "教師控制台" });
   expect(screen.queryByText("550e8400-e29b-41d4-a716-446655440001")).not.toBeInTheDocument();
 });
 it("keeps a fast high-scoring failure visible after the normal query debounce and clears it on retry", async () => {
@@ -190,10 +195,12 @@ it("keeps a fast high-scoring failure visible after the normal query debounce an
     if (url.pathname === "/api/admin/high-scoring-designs" && !url.searchParams.get("className")) return json({ error: "HIGH_SCORING_DESIGNS_UNAVAILABLE" }, 503);
   });
   render(<AdminApp fetcher={fetcher} />);
-  await screen.findByText("iPad-01");
+  await userEvent.click(await screen.findByRole("tab", {name:"高分設計"}));
+  await waitFor(() => expect(fetcher.mock.calls.some(([url])=>String(url).includes("/api/admin/records?"))).toBe(true));
   const section = screen.getByRole("region", { name: "歷史紀錄中的高分設計" });
   expect(within(section).getByRole("alert")).toHaveTextContent("高分設計暫時無法載入。");
   expect(within(section).queryByText("目前篩選範圍沒有高分設計資料。")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByText("篩選條件",{exact:true}));
   await userEvent.type(screen.getByLabelText("班別"), "1A");
   await within(section).findByText("550e8400-e29b-41d4-a716-446655440001");
   expect(within(section).queryByRole("alert")).not.toBeInTheDocument();
@@ -215,9 +222,9 @@ it("keeps login password out of URL and storage", async () => {
     },
   );
   render(<AdminApp fetcher={fetcher} />);
-  await screen.findByRole("heading", { name: "教師登入" });
-  await userEvent.type(screen.getByLabelText("密碼"), "secret-password");
-  await userEvent.click(screen.getByRole("button", { name: "登入" }));
+  await screen.findByRole("heading", { name: "教師控制台" });
+  await userEvent.type(screen.getByLabelText("口令"), "secret-password");
+  await userEvent.click(screen.getByRole("button", { name: "進入控制台" }));
   const login = requests.find((request) => request.url.endsWith("/login"));
   expect(login?.url).not.toContain("secret-password");
   expect(localStorage.length).toBe(0);
@@ -228,7 +235,9 @@ it("runtime-validates authoritative analytics and records DTOs", async () => {
   expect(
     await screen.findByRole("heading", { name: "教師控制台" }),
   ).toBeInTheDocument();
+  await userEvent.click(await screen.findByRole("tab", {name:"對戰紀錄"}));
   expect(await screen.findByText("iPad-01")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("tab", {name:"總覽"}));
   expect((await screen.findAllByText(/形狀：圓形/)).length).toBeGreaterThan(0);
   expect(localStorage.length).toBe(0);
 });
@@ -262,48 +271,11 @@ it("requires two confirmations for room operations and sends no password", async
   expect(calls[0]).toMatchObject({ action: "platform.pause", paused: true, confirmed: true });
   expect(calls[0]).not.toHaveProperty("password");
 });
-it("previews the exact deletion filter and requires two confirmations without a password", async () => {
-  const calls: Array<{ method: string; body?: unknown }> = [];
-  const fetcher = authenticated(async (url, init) => {
-    const method = init?.method ?? "GET";
-    calls.push({
-      method,
-      ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
-    });
-    if (url.pathname.endsWith("deletion-preview"))
-      return json({
-        previewToken: "x".repeat(43),
-        filterHash: "a".repeat(64),
-        expiresAt: "2026-08-30T00:00:00Z",
-        counts: { identities: 2, designs: 4, matches: 3 },
-      });
-    if (url.pathname.endsWith("records") && method === "DELETE")
-      return json({
-        auditId: "audit",
-        counts: { identities: 2, designs: 4, matches: 3 },
-      });
-    return undefined;
-  });
+it("has no deletion or password-change controls in the shared dashboard", async () => {
+  const fetcher = authenticated();
   render(<AdminApp fetcher={fetcher} />);
-  await screen.findByRole("heading", { name: "教師控制台" });
-  await userEvent.click(screen.getByRole("button", { name: "刪除紀錄" }));
-  await userEvent.click(screen.getByRole("button", { name: "預覽刪除範圍" }));
-  expect(
-    await screen.findByText(/2 個身份、4 個設計、3 場對戰/),
-  ).toBeInTheDocument();
-  expect(screen.queryByLabelText("再次輸入管理員密碼")).not.toBeInTheDocument();
-  expect(screen.queryByLabelText("輸入 DELETE 確認")).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "繼續" }));
-  expect(calls.some((call) => call.method === "DELETE")).toBe(false);
-  await userEvent.click(screen.getByRole("button", { name: "確定永久刪除" }));
-  await waitFor(() =>
-    expect(
-      calls.some(
-        (call) =>
-          call.method === "DELETE" &&
-          (call.body as { confirmed?: boolean }).confirmed === true &&
-          !("password" in (call.body as object)),
-      ),
-    ).toBe(true),
-  );
+  await screen.findByRole("tab",{name:"總覽"});
+  expect(screen.queryByRole("button",{name:"刪除紀錄"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("button",{name:"更改密碼"})).not.toBeInTheDocument();
+  expect(fetcher.mock.calls.some(([,init])=>init?.method==="DELETE")).toBe(false);
 });

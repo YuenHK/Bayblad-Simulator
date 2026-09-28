@@ -93,10 +93,10 @@ test("loads the deployed teacher app and handles login without CSP violations", 
   // The container serves the admin build; the student 3D app lives on Pages
   // and has its own full public battle acceptance test.
   await page.goto(`${httpsOrigin}/admin/`);
-  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
-  await page.getByLabel("帳號", { exact: true }).fill("security-nonexistent-user");
-  await page.getByLabel("密碼", { exact: true }).fill("security-invalid-password");
-  await page.getByRole("button", { name: "登入", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("帳號或密碼不正確");
+  await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
+  await expect(page.getByLabel("帳號", { exact: true })).toHaveCount(0);
+  await page.getByLabel("口令", { exact: true }).fill("security-invalid-password");
+  await page.getByRole("button", { name: "進入控制台", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("口令不正確");
   expect(violations).toEqual([]);
 });

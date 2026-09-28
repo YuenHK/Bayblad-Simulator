@@ -1,31 +1,18 @@
 import { expect, test } from "@playwright/test";
-
-test("teacher changes password and must sign in again", async ({ page }) => {
+test("shared console disables password changes and destructive record endpoints", async ({ page }) => {
   await page.goto(".");
-  const original = process.env.E2E_ADMIN_PASSWORD ?? "e2e-admin-only-password";
-  await page.getByLabel("密碼", { exact: true }).fill(original);
-  await page.getByRole("button", { name: "登入", exact: true }).click();
-  await page.getByRole("button", { name: "更改密碼", exact: true }).click({ timeout: 10000 });
-  const dialog = page.getByRole("dialog", { name: "更改管理員密碼" });
-  await dialog.getByLabel("目前密碼", { exact: true }).fill(original);
-  await dialog.getByLabel("新密碼", { exact: true }).fill("local-test-replacement-password");
-  await dialog.getByLabel("確認新密碼", { exact: true }).fill("mismatch-password");
-  await dialog.getByRole("button", { name: "儲存新密碼並登出" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("不一致");
-  await dialog.getByLabel("確認新密碼", { exact: true }).fill("local-test-replacement-password");
-  await dialog.getByRole("button", { name: "儲存新密碼並登出" }).click();
-  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
-  await page.getByLabel("密碼", { exact: true }).fill(original);
-  await page.getByRole("button", { name: "登入", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
-  await page.getByLabel("密碼", { exact: true }).fill("local-test-replacement-password");
-  await page.getByRole("button", { name: "登入", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
-  await page.getByRole("button", { name: "更改密碼", exact: true }).click();
-  await dialog.getByLabel("目前密碼", { exact: true }).fill("local-test-replacement-password");
-  await dialog.getByLabel("新密碼", { exact: true }).fill(original);
-  await dialog.getByLabel("確認新密碼", { exact: true }).fill(original);
-  await dialog.getByRole("button", { name: "儲存新密碼並登出" }).click();
-  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
-  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("local-test-replacement-password");
+  await page.getByLabel("口令").fill("wrong");
+  await page.getByRole("button",{name:"進入控制台"}).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await page.getByLabel("口令").fill("admin");
+  await page.getByRole("button",{name:"進入控制台"}).click();
+  await expect(page.getByRole("tab",{name:"總覽"})).toBeVisible();
+  await expect(page.getByRole("button",{name:"更改密碼"})).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"刪除紀錄"})).toHaveCount(0);
+  const origin = new URL(page.url()).origin;
+  for (const path of ["/api/admin/password","/api/admin/records/deletion-preview"]) {
+    const response = await page.request.post(origin+path,{headers:{origin,"sec-fetch-site":"same-origin"},data:{}});
+    expect(response.status()).toBe(404);
+  }
+  expect((await page.request.delete(origin+"/api/admin/records",{data:{}})).status()).toBe(404);
 });

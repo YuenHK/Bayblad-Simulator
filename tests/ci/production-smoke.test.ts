@@ -4,13 +4,20 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
+it("generates only the shared-phrase payload for every CI smoke credential file", () => {
+  const workflow = readFileSync(resolve(".github/workflows/ci.yml"),"utf8");
+  const writers = workflow.split("\n").filter(line => line.includes("printf") && (line.includes("admin-smoke.json") || line.includes("CANONICAL_ADMIN_SMOKE_SECRET_FILE")));
+  expect(writers).toHaveLength(4);
+  for (const writer of writers) expect(writer).toContain('{"passphrase":"admin"}');
+});
+
 it("checks the deployed admin entry, assets, session and one-use probe without relying on JSON file extensions", () => {
   const dir = mkdtempSync(join(tmpdir(), "production-smoke-contract-"));
   try {
     const nonce = "6".repeat(64);
     const requests = join(dir, "requests");
     const secret = join(dir, "credentials");
-    writeFileSync(secret, JSON.stringify({ username: "fixture", password: "fixture-password" }), { mode: 0o600 });
+    writeFileSync(secret, JSON.stringify({ passphrase: "admin" }), { mode: 0o600 });
     writeFileSync(join(dir, "node"), `#!${process.execPath}
 const fs=require("fs"),cp=require("child_process");
 const args=process.argv.slice(2);

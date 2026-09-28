@@ -9,7 +9,7 @@
 | 入口 | 用途 |
 | --- | --- |
 | [學生測試網站](https://yuenhk.github.io/Bayblad-Simulator/) | 設計、預覽、房間及對戰，不要求手動輸入個人資料 |
-| [教師後台](https://bayblad-simulator-api.onrender.com/admin/) | 須獲授權帳號登入，教師密碼不公開 |
+| [教師後台](https://bayblad-simulator-api.onrender.com/admin/) | 新版使用共用口令 `admin`；非私人帳戶，包含學生資料，勿公開轉載 |
 | [後端健康檢查](https://bayblad-simulator-api.onrender.com/health/ready) | 伺服器、資料庫及遷移就緒狀態 |
 | [建置與測試紀錄](https://github.com/YuenHK/Bayblad-Simulator/actions) | GitHub Actions 結果 |
 
@@ -45,7 +45,9 @@ STL 匯出採用 [Manifold](https://github.com/elalish/manifold) 3.5.3，按需�
 
 ## 教師功能與身份限制
 
-後台提供登入、對戰紀錄、設計參數、日期時間、身份／裝置狀態、排行榜、使用量及參數分析。Excel 含六張工作表：對戰紀錄、逐輪結果、陀螺參數、身份及裝置狀態、使用量統計、參數分析。統計中較高分的參數不是保證獲勝的物理最佳解。
+後台分為總覽、對戰紀錄、學生排行榜及高分設計四頁籤，提供共用口令入口、對戰紀錄、設計參數、日期時間、身份／裝置狀態、排行榜、使用量及參數分析。Excel 含六張工作表：對戰紀錄、逐輪結果、陀螺參數、身份及裝置狀態、使用量統計、參數分析。統計中較高分的參數不是保證獲勝的物理最佳解。
+
+三個紀錄／設計列表直接展示歷史靜態 3D（包括自定輪廓及孔位）；排行榜代表設計取目前篩選範圍內最高分場次，不代表唯一使用過的設計。新版移除改密碼與永久刪除 HTTP 入口，仍保留 session、CSRF、同源限制及登入限流。使用者已選擇以簡單共用口令開放現有資料與匯出；這不是個別教師身份驗證。
 
 一般網頁不能直接讀取 iPad 系統裝置名稱、MAC 位址或其他網站的瀏覽歷史。專案支援受信任的 iClass／WebClip 整合，但需要部署者配置及校方配合；2026-09-08 核實的公開後端使用 `guest-only-explicit` 訪客模式。
 
@@ -112,13 +114,13 @@ pnpm exec playwright test --config playwright.public.config.ts --project chromiu
 CINEMATIC_BATTLES=1 pnpm exec playwright test --config playwright.public.config.ts --project chromium-desktop --grep 'computer battle'
 ```
 
-教師公開站測試需獲授權者安全提供 `PUBLIC_ADMIN_PASSWORD` 環境變數；未提供則跳過，不是通過。不要把密碼寫入檔案、提交紀錄或共享終端指令。其他入口包括 `test:security`、`test:load`，執行前閱讀其設定與環境要求。
+教師公開站測試須明確設定 `PUBLIC_ADMIN_ACCEPTANCE=1` 才執行；未設定則跳過，不是通過。共用口令為 `admin`，請勿在測試報告或截圖公開學生資料。其他入口包括 `test:security`、`test:load`，執行前閱讀其設定與環境要求。
 
 ## 部署與資料保存
 
 目前測試站為 GitHub Pages＋Render Docker＋PostgreSQL。Fork 後應建立自己的服務及密鑰，不應沿用本專案正式後台。
 
-1. 配置自己的 HTTPS 後端、PostgreSQL、Origins、教師密碼與獨立簽章密鑰，參考 [環境設定](docs/operations/environment.md) 及 [.env.example](.env.example)。
+1. 配置自己的 HTTPS 後端、PostgreSQL、Origins 與獨立簽章密鑰，參考 [環境設定](docs/operations/environment.md) 及 [.env.example](.env.example)。
 2. 後端參考 `Dockerfile.server`、`scripts/migrate-and-start.sh`、`apps/server/src/config.ts`。映像 build 需要核實的 Node digest；須明確配置遷移啟動流程，不能假定預設 CMD 會自動遷移。
 3. 前端部署見 [.github/workflows](.github/workflows)，設定自己的 `STUDENT_API_ORIGIN` 及後端允許的學生 Origin。
 4. 驗證健康檢查、身份、完整對戰及教師匯出；部署成功不是功能驗收的替代品。

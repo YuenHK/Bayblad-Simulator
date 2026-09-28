@@ -24,6 +24,7 @@ export const adminRecordFilters = z
     from: date.optional(),
     to: date.optional(),
     className: z.string().trim().max(30).optional(),
+    identityId: z.uuid().optional(),
     identity: z.string().trim().max(80).optional(),
     device: z.string().trim().max(128).optional(),
     parameter: z.string().trim().max(128).optional(),
@@ -46,27 +47,29 @@ export function adminRecordTimestamp(value: unknown): string {
   if (!parsed || !Number.isFinite(parsed.getTime())) throw new TypeError("INVALID_ADMIN_RECORD_TIMESTAMP");
   return parsed.toISOString();
 }
-export class PostgresAdminRecordsSource implements AdminRecordsSource {
-  constructor(private readonly sql: DatabaseClient["sql"]) {}
-  async queryHighScoringDesigns(filters: AdminRecordFilters) {
-    const query = `with design_projection as materialized (
+const DESIGN_PROJECTION = `
       select d.id,jsonb_build_object('layers',jsonb_agg(
         jsonb_build_object('position',l.position::text,'shape',l.shape::text,
           'points',case when l.shape::text='custom' then null else l.points end,
           'diameterMm',l.diameter_mm::float8,'actualAreaMm2',l.actual_area_mm2::float8,
-          'holeCount',d.screw_count,'rotationDeg',l.rotation_deg::float8,'cornerRoundness',l.corner_roundness::float8)
+          'holeCount',d.screw_count,'rotationDeg',l.rotation_deg::float8,'cornerRoundness',l.corner_roundness::float8,'color',l.color)
         || case when l.outline is not null then jsonb_build_object('outline',l.outline) else '{}'::jsonb end order by l.layer_order),
         'totalMassG',d.total_mass_g::float8,'metalDiscDiameterMm',d.metal_disc_diameter_mm::float8,
         'centerOfMassOffsetMm',sqrt(d.center_of_mass_x_mm*d.center_of_mass_x_mm+d.center_of_mass_y_mm*d.center_of_mass_y_mm)::float8,
         'momentOfInertiaGmm2',d.polar_moment_gmm2::float8,'screwRadiusMm',d.screw_radius_mm::float8,'screwRotationDeg',d.screw_rotation_deg::float8) design
-      from designs d join design_layers l on l.design_id=d.id group by d.id
+      from designs d join design_layers l on l.design_id=d.id group by d.id`;
+export class PostgresAdminRecordsSource implements AdminRecordsSource {
+  constructor(private readonly sql: DatabaseClient["sql"]) {}
+  async queryHighScoringDesigns(filters: AdminRecordFilters) {
+    const query = `with design_projection as materialized (
+${DESIGN_PROJECTION}
     ), participants as materialized (
       select m.id match_id,p.design_id,m.performance_model_version,m.physics_model_version,
         coalesce(case when p.slot='player1' then m.player1_total else m.player2_total end,0)::float8 score
       from matches m join match_participant_snapshots p on p.match_id=m.id
       left join identities i on i.id=coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)
       join design_projection dp on dp.id=p.design_id
-      where m.status='completed'
+      where m.status='completed' and ($9::uuid is null or coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)=$9::uuid)
         and ($1::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date >= $1::date)
         and ($2::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date <= $2::date)
         and ($3::text is null or coalesce(p.class_name_snapshot,i.class_name,'') ilike $3 escape '\\')
@@ -83,11 +86,11 @@ export class PostgresAdminRecordsSource implements AdminRecordsSource {
       p.sample_size "sampleSize",p.observations "participantObservations",p.average_score "averageScore",dp.design,t.total
       from totals t left join paged p on true left join design_projection dp on dp.id=p.design_id
       order by p.average_score desc,p.sample_size desc,p.design_id,p.performance_model_version,p.physics_model_version`;
-    const raw = await this.sql.unsafe(query, [filters.from ?? null, filters.to ?? null, pattern(filters.className), pattern(filters.identity), pattern(filters.device), pattern(filters.parameter), filters.pageSize, (filters.page - 1) * filters.pageSize]) as readonly Record<string, unknown>[];
+    const raw = await this.sql.unsafe(query, [filters.from ?? null, filters.to ?? null, pattern(filters.className), pattern(filters.identity), pattern(filters.device), pattern(filters.parameter), filters.pageSize, (filters.page - 1) * filters.pageSize, filters.identityId ?? null]) as readonly Record<string, unknown>[];
     return adminHighScoringDesignsPageSchema.parse({ rows: raw.filter(row => row.designId !== null).map(({ total: _, ...row }) => row), total: Number(raw[0]?.total ?? 0), page: filters.page, pageSize: filters.pageSize });
   }
   async query(filters: AdminRecordFilters) {
-    const query = `with design_projection as materialized(select d.id,jsonb_build_object('layers',jsonb_agg(jsonb_build_object('position',l.position::text,'shape',l.shape::text,'points',case when l.shape::text='custom' then null else l.points end,'diameterMm',l.diameter_mm::float8,'actualAreaMm2',l.actual_area_mm2::float8,'holeCount',d.screw_count,'rotationDeg',l.rotation_deg::float8,'cornerRoundness',l.corner_roundness::float8) || case when l.outline is not null then jsonb_build_object('outline',l.outline) else '{}'::jsonb end order by l.layer_order),'totalMassG',d.total_mass_g::float8,'metalDiscDiameterMm',d.metal_disc_diameter_mm::float8,'centerOfMassOffsetMm',sqrt(d.center_of_mass_x_mm*d.center_of_mass_x_mm+d.center_of_mass_y_mm*d.center_of_mass_y_mm)::float8,'momentOfInertiaGmm2',d.polar_moment_gmm2::float8,'screwRadiusMm',d.screw_radius_mm::float8,'screwRotationDeg',d.screw_rotation_deg::float8) design from designs d join design_layers l on l.design_id=d.id group by d.id),filtered as materialized(select concat(m.id,':',p.slot::text) "rowId",m.id "matchId",p.slot::text slot,m.completed_at "occurredAt",coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)::text "identityId",coalesce(p.class_name_snapshot,i.class_name) "className",coalesce(p.display_name_snapshot,i.display_name,'已刪除身份') identity,case when p.slot='player1' then m.player1_device_name else m.player2_device_name end "deviceName",dp.design,coalesce(case when p.slot='player1' then m.player1_total else m.player2_total end,0)::float8 "totalScore" from matches m join match_participant_snapshots p on p.match_id=m.id left join identities i on i.id=coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) join design_projection dp on dp.id=p.design_id where m.status='completed' and ($1::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date >= $1::date) and ($2::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date <= $2::date) and ($3::text is null or coalesce(p.class_name_snapshot,i.class_name,'') ilike $3 escape '\\') and ($4::text is null or coalesce(p.display_name_snapshot,i.display_name,'') ilike $4 escape '\\') and ($5::text is null or coalesce(case when p.slot='player1' then m.player1_device_name else m.player2_device_name end,'') ilike $5 escape '\\') and ($6::text is null or dp.design::text ilike $6 escape '\\')),totals as(select count(*)::integer total from filtered),paged as(select * from filtered order by "occurredAt" desc,"matchId",slot limit $7 offset $8) select p.*,t.total from totals t left join paged p on true`;
+    const query = `with design_projection as materialized(${DESIGN_PROJECTION}),filtered as materialized(select concat(m.id,':',p.slot::text) "rowId",m.id "matchId",p.slot::text slot,m.completed_at "occurredAt",coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)::text "identityId",coalesce(p.class_name_snapshot,i.class_name) "className",coalesce(p.display_name_snapshot,i.display_name,'已刪除身份') identity,case when p.slot='player1' then m.player1_device_name else m.player2_device_name end "deviceName",dp.design,coalesce(case when p.slot='player1' then m.player1_total else m.player2_total end,0)::float8 "totalScore" from matches m join match_participant_snapshots p on p.match_id=m.id left join identities i on i.id=coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) join design_projection dp on dp.id=p.design_id where m.status='completed' and ($9::uuid is null or coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)=$9::uuid) and ($1::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date >= $1::date) and ($2::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date <= $2::date) and ($3::text is null or coalesce(p.class_name_snapshot,i.class_name,'') ilike $3 escape '\\') and ($4::text is null or coalesce(p.display_name_snapshot,i.display_name,'') ilike $4 escape '\\') and ($5::text is null or coalesce(case when p.slot='player1' then m.player1_device_name else m.player2_device_name end,'') ilike $5 escape '\\') and ($6::text is null or dp.design::text ilike $6 escape '\\')),totals as(select count(*)::integer total from filtered),paged as(select * from filtered order by "occurredAt" desc,"matchId",slot limit $7 offset $8) select p.*,t.total from totals t left join paged p on true`;
     const raw = (await this.sql.unsafe(query, [
       filters.from ?? null,
       filters.to ?? null,
@@ -97,6 +100,7 @@ export class PostgresAdminRecordsSource implements AdminRecordsSource {
       pattern(filters.parameter),
       filters.pageSize,
       (filters.page - 1) * filters.pageSize,
+      filters.identityId ?? null,
     ])) as readonly Record<string, unknown>[];
     const total = Number(raw[0]?.total ?? 0),
       rows = raw
@@ -113,28 +117,32 @@ export class PostgresAdminRecordsSource implements AdminRecordsSource {
     });
   }
   async queryLeaderboard(filters: AdminRecordFilters) {
-    const query = `with design_projection as materialized(select d.id,jsonb_build_object('layers',jsonb_agg(jsonb_build_object('position',l.position::text,'shape',l.shape::text,'points',case when l.shape::text='custom' then null else l.points end,'diameterMm',l.diameter_mm::float8,'actualAreaMm2',l.actual_area_mm2::float8) order by l.layer_order),'totalMassG',d.total_mass_g::float8,'metalDiscDiameterMm',d.metal_disc_diameter_mm::float8) design from designs d join design_layers l on l.design_id=d.id group by d.id),participant_scores as materialized(
+    const query = `with design_projection as materialized(${DESIGN_PROJECTION}),participant_scores as materialized(
       select coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) identity_id,
         coalesce(p.display_name_snapshot,i.display_name,'已刪除身份') display_name,coalesce(p.class_name_snapshot,i.class_name) class_name,
         case when p.slot='player1' then m.player1_battle_points else m.player2_battle_points end::float8 battle_score,
         case when p.slot='player1' then m.player1_challenge_points else m.player2_challenge_points end::float8 challenge_score,
-        case when p.slot='player1' then m.player1_total else m.player2_total end::float8 total_score,p.captured_at
+        case when p.slot='player1' then m.player1_total else m.player2_total end::float8 total_score,p.captured_at,m.completed_at,m.id match_id,p.slot,dp.design
       from matches m join match_participant_snapshots p on p.match_id=m.id
       left join identities i on i.id=coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)
       join design_projection dp on dp.id=p.design_id
-      where m.status='completed' and coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) is not null
+      where m.status='completed' and ($9::uuid is null or coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)=$9::uuid) and coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) is not null
         and ($1::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date >= $1::date)
         and ($2::date is null or (m.completed_at at time zone 'Asia/Hong_Kong')::date <= $2::date)
         and ($3::text is null or coalesce(p.class_name_snapshot,i.class_name,'') ilike $3 escape '\\')
         and ($4::text is null or coalesce(p.display_name_snapshot,i.display_name,'') ilike $4 escape '\\')
         and ($5::text is null or coalesce(case when p.slot='player1' then m.player1_device_name else m.player2_device_name end,'') ilike $5 escape '\\')
         and ($6::text is null or dp.design::text ilike $6 escape '\\')
+    ), best_design as materialized (
+      select distinct on(identity_id) identity_id,design,match_id,completed_at,total_score from participant_scores
+      order by identity_id,total_score desc,completed_at desc,match_id,slot
     ), latest_label as materialized(select distinct on(identity_id) identity_id,display_name,class_name from participant_scores order by identity_id,captured_at desc,display_name desc),aggregated as materialized(select identity_id,sum(battle_score)::float8 battle_score,sum(challenge_score)::float8 challenge_score,sum(total_score)::float8 total_score,count(*)::integer matches from participant_scores group by identity_id),
     ranked as materialized(select a.*,l.display_name,l.class_name,dense_rank() over(order by a.total_score desc)::integer rank from aggregated a join latest_label l using(identity_id)),
     totals as(select count(*)::integer total from ranked),paged as(select * from ranked order by rank,display_name,identity_id limit $7 offset $8)
-    select p.*,t.total from totals t left join paged p on true`;
-    const raw = await this.sql.unsafe(query,[filters.from??null,filters.to??null,pattern(filters.className),pattern(filters.identity),pattern(filters.device),pattern(filters.parameter),filters.pageSize,(filters.page-1)*filters.pageSize]) as readonly Record<string,unknown>[];
-    return adminLeaderboardPageSchema.parse({ rows: raw.filter(row=>row.identity_id!==null).map(row=>({ identityId:row.identity_id,displayName:row.display_name,className:row.class_name,battleScore:Number(row.battle_score),challengeScore:Number(row.challenge_score),totalScore:Number(row.total_score),matches:Number(row.matches),rank:Number(row.rank) })), total:Number(raw[0]?.total??0),page:filters.page,pageSize:filters.pageSize });
+    select p.*,t.total,b.design best_design,b.match_id best_match_id,b.completed_at best_occurred_at,b.total_score best_score
+    from totals t left join paged p on true left join best_design b using(identity_id) order by p.rank,p.display_name,p.identity_id`;
+    const raw = await this.sql.unsafe(query,[filters.from??null,filters.to??null,pattern(filters.className),pattern(filters.identity),pattern(filters.device),pattern(filters.parameter),filters.pageSize,(filters.page-1)*filters.pageSize,filters.identityId??null]) as readonly Record<string,unknown>[];
+    return adminLeaderboardPageSchema.parse({ rows: raw.filter(row=>row.identity_id!==null).map(row=>({ identityId:row.identity_id,displayName:row.display_name,className:row.class_name,battleScore:Number(row.battle_score),challengeScore:Number(row.challenge_score),totalScore:Number(row.total_score),matches:Number(row.matches),rank:Number(row.rank),bestDesign:{design:row.best_design,matchId:row.best_match_id,occurredAt:adminRecordTimestamp(row.best_occurred_at),score:Number(row.best_score)} })), total:Number(raw[0]?.total??0),page:filters.page,pageSize:filters.pageSize });
   }
 }
 export function registerAdminRecordRoutes(

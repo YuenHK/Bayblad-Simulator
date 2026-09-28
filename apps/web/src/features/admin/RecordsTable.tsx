@@ -1,10 +1,12 @@
 import type { RecordsResponse } from "./types";
+import { StaticDesignPreview } from "./StaticDesignPreview";
 import { LayerRecord } from "./LayerRecord";
 export type AdminFilters = {
   from: string;
   to: string;
   className: string;
   identity: string;
+  identityId?: string;
   device: string;
   parameter: string;
   page: number;
@@ -19,53 +21,28 @@ export const filterParams = (filters: AdminFilters) => {
   });
   for (const key of ["className", "identity", "device", "parameter"] as const)
     if (filters[key]) params.set(key, filters[key]);
+  if (filters.identityId) params.set("identityId", filters.identityId);
   return params;
 };
 export function RecordsTable({
   data,
   filters,
   onFilters,
-  selectedIdentities,
-  onSelectIdentity,
 }: {
   data: RecordsResponse;
   filters: AdminFilters;
   onFilters: (filters: AdminFilters) => void;
-  selectedIdentities: ReadonlySet<string>;
-  onSelectIdentity: (id: string, selected: boolean) => void;
+  selectedIdentities?: ReadonlySet<string>;
+  onSelectIdentity?: (id: string, selected: boolean) => void;
 }) {
-  const patch = (key: keyof AdminFilters, value: string | number) =>
-    onFilters({ ...filters, [key]: value, page: 1 });
   return (
     <section className="panel admin-section" aria-labelledby="records-title">
       <h2 id="records-title">對戰紀錄</h2>
-      <form
-        className="admin-filters"
-        onSubmit={(event) => event.preventDefault()}
-      >
-        {Object.entries({
-          className: "班別",
-          identity: "身份／姓名",
-          device: "裝置",
-          parameter: "陀螺參數",
-        }).map(([key, label]) => (
-          <label key={key}>
-            {label}
-            <input
-              type="search"
-              value={String(filters[key as keyof AdminFilters])}
-              onChange={(event) =>
-                patch(key as keyof AdminFilters, event.target.value)
-              }
-            />
-          </label>
-        ))}
-      </form>
+
       <div className="table-scroll">
         <table>
           <thead>
             <tr>
-              <th>選取學生</th>
               <th>日期時間</th>
               <th>班別</th>
               <th>身份</th>
@@ -77,25 +54,12 @@ export function RecordsTable({
           <tbody>
             {data.rows.map((row) => (
               <tr key={row.rowId}>
-                <td>
-                  {row.identityId ? (
-                    <input
-                      aria-label={`選取 ${row.identity}`}
-                      type="checkbox"
-                      checked={selectedIdentities.has(row.identityId)}
-                      onChange={(event) =>
-                        onSelectIdentity(row.identityId!, event.target.checked)
-                      }
-                    />
-                  ) : (
-                    "—"
-                  )}
-                </td>
                 <td>{new Date(row.occurredAt).toLocaleString("zh-HK")}</td>
                 <td>{row.className ?? "—"}</td>
                 <td>{row.identity}</td>
                 <td>{row.deviceName ?? "—"}</td>
                 <td>
+                  <StaticDesignPreview design={row.design} />
                   <details>
                     <summary>
                       {row.design.totalMassG}g；貼片{" "}
@@ -141,4 +105,34 @@ export function RecordsTable({
       </div>
     </section>
   );
+}
+
+export function RecordFilters({ filters, onFilters }: { filters: AdminFilters; onFilters: (filters: AdminFilters) => void }) {
+  const patch = (key: keyof AdminFilters, value: string | number) => onFilters({ ...filters, [key]: value, page: 1 });
+  return <details className="panel admin-section admin-filter-details"><summary>篩選條件{filters.className || filters.identity || filters.device || filters.parameter || filters.identityId ? "（已套用）" : ""}</summary>
+      <form
+        className="admin-filters"
+        onSubmit={(event) => event.preventDefault()}
+      >
+        {Object.entries({
+          className: "班別",
+          identity: "身份／姓名",
+          device: "裝置",
+          parameter: "陀螺參數",
+        }).map(([key, label]) => (
+          <label key={key}>
+            {label}
+            <input
+              type="search"
+              value={String(filters[key as keyof AdminFilters])}
+              onChange={(event) =>
+                patch(key as keyof AdminFilters, event.target.value)
+              }
+            />
+          </label>
+        ))}
+      </form>
+    {filters.identityId && <p>已限定排行榜所選學生 <button onClick={() => { const {identityId: _, ...rest} = filters; onFilters({...rest,page:1}); }}>清除學生限定</button></p>}
+    <p>日期及文字篩選套用於紀錄、排行榜及高分設計；統計及 Excel 使用日期與班別。</p>
+  </details>;
 }

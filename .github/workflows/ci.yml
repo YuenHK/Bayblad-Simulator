@@ -193,7 +193,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          printf '{"username":"%s","password":"%s"}\n' "$ADMIN_USERNAME" "$ADMIN_INITIAL_PASSWORD" > "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
+          printf '{"passphrase":"admin"}\n' > "$CANONICAL_ADMIN_SMOKE_SECRET_FILE"
           # Backup tools use their dedicated libpq service, never the app connection URL.
           env -u DATABASE_URL /opt/steam-top/releases/$RUNTIME_INSTALL_MANIFEST_SHA256/infra/backup/test-canonical-cutover-full.sh
           docker compose -f compose.yaml -f compose.build.yaml -f compose.canonical-test.yaml -f compose.canonical-app.yaml -f compose.ci-secrets.yaml up -d --force-recreate --wait server
@@ -206,7 +206,7 @@ jobs:
           set -euo pipefail
           nonce="$(printf '6%.0s' {1..64})"
           umask 077
-          printf '{"username":"%s","password":"%s"}\n' "$ADMIN_USERNAME" "$ADMIN_INITIAL_PASSWORD" > "$RUNNER_TEMP/admin-smoke.json"
+          printf '{"passphrase":"admin"}\n' > "$RUNNER_TEMP/admin-smoke.json"
           docker compose -f compose.yaml -f compose.build.yaml -f compose.ci-secrets.yaml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v nonce="$nonce" <<'SQL'
           create table if not exists restore_control.deployment_probe(nonce text primary key check(nonce~'^[a-f0-9]{64}$'),restore_target_id uuid not null,system_identifier text not null,created_at timestamptz not null default clock_timestamp(),consumed_at timestamptz);
           alter table restore_control.deployment_probe add column if not exists state text not null default 'pending';alter table restore_control.deployment_probe add column if not exists observed_at timestamptz;alter table restore_control.deployment_probe add column if not exists receipt_signed_at timestamptz;
@@ -355,7 +355,7 @@ jobs:
           for key in state host ledger evidence;do sudo ssh-keygen -q -t ed25519 -N '' -f "/run/steam-top-production-e2e/secrets/$key-key";sudo chmod 0400 "/run/steam-top-production-e2e/secrets/$key-key";printf '%s-ci %s\n' "$key" "$(sudo ssh-keygen -y -f /run/steam-top-production-e2e/secrets/$key-key)" | sudo tee "/run/steam-top-production-e2e/secrets/$key-allowed" >/dev/null;sudo chmod 0444 "/run/steam-top-production-e2e/secrets/$key-allowed";done
           printf '[target]\nhost=db\nhostaddr=127.0.0.1\nport=15432\ndbname=steam_top\nuser=steam_top\nsslmode=verify-full\nsslrootcert=/run/steam-top-production-e2e/server.crt\n' | sudo tee /run/steam-top-production-e2e/secrets/pg-service >/dev/null
           printf 'db:15432:steam_top:steam_top:production-e2e-postgres-password\n' | sudo tee /run/steam-top-production-e2e/secrets/pg-pass >/dev/null
-          printf '%s' "$GH_TOKEN" | sudo tee /run/steam-top-production-e2e/secrets/github-token >/dev/null;printf '{"username":"admin","password":"production-e2e-admin-password"}\n' | sudo tee /run/steam-top-production-e2e/secrets/admin-smoke.json >/dev/null;sudo chmod 0400 /run/steam-top-production-e2e/secrets/{pg-service,pg-pass,github-token,admin-smoke.json}
+          printf '%s' "$GH_TOKEN" | sudo tee /run/steam-top-production-e2e/secrets/github-token >/dev/null;printf '{"passphrase":"admin"}\n' | sudo tee /run/steam-top-production-e2e/secrets/admin-smoke.json >/dev/null;sudo chmod 0400 /run/steam-top-production-e2e/secrets/{pg-service,pg-pass,github-token,admin-smoke.json}
           tar -xOf bootstrap/bootstrap.tgz bootstrap-files.sha256 > "$RUNNER_TEMP/bootstrap-files.sha256";bootstrap_sha=$(sha256sum "$RUNNER_TEMP/bootstrap-files.sha256"|awk '{print $1}')
           node - "$RUNNER_TEMP/trust.json" "$bootstrap_sha" "$GITHUB_REPOSITORY" "$AUTHORIZATION_WORKFLOW_SHA" "$source_ref" <<'NODE'
           const fs=require("fs"),[out,bootstrapSha256,repository,workflowSha,workflowRef]=process.argv.slice(2),r="/run/steam-top-production-e2e";fs.writeFileSync(out,JSON.stringify({schemaVersion:1,purpose:"steam-top-bootstrap-trust",bootstrapSha256,repository,workflowIdentity:`${repository}/.github/workflows/ci.yml`,workflowRef,workflowSha,deploymentPurpose:"production",installer:{url:process.env.INSTALLER_URL,signatureUrl:process.env.INSTALLER_SIGNATURE_URL,sha256:process.env.INSTALLER_SHA256,signerId:"installer",namespace:"steam-top-bootstrap-installer"},validator:{url:process.env.VALIDATOR_URL,signatureUrl:process.env.VALIDATOR_SIGNATURE_URL,sha256:process.env.VALIDATOR_SHA256,signerId:"validator",namespace:"steam-top-bootstrap-validator"},githubTokenFile:`${r}/secrets/github-token`,authorizationDir:`${r}/authorization`,productionEnvFile:`${r}/production.env`,hostReceiptSigningKey:`${r}/secrets/host-key`,hostReceiptAllowedSigners:`${r}/secrets/host-allowed`,hostReceiptSignerId:"host-ci",ledgerSigningKey:`${r}/secrets/ledger-key`,ledgerAllowedSigners:`${r}/secrets/ledger-allowed`,ledgerSignerId:"ledger-ci",evidenceSigningKey:`${r}/secrets/evidence-key`,evidenceAllowedSigners:`${r}/secrets/evidence-allowed`,evidenceSignerId:"evidence-ci",productionStateDir:`${r}/state`,productionStateSigningKey:`${r}/secrets/state-key`,productionStateAllowedSigners:`${r}/secrets/state-allowed`,productionStateSignerId:"state-ci",adminSmokeSecretFile:`${r}/secrets/admin-smoke.json`,hostReceiptOutbox:`${r}/outbox`,pgServiceFile:`${r}/secrets/pg-service`,pgPassFile:`${r}/secrets/pg-pass`,pgServiceName:"target",cutoverPgService:"target",cutoverPgServiceFile:`${r}/secrets/pg-service`,cutoverPgPassFile:`${r}/secrets/pg-pass`,cutoverIncidentDir:`${r}/incident`})+"\n",{mode:0o600});
@@ -668,7 +668,7 @@ jobs:
           sudo install -o root -g root -m 0600 server.key /opt/steam-top/.release-integration/tls/server.key
           sudo install -o root -g root -m 0600 server.crt /opt/steam-top/.release-integration/tls/server.crt
           printf '%s' "$GITHUB_TOKEN" | sudo tee /opt/steam-top/.release-integration/secrets/github-token >/dev/null
-          printf '{"username":"admin","password":"integration-admin-password"}\n' | sudo tee /opt/steam-top/.release-integration/secrets/admin-smoke.json >/dev/null
+          printf '{"passphrase":"admin"}\n' | sudo tee /opt/steam-top/.release-integration/secrets/admin-smoke.json >/dev/null
           printf '[target]\nhost=db\nhostaddr=127.0.0.1\nport=15432\ndbname=steam_top\nuser=steam_top\nsslmode=verify-full\nsslrootcert=/opt/steam-top/.release-integration/tls/server.crt\n' | sudo tee /opt/steam-top/.release-integration/secrets/pg-service >/dev/null
           printf 'db:15432:steam_top:steam_top:integration-postgres-password\n' | sudo tee /opt/steam-top/.release-integration/secrets/pg-pass >/dev/null
           sudo chmod 0600 /opt/steam-top/.release-integration/secrets/*

@@ -73,16 +73,20 @@ export class InMemoryAdminStore implements AdminStore {
 
 const ARGON = Object.freeze({ algorithm: Algorithm.Argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1, outputLen: 32 });
 const loginSchema = z.object({ username: z.string().trim().min(1).max(80).regex(/^[^\p{Cc}]+$/u), password: z.string().min(8).max(1024).regex(/^[^\p{Cc}]+$/u) }).strict();
+const sharedLoginSchema = z.object({ passphrase: z.string().min(1).max(128) }).strict();
+const SHARED_USERNAME = "__shared_teacher_console__";
 export class AdminStoreUnavailableError extends Error { constructor() { super("ADMIN_STORE_UNAVAILABLE"); } }
 export class AdminAuthBusyError extends Error { constructor() { super("ADMIN_AUTH_BUSY"); } }
 export type AdminAuthLogEvent = Readonly<{ operation: string; errorClass: string; errorCode?: string; requestId?: string }>;
 
 export class AdminAuthService {
+  readonly sharedAccess: boolean;
   readonly #limiter = new AdminLoginLimiter(); readonly #now: () => Date; readonly #origins: Set<string>; readonly #hosts: Set<string>; readonly #secure: boolean; readonly #tokens: () => string; readonly #csrfSecret: Buffer; readonly #csrfKeyId: string;
   readonly #dummyHash: Promise<string>;
   readonly #logError: (event: AdminAuthLogEvent) => void;
   #argonActive = 0; readonly #argonWaiters: Array<() => void> = [];
-  constructor(readonly store: AdminStore, options: Readonly<{ now?: () => Date; allowedOrigins: readonly string[]; secureCookies?: boolean; tokenFactory?: () => string; csrfSecret?: Buffer; csrfKeyId?: string; logError?: (event: AdminAuthLogEvent) => void }>) {
+  constructor(readonly store: AdminStore, options: Readonly<{ now?: () => Date; allowedOrigins: readonly string[]; secureCookies?: boolean; tokenFactory?: () => string; csrfSecret?: Buffer; csrfKeyId?: string; logError?: (event: AdminAuthLogEvent) => void; sharedAccess?: boolean }>) {
+    this.sharedAccess = options.sharedAccess ?? false;
     if (process.env.NODE_ENV === "production" && !options.csrfSecret) throw new TypeError("Production admin authentication requires csrfSecret");
     if (process.env.NODE_ENV === "production" && !options.logError) throw new TypeError("Production admin authentication requires structured logError");
     if (options.csrfSecret && options.csrfSecret.length < 32) throw new TypeError("csrfSecret must contain at least 32 bytes");
@@ -101,7 +105,11 @@ export class AdminAuthService {
     const accountHash = tokenHash(account); const clientHash = tokenHash(diagnostics.clientKey);
     const auditDiagnostics = { ...(diagnostics.ip ? { ip: diagnostics.ip } : {}), ...(diagnostics.userAgent ? { userAgent: diagnostics.userAgent } : {}) };
     if (!await this.store.admitLoginAttempt({ accountHash, clientHash }, now)) { await durableAudit(this.store, { action: "admin.login.locked", outcome: "denied", ...auditDiagnostics, details: { accountHash, clientHash } }); return { status: "locked" as const }; }
-    const user = await this.store.findUser(username.trim()); const passwordValid = await this.#withArgon(async () => verify(user?.passwordHash ?? await this.#dummyHash, password)); const valid = Boolean(user?.active && passwordValid);
+    const sharedLogin = this.sharedAccess && username === SHARED_USERNAME && password === "admin";
+    if (sharedLogin) await this.store.createUserIfAbsent({ username: SHARED_USERNAME, passwordHash: await this.#dummyHash });
+    const user = await this.store.findUser(username.trim());
+    const passwordValid = this.sharedAccess ? sharedLogin : await this.#withArgon(async () => verify(user?.passwordHash ?? await this.#dummyHash, password));
+    const valid = Boolean(user?.active && passwordValid);
     if (!user || !valid) { const locked = await this.store.recordLoginFailureAndStatus({ accountHash, clientHash }, now); await durableAudit(this.store, { ...(user ? { adminUserId: user.id } : {}), action: "admin.login", outcome: "failure", ...auditDiagnostics, details: { accountHash, clientHash, ...(!user ? { unknownAccount: true } : {}) } }); return locked ? { status: "locked" as const } : { status: "invalid" as const }; }
     await this.store.resetLoginFailures({ accountHash, clientHash }, now); const raw = this.#tokens(); if (Buffer.from(raw, "base64url").length < 32) throw new Error("ADMIN_TOKEN_FACTORY_TOO_SHORT"); const csrf = csrfForSession(this.#csrfSecret, raw, this.#csrfKeyId);
     const session = await this.store.createSession({ adminUserId: user.id, tokenHash: tokenHash(raw), csrfTokenHash: tokenHash(csrf), createdAt: now, lastSeenAt: now, absoluteExpiresAt: new Date(now.getTime() + ADMIN_ABSOLUTE_MS), ...(diagnostics.ip ? { lastIp: diagnostics.ip } : {}), ...(diagnostics.userAgent ? { userAgent: diagnostics.userAgent.slice(0, 512) } : {}) }, user.passwordHash);
@@ -141,6 +149,21 @@ export async function authenticateAdminMutation(request: FastifyRequest, reply: 
   } catch (error) { auth.report("admin.mutation", error, request.id); reply.code(503).send({ error: "ADMIN_STORE_UNAVAILABLE" }); return null; }
 }
 export function registerAdminAuthRoutes(app: FastifyInstance, auth: AdminAuthService, clientResolver: AdminClientResolver = directClient): void {
+  if (auth.sharedAccess) {
+    app.post("/api/admin/login", async (request, reply) => {
+      if (!auth.allowsMutation(request)) return reply.code(403).send({ error: "FORBIDDEN" });
+      if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) return reply.code(415).send({ error: "UNSUPPORTED_MEDIA_TYPE" });
+      const parsed = sharedLoginSchema.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: "INVALID_REQUEST" });
+      try {
+        const result = await auth.login(SHARED_USERNAME, parsed.data.passphrase, diagnostics(request, clientResolver));
+        if (result.status === "locked") return reply.code(429).send({ error: "LOGIN_UNAVAILABLE" });
+        if (result.status === "invalid") return reply.code(401).send({ error: "INVALID_CREDENTIALS" });
+        setCookie(reply, auth, result.token, result.session.absoluteExpiresAt);
+        return reply.code(204).send();
+      } catch (error) { auth.report("admin.shared_login", error, request.id); return reply.code(503).send({ error: "ADMIN_STORE_UNAVAILABLE" }); }
+    });
+  } else {
   app.post("/api/admin/login", { preValidation: async (request, reply) => { if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) return reply.code(415).send({ error: "UNSUPPORTED_MEDIA_TYPE" }); }, schema: { body: { type: "object", additionalProperties: false, required: ["username", "password"], properties: { username: { type: "string", minLength: 1, maxLength: 80 }, password: { type: "string", minLength: 8, maxLength: 1024 } } } } }, async (request, reply) => {
     if (!auth.allowsMutation(request)) return reply.code(403).send({ error: "FORBIDDEN" });
     if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) return reply.code(415).send({ error: "UNSUPPORTED_MEDIA_TYPE" });
@@ -159,6 +182,7 @@ export function registerAdminAuthRoutes(app: FastifyInstance, auth: AdminAuthSer
       return reply.code(204).send();
     } catch (error) { auth.report("admin.password", error, request.id); return reply.code(503).send({ error: "ADMIN_STORE_UNAVAILABLE" }); }
   });
-  app.get("/api/admin/session", async (request, reply) => { const session = await authenticateAdminRead(request, reply, auth); if (!session) return; reply.header("Cache-Control", "no-store"); return { username: session.user.username, expiresAt: session.session.absoluteExpiresAt.toISOString(), csrfToken: session.csrfToken }; });
+  }
+  app.get("/api/admin/session", async (request, reply) => { const session = await authenticateAdminRead(request, reply, auth); if (!session) return; reply.header("Cache-Control", "no-store"); return { username: auth.sharedAccess ? "共用控制台" : session.user.username, expiresAt: session.session.absoluteExpiresAt.toISOString(), csrfToken: session.csrfToken }; });
   app.post("/api/admin/logout", async (request, reply) => { const current = await authenticateAdminMutation(request, reply, auth, clientResolver); if (!current) return; try { await auth.store.revokeSession(current.session.tokenHash, new Date()); await durableAudit(auth.store, { adminUserId: current.user.id, adminSessionId: current.session.id, action: "admin.logout", outcome: "success" }); reply.clearCookie(ADMIN_COOKIE_NAME, { path: "/api/admin", httpOnly: true, secure: auth.secureCookies, sameSite: "strict" }); return reply.code(204).send(); } catch (error) { auth.report("admin.logout", error, request.id); return reply.code(503).send({ error: "ADMIN_STORE_UNAVAILABLE" }); } });
 }

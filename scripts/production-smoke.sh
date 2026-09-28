@@ -14,7 +14,7 @@ curl --fail --silent --show-error --resolve "$resolve_tls" "$origin/admin/" >"$t
 curl --fail --silent --show-error --resolve "$resolve_tls" "$origin/health/ready" >/dev/null;node "$script_dir/production-wss-smoke.mjs" "$origin" "$nonce"
 echo 'production smoke checkpoint: full WebSocket match passed'
 node - "$ADMIN_SMOKE_SECRET_FILE" "$tmp/login.json" <<'NODE'
-const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));if(typeof x.username!=="string"||typeof x.password!=="string"||x.password.length<8)process.exit(1);fs.writeFileSync(process.argv[3],JSON.stringify(x),{mode:0o600});
+const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));if(x.passphrase!=="admin"||Object.keys(x).length!==1)process.exit(1);fs.writeFileSync(process.argv[3],JSON.stringify(x),{mode:0o600});
 NODE
 curl --fail --silent --show-error --resolve "$resolve_tls" -c "$tmp/cookies" -H "Origin: $origin" -H 'Sec-Fetch-Site: same-origin' -H 'Content-Type: application/json' --data-binary @"$tmp/login.json" "$origin/api/admin/login" >/dev/null
 curl --fail --silent --show-error --resolve "$resolve_tls" -b "$tmp/cookies" -H "Origin: $origin" "$origin/api/admin/session" >"$tmp/session";csrf=$(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(typeof x.csrfToken!=="string")process.exit(1);process.stdout.write(x.csrfToken)' "$tmp/session")

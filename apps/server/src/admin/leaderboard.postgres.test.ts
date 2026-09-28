@@ -27,6 +27,18 @@ it.skipIf(!databaseUrl)("applies date, class, identity, device and parameter fil
 
 it.skipIf(!databaseUrl)("keeps deterministic pages and the true total on an empty page",async()=>{const first=await source.queryLeaderboard({page:1,pageSize:2}),second=await source.queryLeaderboard({page:2,pageSize:2}),empty=await source.queryLeaderboard({page:3,pageSize:2});expect(first.rows.map(row=>row.displayName)).toEqual(["Ada Latest","Ben"]);expect(second.rows.map(row=>row.displayName)).toEqual(["Cara","Dion"]);expect(empty).toMatchObject({rows:[],total:4,page:3,pageSize:2});},30_000);
 
+it.skipIf(!databaseUrl)("selects best historical designs after filtering and supports exact identity drill-down", async () => {
+  const base = { page: 1, pageSize: 10, from: "2026-08-01", to: "2026-08-04", identityId: ids.canonicalA };
+  const all = await source.queryLeaderboard(base);
+  expect(all.rows).toHaveLength(1);
+  expect(all.rows[0]!.bestDesign).toMatchObject({score:2.5,occurredAt:"2026-08-01T04:00:00.000Z",design:{screwRadiusMm:12,screwRotationDeg:0}});
+  expect(all.rows[0]!.bestDesign!.design.layers.every(layer => layer.shape === "star" && layer.color === "#123456")).toBe(true);
+  const secondDay = await source.queryLeaderboard({...base,from:"2026-08-02",to:"2026-08-02"});
+  expect(secondDay.rows[0]!.bestDesign!.design.layers.every(layer => layer.shape === "polygon" && layer.points === 3)).toBe(true);
+  expect((await source.query(base)).rows.every(row=>row.identityId===ids.canonicalA)).toBe(true);
+  expect((await source.queryHighScoringDesigns(base)).rows.map(row=>row.designId).sort()).toEqual([ids.star,ids.triangle].sort());
+},30_000);
+
 it.skipIf(!databaseUrl)("ranks complete designs across all filtered records with stable pages and full parameters", async () => {
   const base = { page: 1, pageSize: 10, from: "2026-08-01", to: "2026-08-04" };
   const page = await source.queryHighScoringDesigns(base);
@@ -73,4 +85,8 @@ it.skipIf(!databaseUrl)("preserves custom outlines and rotation in high-scoring 
   const page = await source.queryHighScoringDesigns({ page: 1, pageSize: 10, from: "2026-09-05", to: "2026-09-05", parameter: "leftRight" });
   expect(page.total).toBe(1);
   expect(page.rows[0]!.design.layers).toEqual(["top", "middle", "bottom"].map(position => expect.objectContaining({ position, shape: "custom", points: null, outline, rotationDeg: 30, holeCount: 3 })));
+  // Equal scores choose the more recent historical event, including custom shapes.
+  const ranked = await source.queryLeaderboard({page:1,pageSize:10,from:"2026-08-01",to:"2026-09-05",identityId:ids.canonicalA});
+  expect(ranked.rows[0]!.bestDesign).toMatchObject({score:2.5,occurredAt:"2026-09-05T04:00:00.000Z"});
+  expect(ranked.rows[0]!.bestDesign!.design.layers).toEqual(page.rows[0]!.design.layers);
 }, 30_000);

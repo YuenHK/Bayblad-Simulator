@@ -356,3 +356,13 @@ th { white-space: nowrap; background: #eef4fc; }
 .pagination span { font-variant-numeric: tabular-nums; }
 @media (max-width: 820px) { .admin-filters { grid-template-columns: repeat(2,minmax(0,1fr)); }.chart-grid { grid-template-columns: 1fr; } }
 @media (max-width: 599px) { .admin-shell { padding: 18px max(14px,env(safe-area-inset-right)) max(40px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left)); }.admin-header,.admin-section-heading { align-items: flex-start; flex-direction: column; }.admin-header-actions { width: 100%; }.admin-header-actions button { flex: 1; }.admin-room-grid,.admin-filters { grid-template-columns: 1fr; }.modal-scrim { padding: max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); }.admin-final-confirm { align-self: flex-end; } }
+/* Shared console: layout only; retain existing typography and colour tokens. */
+.admin-tabs { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+.admin-tabs [aria-selected="true"] { outline: 2px solid currentColor; outline-offset: 2px; }
+.admin-design-preview { width: 200px; min-height: 160px; max-width: 100%; margin: auto; }
+.admin-design-preview svg { display: block; width: 100%; height: auto; }
+.admin-design-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 1rem; }
+.admin-design-card { min-width: 0; padding: 1rem; overflow-wrap: anywhere; }
+.admin-design-card details { margin-top: .75rem; }
+.admin-shell [role="tabpanel"] { min-width: 0; }
+@media (max-width: 600px) { .admin-tabs button { flex: 1 1 40%; } }

@@ -7,13 +7,11 @@ import {
   type AdminHighScoringDesignsPage,
 } from "@steam-top/protocol";
 import { AdminModal } from "./AdminModal";
-import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { AdminApiError, jsonHeaders, requestJson } from "./api";
 import { AnalyticsCharts } from "./AnalyticsCharts";
-import { DeleteDialog } from "./DeleteDialog";
 import { LeaderboardTable } from "./LeaderboardTable";
 import { HighScoringDesigns } from "./HighScoringDesigns";
-import { filterParams, RecordsTable, type AdminFilters } from "./RecordsTable";
+import { filterParams, RecordFilters, RecordsTable, type AdminFilters } from "./RecordsTable";
 import { RoomsPanel } from "./RoomsPanel";
 import type {
   AdminSession,
@@ -77,8 +75,6 @@ export function AdminDashboard({
     [highScoringDesigns, setHighScoringDesigns] = useState<AdminHighScoringDesignsPage>(emptyDesigns),
     [highScoringError, setHighScoringError] = useState(""),
     [designPage, setDesignPage] = useState(1),
-    [designRefresh, setDesignRefresh] = useState(0),
-    [selected, setSelected] = useState<Set<string>>(new Set()),
     [error, setError] = useState(""),
     [confirm, setConfirm] = useState<{
       action: string;
@@ -88,10 +84,9 @@ export function AdminDashboard({
       stage: "review" | "confirm";
     } | null>(null),
     [mutationBusy, setMutationBusy] = useState(false),
-    [deleteOpen, setDeleteOpen] = useState(false),
     [exportStatus, setExportStatus] = useState("");
   const exportController = useRef<AbortController | null>(null);
-  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [section, setSection] = useState("overview");
   const queryController = useRef<AbortController | null>(null);
   const queryGeneration = useRef(0);
   const designsController = useRef<AbortController | null>(null);
@@ -108,7 +103,6 @@ export function AdminDashboard({
           setRecords(emptyRecords);
           setAnalytics(null);
           setRooms({ paused: false, rooms: [] });
-          setSelected(new Set());
           onUnauthorized();
         }
         throw reason;
@@ -166,12 +160,11 @@ export function AdminDashboard({
   useEffect(() => {
     setRecords({ ...emptyRecords, pageSize: filters.pageSize });
     setAnalytics(null);
-    setSelected(new Set());
     const timer = window.setTimeout(() => void query(filters), 250);
     return () => window.clearTimeout(timer);
   }, [filters, query]);
-  useEffect(()=>setLeaderboardPage(1),[filters.from,filters.to,filters.className,filters.identity,filters.device,filters.parameter]);
-  useEffect(() => setDesignPage(1), [filters.from, filters.to, filters.className, filters.identity, filters.device, filters.parameter, filters.pageSize]);
+  useEffect(()=>setLeaderboardPage(1),[filters.from,filters.to,filters.className,filters.identity, filters.identityId,filters.device,filters.parameter]);
+  useEffect(() => setDesignPage(1), [filters.from, filters.to, filters.className, filters.identity, filters.identityId, filters.device, filters.parameter, filters.pageSize]);
   useEffect(() => {
     const controller = new AbortController();
     designsController.current = controller;
@@ -182,7 +175,7 @@ export function AdminDashboard({
       .then(page => { if (!controller.signal.aborted) setHighScoringDesigns(page); })
       .catch(reason => { if (!controller.signal.aborted && !(reason instanceof AdminApiError && reason.status === 401)) setHighScoringError("高分設計暫時無法載入。"); });
     return () => controller.abort();
-  }, [fetcher, filters.from, filters.to, filters.className, filters.identity, filters.device, filters.parameter, filters.pageSize, guarded, designPage, designRefresh]);
+  }, [fetcher, filters.from, filters.to, filters.className, filters.identity, filters.identityId, filters.device, filters.parameter, filters.pageSize, guarded, designPage]);
   useEffect(() => {
     const controller = new AbortController();
     const params = filterParams({ ...filters, page: leaderboardPage });
@@ -190,7 +183,7 @@ export function AdminDashboard({
       .then(setLeaderboard)
       .catch((reason) => { if (!controller.signal.aborted && !(reason instanceof AdminApiError && reason.status === 401)) setError("排行榜暫時無法載入。"); });
     return () => controller.abort();
-  }, [fetcher, filters.from, filters.to, filters.className, filters.identity, filters.device, filters.parameter, filters.pageSize, guarded, leaderboardPage]);
+  }, [fetcher, filters.from, filters.to, filters.className, filters.identity, filters.identityId, filters.device, filters.parameter, filters.pageSize, guarded, leaderboardPage]);
   useEffect(() => {
     const timer = window.setInterval(
       () =>
@@ -286,8 +279,7 @@ export function AdminDashboard({
       setHighScoringError("");
       setAnalytics(null);
       setRooms({ paused: false, rooms: [] });
-      setSelected(new Set());
-      onUnauthorized();
+        onUnauthorized();
     } finally {
       setMutationBusy(false);
     }
@@ -298,25 +290,20 @@ export function AdminDashboard({
         <div>
           <p className="eyebrow">教師後台</p>
           <h1>教師控制台</h1>
-          <p>已登入：{session.username}</p>
+          <p>{session.username} · 共用存取，非私人帳戶</p>
         </div>
         <div className="admin-header-actions">
-          <button onClick={() => setPasswordOpen(true)}>更改密碼</button>
           <button
             disabled={Boolean(exportController.current)}
             onClick={exportXlsx}
           >
             匯出 Excel
           </button>
-          <button className="danger-button" onClick={() => setDeleteOpen(true)}>
-            刪除紀錄
-          </button>
           <button disabled={mutationBusy} onClick={logout}>
             登出
           </button>
         </div>
       </header>
-      {passwordOpen ? <ChangePasswordDialog fetcher={fetcher} session={session} onClose={() => setPasswordOpen(false)} onChanged={onUnauthorized} /> : null}
       <section
         className="panel admin-section admin-date-filter"
         aria-label="統一查詢日期"
@@ -360,28 +347,19 @@ export function AdminDashboard({
           {exportStatus}
         </p>
       ) : null}
-      <RoomsPanel rooms={rooms.rooms} paused={rooms.paused} mutate={mutate} />
-      <RecordsTable
-        data={records}
-        filters={filters}
-        onFilters={setFilters}
-        selectedIdentities={selected}
-        onSelectIdentity={(id, isSelected) =>
-          setSelected((current) => {
-            const next = new Set(current);
-            if (isSelected) next.add(id);
-            else next.delete(id);
-            return next;
-          })
-        }
-      />
-      <LeaderboardTable data={leaderboard} onPage={setLeaderboardPage} />
-      <HighScoringDesigns data={highScoringDesigns} onPage={setDesignPage} error={highScoringError} />
-      {analytics ? (
-        <AnalyticsCharts data={analytics} />
-      ) : (
-        <p role="status">正在載入統計……</p>
-      )}
+      <RecordFilters filters={filters} onFilters={setFilters} />
+      <div className="admin-tabs" role="tablist" aria-label="控制台分區">
+        {[["overview","總覽"],["records","對戰紀錄"],["leaderboard","學生排行榜"],["designs","高分設計"]].map(([key,label]) => <button key={key} id={`admin-tab-${key}`} role="tab" aria-selected={section===key} aria-controls={`admin-panel-${key}`} onClick={()=>setSection(key!)}>{label}</button>)}
+      </div>
+      <div role="tabpanel" id={`admin-panel-${section}`} aria-labelledby={`admin-tab-${section}`}>
+        {section === "overview" && <>
+          <RoomsPanel rooms={rooms.rooms} paused={rooms.paused} mutate={mutate} />
+          {analytics ? <AnalyticsCharts data={analytics} /> : <p role="status">正在載入統計……</p>}
+        </>}
+        {section === "records" && <RecordsTable data={records} filters={filters} onFilters={setFilters} />}
+        {section === "leaderboard" && <LeaderboardTable data={leaderboard} onPage={setLeaderboardPage} onViewHistory={(identityId) => { setFilters({...filters, identityId, identity:"", page:1}); setSection("records"); }} />}
+        {section === "designs" && <HighScoringDesigns data={highScoringDesigns} onPage={setDesignPage} error={highScoringError} />}
+      </div>
       {confirm ? (
         <AdminModal
           title="確認管理操作"
@@ -404,23 +382,6 @@ export function AdminDashboard({
             取消
           </button>
         </AdminModal>
-      ) : null}
-      {deleteOpen ? (
-        <DeleteDialog
-          fetcher={fetcher}
-          csrf={session.csrfToken}
-          filters={filters}
-          identities={records.rows.flatMap((row, index, rows) => row.identityId && selected.has(row.identityId) && rows.findIndex((candidate) => candidate.identityId === row.identityId) === index ? [{ id: row.identityId, displayName: row.identity, className: row.className, deviceName: row.deviceName }] : [])}
-          onDeleted={async () => {
-            setDesignRefresh(value => value + 1);
-            setRecords(emptyRecords);
-            setAnalytics(null);
-            setSelected(new Set());
-            await query(filters);
-          }}
-          onClose={() => setDeleteOpen(false)}
-          onUnauthorized={onUnauthorized}
-        />
       ) : null}
     </main>
   );

@@ -10,6 +10,21 @@ import { postgresTestSchemaUrl } from "../postgres-test-url";
 
 const databaseUrl = process.env.TEST_DATABASE_URL; const schemaName = `admin_${randomUUID().replaceAll("-", "")}`; let client: DatabaseClient;
 function barrier(participants: number) { let arrived = 0; let release!: () => void; const ready = new Promise<void>((resolve) => { release = resolve; }); return async () => { arrived++; if (arrived === participants) release(); await ready; }; }
+it.skipIf(!databaseUrl)("persists shared-console sessions across service recreation without changing legacy credentials", async () => {
+  const store = new PostgresAdminStore(client.db);
+  const options = {allowedOrigins:["https://example.test"],sharedAccess:true,csrfSecret:Buffer.alloc(32,9)};
+  const first = new AdminAuthService(store, options);
+  await first.bootstrap("legacy-teacher", "legacy-private-password");
+  const sessions = await Promise.all([first,new AdminAuthService(store,options)].map(auth=>auth.login("__shared_teacher_console__","admin",{clientKey:"shared-test"})));
+  expect(sessions.every(session=>session.status==="ok")).toBe(true);
+  const login = sessions[0]!;
+  if(login.status!=="ok") throw Error("shared login failed");
+  const restarted = new AdminAuthService(new PostgresAdminStore(client.db),options);
+  const loaded = await restarted.authenticate(login.token);
+  expect(loaded?.user.id).toBe(login.user.id);
+  expect(restarted.csrfMatches(login.token,loaded?.csrfToken,login.session)).toBe(true);
+  expect(await restarted.verifyPassword("legacy-teacher","legacy-private-password")).toBe(true);
+});
 it.skipIf(!databaseUrl)("rotates a durable password atomically and rejects sessions from the stale credential", async () => {
   const store = new PostgresAdminStore(client.db);
   const auth = new AdminAuthService(store, { allowedOrigins: ["https://example.test"] });

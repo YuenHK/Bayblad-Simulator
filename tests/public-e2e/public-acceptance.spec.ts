@@ -2,7 +2,7 @@ import { expect, test, type Browser, type BrowserContext, type Page } from "@pla
 import { spawnSync } from "node:child_process";
 
 const adminUrl = "https://bayblad-simulator-api.onrender.com/admin/";
-const adminPassword = process.env.PUBLIC_ADMIN_PASSWORD ?? "";
+const adminPassword = process.env.PUBLIC_ADMIN_ACCEPTANCE === "1" ? "admin" : "";
 
 async function waitConnected(page: Page) {
   await expect(page.getByText("已連線", { exact: true })).toBeVisible({ timeout: 30_000 });
@@ -69,22 +69,24 @@ test("學生設計、限制、預覽及響應式操作", async ({ page }, testIn
 });
 
 test("老師登入、統計篩選、排行榜及 Excel 匯出", async ({ page }, testInfo) => {
-  test.skip(!adminPassword, "Set PUBLIC_ADMIN_PASSWORD securely to run authenticated public tests");
+  test.skip(!adminPassword, "Set PUBLIC_ADMIN_ACCEPTANCE=1 to explicitly run shared-console public acceptance");
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(adminUrl);
-  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
-  await page.getByLabel("帳號").fill("admin");
-  await page.getByLabel("密碼").fill("incorrect-password");
-  await page.getByRole("button", { name: "登入" }).click();
-  await expect(page.getByText("帳號或密碼不正確")).toBeVisible();
-  await page.getByLabel("密碼").fill(adminPassword);
-  await page.getByRole("button", { name: "登入" }).click();
+  await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible();
+  await expect(page.getByLabel("帳號")).toHaveCount(0);
+  await page.getByLabel("口令").fill("incorrect-password");
+  await page.getByRole("button", { name: "進入控制台" }).click();
+  await expect(page.getByText(/口令不正確/)).toBeVisible();
+  await page.getByLabel("口令").fill(adminPassword);
+  await page.getByRole("button", { name: "進入控制台" }).click();
   await expect(page.getByRole("heading", { name: "教師控制台" })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("heading", { name: "學生總分排行榜（只供教師查看）" })).toBeVisible();
+  await expect(page.getByRole("tab",{name:"總覽"})).toBeVisible();
   await expect(page.getByText("發射判定分佈")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   if (testInfo.project.name === "chromium-desktop") {
+    const originalFrom = await page.getByLabel("開始日期").inputValue();
+    const originalTo = await page.getByLabel("結束日期").inputValue();
     if (process.env.PUBLIC_EXPORT_EMPTY_RANGE === "1") {
       await page.getByLabel("開始日期").fill("2020-01-01");
       await page.getByLabel("結束日期").fill("2020-01-02");
@@ -105,10 +107,24 @@ test("老師登入、統計篩選、排行榜及 Excel 匯出", async ({ page },
     for (const name of ["對戰紀錄", "逐輪結果", "陀螺參數", "身份及裝置狀態", "使用量統計", "參數分析"]) {
       expect(workbookXml.stdout).toMatch(new RegExp(`<sheet\\b[^>]*\\bname="${name}"`));
     }
+    if (process.env.PUBLIC_EXPORT_EMPTY_RANGE === "1") {
+      await page.getByLabel("結束日期").fill(originalTo);
+      await page.getByLabel("開始日期").fill(originalFrom);
+    }
   }
+  for (const section of ["對戰紀錄","學生排行榜","高分設計"]) {
+    await page.getByRole("tab",{name:section}).click();
+    await expect(page.getByRole("tabpanel",{name:section})).toBeVisible();
+    const previews = page.locator(".admin-design-preview");
+    await expect(previews.first()).toBeAttached();
+    await previews.first().scrollIntoViewIfNeeded();
+    await expect(page.getByRole("img",{name:"歷史陀螺靜態 3D"}).first()).toBeVisible();
+  }
+  await expect(page.getByRole("button",{name:"刪除紀錄"})).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"更改密碼"})).toHaveCount(0);
   expect(errors).toEqual([]);
   await page.getByRole("button", { name: "登出" }).click();
-  await expect(page.getByRole("heading", { name: "教師登入" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "進入控制台" })).toBeVisible();
 });
 
 test("兩個獨立訪客完成同步 30 秒 3D 對戰、賽後計分及返回原房", async ({ browser, browserName }, testInfo) => {

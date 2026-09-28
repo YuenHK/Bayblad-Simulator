@@ -1072,6 +1072,7 @@ export const adminDesignParametersSchema = z
             holeCount: z.number().int(),
             rotationDeg: z.number(),
             cornerRoundness: z.number(),
+            color: z.string().regex(/^#[0-9a-f]{6}$/i).optional(),
           })
           .strict(),
       )
@@ -1135,6 +1136,7 @@ export const adminLeaderboardRowSchema = z.object({
   identityId: z.uuid(), displayName: z.string().min(1).max(80), className: z.string().max(30).nullable(),
   battleScore: z.number().nonnegative(), challengeScore: z.number().nonnegative(), totalScore: z.number().nonnegative(),
   matches: z.number().int().nonnegative(), rank: z.number().int().positive(),
+  bestDesign: z.object({ design: adminDesignParametersSchema, matchId: z.string(), occurredAt: z.iso.datetime(), score: z.number() }).strict().optional(),
 }).strict();
 export const adminLeaderboardPageSchema = z.object({
   rows: z.array(adminLeaderboardRowSchema), total: z.number().int().nonnegative(), page: z.number().int().positive(), pageSize: z.number().int().positive(),
