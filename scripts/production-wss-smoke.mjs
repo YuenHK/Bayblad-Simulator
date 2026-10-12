@@ -151,10 +151,10 @@ try {
   const readyAcknowledge=waitWhere(a.socket,"command.ack",reply=>reply.causedByEventId===readyA.eventId&&reply.commandType==="player.ready"),readyBAcknowledge=waitWhere(b.socket,"command.ack",reply=>reply.causedByEventId===readyB.eventId&&reply.commandType==="player.ready");
   a.socket.emit("client.event",readyA);b.socket.emit("client.event",readyB);await Promise.all([readyAcknowledge,readyBAcknowledge]);
   const [matchA, matchB] = await Promise.all([finishedA, finishedB]);
-  if (matchA.matchId !== matchB.matchId || matchA.roomId !== room.roomId || matchA.roundWinners.length < 2) throw new Error("match correlation invalid");
+  if (matchA.matchId !== matchB.matchId || matchA.roomId !== room.roomId || matchA.roundWinners.length > 1) throw new Error("match correlation invalid");
   // match.roundWinners contains player labels, not round IDs; draws are replayed.
   const expectedRounds=new Set(completedRounds[0].keys());
-  if (expectedRounds.size < matchA.roundWinners.length || JSON.stringify(matchA.roundWinners) !== JSON.stringify(matchB.roundWinners)) throw new Error("round winner set invalid");
+  if (expectedRounds.size !== 1 || JSON.stringify(matchA.roundWinners) !== JSON.stringify(matchB.roundWinners)) throw new Error("round winner set invalid");
   for (const completed of completedRounds) {
     if (completed.size !== expectedRounds.size || [...completed].some(([id, result]) => !expectedRounds.has(id) || result.matchId !== matchA.matchId)) throw new Error("round result correlation invalid");
     const winners = [...completed.values()].map(result => result.winner).filter(winner => winner !== "draw");
