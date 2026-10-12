@@ -8,6 +8,8 @@
 
 **工作目錄：** `/Users/cywong/Documents/Codex/Bayblad-Simulator-20260911`。保留 `.superpowers/`，不使用舊掛載工作樹或已停止代理。
 
+**追加要求：** 玩家入房／坐上對戰席自動準備一次；離線／命令未完成時先等候，準備失敗保留手動重試，不連續自動再戰。觀眾不準備。主頁左上角與頁尾 ARENA LAB 改為 YUENHK，字體、大小及顏色不變。
+
 - [ ] `apps/server/src/battle/presentation.test.ts`：十秒端點、五秒中段、八秒召喚；`scoring.test.ts`：單勝及平手；protocol／db／repository 保留舊結果，驗證新單場結果。
 - [ ] 調整 `presentation.ts`、`socket.ts`、`scoring.ts`、`packages/protocol/src/events.ts`；第一輪勝敗／平手均生成 match.finished，沒有第二輪 launch.schedule。
 - [ ] `packages/db/src/persistence.ts`、`schema.ts`、新 `drizzle/0007_single_round_matches.sql`、journal 及 pinned migration manifest：容許單場，平手 winner=null／roundWinners=[]，維持總分與勝方約束和歷史兩胜結果。

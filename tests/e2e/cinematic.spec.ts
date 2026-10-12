@@ -38,7 +38,7 @@ test("two guests play custom versus basic full-length rounds and can rematch", a
     await peer.getByRole("button", { name: "以房間碼進入" }).click();
     await expect(peer.locator(".room-heading .eyebrow")).toHaveText(codeText!);
     const started = Date.now();
-    await Promise.all([page, peer].map(player => player.getByRole("button", { name: /設計準備/ }).click()));
+    await expect(page.getByRole("button", { name: "在判定線發射", exact: true })).toBeVisible();
     // Neither guest taps: both must launch at minimum force without hanging.
     for (const player of [page, peer]) {
       await expect(player.getByText("你的判定：Miss", { exact: true })).toBeVisible({ timeout: 15_000 });
@@ -97,7 +97,7 @@ for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle
   const code = await page.locator(".room-heading .eyebrow").textContent();
   await page.getByRole("button", { name: "加入電腦玩家", exact: true }).click();
   await expect(page.getByRole("heading", { name: "電腦玩家", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "上載當前設計並準備", exact: true }).click();
+  await expect(page.getByRole("button", { name: "在判定線發射", exact: true })).toBeVisible();
   for (let round = 0; round < 1; round++) {
     // Intentionally do not tap: deadline must launch at the minimum force.
     await expect(page.getByText("你的判定：Miss", { exact: true })).toBeVisible({ timeout: 15_000 });

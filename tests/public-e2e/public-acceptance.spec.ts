@@ -172,10 +172,7 @@ test("兩個獨立訪客完成同步單場 10 秒 3D 對戰、賽後計分及返
     await owner.page.getByRole("button", { name: "建立房間" }).click();
     const code = (await owner.page.locator(".room-heading .eyebrow").textContent())!.replace("房間碼", "").trim();
     await joinRoom(peer.page, code);
-    await Promise.all([
-      owner.page.getByRole("button", { name: "上載當前設計並準備" }).click(),
-      peer.page.getByRole("button", { name: "上載當前設計並準備" }).click(),
-    ]);
+    await expect(owner.page.getByRole("button", { name: "在判定線發射" })).toBeVisible();
     const resultHeading = owner.page.getByRole("heading", { name: "對戰結果" });
     for (let attempt = 0; attempt < 1 && !(await resultHeading.isVisible()); attempt += 1) {
       const ownerLaunch = owner.page.getByRole("button", { name: "在判定線發射" });

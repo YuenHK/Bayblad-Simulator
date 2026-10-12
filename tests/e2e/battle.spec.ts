@@ -85,10 +85,7 @@ test("真實 Socket 自定對基本造型三角色完成讓位、觀戰、三輪
     const spectatorName = await owner.page.locator(".spectator-list li").textContent();
     expect(spectatorName).toContain("訪客-");
 
-    await Promise.all([
-      playerA.page.getByRole("button", { name: /設計準備/ }).click(),
-      playerB.page.getByRole("button", { name: /設計準備/ }).click(),
-    ]);
+    await expect(playerA.page.getByRole("button", { name: "在判定線發射" })).toBeVisible();
     const initialStats = await (await request.get(`${REALTIME_URL}/__test/stats`, { headers: { "x-test-secret": CONTROL_SECRET } })).json() as { simulationCount: number };
     for (let round = 1; round <= 1; round += 1) {
       await launchRound(playerA.page, playerB.page, owner.page, round);
@@ -128,10 +125,6 @@ test("發射與對戰斷線可恢復 checkpoint，119 秒可取結果而超過 1
     const code = (await owner.page.locator(".room-heading .eyebrow").textContent())!.replace("房間碼", "").trim();
     await chooseDesign(peer.page, "50");
     await joinByCode(peer.page, code, "player");
-    await Promise.all([
-      owner.page.getByRole("button", { name: /設計準備/ }).click(),
-      peer.page.getByRole("button", { name: /設計準備/ }).click(),
-    ]);
     await expect(owner.page.getByRole("button", { name: "在判定線發射" })).toBeEnabled();
     await owner.context.setOffline(true);
     await expect(owner.page.getByText("重新連線中……")).toBeVisible();

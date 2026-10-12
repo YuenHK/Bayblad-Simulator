@@ -18,6 +18,28 @@ class AppTransport implements RealtimeTransport {
 
 describe("App upload lifecycle", () => {
   afterEach(() => vi.useRealTimers());
+  it("入房自動準備一次，完成後不自動再戰，轉到觀賽再坐下才再次準備", async () => {
+    const transport = new AppTransport();
+    const client = new RealtimeClient({ transport });
+    const ready = vi.spyOn(client, "readyWithDesign").mockResolvedValue("20000000-0000-4000-8000-000000000000");
+    render(<App client={client} />);
+    const snapshot = { type: "room.snapshot", roomId: "room-1", code: "ABC123", name: "Room", ownerParticipantId: "p1", phase: "waiting", revision: 1,
+      player1: { participantId: "p1", displayName: "玩家一", ready: false, designId: null }, player2: null, spectators: [],
+      viewer: { participantId: "p1", role: "player1", isOwner: true }, protocolVersion: 1, serverEventId: "30000000-0000-4000-8000-000000000000" };
+    await act(async () => {
+      transport.fire("connect");
+      transport.fire("server.event", { type: "protocol.welcome", selectedVersion: 1, sessionToken: "s".repeat(32), sessionStatus: "new", protocolVersion: 1, serverEventId: "10000000-0000-4000-8000-000000000000" });
+      transport.fire("server.event", snapshot);
+    });
+    expect(ready).toHaveBeenCalledTimes(1);
+    await act(async () => { transport.fire("server.event", { ...snapshot, phase: "battle", revision: 2, serverEventId: "40000000-0000-4000-8000-000000000000" }); });
+    await act(async () => { transport.fire("server.event", { ...snapshot, revision: 3, serverEventId: "50000000-0000-4000-8000-000000000000" }); });
+    expect(ready).toHaveBeenCalledTimes(1);
+    await act(async () => { transport.fire("server.event", { ...snapshot, revision: 4, player1: null, spectators: [{ participantId: "p1", displayName: "玩家一" }], viewer: { ...snapshot.viewer, role: "spectator" }, serverEventId: "60000000-0000-4000-8000-000000000000" }); });
+    expect(ready).toHaveBeenCalledTimes(1);
+    await act(async () => { transport.fire("server.event", { ...snapshot, revision: 5, serverEventId: "70000000-0000-4000-8000-000000000000" }); });
+    expect(ready).toHaveBeenCalledTimes(2);
+  });
   it("places the teacher entry alongside project and ShapeCut links without embedding credentials", () => {
     render(<App client={new RealtimeClient({ transport: new AppTransport() })} />);
     const footer = within(screen.getByRole("contentinfo", { name: "專案與更多作品" }));
@@ -38,6 +60,8 @@ describe("App upload lifecycle", () => {
     expect(icon).toHaveAttribute('alt', '');
     expect(container.querySelector('.brand-core')).toBeNull();
     expect(container.querySelector('.brand-title')).toHaveTextContent('STEAM 陀螺');
+    expect(screen.getAllByText("YUENHK")).toHaveLength(2);
+    expect(screen.queryByText("ARENA LAB")).not.toBeInTheDocument();
   });
   it("response.json卡住逾時後會清除busy並顯示穩定訊息", async () => {
     vi.useFakeTimers();

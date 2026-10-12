@@ -28,6 +28,7 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
   const gameAudio = useMemo(() => new GameAudio(), []);
   const reducedMotion = systemReducedMotion || !gamePreferences.motionEnabled;
   const actionController = useRef<AbortController | null>(null);
+  const autoReadySeat = useRef<string | null>(null);
 
   useEffect(() => { client.start(); return () => { actionController.current?.abort(); client.stop(); void gameAudio.dispose(); }; }, [client, gameAudio]);
   useEffect(() => { gameAudio.setEnabled(gamePreferences.soundEnabled); saveGamePreferences(storage, gamePreferences); }, [gameAudio, gamePreferences, storage]);
@@ -66,11 +67,26 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
 
   const send = (command: Parameters<RealtimeClient["command"]>[0]) => { setActionError(null); try { client.command(command); } catch (error) { setActionError(error instanceof Error ? error.message : "操作失敗。"); } };
 
+  useEffect(() => {
+    const room = state.room;
+    if (!room || room.viewer.role === "spectator") { autoReadySeat.current = null; return; }
+    const seatKey = `${room.roomId}:${room.viewer.participantId}:${room.viewer.role}`;
+    if (autoReadySeat.current === seatKey) return;
+    // A resumed active/finished match must never trigger another match automatically.
+    if (room.phase !== "waiting" || state.matchFinished || state.cancelledReason || room[room.viewer.role]?.ready) {
+      autoReadySeat.current = seatKey;
+      return;
+    }
+    if (busy || state.pendingActions > 0 || state.status !== "online" || state.platformPaused || state.departurePending) return;
+    autoReadySeat.current = seatKey;
+    void ready();
+  });
+
   const connectionLabel = state.status === "online" ? "已連線" : state.status === "reconnecting" ? "重新連線中……" : state.status === "connecting" ? "連線中……" : "離線";
   const phase = state.matchFinished || state.cancelledReason ? "result" : state.room?.phase ?? "waiting";
   const battleFocus = page === "room" && phase === "launch" && state.room?.viewer.role !== "spectator";
   return <div className={`app-root student-game quality-${gamePreferences.quality}${reducedMotion ? " reduced-game-motion" : ""}${battleFocus ? " battle-focus-mode" : ""}`} onPointerDownCapture={() => { if (gamePreferences.soundEnabled) void gameAudio.unlock().catch(() => undefined); }}>
-    <nav className="app-nav game-hud" aria-label="主要導航"><div className="app-brand"><img className="brand-icon" src={`${import.meta.env.BASE_URL}icons/favicon.svg`} alt="" width={28} height={28} /><span className="brand-title">STEAM 陀螺</span><small>ARENA LAB</small></div><div className="nav-actions"><button aria-current={page === "designer" ? "page" : undefined} onClick={() => setPage("designer")}>設計室</button><button aria-current={page === "lobby" ? "page" : undefined} onClick={() => setPage("lobby")}>對戰大廳</button></div>{state.identity ? <span className="player-identity" aria-label={`身份來源：${state.identity.status}`}>{state.identity.displayName}</span> : null}<span className={`connection-status status-${state.status}`} aria-live="polite">{state.identityStatus === "waking" ? "等候伺服器回應……" : state.identityStatus === "loading" ? "連接伺服器中……" : connectionLabel}</span><GameHudControls preferences={gamePreferences} onChange={setGamePreferences} /></nav>
+    <nav className="app-nav game-hud" aria-label="主要導航"><div className="app-brand"><img className="brand-icon" src={`${import.meta.env.BASE_URL}icons/favicon.svg`} alt="" width={28} height={28} /><span className="brand-title">STEAM 陀螺</span><small>YUENHK</small></div><div className="nav-actions"><button aria-current={page === "designer" ? "page" : undefined} onClick={() => setPage("designer")}>設計室</button><button aria-current={page === "lobby" ? "page" : undefined} onClick={() => setPage("lobby")}>對戰大廳</button></div>{state.identity ? <span className="player-identity" aria-label={`身份來源：${state.identity.status}`}>{state.identity.displayName}</span> : null}<span className={`connection-status status-${state.status}`} aria-live="polite">{state.identityStatus === "waking" ? "等候伺服器回應……" : state.identityStatus === "loading" ? "連接伺服器中……" : connectionLabel}</span><GameHudControls preferences={gamePreferences} onChange={setGamePreferences} /></nav>
     {state.sessionStatus === "resumed" ? <p className="system-banner" role="status">已恢復上次的房間位置。</p> : null}
     {state.sessionStatus === "replaced" ? <p className="system-banner warning" role="status">舊連線已過期，已為你建立新訪客連線。</p> : null}
     {state.platformPaused ? <p className="system-banner warning" role="status">平台現正暫停：不可建立或加入房間，也不可開始新對戰；已開始的對戰可繼續完成。</p> : null}
