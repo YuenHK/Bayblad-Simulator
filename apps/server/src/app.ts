@@ -378,6 +378,16 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     logError: reportBackgroundError,
   });
   app.decorate("realtimeGateway", gateway);
+  app.post("/api/session/page-exit", { bodyLimit: 1024 }, async (request, reply) => {
+    const origin = request.headers.origin;
+    if (typeof origin !== "string" || !options.allowedOrigins?.includes(origin)) return reply.code(403).send({ error: "ORIGIN_NOT_ALLOWED" });
+    let body: unknown;
+    try { body = typeof request.body === "string" ? JSON.parse(request.body) : request.body; }
+    catch { return reply.code(400).send({ error: "INVALID_NOTICE" }); }
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 || !("sessionToken" in body) || typeof body.sessionToken !== "string" || !/^[A-Za-z0-9_-]{32,256}$/u.test(body.sessionToken)) return reply.code(400).send({ error: "INVALID_NOTICE" });
+    if (!gateway.notifyPageExit(body.sessionToken)) return reply.code(401).send({ error: "INVALID_SESSION" });
+    return reply.code(204).send();
+  });
   const platformSettings = options.platformSettingsStore ?? new InMemoryPlatformSettingsStore();
   const commandStore=options.adminCommandStore??new InMemoryAdminCommandStore();
   const commandExecutor=options.adminAuth?new AdminCommandExecutor(commandStore,options.adminAuth,gateway,platformSettings):undefined;

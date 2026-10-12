@@ -151,7 +151,15 @@ export class RoomService {
   setPlatformPaused(paused: boolean): void { this.#platformPaused = paused; }
   adminRooms() { return [...this.#rooms.values()].map((room) => ({ roomId: room.id, roomCode: room.code, status: room.phase, players: [room.player1, room.player2].flatMap((id) => { const participant = id ? room.participants.get(id) : undefined; return participant ? [{ id: participant.participantId, displayName: participant.displayName }] : []; }), spectators: room.spectators.flatMap((id) => { const participant = room.participants.get(id); return participant ? [{ id: participant.participantId, displayName: participant.displayName }] : []; }) })); }
   adminClose(roomId: string): boolean { if (!this.#rooms.has(roomId)) return false; this.discardPersistedRoom(roomId); return true; }
-  adminRemove(roomId: string, participantId: string): boolean { const room = this.#rooms.get(roomId); if (!room) return false; const participant = [...room.participants.values()].find((candidate) => candidate.participantId === participantId); if (!participant) return false; this.leave(roomId, participant.internalUserId); return true; }
+  adminRemove(roomId: string, participantId: string): boolean {
+    const room = this.#rooms.get(roomId); if (!room) return false;
+    const participant = [...room.participants.values()].find(person => person.participantId === participantId); if (!participant) return false;
+    this.#transaction(roomId, () => {
+      this.#connectedParticipant(room, participant.internalUserId);
+      this.#removeParticipant(room, participant); this.#transferOwnerIfMissing(room); this.#markEmpty(room);
+    });
+    return true;
+  }
 
   checkpoint(roomId: string): RoomCheckpoint {
     return { roomId, room: this.#rooms.has(roomId) ? this.#copyRoom(this.#rooms.get(roomId)!) : null, roomIdsByCode: new Map(this.#roomIdsByCode), lobbyRevision: this.#lobbyRevision };
@@ -281,10 +289,8 @@ export class RoomService {
 
   roomsDueForClosure(): readonly Readonly<{ roomId: string; revision: number }>[] {
     const now = this.#dependencies.now();
-    return [...this.#rooms.values()].filter((room) =>
-      ![...room.participants.values()].some((participant) => participant.connected && !participant.isComputer) &&
-      room.emptySinceMs !== null && now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
-    ).map((room) => ({ roomId: room.id, revision: room.revision + 1 }));
+    return [...this.#rooms.values()].filter((room) => this.#closureDue(room, now))
+      .map((room) => ({ roomId: room.id, revision: room.revision + 1 }));
   }
 
   #create(user: InternalUser, roomName: string): RoomMembership {
@@ -324,10 +330,7 @@ export class RoomService {
   ): RoomMembership | typeof ROOM_EXPIRED {
     const room = this.#room(roomId);
     const now = this.#dependencies.now();
-    if (
-      room.emptySinceMs !== null &&
-      now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
-    ) {
+    if (this.#closureDue(room, now)) {
       this.#deleteRoom(room);
       return ROOM_EXPIRED;
     }
@@ -563,6 +566,11 @@ export class RoomService {
   #leave(roomId: string, internalUserId: string): void {
     const room = this.#room(roomId);
     const participant = this.#participant(room, internalUserId);
+    if (room.ownerInternalUserId === internalUserId) {
+      this.#connectedParticipant(room, internalUserId);
+      this.#deleteRoom(room);
+      return;
+    }
     if (
       room.phase !== "waiting" &&
       participant.role !== "spectator"
@@ -573,6 +581,10 @@ export class RoomService {
     }
     if (!participant.connected) throw new RoomServiceError("PARTICIPANT_DISCONNECTED");
     this.#removeParticipant(room, participant);
+    if (![...room.participants.values()].some((person) => person.connected && !person.isComputer)) {
+      this.#deleteRoom(room);
+      return;
+    }
     this.#transferOwnerIfMissing(room);
     this.#markEmpty(room, this.#dependencies.now());
   }
@@ -583,23 +595,13 @@ export class RoomService {
     if (room.ownerInternalUserId !== actorInternalUserId) {
       throw new RoomServiceError("OWNER_REQUIRED");
     }
-    if (room.phase !== "waiting") {
-      throw new RoomServiceError("ROOM_ACTIVE");
-    }
     this.#deleteRoom(room);
   }
 
   #sweepRoom(roomId: string): void {
     const room = this.#room(roomId);
     const now = this.#dependencies.now();
-    const hasConnectedParticipant = [...room.participants.values()].some(
-      (participant) => participant.connected && !participant.isComputer,
-    );
-    if (
-      !hasConnectedParticipant &&
-      room.emptySinceMs !== null &&
-      now - room.emptySinceMs >= DISCONNECT_RETENTION_MS
-    ) {
+    if (this.#closureDue(room, now)) {
       this.#deleteRoom(room);
       return;
     }
@@ -861,6 +863,13 @@ export class RoomService {
           left.joinedAt - right.joinedAt ||
           left.participantId.localeCompare(right.participantId),
       )[0];
+  }
+
+  #closureDue(room: Room, now: number): boolean {
+    const owner = room.ownerInternalUserId ? room.participants.get(room.ownerInternalUserId) : undefined;
+    if (owner && !owner.connected && owner.disconnectedAt !== null && now - owner.disconnectedAt >= DISCONNECT_RETENTION_MS) return true;
+    return ![...room.participants.values()].some(person => person.connected && !person.isComputer) &&
+      room.emptySinceMs !== null && now - room.emptySinceMs >= DISCONNECT_RETENTION_MS;
   }
 
   #markDisconnected(room: Room, participant: Participant, now: number): void {

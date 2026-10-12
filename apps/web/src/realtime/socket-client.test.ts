@@ -31,6 +31,20 @@ const uuid = (digit: number) => `${digit}0000000-0000-4000-8000-000000000000`;
 const uploadPayload = (designId: string) => ({ designId, massG: 25, performance: { speed: 70, spinDuration: 60, stability: 80, impactResistance: 50, modelVersion: "1.1.0" } });
 
 describe("RealtimeClient", () => {
+  it("離頁通知只在房間內發送，使用不觸發預檢的限長文字 Blob", () => {
+    const transport = new FakeTransport();
+    const client = new RealtimeClient({ transport, apiBase: "https://api.example" });
+    const beacon = vi.fn().mockReturnValue(true);
+    client.start(); transport.fire("server.event", welcome("new"));
+    client.notifyPageExit(beacon); expect(beacon).not.toHaveBeenCalled();
+    transport.fire("server.event", roomSnapshot());
+    client.notifyPageExit(beacon);
+    expect(beacon).toHaveBeenCalledTimes(1);
+    expect(beacon.mock.calls[0]![0]).toBe("https://api.example/api/session/page-exit");
+    const body = beacon.mock.calls[0]![1] as Blob;
+    expect(body.type).toBe("text/plain"); expect(body.size).toBeLessThan(1024);
+    client.stop();
+  });
   it("retains the legacy-compatible refresh reason after a server disconnect", () => {
     const transport = new FakeTransport();
     const client = new RealtimeClient({ transport });

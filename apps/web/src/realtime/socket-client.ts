@@ -269,6 +269,14 @@ export class RealtimeClient {
     } finally { clearTimeout(timeout); if (this.#identityController === controller) this.#identityController = null; }
   }
 
+  notifyPageExit(beacon = typeof navigator !== "undefined" ? navigator.sendBeacon?.bind(navigator) : undefined): void {
+    if (!this.#token || !this.#state.room) return;
+    const url = `${this.#apiBase}/api/session/page-exit`;
+    const body = new Blob([JSON.stringify({ sessionToken: this.#token })], { type: "text/plain" });
+    try { if (beacon?.(url, body)) return; } catch { /* use bounded keepalive fallback */ }
+    void this.#fetch(url, { method: "POST", body, keepalive: true, credentials: "omit" }).catch(() => undefined);
+  }
+
   stop(): void {
     if (!this.#started) return;
     this.#startGeneration += 1;

@@ -48,6 +48,12 @@ describe("App upload lifecycle", () => {
     expect(ready).toHaveBeenCalledTimes(1);
     await act(async () => { transport.fire("server.event", { ...snapshot, revision: 5, serverEventId: "70000000-0000-4000-8000-000000000000" }); });
     expect(ready).toHaveBeenCalledTimes(2);
+    const leave = vi.spyOn(client, "command");
+    fireEvent.click(screen.getByRole("button", { name: "設計室" }));
+    expect(leave).toHaveBeenCalledWith({ type: "room.leave", roomId: "room-1" });
+    expect(screen.getByRole("heading", { name: "Room" })).toBeVisible();
+    await act(async () => { transport.fire("server.event", { type: "room.departed", roomId: "room-1", reason: "closed", departureId: "a0000000-0000-4000-8000-000000000000", protocolVersion: 1, serverEventId: "b0000000-0000-4000-8000-000000000000" }); });
+    expect(screen.getByRole("heading", { name: "陀螺設計器" })).toBeVisible();
   });
   it("places the teacher entry alongside project and ShapeCut links without embedding credentials", () => {
     render(<App client={new RealtimeClient({ transport: new AppTransport() })} />);

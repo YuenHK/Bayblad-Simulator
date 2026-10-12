@@ -50,6 +50,7 @@ type Session = {
   inflightCommands: Map<string, Readonly<{ fingerprint: string; promise: Promise<void> }>>;
   commandsStopped: boolean;
   disconnectedAt: number | null;
+  pageExitAtMs?: number;
   lastActiveAt: number;
   lastActivityRecordedAt: number;
   clockChallenges: Map<string, Readonly<{ serverSentAtMs: number; expiresAtMs: number }>>;
@@ -354,7 +355,17 @@ export class RealtimeGateway {
   }
 
   adminCloseRoom(roomId: string, signal?: AbortSignal): Promise<void> {
-    return this.#adminRoomTail(roomId, async () => {
+    return this.#adminRoomTail(roomId, () => this.#closeRoom(roomId, signal));
+  }
+
+  notifyPageExit(token: string): boolean {
+    const session = this.#sessionsByToken.get(token);
+    if (!session || session.commandsStopped || this.#closing) return false;
+    session.pageExitAtMs ??= this.#now() + 10_000;
+    return true;
+  }
+
+  async #closeRoom(roomId: string, signal?: AbortSignal): Promise<void> {
       if (signal?.aborted) return;
       const view = this.#rooms.get(roomId); if (!view) return;
       const revision = view.revision + 1, checkpoint = this.#rooms.checkpoint(roomId), closedAt = new Date(this.#now());
@@ -365,7 +376,6 @@ export class RealtimeGateway {
       catch (error) { this.#rooms.restore(checkpoint); throw error; }
       const match = this.#matches.get(roomId); if (match) this.#cancelMatch(roomId, match);
       this.#departWholeRoom(roomId, "closed"); this.#cleanupRoom(roomId); this.#broadcastLobby();
-    });
   }
 
   adminRemoveParticipant(roomId: string, participantId: string, context?: Readonly<{ signal: AbortSignal; currentStep?: string; fence: (completedStep?: string) => Promise<void> }>): Promise<void> {
@@ -513,6 +523,20 @@ export class RealtimeGateway {
   }
   async #pumpOnce(nowMs: number): Promise<void> {
     this.#pruneTerminalMatches(nowMs);
+    for (const session of this.#sessionsById.values()) {
+      if (session.pageExitAtMs === undefined || nowMs < session.pageExitAtMs) continue;
+      if (session.socketIds.size > 0) { delete session.pageExitAtMs; continue; }
+      for (const roomId of [...session.ownedRoomIds]) {
+        await this.#runInRoomTail(roomId, async () => {
+          if (session.pageExitAtMs === undefined || session.socketIds.size > 0) return;
+          const room = this.#rooms.get(roomId);
+          const ownerSession = room?.ownerParticipantId ? this.#sessionIdsByParticipant.get(roomId)?.get(room.ownerParticipantId) : undefined;
+          if (ownerSession !== session.id) return;
+          await this.#closeRoom(roomId);
+        });
+      }
+      delete session.pageExitAtMs;
+    }
     for (const [roomId, match] of this.#matches) {
       const bot = this.#roomBots.get(roomId);
       if (bot && match.schedule && match.botTapAtMs !== undefined && nowMs >= match.botTapAtMs && nowMs <= match.schedule.serverDeadlineTimeMs) {
@@ -652,6 +676,7 @@ export class RealtimeGateway {
           return;
         }
         session = established.session;
+        delete session.pageExitAtMs;
         session.disconnectedAt = null;
         session.lastActiveAt = this.#now();
         session.socketIds.add(socket.id);
@@ -983,7 +1008,7 @@ export class RealtimeGateway {
       this.#broadcastRoom(event.roomId);
       this.#broadcastLobby();
       await this.#startMatchIfReady(event.roomId);
-    } else if (event.type === "room.close") {
+    } else if (event.type === "room.close" || (event.type === "room.leave" && this.#rooms.snapshot(event.roomId, session.id).viewer.isOwner)) {
       const closingRevision = (this.#rooms.get(event.roomId)?.revision ?? 0) + 1;
       const checkpoint = this.#rooms.checkpoint(event.roomId);
       if (this.#roomProjections.usesDurableStore) {
@@ -1011,6 +1036,13 @@ export class RealtimeGateway {
       const participantId = this.#participantForSession(event.roomId, session.id);
       const checkpoint = this.#rooms.checkpoint(event.roomId);
       this.#rooms.leave(event.roomId, session.id);
+      if (!this.#rooms.hasRoom(event.roomId)) {
+        // The last connected human left. Restore membership until the atomic
+        // durable close succeeds, then notify and detach the whole room.
+        this.#rooms.restore(checkpoint);
+        await this.#closeRoom(event.roomId);
+        return;
+      }
       try {
         if (this.#roomRecordRepository) {
           if (this.#rooms.hasRoom(event.roomId)) {

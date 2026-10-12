@@ -29,6 +29,8 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
   const reducedMotion = systemReducedMotion || !gamePreferences.motionEnabled;
   const actionController = useRef<AbortController | null>(null);
   const autoReadySeat = useRef<string | null>(null);
+  const pendingNavigation = useRef<"designer" | "lobby" | null>(null);
+  useEffect(() => { if (state.lastError) pendingNavigation.current = null; }, [state.lastError]);
 
   useEffect(() => { client.start(); return () => { actionController.current?.abort(); client.stop(); void gameAudio.dispose(); }; }, [client, gameAudio]);
   useEffect(() => { gameAudio.setEnabled(gamePreferences.soundEnabled); saveGamePreferences(storage, gamePreferences); }, [gameAudio, gamePreferences, storage]);
@@ -40,7 +42,13 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
     return () => media.removeEventListener?.("change", update);
   }, []);
   useEffect(() => { if (state.room) setPage("room"); }, [state.room]);
-  useEffect(() => { if (page === "room" && !state.room) setPage("lobby"); }, [page, state.room]);
+  useEffect(() => { if (page === "room" && !state.room) { setPage(pendingNavigation.current ?? "lobby"); pendingNavigation.current = null; } }, [page, state.room]);
+  useEffect(() => {
+    const exit = () => { client.notifyPageExit(); client.stop(); };
+    const restore = (event: PageTransitionEvent) => { if (event.persisted) client.start(); };
+    window.addEventListener("pagehide", exit); window.addEventListener("pageshow", restore);
+    return () => { window.removeEventListener("pagehide", exit); window.removeEventListener("pageshow", restore); };
+  }, [client]);
   useEffect(() => { if (state.sessionStatus === "replaced" || state.sessionStatus === "new") { actionController.current?.abort(); actionController.current = null; setBusy(false); setDesignId(null); storage.remove(DESIGN_ID_KEY); if (state.sessionStatus === "replaced") setPage("lobby"); } }, [state.sessionStatus, storage]);
 
   const useFromDesigner = async (next: TopDesign) => {
@@ -66,6 +74,13 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
   };
 
   const send = (command: Parameters<RealtimeClient["command"]>[0]) => { setActionError(null); try { client.command(command); } catch (error) { setActionError(error instanceof Error ? error.message : "操作失敗。"); } };
+  const navigate = (next: "designer" | "lobby") => {
+    if (!state.room) { setPage(next); return; }
+    pendingNavigation.current = next; setActionError(null);
+    try { client.command({ type: "room.leave", roomId: state.room.roomId }); }
+    catch (error) { pendingNavigation.current = null; setActionError(error instanceof Error ? error.message : "無法離開房間。"); }
+  };
+  const navigationDisabled = Boolean(state.room) && (busy || state.departurePending || state.pendingActions > 0 || state.status !== "online" || (state.room!.phase !== "waiting" && !state.room!.viewer.isOwner && state.room!.viewer.role !== "spectator"));
 
   useEffect(() => {
     const room = state.room;
@@ -87,7 +102,7 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
   const phase = state.matchFinished || state.cancelledReason ? "result" : state.room?.phase ?? "waiting";
   const battleFocus = page === "room" && phase === "launch" && state.room?.viewer.role !== "spectator";
   return <div className={`app-root student-game quality-${gamePreferences.quality}${reducedMotion ? " reduced-game-motion" : ""}${battleFocus ? " battle-focus-mode" : ""}`} onPointerDownCapture={() => { if (gamePreferences.soundEnabled) void gameAudio.unlock().catch(() => undefined); }}>
-    <nav className="app-nav game-hud" aria-label="主要導航"><div className="app-brand"><img className="brand-icon" src={`${import.meta.env.BASE_URL}icons/favicon.svg`} alt="" width={28} height={28} /><span className="brand-title">STEAM 陀螺</span><small>YUENHK</small></div><div className="nav-actions"><button aria-current={page === "designer" ? "page" : undefined} onClick={() => setPage("designer")}>設計室</button><button aria-current={page === "lobby" ? "page" : undefined} onClick={() => setPage("lobby")}>對戰大廳</button></div>{state.identity ? <span className="player-identity" aria-label={`身份來源：${state.identity.status}`}>{state.identity.displayName}</span> : null}<span className={`connection-status status-${state.status}`} aria-live="polite">{state.identityStatus === "waking" ? "等候伺服器回應……" : state.identityStatus === "loading" ? "連接伺服器中……" : connectionLabel}</span><GameHudControls preferences={gamePreferences} onChange={setGamePreferences} /></nav>
+    <nav className="app-nav game-hud" aria-label="主要導航"><div className="app-brand"><img className="brand-icon" src={`${import.meta.env.BASE_URL}icons/favicon.svg`} alt="" width={28} height={28} /><span className="brand-title">STEAM 陀螺</span><small>YUENHK</small></div><div className="nav-actions"><button aria-current={page === "designer" ? "page" : undefined} disabled={navigationDisabled} onClick={() => navigate("designer")}>設計室</button><button aria-current={page === "lobby" ? "page" : undefined} disabled={navigationDisabled} onClick={() => navigate("lobby")}>對戰大廳</button></div>{state.identity ? <span className="player-identity" aria-label={`身份來源：${state.identity.status}`}>{state.identity.displayName}</span> : null}<span className={`connection-status status-${state.status}`} aria-live="polite">{state.identityStatus === "waking" ? "等候伺服器回應……" : state.identityStatus === "loading" ? "連接伺服器中……" : connectionLabel}</span><GameHudControls preferences={gamePreferences} onChange={setGamePreferences} /></nav>
     {state.sessionStatus === "resumed" ? <p className="system-banner" role="status">已恢復上次的房間位置。</p> : null}
     {state.sessionStatus === "replaced" ? <p className="system-banner warning" role="status">舊連線已過期，已為你建立新訪客連線。</p> : null}
     {state.platformPaused ? <p className="system-banner warning" role="status">平台現正暫停：不可建立或加入房間，也不可開始新對戰；已開始的對戰可繼續完成。</p> : null}

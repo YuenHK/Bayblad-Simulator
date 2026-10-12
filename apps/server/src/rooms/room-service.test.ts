@@ -30,12 +30,32 @@ const makeHarness = () => {
 const user = (id: string, displayName = id) => ({ id, displayName });
 
 describe("RoomService membership and public state", () => {
+  it("房主明確離開即關房，其他玩家不能繼續使用舊房間碼", () => {
+    const { service } = makeHarness();
+    const room = service.create(user("owner"), "Owner exit");
+    service.join(room.roomId, user("peer"), "player");
+    service.leave(room.roomId, "owner");
+    expect(service.hasRoom(room.roomId)).toBe(false);
+    expect(service.resolveRoomReference(room.code)).toBeUndefined();
+  });
+  it("房主純斷線保留重連緩衝，逾時後即使有人觀賽也關房", () => {
+    const { service, advance } = makeHarness();
+    const room = service.create(user("owner"), "Owner timeout");
+    service.join(room.roomId, user("viewer"), "spectator");
+    service.disconnect(room.roomId, "owner");
+    advance(119_999); service.sweep();
+    expect(service.hasRoom(room.roomId)).toBe(true);
+    advance(1);
+    expect(service.roomsDueForClosure()).toEqual([{ roomId: room.roomId, revision: service.get(room.roomId)!.revision + 1 }]);
+    service.sweep();
+    expect(service.hasRoom(room.roomId)).toBe(false);
+  });
   it("computer participants never inherit ownership or keep an empty room alive", () => {
     const { service, advance } = makeHarness();
     const room = service.create(user("owner"), "CPU room");
     service.join(room.roomId, { ...user("cpu"), isComputer: true }, "player");
     const spectator = service.join(room.roomId, user("human"), "spectator");
-    service.leave(room.roomId, "owner");
+    service.adminRemove(room.roomId, room.participantId);
     expect(service.snapshot(room.roomId, "human").ownerParticipantId).toBe(spectator.participantId);
     service.leave(room.roomId, "human");
     advance(120_000);
@@ -430,7 +450,7 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     expect(service.get(room.roomId)?.player2?.participantId).toBe(replacement.participantId);
   });
 
-  it("transfers active ownership after timeout without removing the owner's seat", () => {
+  it("房主斷線逾時會關閉進行中的房間", () => {
     const { service, advance } = makeHarness();
     const room = service.create(user("owner"), "Room");
     const player2 = service.join(room.roomId, user("player2"), "player");
@@ -440,10 +460,7 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     service.disconnect(room.roomId, "owner");
     advance(120_001);
     service.sweep();
-    expect(service.get(room.roomId)).toMatchObject({
-      ownerParticipantId: player2.participantId,
-      player1: { participantId: room.participantId, ready: true, designId: DESIGN_A },
-    });
+    expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
   it("restores an expired active seat session even if reconnect requests spectator", () => {
@@ -475,7 +492,7 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
-  it("treats active seated leave as an idempotent disconnect while spectators may leave", () => {
+  it("非房主正在對戰時離開仍只標記斷線，觀眾可以退出", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
     service.join(room.roomId, user("player2"), "player");
@@ -485,11 +502,11 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     service.setPhase(room.roomId, "launch");
     service.drainDeltas(room.roomId);
     const before = service.get(room.roomId);
-    service.leave(room.roomId, "owner");
-    service.leave(room.roomId, "owner");
+    service.leave(room.roomId, "player2");
+    service.leave(room.roomId, "player2");
     expect(service.get(room.roomId)).toEqual(before);
     expect(service.drainDeltas(room.roomId)).toEqual([]);
-    expect(() => service.snapshot(room.roomId, "owner")).toThrow(
+    expect(() => service.snapshot(room.roomId, "player2")).toThrow(
       new RoomServiceError("PARTICIPANT_DISCONNECTED"),
     );
     service.leave(room.roomId, "spectator");
@@ -529,17 +546,14 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     expect(service.snapshot(room.roomId, "owner").viewer).toMatchObject({ role: "player1", isOwner: true });
   });
 
-  it("treats a reconnect at the 120000ms boundary as a new participant without requiring sweep", () => {
+  it("房主斷線到 120000ms 即使未 sweep 也不能再加入原房", () => {
     const { service, advance } = makeHarness();
     const room = service.create(user("owner"), "Room");
     const other = service.join(room.roomId, user("other"), "spectator");
     service.disconnect(room.roomId, "owner");
     advance(120_000);
-    const rejoined = service.join(room.roomId, user("owner"), "player");
-    expect(rejoined.participantId).not.toBe(room.participantId);
-    const snapshot = service.snapshot(room.roomId, "owner");
-    expect(snapshot.viewer.role).toBe("player1");
-    expect(snapshot.ownerParticipantId).toBe(other.participantId);
+    expect(() => service.join(room.roomId, user("owner"), "player")).toThrow(new RoomServiceError("ROOM_NOT_FOUND"));
+    expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
   it("keeps an expired empty-room deletion committed when join reports room not found", () => {
@@ -553,19 +567,13 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
-  it("allows an explicit empty room to be joined at 119999ms and clears its expiry", () => {
+  it("主動離開的空房即時釋放，不保留可加入的舊房間", () => {
     const { service, advance } = makeHarness();
     const room = service.create(user("owner"), "Room");
     service.leave(room.roomId, "owner");
     advance(119_999);
-    const joined = service.join(room.roomId, user("newcomer"), "spectator");
-    expect(service.snapshot(room.roomId, "newcomer")).toMatchObject({
-      ownerParticipantId: joined.participantId,
-      viewer: { participantId: joined.participantId, role: "spectator", isOwner: true },
-    });
-    advance(120_000);
-    service.sweep();
-    expect(service.hasRoom(room.roomId)).toBe(true);
+    expect(() => service.join(room.roomId, user("newcomer"), "spectator")).toThrow(new RoomServiceError("ROOM_NOT_FOUND"));
+    expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
   it("rejects any join to an explicit empty room at 120000ms and releases its code", () => {
@@ -591,29 +599,24 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
-  it("transfers a timed-out owner at the 120000ms boundary and deletes an empty room", () => {
+  it("房主逾時不再轉移房主，直接關閉房間", () => {
     const { service, advance } = makeHarness();
     const room = service.create(user("owner"), "Room");
     const other = service.join(room.roomId, user("other"), "spectator");
     service.disconnect(room.roomId, "owner");
     advance(120_000);
     service.sweep();
-    expect(service.snapshot(room.roomId, "other").ownerParticipantId).toBe(other.participantId);
-
-    service.disconnect(room.roomId, "other");
-    advance(120_000);
-    service.sweep();
     expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
-  it("transfers explicit ownership to the longest-connected participant with stable ties", () => {
+  it("管理員移除房主仍保留原有穩定的房主轉移規則", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
     const first = service.join(room.roomId, user("z-user"), "spectator");
     const second = service.join(room.roomId, user("a-user"), "spectator");
     expect(first.participantId < second.participantId).toBe(true);
     service.drainDeltas(room.roomId);
-    service.leave(room.roomId, "owner");
+    service.adminRemove(room.roomId, room.participantId);
     expect(service.get(room.roomId)?.ownerParticipantId).toBe(first.participantId);
     expect(service.drainDeltas(room.roomId)).toMatchObject([
       {
@@ -622,27 +625,22 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     ]);
   });
 
-  it("starts empty retention after explicit final leave and counts connected spectators as nonempty", () => {
+  it("斷線房主的重連緩衝內仍有觀眾時保留，最後觀眾主動離開即關房", () => {
     const { service, advance } = makeHarness();
     const room = service.create(user("owner"), "Room");
     service.join(room.roomId, user("spectator"), "spectator");
-    service.leave(room.roomId, "owner");
-    advance(120_001);
-    service.sweep();
-    expect(service.hasRoom(room.roomId)).toBe(true);
-    service.leave(room.roomId, "spectator");
+    service.disconnect(room.roomId, "owner");
     advance(119_999);
     service.sweep();
     expect(service.hasRoom(room.roomId)).toBe(true);
-    advance(1);
-    service.sweep();
+    service.leave(room.roomId, "spectator");
     expect(service.hasRoom(room.roomId)).toBe(false);
   });
 
   it("makes the first new participant owner when joining a retained empty room", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
-    service.leave(room.roomId, "owner");
+    service.adminRemove(room.roomId, room.participantId);
     const newcomer = service.join(room.roomId, user("newcomer"), "spectator");
     expect(service.snapshot(room.roomId, "newcomer")).toMatchObject({
       ownerParticipantId: newcomer.participantId,
@@ -650,7 +648,7 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     });
   });
 
-  it("allows only the owner to close waiting or finished rooms", () => {
+  it("所有階段只有房主可關房，對戰中亦可主動離房", () => {
     const { service } = makeHarness();
     const room = service.create(user("owner"), "Room");
     service.join(room.roomId, user("player2"), "player");
@@ -659,11 +657,9 @@ describe("RoomService disconnect, leave, sweep, and close", () => {
     service.ready(room.roomId, "owner", DESIGN_A);
     service.ready(room.roomId, "player2", DESIGN_B);
     service.setPhase(room.roomId, "launch");
-    expect(() => service.close(room.roomId, "owner")).toThrow(new RoomServiceError("ROOM_ACTIVE"));
+    expect(() => service.close(room.roomId, "other")).toThrow(new RoomServiceError("OWNER_REQUIRED"));
     service.setPhase(room.roomId, "battle");
     service.setPhase(room.roomId, "result");
-    expect(() => service.close(room.roomId, "owner")).toThrow(new RoomServiceError("ROOM_ACTIVE"));
-    service.finishMatch(room.roomId);
     service.close(room.roomId, "owner");
     expect(service.hasRoom(room.roomId)).toBe(false);
   });

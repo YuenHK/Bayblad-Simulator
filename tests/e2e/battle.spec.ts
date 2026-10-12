@@ -178,7 +178,45 @@ test("發射與對戰斷線可恢復 checkpoint，119 秒可取結果而超過 1
   }
 });
 
-test("房主斷線兩分鐘後轉移，空房再過兩分鐘自動刪除", async ({ browser, request }) => {
+test("房主切換到設計室會關房，觀眾回大廳且不產生完成分數", async ({ browser }) => {
+  const owner = await openGuest(browser), peer = await openGuest(browser);
+  try {
+    await owner.page.getByRole("button", { name: "對戰大廳", exact: true }).click();
+    await owner.page.getByLabel("房間名稱").fill("導航離房驗收");
+    await owner.page.getByRole("button", { name: "建立房間", exact: true }).click();
+    const code = (await owner.page.locator(".room-heading .eyebrow").textContent())!.replace("房間碼", "").trim();
+    await peer.page.getByRole("button", { name: "對戰大廳", exact: true }).click();
+    await joinByCode(peer.page, code, "spectator");
+    await owner.page.getByRole("button", { name: "設計室", exact: true }).click();
+    await expect(owner.page.getByRole("heading", { name: "陀螺設計器", exact: true })).toBeVisible();
+    await expect(peer.page.getByRole("heading", { name: "對戰大廳", exact: true })).toBeVisible();
+    await expect(peer.page.getByRole("heading", { name: "導航離房驗收", exact: true })).toHaveCount(0);
+    await expect(peer.page.getByRole("heading", { name: "對戰結果", exact: true })).toHaveCount(0);
+  } finally { await Promise.all([owner.context.close(), peer.context.close()]); }
+});
+
+test("房主重新整理可取消離頁通知，關閉分頁十秒後關房", async ({ browser, request }) => {
+  const owner = await openGuest(browser), peer = await openGuest(browser);
+  try {
+    await owner.page.getByRole("button", { name: "對戰大廳", exact: true }).click();
+    await owner.page.getByLabel("房間名稱").fill("離頁通知驗收");
+    await owner.page.getByRole("button", { name: "建立房間", exact: true }).click();
+    const codeText = (await owner.page.locator(".room-heading .eyebrow").textContent())!;
+    await peer.page.getByRole("button", { name: "對戰大廳", exact: true }).click();
+    await joinByCode(peer.page, codeText.replace("房間碼", "").trim(), "spectator");
+    await owner.page.reload();
+    await expect(owner.page.locator(".room-heading .eyebrow")).toHaveText(codeText);
+    expect((await request.post(`${REALTIME_URL}/__test/advance`, { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 10_001 } })).ok()).toBe(true);
+    await expect(peer.page.locator(".room-heading .eyebrow")).toHaveText(codeText);
+    await owner.page.close({ runBeforeUnload: true });
+    await expect.poll(async () => (await request.get(`${REALTIME_URL}/__test/stats`, { headers: { "x-test-secret": CONTROL_SECRET } })).json().then(stats => stats.connections)).toBe(1);
+    expect((await request.post(`${REALTIME_URL}/__test/advance`, { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 10_001 } })).ok()).toBe(true);
+    await expect(peer.page.getByRole("heading", { name: "對戰大廳", exact: true })).toBeVisible();
+    await expect(peer.page.getByRole("heading", { name: "離頁通知驗收", exact: true })).toHaveCount(0);
+  } finally { await Promise.all([owner.context.close(), peer.context.close()]); }
+});
+
+test("房主斷線兩分鐘後關房，主動離開的空房立即關閉", async ({ browser, request }) => {
   const owner = await openGuest(browser);
   const peer = await openGuest(browser);
   try {
@@ -193,13 +231,14 @@ test("房主斷線兩分鐘後轉移，空房再過兩分鐘自動刪除", async
     await expect(owner.page.getByText("重新連線中……")).toBeVisible();
     const transfer = await request.post(`${REALTIME_URL}/__test/advance`, { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 120_001 } });
     expect(transfer.ok()).toBe(true);
-    await expect(peer.page.getByRole("button", { name: "關閉房間" })).toBeVisible();
-
-    await peer.page.getByRole("button", { name: "離開房間" }).click();
     await expect(peer.page.getByRole("heading", { name: "對戰大廳" })).toBeVisible();
-    const deletion = await request.post(`${REALTIME_URL}/__test/advance`, { headers: { "x-test-secret": CONTROL_SECRET }, data: { ms: 120_001 } });
-    expect(deletion.ok()).toBe(true);
     await expect(peer.page.getByRole("heading", { name: "兩分鐘生命週期房" })).toHaveCount(0);
+    await peer.page.getByLabel("房間名稱").fill("主動離開空房");
+    await peer.page.getByRole("button", { name: "建立房間" }).click();
+    await expect(peer.page.locator(".room-heading")).toContainText("主動離開空房");
+    await peer.page.getByRole("button", { name: "離開房間", exact: true }).click();
+    await expect(peer.page.getByRole("heading", { name: "對戰大廳" })).toBeVisible();
+    await expect(peer.page.getByRole("heading", { name: "主動離開空房" })).toHaveCount(0);
   } finally {
     await Promise.all([owner.context.close(), peer.context.close()]);
   }

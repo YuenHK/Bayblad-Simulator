@@ -139,6 +139,54 @@ async function connect(url: string, displayName: string, sessionToken?: string) 
 }
 
 describe("realtime app", () => {
+  it("房主在發射階段離房會取消整場並通知雙方，不新增完成分數", async () => {
+    const rooms = new RoomService(), records = new MemoryMatchRepository();
+    const app = buildApp({ rooms, matchRepository: records, battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 });
+    closers.push(() => app.close()); await app.listen({ host: "127.0.0.1", port: 0 });
+    const url = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`;
+    const owner = await connect(url, "Owner"), peer = await connect(url, "Peer");
+    closers.push(() => { owner.socket.close(); peer.socket.close(); });
+    const created = nextEvent(owner.socket, "room.snapshot"); owner.socket.emit("client.event", command("room.create", { name: "Active owner exit" })); const room = await created;
+    const joined = nextEvent(peer.socket, "room.snapshot"); peer.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" })); await joined;
+    const designId = async (token: string) => (await app.inject({ method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${token}` }, payload: makeDefaultDesign() })).json().designId as string;
+    const schedule = nextEvent(owner.socket, "launch.schedule");
+    owner.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: await designId(owner.token) }));
+    peer.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: await designId(peer.token) })); await schedule;
+    const ownerLeft = nextEvent(owner.socket, "room.departed"), peerLeft = nextEvent(peer.socket, "room.departed");
+    owner.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
+    expect((await ownerLeft).reason).toBe("closed"); expect((await peerLeft).reason).toBe("closed");
+    expect(rooms.hasRoom(room.roomId)).toBe(false); expect(app.realtimeGateway.activeMatchCount).toBe(0); expect(records.records.size).toBe(0);
+  });
+  it("離頁通知拒絕外站、無效憑證和超長請求", async () => {
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), allowedOrigins: ["https://school.example"], sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    const send = (origin: string, payload: string) => app.inject({ method: "POST", url: "/api/session/page-exit", headers: { origin, "content-type": "text/plain" }, payload });
+    expect((await send("https://evil.example", JSON.stringify({ sessionToken: "x".repeat(32) }))).statusCode).toBe(403);
+    expect((await send("https://school.example", "{}")).statusCode).toBe(400);
+    expect((await send("https://school.example", JSON.stringify({ sessionToken: "x".repeat(32) }))).statusCode).toBe(401);
+    expect((await send("https://school.example", "x".repeat(2048))).statusCode).toBe(413);
+  });
+  it("房主離頁通知經十秒斷線緩衝關房，重連可取消", async () => {
+    let now = 1_000;
+    const rooms = new RoomService({ now: () => now });
+    const app = buildApp({ battleEngine: new FakeBattleEngine(), rooms, now: () => now, allowedOrigins: ["https://school.example"], sweepIntervalMs: 0 });
+    closers.push(() => app.close());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const url = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`;
+    const owner = await connect(url, "Owner"); closers.push(() => { owner.socket.close(); });
+    const created = nextEvent(owner.socket, "room.snapshot");
+    owner.socket.emit("client.event", command("room.create", { name: "Exit notice" }));
+    const room = await created;
+    const notice = () => app.inject({ method: "POST", url: "/api/session/page-exit", headers: { origin: "https://school.example", "content-type": "text/plain" }, payload: JSON.stringify({ sessionToken: owner.token }) });
+    expect((await notice()).statusCode).toBe(204);
+    owner.socket.close(); await waitForCleanup(() => app.realtimeGateway.debugCounts.connections === 0);
+    now += 9_999; await app.realtimeGateway.pump(now); expect(rooms.hasRoom(room.roomId)).toBe(true);
+    const resumed = await connect(url, "Owner", owner.token); closers.push(() => { resumed.socket.close(); });
+    now += 1; await app.realtimeGateway.pump(now); expect(rooms.hasRoom(room.roomId)).toBe(true);
+    expect((await notice()).statusCode).toBe(204);
+    resumed.socket.close(); await waitForCleanup(() => app.realtimeGateway.debugCounts.connections === 0);
+    now += 10_000; await app.realtimeGateway.pump(now); expect(rooms.hasRoom(room.roomId)).toBe(false);
+  });
   it("removing a computer is durable and an admin kick permits a replacement", async () => {
     const rooms = new RoomService();
     const repository = new FailWaitingRoomProjection();
@@ -974,8 +1022,8 @@ describe("realtime app", () => {
     lateSpectator.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "spectator" }));
     await lateJoined;
     expect(app.realtimeGateway.debugCounts.bindings).toBe(23);
-    const activeLeaveRejected = nextEvent(p1.socket, "error");
-    p1.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
+    const activeLeaveRejected = nextEvent(p2.socket, "error");
+    p2.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
     expect(await activeLeaveRejected).toMatchObject({ code: "ROOM_ACTIVE" });
 
     const schedule2 = schedule1;
@@ -1085,13 +1133,13 @@ describe("realtime app", () => {
     };
     await resumeTerminal(30_000);
     await resumeTerminal(119_000);
-    const playerDeparture = nextEvent(p1.socket, "room.departed");
-    p1.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
+    const playerDeparture = nextEvent(p2Socket, "room.departed");
+    p2Socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
     await playerDeparture;
     const playerLeak = vi.fn();
-    p1.socket.on("server.event", (event) => { if (event.type === "match.finished") playerLeak(event); });
-    const rejoinedPlayer = nextEvent(p1.socket, "room.snapshot");
-    p1.socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
+    p2Socket.on("server.event", (event) => { if (event.type === "match.finished") playerLeak(event); });
+    const rejoinedPlayer = nextEvent(p2Socket, "room.snapshot");
+    p2Socket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
     await rejoinedPlayer;
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     expect(playerLeak).not.toHaveBeenCalled();
@@ -1292,13 +1340,11 @@ describe("realtime app", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
 
     now += 120_001;
-    const removed = nextEvent(peer.socket, "room.delta");
+    const removed = nextEvent(peer.socket, "room.departed");
     const sweptLobby = nextEvent(peer.socket, "lobby.snapshot");
     await app.realtimeGateway.pump(now);
-    const removalDelta = await removed;
-    expect(removalDelta.patch.player1).toBeNull();
-    expect(removalDelta.patch.ownerParticipantId).toBeDefined();
-    expect((await sweptLobby).rooms[0].player1.displayName).toBeNull();
+    expect((await removed).reason).toBe("expired");
+    expect((await sweptLobby).rooms).toHaveLength(0);
 
     const replacementSocket = io(url, { transports: ["websocket"], auth: { customOutlineVersion: 1, displayName: "Replacement", sessionToken: owner.token } });
     await new Promise<void>((resolve) => replacementSocket.once("connect", resolve));
@@ -1309,22 +1355,28 @@ describe("realtime app", () => {
     const replacementToken = replacementWelcomeEvent.sessionToken as string;
     expect(replacementWelcomeEvent.sessionStatus).toBe("replaced");
     expect(replacementToken).not.toBe(owner.token);
-    const replacementJoined = nextEvent(replacementSocket, "room.snapshot");
+    const expiredJoin = nextEvent(replacementSocket, "error");
     replacementSocket.emit("client.event", command("room.join", { roomId: room.roomId, role: "player" }));
+    expect((await expiredJoin).code).toBe("ROOM_NOT_FOUND");
+    const replacementJoined = nextEvent(replacementSocket, "room.snapshot");
+    replacementSocket.emit("client.event", command("room.create", { name: "Replacement room" }));
     const replacementRoom = await replacementJoined;
     expect(replacementRoom.viewer.participantId).not.toBe(originalParticipantId);
+    const peerReplacement = nextEvent(peer.socket, "room.snapshot");
+    peer.socket.emit("client.event", command("room.join", { roomId: replacementRoom.roomId, role: "player" }));
+    await peerReplacement;
     const register = async (token: string) => (await app.inject({
       method: "POST", url: "/api/designs", headers: { authorization: `Bearer ${token}` }, payload: makeDefaultDesign(),
     })).json().designId as string;
     const [replacementDesign, peerDesign] = await Promise.all([register(replacementToken), register(peer.token)]);
-    replacementSocket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: replacementDesign }));
+    replacementSocket.emit("client.event", command("player.ready", { roomId: replacementRoom.roomId, designId: replacementDesign }));
     const replacementSchedule = nextEvent(replacementSocket, "launch.schedule");
-    peer.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: peerDesign }));
+    peer.socket.emit("client.event", command("player.ready", { roomId: replacementRoom.roomId, designId: peerDesign }));
     const activeSchedule = await replacementSchedule;
     now = activeSchedule.serverTargetTimeMs;
     const replacementPrivate = nextEvent(replacementSocket, "launch.result.private");
-    replacementSocket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: activeSchedule.roundId, nonce: activeSchedule.nonce, clientTimeMs: now }));
-    peer.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: activeSchedule.roundId, nonce: activeSchedule.nonce, clientTimeMs: now }));
+    replacementSocket.emit("client.event", command("launch.tap", { roomId: replacementRoom.roomId, roundId: activeSchedule.roundId, nonce: activeSchedule.nonce, clientTimeMs: now }));
+    peer.socket.emit("client.event", command("launch.tap", { roomId: replacementRoom.roomId, roundId: activeSchedule.roundId, nonce: activeSchedule.nonce, clientTimeMs: now }));
     expect((await replacementPrivate).participantId).toBe(replacementRoom.viewer.participantId);
   });
 
