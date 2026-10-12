@@ -17,7 +17,7 @@ import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import { DesignRegistry } from "./design-registry";
 import type { DesignRepository } from "./records/design-repository";
-import { designPopularityKey } from "./records/design-popularity";
+import { HighestScoringDesign } from "./records/highest-scoring-design";
 import { completedMatchFingerprint, type CompletedMatchRecord, type MatchRepository } from "./records/match-repository";
 import type { RoomParticipantRecord, RoomRecordRepository } from "./records/room-repository";
 import { RoomProjectionCoordinator } from "./records/room-projection-coordinator";
@@ -236,7 +236,7 @@ export class RealtimeGateway {
   readonly #sessionsByToken = new Map<string, Session>();
   readonly #sessionsById = new Map<string, Session>();
   readonly #roomBots = new Map<string, { session: Session; ownerIdentityId: string; designId: string }>();
-  readonly #popularDesigns = new Map<string, { design: TopDesign; uses: number }>();
+  readonly #highestScoringDesign = new HighestScoringDesign();
   readonly #sessionIdsByParticipant = new Map<string, Map<string, string>>();
   readonly #matches = new Map<string, MatchState>();
   readonly #terminalMatches = new Map<string, TerminalMatchState>();
@@ -1223,8 +1223,12 @@ export class RealtimeGateway {
     const room = this.#rooms.snapshot(roomId, entry.session.id);
     const seat = room.viewer.role === "player1" ? room.player1 : room.player2;
     if (seat?.ready) return;
-    const popular = await this.#designRepository?.mostPopularBattleDesign?.() ?? [...this.#popularDesigns.values()].sort((a,b) => b.uses-a.uses)[0]?.design ?? makeDefaultDesign();
-    const design = { ...structuredClone(popular), id: crypto.randomUUID(), name: "電腦玩家・人氣設計" };
+    // A durable query is authoritative: do not resurrect deleted history from
+    // the process-local fallback when PostgreSQL reports no eligible candidate.
+    const highest = this.#designRepository?.highestScoringBattleDesign
+      ? await this.#designRepository.highestScoringBattleDesign()
+      : this.#highestScoringDesign.design();
+    const design = { ...structuredClone(highest ?? makeDefaultDesign()), id: crypto.randomUUID(), name: "電腦玩家・高分設計" };
     this.#designs.cleanupOwner(entry.session.id);
     const stored = this.#designRepository
       ? this.#designs.hydrate(entry.session.id, await this.#designRepository.saveBattleEligible(entry.ownerIdentityId, design))
@@ -1373,13 +1377,11 @@ export class RealtimeGateway {
           if (this.#matches.get(roomId) !== match || match.generation !== generation) return;
         }
         match.officiallyCompleted = true;
-        for (const player of match.players) {
+        const completedAtMs = this.#now();
+        for (const [slot, player] of match.players.entries()) {
           if (this.#sessionsById.get(player.sessionId)?.isComputer) continue;
           const design = this.#designs.requireOwned(player.sessionId, player.designId).design;
-          const key = designPopularityKey(design);
-          const current = this.#popularDesigns.get(key);
-          this.#popularDesigns.set(key, { design, uses: (current?.uses ?? 0) + 1 });
-          if (this.#popularDesigns.size > 2_000) this.#popularDesigns.delete(this.#popularDesigns.keys().next().value!);
+          this.#highestScoringDesign.record({ design, total: slot === 0 ? completedScore.player1.total : completedScore.player2.total, completedAtMs, matchId: match.matchId, slot });
         }
         try {
           this.#emitToRoom(roomId, matchFinished);

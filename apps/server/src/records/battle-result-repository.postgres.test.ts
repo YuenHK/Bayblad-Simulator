@@ -10,7 +10,7 @@ import { PostgresBattleResultRepository } from "./battle-result-repository";
 import { PostgresDesignRepository } from "./design-repository";
 import { completedMatchFingerprint, MatchPersistenceConflictError, PostgresMatchRepository, type CompletedMatchRecord } from "./match-repository";
 import { identities } from "@steam-top/db/schema";
-import { matches, roomParticipants, rooms, rounds } from "@steam-top/db/schema";
+import { designs as designRows, matches, roomParticipants, rooms, rounds } from "@steam-top/db/schema";
 import { eq } from "drizzle-orm";
 import { PostgresRoomRecordRepository } from "./room-repository";
 import { PostgresRoomProjectionStore } from "./room-projection-store";
@@ -31,6 +31,45 @@ beforeAll(async () => {
     for (const statement of readFileSync(`${directory}/${file}`, "utf8").split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) if(!statement.includes('"restore_control"'))await client.sql.unsafe(statement.replaceAll('"public".', `"${schemaName}".`).replaceAll("public.", `${schemaName}.`));
   }
 }, 30_000);
+
+it.skipIf(!databaseUrl)("selects highest single-match human score, not popularity, across both seats and custom outlines", async () => {
+  const repository = new PostgresDesignRepository(client.db);
+  await expect(repository.highestScoringBattleDesign()).resolves.toBeUndefined();
+  const human = randomUUID(), opponent = randomUUID();
+  await client.db.insert(identities).values([{ id: human, status: "guest", displayName: "Score fixture" }, { id: opponent, status: "guest", displayName: "Opponent fixture" }]);
+  const low = await repository.saveBattleEligible(human, makeDefaultDesign());
+  const custom = makeDefaultDesign(); custom.name = "Highest custom";
+  custom.layers[0] = { ...custom.layers[0], shape: "custom", diameterMm: 28.284, outline: { version: 1, mirror: "none", vertices: [{ x: -10, y: -10 }, { x: 10, y: -10 }, { x: 10, y: 10 }, { x: -10, y: 10 }] } };
+  const high = await repository.saveBattleEligible(human, custom);
+  const latestInput = structuredClone(custom); latestInput.name = "Latest tied custom";
+  const latest = await repository.saveBattleEligible(human, latestInput);
+  const [row] = await client.db.select().from(designRows).where(eq(designRows.id, high.designId));
+  const ineligible = randomUUID();
+  await client.db.insert(designRows).values({ ...row!, id: ineligible, logicalDesignId: randomUUID(), version: 1, battleEligible: false });
+  // Isolated completed snapshot fixtures exercise the read query with real
+  // schema constraints; authoritative round persistence is tested separately below.
+  const insertScore = async (designId: string, side: 1 | 2, total: number, time: number, identityId: string | null = human, status: "completed" | "in_progress" = "completed") => {
+    const winner = side === 1 ? "player1" : "player2";
+    await client.db.insert(matches).values({
+      id: randomUUID(), idempotencyFingerprint: randomUUID(), status,
+      player1IdentityId: side === 1 ? identityId : opponent, player2IdentityId: side === 2 ? identityId : opponent,
+      player1DesignId: side === 1 ? designId : low.designId, player2DesignId: side === 2 ? designId : low.designId,
+      player1BattlePoints: side === 1 ? 2 : 0, player2BattlePoints: side === 2 ? 2 : 0,
+      player1ChallengePoints: side === 1 ? total - 2 : 0, player2ChallengePoints: side === 2 ? total - 2 : 0,
+      player1Total: side === 1 ? total : 0, player2Total: side === 2 ? total : 0,
+      winner, roundWinners: [winner, winner], performanceModelVersion: "2.0.0", physicsModelVersion: "2.0.0", protocolVersion: 1,
+      startedAt: new Date("2098-01-01"), completedAt: new Date(Date.UTC(2098, 0, 1) + time),
+    });
+  };
+  for (let i = 0; i < 8; i++) await insertScore(low.designId, 1, 2, i);
+  await insertScore(high.designId, 2, 2.4, 20);
+  await insertScore(low.designId, 1, 2.5, 30, null); // computer must not feed back
+  await insertScore(low.designId, 2, 2.5, 40, human, "in_progress");
+  await insertScore(ineligible, 1, 2.5, 50);
+  expect((await repository.highestScoringBattleDesign())?.id).toBe(high.design.id);
+  await insertScore(latest.designId, 1, 2.4, 60);
+  expect((await new PostgresDesignRepository(client.db).highestScoringBattleDesign())?.name).toBe("Latest tied custom");
+});
 
 function leaseClient(): DatabaseClient {
   const local = /(?:localhost|127\.0\.0\.1)/u.test(databaseUrl!);
@@ -297,7 +336,7 @@ it.skipIf(!databaseUrl).each([false, true])("persists an exact authoritative rou
   await expect(new PostgresMatchRepository(client.db).retryFailedMatch(matchId)).resolves.toBe("replayed");
   await expect(repository.saveCompletedMatch(completed)).resolves.toBe("replayed");
   // Exercise the actual SQL used when a room selects its computer opponent.
-  await expect(designs.mostPopularBattleDesign()).resolves.toMatchObject({
+  await expect(designs.highestScoringBattleDesign()).resolves.toMatchObject({
     screwLayout: player1Design.design.screwLayout,
     metalDiscDiameterMm: player1Design.design.metalDiscDiameterMm,
   });

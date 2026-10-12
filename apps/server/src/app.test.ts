@@ -13,6 +13,7 @@ import { MemoryMatchRepository } from "./records/match-repository";
 import type { RoomRecordRepository } from "./records/room-repository";
 import { MemoryRoomProjectionStore } from "./records/room-projection-store";
 import { shouldRecordRealtimeActivity } from "./socket";
+import { MemoryDesignRepository } from "./records/design-repository";
 
 const uuid = () => crypto.randomUUID();
 // Legacy protocol tests use the physics clock; cinematic timing is tested separately.
@@ -217,6 +218,32 @@ describe("realtime app", () => {
     expect(app.realtimeGateway.debugCounts.sessions).toBe(1);
     await toggle(true);
     expect(rooms.get(room.roomId)!.player2!.displayName).toBe("電腦玩家");
+  });
+  it.each([true, false])("computer uses authoritative highest-score geometry or default if none (history=%s)", async (hasHistory) => {
+    const highest = makeDefaultDesign(); highest.layers[0].diameterMm = 35;
+    class HistoricalDesignRepository extends MemoryDesignRepository {
+      async highestScoringBattleDesign() { return hasHistory ? structuredClone(highest) : undefined; }
+    }
+    const stored: ReturnType<DesignRegistry["hydrate"]>[] = [];
+    class CapturingDesignRegistry extends DesignRegistry {
+      override hydrate(...args: Parameters<DesignRegistry["hydrate"]>) {
+        const design = super.hydrate(...args); stored.push(design); return design;
+      }
+    }
+    const rooms = new RoomService();
+    const app = buildApp({ rooms, designs: new CapturingDesignRegistry(), designRepository: new HistoricalDesignRepository(), battleEngine: new FakeBattleEngine(), sweepIntervalMs: 0 });
+    closers.push(() => app.close()); await app.listen({ host: "127.0.0.1", port: 0 });
+    const owner = await connect(`http://127.0.0.1:${(app.server.address() as { port: number }).port}`, "Owner");
+    closers.push(() => { owner.socket.close(); });
+    const created = nextEvent(owner.socket, "room.snapshot"); owner.socket.emit("client.event", command("room.create", { name: "Highest score" }));
+    const room = await created;
+    const event = command("room.bot", { roomId: room.roomId, enabled: true });
+    const ack = nextEvent(owner.socket, "command.ack", 3_000, event.eventId); owner.socket.emit("client.event", event); await ack;
+    expect(rooms.get(room.roomId)?.player2?.ready).toBe(true);
+    expect(stored.at(-1)?.design.layers).toEqual((hasHistory ? highest : makeDefaultDesign()).layers.map((layer, index) => ({ ...layer, id: stored.at(-1)!.design.layers[index]!.id })));
+    expect(stored.at(-1)?.design.name).toBe("電腦玩家・高分設計");
+    expect(stored.at(-1)?.design.id).not.toBe(highest.id);
+    expect(highest.name).not.toBe("電腦玩家・高分設計");
   });
   it.each(["player1", "draw"] as const)("owner adds computer; timeout settles one ten-second %s round", async (outcome) => {
     let now = 100_000;
