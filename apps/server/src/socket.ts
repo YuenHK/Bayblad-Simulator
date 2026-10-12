@@ -126,8 +126,8 @@ type MatchState = {
   currentRoundId: string;
   roundWinners: Array<"player1" | "player2">;
   players: readonly [
-    { participantId: string; sessionId: string; designId: string },
-    { participantId: string; sessionId: string; designId: string },
+    { participantId: string; sessionId: string; designId: string; identityId: string; displayName: string },
+    { participantId: string; sessionId: string; designId: string; identityId: string; displayName: string },
   ];
   launches: Map<string, LaunchJudgement>;
   schedule: LaunchScheduleEvent | null;
@@ -1167,8 +1167,8 @@ export class RealtimeGateway {
       currentRoundId: "",
       roundWinners: [],
       players: [
-        { participantId: room.player1.participantId, sessionId: session1, designId: room.player1.designId },
-        { participantId: room.player2.participantId, sessionId: session2, designId: room.player2.designId },
+        { participantId: room.player1.participantId, sessionId: session1, designId: room.player1.designId, identityId: this.#sessionsById.get(session1)!.identityId, displayName: room.player1.displayName },
+        { participantId: room.player2.participantId, sessionId: session2, designId: room.player2.designId, identityId: this.#sessionsById.get(session2)!.identityId, displayName: room.player2.displayName },
       ],
       launches: new Map(),
       schedule: null,
@@ -1225,10 +1225,10 @@ export class RealtimeGateway {
     if (seat?.ready) return;
     // A durable query is authoritative: do not resurrect deleted history from
     // the process-local fallback when PostgreSQL reports no eligible candidate.
-    const highest = this.#designRepository?.highestScoringBattleDesign
-      ? await this.#designRepository.highestScoringBattleDesign()
+    const highest = this.#designRepository?.leaderboardChampionBattleDesign
+      ? await this.#designRepository.leaderboardChampionBattleDesign()
       : this.#highestScoringDesign.design();
-    const design = { ...structuredClone(highest ?? makeDefaultDesign()), id: crypto.randomUUID(), name: "電腦玩家・高分設計" };
+    const design = { ...structuredClone(highest ?? makeDefaultDesign()), id: crypto.randomUUID(), name: "電腦玩家・榜首設計" };
     this.#designs.cleanupOwner(entry.session.id);
     const stored = this.#designRepository
       ? this.#designs.hydrate(entry.session.id, await this.#designRepository.saveBattleEligible(entry.ownerIdentityId, design))
@@ -1381,7 +1381,7 @@ export class RealtimeGateway {
         for (const [slot, player] of match.players.entries()) {
           if (this.#sessionsById.get(player.sessionId)?.isComputer) continue;
           const design = this.#designs.requireOwned(player.sessionId, player.designId).design;
-          this.#highestScoringDesign.record({ design, total: slot === 0 ? completedScore.player1.total : completedScore.player2.total, completedAtMs, matchId: match.matchId, slot });
+          this.#highestScoringDesign.record({ design, total: slot === 0 ? completedScore.player1.total : completedScore.player2.total, completedAtMs, capturedAtMs: match.startedAt.getTime(), matchId: match.matchId, slot, identityId: player.identityId, displayName: player.displayName });
         }
         try {
           this.#emitToRoom(roomId, matchFinished);

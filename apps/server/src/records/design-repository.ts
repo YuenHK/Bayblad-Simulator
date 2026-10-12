@@ -24,7 +24,7 @@ export type PersistedDesign = Readonly<{
 }>;
 
 export interface DesignRepository {
-  highestScoringBattleDesign?(): Promise<TopDesign | undefined>;
+  leaderboardChampionBattleDesign?(): Promise<TopDesign | undefined>;
   saveBattleEligible(ownerIdentityId: string, input: unknown): Promise<PersistedDesign>;
   getOwned(ownerIdentityId: string, designId: string): Promise<PersistedDesign | undefined>;
 }
@@ -106,18 +106,29 @@ type Db = DatabaseClient["db"];
 export class PostgresDesignRepository implements DesignRepository {
   constructor(readonly db: Db) {}
 
-  async highestScoringBattleDesign(): Promise<TopDesign | undefined> {
+  async leaderboardChampionBattleDesign(): Promise<TopDesign | undefined> {
     const rows = await this.db.execute<{ id: string; owner: string }>(sql`
-      with scores as (
-        select player1_design_id id, player1_total total, completed_at, id match_id, 0 seat
-        from matches where status = 'completed' and player1_identity_id is not null
-        union all
-        select player2_design_id id, player2_total total, completed_at, id match_id, 1 seat
-        from matches where status = 'completed' and player2_identity_id is not null
-      ) select d.id, d.owner_identity_id owner
-        from scores s join designs d on d.id=s.id
-        where d.battle_eligible=true and s.total is not null
-        order by s.total desc, s.completed_at desc, s.match_id asc, s.seat asc limit 1`);
+      with participants as materialized (
+        select coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) identity_id,
+          coalesce(p.display_name_snapshot,i.display_name,'已刪除身份') display_name,
+          p.design_id, p.captured_at, m.completed_at, m.id match_id, p.slot,
+          (case when p.slot='player1' then m.player1_total else m.player2_total end)::float8 total
+        from matches m join match_participant_snapshots p on p.match_id=m.id
+        left join identities i on i.id=coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start)
+        where m.status='completed' and coalesce(p.canonical_identity_id_at_start,p.identity_id_at_start) is not null
+          and exists(select 1 from design_layers l where l.design_id=p.design_id)
+      ), labels as (
+        select distinct on(identity_id) identity_id,display_name from participants
+        order by identity_id,captured_at desc,display_name desc
+      ), totals as (
+        select identity_id,sum(total) total from participants group by identity_id
+      ), champion as (
+        select t.identity_id from totals t join labels l using(identity_id)
+        order by t.total desc,l.display_name,t.identity_id limit 1
+      ) select d.id,d.owner_identity_id owner
+        from participants p join champion c using(identity_id) join designs d on d.id=p.design_id
+        where d.battle_eligible=true
+        order by p.total desc,p.completed_at desc,p.match_id,p.slot limit 1`);
     const row = rows[0];
     return row ? (await this.#load(this.db, row.owner, row.id))?.design : undefined;
   }

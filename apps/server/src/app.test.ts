@@ -222,7 +222,7 @@ describe("realtime app", () => {
   it.each([true, false])("computer uses authoritative highest-score geometry or default if none (history=%s)", async (hasHistory) => {
     const highest = makeDefaultDesign(); highest.layers[0].diameterMm = 35;
     class HistoricalDesignRepository extends MemoryDesignRepository {
-      async highestScoringBattleDesign() { return hasHistory ? structuredClone(highest) : undefined; }
+      async leaderboardChampionBattleDesign() { return hasHistory ? structuredClone(highest) : undefined; }
     }
     const stored: ReturnType<DesignRegistry["hydrate"]>[] = [];
     class CapturingDesignRegistry extends DesignRegistry {
@@ -241,9 +241,9 @@ describe("realtime app", () => {
     const ack = nextEvent(owner.socket, "command.ack", 3_000, event.eventId); owner.socket.emit("client.event", event); await ack;
     expect(rooms.get(room.roomId)?.player2?.ready).toBe(true);
     expect(stored.at(-1)?.design.layers).toEqual((hasHistory ? highest : makeDefaultDesign()).layers.map((layer, index) => ({ ...layer, id: stored.at(-1)!.design.layers[index]!.id })));
-    expect(stored.at(-1)?.design.name).toBe("電腦玩家・高分設計");
+    expect(stored.at(-1)?.design.name).toBe("電腦玩家・榜首設計");
     expect(stored.at(-1)?.design.id).not.toBe(highest.id);
-    expect(highest.name).not.toBe("電腦玩家・高分設計");
+    expect(highest.name).not.toBe("電腦玩家・榜首設計");
   });
   it.each(["player1", "draw"] as const)("owner adds computer; timeout settles one ten-second %s round", async (outcome) => {
     let now = 100_000;

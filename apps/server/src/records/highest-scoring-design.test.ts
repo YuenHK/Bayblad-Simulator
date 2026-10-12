@@ -2,17 +2,27 @@ import { makeDefaultDesign } from "@steam-top/domain";
 import { describe, expect, it } from "vitest";
 import { HighestScoringDesign } from "./highest-scoring-design";
 
-describe("highest single-match design", () => {
-  const record = (design = makeDefaultDesign(), total = 1, completedAtMs = 100, matchId = "a", slot = 0) => ({ design, total, completedAtMs, matchId, slot });
+describe("all-time student leaderboard champion design", () => {
+  const record = (design = makeDefaultDesign(), total = 1, completedAtMs = 100, matchId = "a", slot = 0, identityId = "student") => ({ design, total, completedAtMs, matchId, slot, identityId, displayName: identityId });
   it("defaults to no candidate without completed history", () => {
     expect(new HighestScoringDesign().design()).toBeUndefined();
   });
-  it("chooses a rare high score rather than a popular low score or cumulative total", () => {
+  it("chooses the cumulative champion even when another student has the highest single score", () => {
     const tracker = new HighestScoringDesign();
     const high = makeDefaultDesign(); high.name = "High";
-    tracker.record(record(high, 1.4));
-    for (let i = 0; i < 50; i++) tracker.record(record(makeDefaultDesign(), 1, 200 + i));
-    expect(tracker.design()?.name).toBe("High");
+    tracker.record(record(high, 1.4, 100, "high", 0, "rare"));
+    const champion = makeDefaultDesign(); champion.name = "Champion best";
+    tracker.record(record(champion, 1.2, 200, "best", 0, "champion"));
+    tracker.record(record(makeDefaultDesign(), 1, 300, "latest", 0, "champion"));
+    expect(tracker.design()?.name).toBe("Champion best");
+  });
+  it("changes champion as all-time totals change and excludes empty computer identities", () => {
+    const tracker = new HighestScoringDesign();
+    const a = makeDefaultDesign(); a.name = "A"; const b = makeDefaultDesign(); b.name = "B";
+    tracker.record(record(a, 1.4, 1, "a", 0, "a")); tracker.record(record(b, 1, 2, "b", 0, "b"));
+    expect(tracker.design()?.name).toBe("A");
+    tracker.record(record(b, 1, 3, "c", 0, "b")); tracker.record(record(a, 9, 4, "cpu", 0, ""));
+    expect(tracker.design()?.name).toBe("B");
   });
   it("resolves ties by latest completion then match ID and seat", () => {
     const tracker = new HighestScoringDesign();
@@ -22,6 +32,13 @@ describe("highest single-match design", () => {
       tracker.record(record(design, 1, time, id, slot));
     }
     expect(tracker.design()?.name).toBe("earlier-id");
+  });
+  it("ties student totals by snapshot name before identity, not by best single score", () => {
+    const tracker = new HighestScoringDesign(); const a = makeDefaultDesign(); a.name = "Ada"; const b = makeDefaultDesign(); b.name = "Ben";
+    tracker.record({ ...record(b, 2, 100, "b", 0, "a-id"), displayName: "Ben" });
+    tracker.record({ ...record(a, 1, 200, "a1", 0, "z-id"), displayName: "Ada" });
+    tracker.record({ ...record(a, 1, 300, "a2", 0, "z-id"), displayName: "Ada" });
+    expect(tracker.design()?.name).toBe("Ada");
   });
   it("ignores invalid weight and non-finite scores", () => {
     const tracker = new HighestScoringDesign();

@@ -10,7 +10,8 @@ import { PostgresBattleResultRepository } from "./battle-result-repository";
 import { PostgresDesignRepository } from "./design-repository";
 import { completedMatchFingerprint, MatchPersistenceConflictError, PostgresMatchRepository, type CompletedMatchRecord } from "./match-repository";
 import { identities } from "@steam-top/db/schema";
-import { designs as designRows, matches, roomParticipants, rooms, rounds } from "@steam-top/db/schema";
+import { designs as designRows, matchParticipantSnapshots, matches, roomParticipants, rooms, rounds } from "@steam-top/db/schema";
+import { PostgresAdminRecordsSource } from "../admin/records-routes";
 import { eq } from "drizzle-orm";
 import { PostgresRoomRecordRepository } from "./room-repository";
 import { PostgresRoomProjectionStore } from "./room-projection-store";
@@ -32,9 +33,9 @@ beforeAll(async () => {
   }
 }, 30_000);
 
-it.skipIf(!databaseUrl)("selects highest single-match human score, not popularity, across both seats and custom outlines", async () => {
+it.skipIf(!databaseUrl)("selects all-time student leaderboard champion representative, not global single-match maximum", async () => {
   const repository = new PostgresDesignRepository(client.db);
-  await expect(repository.highestScoringBattleDesign()).resolves.toBeUndefined();
+  await expect(repository.leaderboardChampionBattleDesign()).resolves.toBeUndefined();
   const human = randomUUID(), opponent = randomUUID();
   await client.db.insert(identities).values([{ id: human, status: "guest", displayName: "Score fixture" }, { id: opponent, status: "guest", displayName: "Opponent fixture" }]);
   const low = await repository.saveBattleEligible(human, makeDefaultDesign());
@@ -48,10 +49,15 @@ it.skipIf(!databaseUrl)("selects highest single-match human score, not popularit
   await client.db.insert(designRows).values({ ...row!, id: ineligible, logicalDesignId: randomUUID(), version: 1, battleEligible: false });
   // Isolated completed snapshot fixtures exercise the read query with real
   // schema constraints; authoritative round persistence is tested separately below.
+  const alias = randomUUID(), rare = randomUUID();
+  await client.db.insert(identities).values([{ id: alias, status: "guest", displayName: "Score fixture" }, { id: rare, status: "guest", displayName: "Rare fixture" }]);
+  const rareInput = makeDefaultDesign(); rareInput.name = "Global single-match maximum";
+  const rareDesign = await repository.saveBattleEligible(rare, rareInput);
   const insertScore = async (designId: string, side: 1 | 2, total: number, time: number, identityId: string | null = human, status: "completed" | "in_progress" = "completed") => {
     const winner = side === 1 ? "player1" : "player2";
+    const matchId = randomUUID(), capturedAt = new Date(Date.UTC(2098, 0, 1) + time);
     await client.db.insert(matches).values({
-      id: randomUUID(), idempotencyFingerprint: randomBytes(32).toString("hex"), status,
+      id: matchId, idempotencyFingerprint: randomBytes(32).toString("hex"), status,
       player1IdentityId: side === 1 ? identityId : opponent, player2IdentityId: side === 2 ? identityId : opponent,
       player1DesignId: side === 1 ? designId : low.designId, player2DesignId: side === 2 ? designId : low.designId,
       player1BattlePoints: side === 1 ? 2 : 0, player2BattlePoints: side === 2 ? 2 : 0,
@@ -60,15 +66,28 @@ it.skipIf(!databaseUrl)("selects highest single-match human score, not popularit
       winner, roundWinners: [winner, winner], performanceModelVersion: "2.0.0", physicsModelVersion: "2.0.0", protocolVersion: 1,
       startedAt: new Date("2098-01-01"), completedAt: new Date(Date.UTC(2098, 0, 1) + time),
     });
+    for (const slot of ["player1", "player2"] as const) {
+      const chosen = slot === winner;
+      const participantIdentity = chosen ? identityId : opponent;
+      await client.db.insert(matchParticipantSnapshots).values({ matchId, slot, identityIdAtStart: participantIdentity,
+        canonicalIdentityIdAtStart: participantIdentity === alias ? human : participantIdentity,
+        displayNameSnapshot: participantIdentity === rare ? "Rare fixture" : chosen ? "Score fixture" : "Opponent fixture",
+        designId: chosen ? designId : low.designId, capturedAt });
+    }
   };
   for (let i = 0; i < 8; i++) await insertScore(low.designId, 1, 2, i);
-  await insertScore(high.designId, 2, 2.4, 20);
+  await insertScore(high.designId, 2, 2.4, 20, alias);
+  await insertScore(rareDesign.designId, 1, 2.5, 25, rare);
   await insertScore(low.designId, 1, 2.5, 30, null); // computer must not feed back
   await insertScore(low.designId, 2, 2.5, 40, human, "in_progress");
   await insertScore(ineligible, 1, 2.5, 50);
-  expect((await repository.highestScoringBattleDesign())?.id).toBe(high.design.id);
+  expect((await repository.leaderboardChampionBattleDesign())?.name).toBe("Highest custom");
   await insertScore(latest.designId, 1, 2.4, 60);
-  expect((await new PostgresDesignRepository(client.db).highestScoringBattleDesign())?.name).toBe("Latest tied custom");
+  expect((await new PostgresDesignRepository(client.db).leaderboardChampionBattleDesign())?.name).toBe("Latest tied custom");
+  const leaderboard = await new PostgresAdminRecordsSource(client.sql).queryLeaderboard({ page: 1, pageSize: 1 });
+  expect(leaderboard.rows[0]?.identityId).toBe(human);
+  expect(leaderboard.rows[0]?.bestDesign?.score).toBe(2.4);
+  expect(leaderboard.rows[0]?.bestDesign?.design.layers[0]?.shape).toBe("custom");
 });
 
 function leaseClient(): DatabaseClient {
@@ -336,7 +355,7 @@ it.skipIf(!databaseUrl).each([false, true])("persists an exact authoritative rou
   await expect(new PostgresMatchRepository(client.db).retryFailedMatch(matchId)).resolves.toBe("replayed");
   await expect(repository.saveCompletedMatch(completed)).resolves.toBe("replayed");
   // Exercise the actual SQL used when a room selects its computer opponent.
-  await expect(designs.highestScoringBattleDesign()).resolves.toMatchObject({
+  await expect(designs.leaderboardChampionBattleDesign()).resolves.toMatchObject({
     screwLayout: player1Design.design.screwLayout,
     metalDiscDiameterMm: player1Design.design.metalDiscDiameterMm,
   });
