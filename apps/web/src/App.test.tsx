@@ -4,6 +4,7 @@ import { App } from "./App";
 import { RealtimeClient, type RealtimeTransport } from "./realtime/socket-client";
 import { createSafeStorage } from "./realtime/safe-storage";
 import { makeDefaultDesign } from "@steam-top/domain";
+import { battleStartedEventSchema, matchFinishedEventSchema } from "@steam-top/protocol";
 
 class AppTransport implements RealtimeTransport {
   auth: Record<string, unknown> = {};
@@ -35,9 +36,11 @@ describe("App upload lifecycle", () => {
     expect(ready).toHaveBeenCalledTimes(1);
     const draft = makeDefaultDesign();
     const design = { layers: draft.layers, screwLayout: draft.screwLayout, metalDiscDiameterMm: draft.metalDiscDiameterMm };
+    battleStartedEventSchema.parse({ type: "battle.started", roomId: "room-1", matchId: "match-1", player1: { participantId: "p1", designId: "20000000-0000-4000-8000-000000000000", design }, player2: { participantId: "p2", designId: "90000000-0000-4000-8000-000000000000", design }, protocolVersion: 1, serverEventId: "90000000-0000-4000-8000-000000000000" });
+    matchFinishedEventSchema.parse({ type: "match.finished", roomId: "room-1", matchId: "match-1", roundWinners: ["player1"], player1: { battlePoints: 1, challengePoints: .3, total: 1.3 }, player2: { battlePoints: 0, challengePoints: 0, total: 0 }, protocolVersion: 1, serverEventId: "80000000-0000-4000-8000-000000000000" });
     await act(async () => { transport.fire("server.event", { type: "battle.started", roomId: "room-1", matchId: "match-1", player1: { participantId: "p1", designId: "20000000-0000-4000-8000-000000000000", design }, player2: { participantId: "p2", designId: "90000000-0000-4000-8000-000000000000", design }, protocolVersion: 1, serverEventId: "90000000-0000-4000-8000-000000000000" }); });
     await act(async () => { transport.fire("server.event", { ...snapshot, phase: "battle", revision: 2, serverEventId: "40000000-0000-4000-8000-000000000000" }); });
-    await act(async () => { transport.fire("server.event", { type: "match.finished", roomId: "room-1", matchId: "match-1", roundWinners: ["player1"], player1: { battlePoints: 1, challengePoints: .3, total: 1.3 }, player2: { battlePoints: 0, challengePoints: .2, total: .2 }, protocolVersion: 1, serverEventId: "80000000-0000-4000-8000-000000000000" }); });
+    await act(async () => { transport.fire("server.event", { type: "match.finished", roomId: "room-1", matchId: "match-1", roundWinners: ["player1"], player1: { battlePoints: 1, challengePoints: .3, total: 1.3 }, player2: { battlePoints: 0, challengePoints: 0, total: 0 }, protocolVersion: 1, serverEventId: "80000000-0000-4000-8000-000000000000" }); });
     expect(client.getState().matchFinished?.matchId).toBe("match-1");
     await act(async () => { transport.fire("server.event", { ...snapshot, revision: 3, serverEventId: "50000000-0000-4000-8000-000000000000" }); });
     expect(ready).toHaveBeenCalledTimes(1);
