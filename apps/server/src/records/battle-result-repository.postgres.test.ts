@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "@steam-top/db";
@@ -51,7 +51,7 @@ it.skipIf(!databaseUrl)("selects highest single-match human score, not popularit
   const insertScore = async (designId: string, side: 1 | 2, total: number, time: number, identityId: string | null = human, status: "completed" | "in_progress" = "completed") => {
     const winner = side === 1 ? "player1" : "player2";
     await client.db.insert(matches).values({
-      id: randomUUID(), idempotencyFingerprint: randomUUID(), status,
+      id: randomUUID(), idempotencyFingerprint: randomBytes(32).toString("hex"), status,
       player1IdentityId: side === 1 ? identityId : opponent, player2IdentityId: side === 2 ? identityId : opponent,
       player1DesignId: side === 1 ? designId : low.designId, player2DesignId: side === 2 ? designId : low.designId,
       player1BattlePoints: side === 1 ? 2 : 0, player2BattlePoints: side === 2 ? 2 : 0,
