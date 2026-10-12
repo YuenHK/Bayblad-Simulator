@@ -69,11 +69,12 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
 
   useEffect(() => {
     const room = state.room;
-    if (!room || room.viewer.role === "spectator") { autoReadySeat.current = null; return; }
+    if (!room) { autoReadySeat.current = null; return; }
+    if (room.viewer.role === "spectator") { autoReadySeat.current = `${room.roomId}:spectator`; return; }
     const seatKey = `${room.roomId}:${room.viewer.participantId}:${room.viewer.role}`;
     if (autoReadySeat.current === seatKey) return;
     // A resumed active/finished match must never trigger another match automatically.
-    if (room.phase !== "waiting" || state.matchFinished || state.cancelledReason || room[room.viewer.role]?.ready) {
+    if (room.phase !== "waiting" || ((state.matchFinished || state.cancelledReason) && autoReadySeat.current === null) || room[room.viewer.role]?.ready) {
       autoReadySeat.current = seatKey;
       return;
     }
