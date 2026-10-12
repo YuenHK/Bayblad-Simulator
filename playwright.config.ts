@@ -11,6 +11,7 @@ process.env.E2E_ADMIN_PORT = String(adminPort);
 const webUrl = `http://127.0.0.1:${webPort}`;
 const realtimeUrl = `http://127.0.0.1:${realtimePort}`;
 const adminUrl = `http://127.0.0.1:${adminPort}`;
+const hardwareGpu = process.env.E2E_HARDWARE_GPU === "1";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -26,7 +27,8 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "retain-on-failure",
     launchOptions: {
-      args: [
+      headless: !hardwareGpu,
+      args: hardwareGpu ? ["--enable-webgl", ...(process.platform === "darwin" ? ["--use-angle=metal"] : [])] : [
         "--enable-webgl",
         "--ignore-gpu-blocklist",
         "--use-angle=swiftshader",

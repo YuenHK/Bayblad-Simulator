@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const source = readFileSync(fileURLToPath(new URL("../../../drizzle/0000_steam_top_pre_first_deploy.sql", import.meta.url)), "utf8");
-const sources = ["0000_steam_top_pre_first_deploy.sql", "0001_cutover_state_machine.sql", "0002_platform_installation.sql", "0003_postgresql_catalog_array_compatibility.sql", "0004_scoped_readiness_acl.sql", "0005_custom_layer_outlines.sql", "0006_custom_outline_installation_guard.sql"].map((name) => readFileSync(fileURLToPath(new URL(`../../../drizzle/${name}`, import.meta.url)), "utf8"));
+const sources = ["0000_steam_top_pre_first_deploy.sql", "0001_cutover_state_machine.sql", "0002_platform_installation.sql", "0003_postgresql_catalog_array_compatibility.sql", "0004_scoped_readiness_acl.sql", "0005_custom_layer_outlines.sql", "0006_custom_outline_installation_guard.sql", "0007_single_round_matches.sql"].map((name) => readFileSync(fileURLToPath(new URL(`../../../drizzle/${name}`, import.meta.url)), "utf8"));
 
 function executor(input: { ledger?: { id: string; sha256: string }; partial?: boolean; failApply?: boolean } = {}) {
   const executed: string[] = [];
@@ -37,7 +37,7 @@ describe("single baseline migration", () => {
   });
   it("applies all pinned migrations in ledger order", async () => {
     const target = executor();
-    await expect(applyMigrations(target.value, sources)).resolves.toEqual(["applied", "applied", "applied", "applied", "applied", "applied", "applied"]);
+    await expect(applyMigrations(target.value, sources)).resolves.toEqual(EXPECTED_MIGRATIONS.map(() => "applied"));
     expect(target.insert.mock.calls).toEqual(EXPECTED_MIGRATIONS.map(({ id, sha256 }) => [id, sha256]));
   });
   it("pins the committed source to the exact expected SHA-256", () => {

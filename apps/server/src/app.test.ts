@@ -170,9 +170,11 @@ describe("realtime app", () => {
     await toggle(true);
     expect(rooms.get(room.roomId)!.player2!.displayName).toBe("電腦玩家");
   });
-  it("owner adds computer; timeout launches at minimum and cinematic result waits sixty seconds", async () => {
+  it.each(["player1", "draw"] as const)("owner adds computer; timeout settles one ten-second %s round", async (outcome) => {
     let now = 100_000;
-    const app = buildApp({ cinematicBattles: true, now: () => now, sweepIntervalMs: 0, battleEngine: new FakeBattleEngine(), frameScheduler: async (delay) => { now += Math.ceil(delay); await new Promise<void>(resolve => setImmediate(resolve)); } });
+    const engine = new FakeBattleEngine();
+    engine.outcomes = [outcome];
+    const app = buildApp({ cinematicBattles: true, now: () => now, sweepIntervalMs: 0, battleEngine: engine, frameScheduler: async (delay) => { now += Math.ceil(delay); await new Promise<void>(resolve => setImmediate(resolve)); } });
     closers.push(() => app.close());
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address() as { port: number };
@@ -201,6 +203,7 @@ describe("realtime app", () => {
     const watcherGrade = nextEvent(watcher.socket, "launch.result.spectator");
     const watcherFrame = nextEvent(watcher.socket, "battle.frame");
     const finished = nextEvent(owner.socket, "round.finished", 10_000);
+    const matchFinished = nextEvent(owner.socket, "match.finished", 10_000);
     now = schedule.serverDeadlineTimeMs + 1;
     await app.realtimeGateway.pump(now);
     expect(await gradePromise).toMatchObject({ grade: "Miss", angularMultiplier: .75, impulseMultiplier: .75 });
@@ -209,9 +212,13 @@ describe("realtime app", () => {
     expect(await watcherGrade).toMatchObject({ roomId: room.roomId });
     expect(frames.length).toBeGreaterThan(2);
     expect(frames[0].presentation.elapsedMs).toBe(0);
-    expect(frames.at(-1).presentation.elapsedMs).toBe(30000);
-    expect(frames.filter(frame => frame.presentation.elapsedMs < 24000).every(frame => frame.presentation.finisher === undefined)).toBe(true);
-    expect(now).toBeGreaterThanOrEqual(frames[0].presentation.startsAtMs + 30000);
+    expect(frames.at(-1).presentation.elapsedMs).toBe(10000);
+    expect(frames.at(-1).sequence).toBe(300);
+    expect(frames.filter(frame => frame.presentation.elapsedMs < 8000).every(frame => frame.presentation.finisher === undefined)).toBe(true);
+    expect(now).toBeGreaterThanOrEqual(frames[0].presentation.startsAtMs + 10000);
+    expect((await matchFinished).roundWinners).toEqual(outcome === "draw" ? [] : [outcome]);
+    expect(engine.simulationCount).toBe(1);
+    expect(app.realtimeGateway.activeMatchCount).toBe(0);
   });
   it("throttles a thousand heartbeat pings but records immediately across HK midnight",()=>{
     const start=Date.parse("2026-08-31T15:59:59Z");let recorded=start,count=0;
@@ -971,24 +978,7 @@ describe("realtime app", () => {
     p1.socket.emit("client.event", command("room.leave", { roomId: room.roomId }));
     expect(await activeLeaveRejected).toMatchObject({ code: "ROOM_ACTIVE" });
 
-    const playAttempt = async (schedule: any) => {
-      now = schedule.serverTargetTimeMs;
-      const private1 = nextEvent(p1.socket, "launch.result.private");
-      const private2 = nextEvent(p2Socket, "launch.result.private");
-      const publicResult = nextEvent(spectator.socket, "launch.result.spectator");
-      const finalFrames = spectators.map(({ socket }) => nextEvent(socket, "battle.frame", 5_000));
-      p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
-      p2Socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
-      const [own1, own2, both, ...frames] = await Promise.all([private1, private2, publicResult, ...finalFrames]);
-      expect(own1.participantId).not.toBe(own2.participantId);
-      expect(own1).not.toHaveProperty("player2");
-      expect(both.player1.grade).toBe("Perfect");
-      expect(frames.every((frame) => frame.matchId === started.matchId && frame.tick === frames[0]!.tick)).toBe(true);
-    };
-
-    const schedule2Promise = nextEvent(p1.socket, "launch.schedule", 5_000);
-    await playAttempt(schedule1);
-    const schedule2 = await schedule2Promise;
+    const schedule2 = schedule1;
     now = schedule2.serverTargetTimeMs;
     const p2OwnBeforeDisconnect = nextEvent(p2Socket, "launch.result.private");
     p2Socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule2.roundId, nonce: schedule2.nonce, clientTimeMs: now }));
@@ -1013,7 +1003,7 @@ describe("realtime app", () => {
       displayName: "P2", ready: true, designId: d2,
     });
     expect((await resumeStarted).matchId).toBe(started.matchId);
-    expect((await resumeCheckpoint).roundWinners).toEqual(["player1"]);
+    expect((await resumeCheckpoint).roundWinners).toEqual([]);
     expect((await resumeSchedule).roundId).toBe(schedule2.roundId);
     expect((await resumePrivate).participantId).toBe(started.player2.participantId);
     expect(leaked.every((event) => event.participantId === started.player2.participantId)).toBe(true);
@@ -1024,14 +1014,17 @@ describe("realtime app", () => {
     const finalPrivate = nextEvent(p1.socket, "launch.result.private");
     const finalSpectator = nextEvent(spectator.socket, "launch.result.spectator");
     p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule2.roundId, nonce: schedule2.nonce, clientTimeMs: now }));
-    await Promise.all([finalPrivate, finalSpectator]);
+    const [finalOwn, finalPublic] = await Promise.all([finalPrivate, finalSpectator]);
+    expect(finalOwn.participantId).not.toBe(started.player2.participantId);
+    expect(finalOwn).not.toHaveProperty("player2");
+    expect(finalPublic.player1.grade).toBe("Perfect");
     const match = await matchFinished;
     const finalFramesRound2 = await Promise.all(spectatorFinalFramesRound2);
     expect(finalFramesRound2.every((frame) => frame.matchId === match.matchId && frame.tick === finalFramesRound2[0]!.tick)).toBe(true);
     expect((await Promise.all(spectatorFinished)).every((event) => event.matchId === match.matchId)).toBe(true);
-    expect(match.roundWinners).toEqual(["player1", "player1"]);
-    expect(engine.simulationCount).toBe(2);
-    expect(app.realtimeGateway.debugCounts.frameBroadcastOperations).toBe(2);
+    expect(match.roundWinners).toEqual(["player1"]);
+    expect(engine.simulationCount).toBe(1);
+    expect(app.realtimeGateway.debugCounts.frameBroadcastOperations).toBe(1);
     expect(app.realtimeGateway.activeMatchCount).toBe(0);
     expect(app.realtimeGateway.debugCounts.terminalMatches).toBe(1);
     expect(p1Events.some((event) => event.type === "launch.result.spectator")).toBe(false);
@@ -1039,8 +1032,8 @@ describe("realtime app", () => {
     expect(p1Events.filter((event) => event.type === "error" && event.code === "BATTLE_FAILED")).toHaveLength(0);
     await vi.waitFor(() => expect(roomProjection.waitingFailures).toBe(1));
     expect(app.realtimeGateway.activeMatchCount).toBe(0);
-    expect(matchRepository.records.get(match.matchId)).toMatchObject({ spectatorCount: 20, roundWinners: ["player1", "player1"] });
-    expect(matchRepository.records.get(match.matchId)?.rounds).toHaveLength(2);
+    expect(matchRepository.records.get(match.matchId)).toMatchObject({ spectatorCount: 20, roundWinners: ["player1"] });
+    expect(matchRepository.records.get(match.matchId)?.rounds).toHaveLength(1);
     expect(matchRepository.saveCalls).toBe(3);
     expect(p1Events.filter((event) => event.type === "match.persistence").map((event) => event.status)).toEqual(["saving", "retrying", "retrying"]);
     expect(p1Events.findLastIndex((event) => event.type === "match.persistence")).toBeLessThan(p1Events.findIndex((event) => event.type === "match.finished"));
@@ -1117,7 +1110,7 @@ describe("realtime app", () => {
     expect(leakedTerminal).not.toHaveBeenCalled();
   });
 
-  it("retries a draw without counting it as a scored round", async () => {
+  it("recovers engine and scoring failures then settles one successful round", async () => {
     let now = 10_000;
     const engine = new FakeBattleEngine();
     engine.outcomes = ["throw", "draw", "player1", "player1", "player1"];
@@ -1164,14 +1157,14 @@ describe("realtime app", () => {
     expect(schedule.roundId).not.toBe(failedRoundId);
     let firstWinner: string | undefined;
     let matchPromise: Promise<any> | undefined;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       now = schedule.serverTargetTimeMs;
-      const scoreWillFail = attempt === 2;
+      const scoreWillFail = attempt === 0;
       const completion = scoreWillFail
         ? nextEvent(p1.socket, "error", 5_000)
         : nextEvent(p1.socket, "round.finished", 5_000);
-      const nextSchedule = attempt < 3 ? nextEvent(p1.socket, "launch.schedule", 5_000) : undefined;
-      if (attempt === 3) matchPromise = nextEvent(p1.socket, "match.finished", 5_000);
+      const nextSchedule = attempt < 1 ? nextEvent(p1.socket, "launch.schedule", 5_000) : undefined;
+      if (attempt === 1) matchPromise = nextEvent(p1.socket, "match.finished", 5_000);
       p1.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
       p2.socket.emit("client.event", command("launch.tap", { roomId: room.roomId, roundId: schedule.roundId, nonce: schedule.nonce, clientTimeMs: now }));
       const completedEvent = await completion;
@@ -1180,16 +1173,16 @@ describe("realtime app", () => {
       if (nextSchedule) schedule = await nextSchedule;
     }
     const finished = await matchPromise!;
-    expect(firstWinner).toBe("draw");
-    expect(engine.simulationCount).toBe(5);
+    expect(firstWinner).toBe("player1");
+    expect(engine.simulationCount).toBe(3);
     expect(scoreAttempts).toBe(2);
-    expect(finished.roundWinners).toEqual(["player1", "player1"]);
+    expect(finished.roundWinners).toEqual(["player1"]);
   });
 
   it("cancels at the bounded attempt limit without scores and permits a clean new match", async () => {
     let now = 12_000;
     const engine = new FakeBattleEngine();
-    engine.outcomes = ["draw", "draw", "player1", "player1"];
+    engine.outcomes = ["throw", "throw", "player1", "player1"];
     const app = buildApp({
       battleEngine: engine, now: () => now, maxMatchAttempts: 2, sweepIntervalMs: 0,
       launch: new LaunchCoordinator({ now: () => now, leadTimeMs: 100 }),
@@ -1241,13 +1234,10 @@ describe("realtime app", () => {
     expect(finishedEvents).toEqual([]);
 
     schedule = await readyAndGetSchedule();
-    const secondRound = nextEvent(p1.socket, "launch.schedule");
-    await play(schedule);
-    schedule = await secondRound;
     const finished = nextEvent(p1.socket, "match.finished");
     await play(schedule);
-    expect((await finished).roundWinners).toEqual(["player1", "player1"]);
-    expect(engine.simulationCount).toBe(4);
+    expect((await finished).roundWinners).toEqual(["player1"]);
+    expect(engine.simulationCount).toBe(3);
     expect(app.realtimeGateway.debugCounts.terminalMatches).toBe(1);
 
     engine.outcomes = ["throw", "throw"];
@@ -1263,7 +1253,7 @@ describe("realtime app", () => {
     await play(schedule);
     expect((await failure2).code).toBe("BATTLE_FAILED");
     expect((await failureCancelled).reason).toBe("attempt-limit");
-    expect(engine.simulationCount).toBe(6);
+    expect(engine.simulationCount).toBe(5);
     expect(app.realtimeGateway.activeMatchCount).toBe(0);
   });
 
@@ -1453,7 +1443,7 @@ describe("realtime app", () => {
     const watcherThirdFrame = nextEvent(watcher.socket, "battle.frame");
     const roundFinished = nextEvent(p1.socket, "round.finished");
     const watcherRoundFinished = nextEvent(watcher.socket, "round.finished");
-    const nextRoundSchedule = nextEvent(p1.socket, "launch.schedule");
+    const firstMatchFinished = nextEvent(p1.socket, "match.finished");
     waits.shift()!.resolve();
     expect((await thirdFrame).sequence).toBe(2);
     expect((await watcherThirdFrame).sequence).toBe(2);
@@ -1463,7 +1453,11 @@ describe("realtime app", () => {
     expect(finalKeyframes[0]).toMatchObject({ tick: 8, player1: { x: -2 }, player2: { x: 2 } });
     expect(watcherOrder.indexOf("frame:2")).toBeLessThan(watcherOrder.indexOf("round.finished"));
 
-    const secondSchedule = await nextRoundSchedule;
+    await firstMatchFinished;
+    const nextMatchSchedule = nextEvent(p1.socket, "launch.schedule");
+    p1.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d1 }));
+    p2.socket.emit("client.event", command("player.ready", { roomId: room.roomId, designId: d2 }));
+    const secondSchedule = await nextMatchSchedule;
     now = secondSchedule.serverTargetTimeMs;
     const secondRoundFirstFrame = nextEvent(p1.socket, "battle.frame");
     const watcherSecondRoundFirstFrame = nextEvent(watcher.socket, "battle.frame");

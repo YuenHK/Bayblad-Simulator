@@ -30,8 +30,8 @@ export const completedMatchRecordSchema = z.object({
   id: z.uuid(), roomId: z.uuid().nullable(), idempotencyFingerprint: hash,
   player1: diagnosticSchema.extend({ designId: z.uuid(), massG: z.number().positive().max(60), score: scoreSchema }),
   player2: diagnosticSchema.extend({ designId: z.uuid(), massG: z.number().positive().max(60), score: scoreSchema }),
-  roundWinners: z.array(z.enum(["player1", "player2"])).min(2).max(3),
-  rounds: z.array(roundSchema).min(2).max(1_000),
+  roundWinners: z.array(z.enum(["player1", "player2"])).min(0).max(3),
+  rounds: z.array(roundSchema).min(1).max(1_000),
   performanceModelVersion: z.string().trim().min(1).max(64),
   physicsModelVersion: z.string().trim().min(1).max(64),
   protocolVersion: z.number().int().positive(), spectatorCount: z.number().int().nonnegative(),
@@ -43,7 +43,8 @@ export const completedMatchRecordSchema = z.object({
   if (value.completedAt < value.startedAt || value.rounds.some((round) => round.completedAt < round.startedAt)) context.addIssue({ code: "custom", message: "invalid time order" });
   const wins1 = value.roundWinners.filter((winner) => winner === "player1").length;
   const wins2 = value.roundWinners.length - wins1;
-  if ((wins1 !== 2 && wins2 !== 2) || value.player1.score.battlePoints !== wins1 || value.player2.score.battlePoints !== wins2) context.addIssue({ code: "custom", message: "scores must match completed best-of-three winners" });
+  const singleRound = value.rounds.length === 1;
+  if ((!singleRound && wins1 !== 2 && wins2 !== 2) || value.player1.score.battlePoints !== wins1 || value.player2.score.battlePoints !== wins2) context.addIssue({ code: "custom", message: "scores must match a single round or completed legacy best-of-three winners" });
   for (const player of [value.player1, value.player2]) if (Math.abs(player.score.total - player.score.battlePoints - player.score.challengePoints) > 1e-9) context.addIssue({ code: "custom", message: "score total mismatch" });
   // Match the authoritative scorer's 1 mg quantisation, including custom
   // outlines whose simulated masses have sub-milligram precision.

@@ -83,6 +83,9 @@ describe("authoritative persistence builders", () => {
     };
     const row = buildCompletedMatchRow(input);
     expect(row).toMatchObject({ status: "completed", winner: "player1" });
+    expect(buildCompletedMatchRow({ ...input, roundWinners: ["player1"], player1: { battlePoints: 1, challengePoints: .25, total: 1.25 }, player2: { battlePoints: 0, challengePoints: 0, total: 0 } })).toMatchObject({ winner: "player1", player1BattlePoints: 1 });
+    expect(buildCompletedMatchRow({ ...input, roundWinners: [], player1: { battlePoints: 0, challengePoints: .25, total: .25 }, player2: { battlePoints: 0, challengePoints: 0, total: 0 } })).toMatchObject({ winner: null, player1BattlePoints: 0, player2BattlePoints: 0 });
+    expect(() => buildCompletedMatchRow({ ...input, roundWinners: [] })).toThrow();
     expect(() => buildCompletedMatchRow({
       ...input,
       roundWinners: ["player1", "player1", "player2"],

@@ -67,6 +67,16 @@ describe("challengePoints", () => {
 });
 
 describe("scoreMatch", () => {
+  it("settles one round immediately and retains the lighter challenge score", () => {
+    expect(scoreMatch({ player1MassG: 50, player2MassG: 40, roundWinners: ["player1"] })).toEqual({
+      winner: "player1", player1: { battlePoints: 1, challengePoints: 0, total: 1 }, player2: { battlePoints: 0, challengePoints: .5, total: .5 },
+    });
+  });
+  it("settles a drawn single round without requesting a replay", () => {
+    expect(scoreMatch({ player1MassG: 40, player2MassG: 40, roundWinners: [] })).toEqual({
+      winner: "draw", player1: { battlePoints: 0, challengePoints: 0, total: 0 }, player2: { battlePoints: 0, challengePoints: 0, total: 0 },
+    });
+  });
   it("scores the official 50g versus 40g 2:1 example", () => {
     const result = scoreMatch({
       player1MassG: 50,
@@ -214,8 +224,6 @@ describe("scoreMatch", () => {
   });
 
   it.each([
-    { roundWinners: [] },
-    { roundWinners: ["player1"] },
     { roundWinners: ["player1", "player2"] },
     { roundWinners: ["player1", "player1", "player1"] },
     { roundWinners: ["player2", "player2", "player1"] },

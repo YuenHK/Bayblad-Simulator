@@ -239,6 +239,22 @@ it.skipIf(testDatabaseUrl === undefined)(
             completedAt: new Date(),
           });
           const now = new Date();
+          // Exercise the new database constraints without retaining extra fixture matches.
+          await transaction.savepoint(async (variantTx) => {
+            for (const [suffix, winner, wins] of [[2, "player1", 1], [3, null, 0]] as const) {
+              const variant = { id: `30000000-0000-4000-8000-00000000000${suffix}`, idempotency_fingerprint: String(suffix).repeat(64), player1_battle_points: wins, player2_battle_points: 0, player1_total: wins + .25, player2_total: 0, winner, round_winners: winner ? [winner] : [] };
+              await variantTx.unsafe('insert into matches select (jsonb_populate_record(null::matches, to_jsonb(m) || $1::jsonb)).* from matches m where m.id=$2', [JSON.stringify(variant), ids.match]);
+            }
+            const inserted = await variantTx.unsafe("select winner,player1_battle_points,round_winners from matches where id<>$1 order by id", [ids.match]);
+            expect(inserted).toHaveLength(2);
+            expect(inserted[0]).toMatchObject({ winner: "player1", player1_battle_points: 1, round_winners: ["player1"] });
+            expect(inserted[1]).toMatchObject({ winner: null, player1_battle_points: 0, round_winners: [] });
+            await expect(variantTx.savepoint(async (invalidTx) => {
+              const invalid = { id: "30000000-0000-4000-8000-000000000004", idempotency_fingerprint: "4".repeat(64), winner: null, round_winners: [] };
+              await invalidTx.unsafe('insert into matches select (jsonb_populate_record(null::matches, to_jsonb(m) || $1::jsonb)).* from matches m where m.id=$2', [JSON.stringify(invalid), ids.match]);
+            })).rejects.toMatchObject({ constraint_name: "matches_completed_score_shape" });
+            throw rollbackSentinel;
+          }).catch(error => { if (error !== rollbackSentinel) throw error; });
           await db.insert(schema.rounds).values([
             {
               id: ids.round1,

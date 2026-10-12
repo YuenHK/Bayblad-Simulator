@@ -33,7 +33,7 @@ function publicToDesign(started: BattleStartedEvent, side: "player1" | "player2"
 function resultView(event: MatchFinishedEvent): MatchResultView {
   const p1 = event.roundWinners.filter((winner) => winner === "player1").length;
   const p2 = event.roundWinners.length - p1;
-  return { winner: p1 === 2 ? "player1" : "player2", scoreline: `2:${Math.min(p1, p2)}` as "2:0" | "2:1", player1: event.player1, player2: event.player2 };
+  return { winner: p1 === p2 ? "draw" : p1 > p2 ? "player1" : "player2", scoreline: `${Math.max(p1,p2)}:${Math.min(p1,p2)}`, player1: event.player1, player2: event.player2 };
 }
 function GradeFeedback({ grade, prefix }: Readonly<{ grade: LaunchGrade; prefix: string }>) {
   const presentation = gradePresentation(grade);
@@ -69,7 +69,7 @@ export function RoomPage({ snapshot, battle, design, designId, onUseDesign, onCo
     {snapshot.viewer.role !== "spectator" && battle.privateGrade ? <GradeFeedback grade={battle.privateGrade} prefix="你的判定" /> : null}
     {snapshot.viewer.role === "spectator" && battle.spectatorGrades ? <div className="spectator-grades"><GradeFeedback grade={battle.spectatorGrades.player1} prefix="玩家一" /><GradeFeedback grade={battle.spectatorGrades.player2} prefix="玩家二" /></div> : null}
     {!resultDismissed && (snapshot.phase === "battle" || battle.frames?.length) ? battle.frames?.at(-1)?.presentation ? <Suspense fallback={<p role="status">正在載入 3D 對戰場……</p>}><CinematicBattle designs={battleDesigns} frames={battle.frames} clockOffsetMs={battle.clockOffsetMs ?? 0} reducedMotion={reducedMotion} gameAudio={gameAudio} /></Suspense> : <BattleArena designs={battleDesigns} frames={battle.frames ?? []} winner={battle.matchFinished ? resultView(battle.matchFinished).winner : battle.roundWinner} reducedMotion={reducedMotion} quality={gameQuality} onEffect={(effect) => gameAudio?.play(effect.type === "heavy-impact" ? "heavy-impact" : effect.type, effect.id)} /> : null}
-    {battle.roundWinner && !battle.matchFinished ? <p className="round-result" role="status">本輪勝方：{battle.roundWinner === "draw" ? "平手，重賽" : battle.roundWinner === "player1" ? "玩家一" : "玩家二"}</p> : null}
+    {battle.roundWinner && !battle.matchFinished ? <p className="round-result" role="status">本場勝方：{battle.roundWinner === "draw" ? "平手" : battle.roundWinner === "player1" ? "玩家一" : "玩家二"}</p> : null}
     {!resultDismissed ? <MatchResult result={battle.matchFinished ? resultView(battle.matchFinished) : undefined} cancelledReason={battle.cancelledReason} /> : null}
     {battle.matchFinished && !resultDismissed ? <button className="primary-button" onClick={() => { setDismissedMatch(battle.matchFinished!.matchId); window.scrollTo({ top: 0, behavior: reducedMotion ? "instant" : "smooth" }); }}>返回房間</button> : null}
     {snapshot.viewer.isOwner && !active ? <button disabled={actionsDisabled || (!hasComputer && Boolean(snapshot.player1 && snapshot.player2))} onClick={() => onCommand({ type: "room.bot", roomId: snapshot.roomId, enabled: !hasComputer })}>{hasComputer ? "移除電腦玩家" : "加入電腦玩家"}</button> : null}

@@ -37,9 +37,10 @@ const measuredMassSchema = z
 
 const completedRoundWinnersSchema = z
   .array(matchRoundWinnerSchema)
-  .min(2)
+  .min(0)
   .max(3)
   .superRefine((roundWinners, context) => {
+    if (roundWinners.length <= 1) return;
     let player1Wins = 0;
     let player2Wins = 0;
 
@@ -78,7 +79,7 @@ const scoreMatchInputSchema = z
 export type ScoreMatchInput = z.input<typeof scoreMatchInputSchema>;
 export type PlayerMatchScore = Readonly<MatchScore>;
 export type MatchScoreResult = Readonly<{
-  winner: MatchRoundWinner;
+  winner: MatchRoundWinner | "draw";
   player1: PlayerMatchScore;
   player2: PlayerMatchScore;
 }>;
@@ -128,7 +129,7 @@ export function scoreMatch(input: ScoreMatchInput): MatchScoreResult {
     : 0;
 
   return Object.freeze({
-    winner: player1BattlePoints === 2 ? "player1" : "player2",
+    winner: player1BattlePoints === player2BattlePoints ? "draw" : player1BattlePoints > player2BattlePoints ? "player1" : "player2",
     player1: frozenScore(player1BattlePoints, player1ChallengePoints),
     player2: frozenScore(player2BattlePoints, player2ChallengePoints),
   });

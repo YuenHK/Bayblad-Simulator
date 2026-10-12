@@ -96,7 +96,7 @@ const completedMatchInputSchema = z.object({
   player2IdentityId: z.uuid().nullable(),
   player1DesignId: z.uuid(),
   player2DesignId: z.uuid(),
-  roundWinners: z.array(matchRoundWinnerSchema).min(2).max(3),
+  roundWinners: z.array(matchRoundWinnerSchema).min(0).max(3),
   player1: scoreSchema,
   player2: scoreSchema,
   performanceModelVersion: modelVersionSchema,
@@ -109,8 +109,7 @@ const completedMatchInputSchema = z.object({
   const p2 = value.roundWinners.length - p1;
   const finalWinner = value.roundWinners.at(-1);
   if (
-    (p1 !== 2 && p2 !== 2) ||
-    finalWinner !== (p1 === 2 ? "player1" : "player2") ||
+    (value.roundWinners.length > 1 && ((p1 !== 2 && p2 !== 2) || finalWinner !== (p1 === 2 ? "player1" : "player2"))) ||
     value.player1.battlePoints !== p1 ||
     value.player2.battlePoints !== p2
   ) {
@@ -122,7 +121,7 @@ export function buildCompletedMatchRow(
   input: z.input<typeof completedMatchInputSchema>,
 ): NewMatch {
   const parsed = completedMatchInputSchema.parse(input);
-  const winner = parsed.player1.battlePoints === 2 ? "player1" : "player2";
+  const winner = parsed.player1.battlePoints === parsed.player2.battlePoints ? null : parsed.player1.battlePoints > parsed.player2.battlePoints ? "player1" : "player2";
   return Object.freeze({
     id: parsed.id,
     ...(parsed.roomId === undefined ? {} : { roomId: parsed.roomId }),

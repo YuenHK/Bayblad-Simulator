@@ -90,13 +90,13 @@ test("真實 Socket 自定對基本造型三角色完成讓位、觀戰、三輪
       playerB.page.getByRole("button", { name: /設計準備/ }).click(),
     ]);
     const initialStats = await (await request.get(`${REALTIME_URL}/__test/stats`, { headers: { "x-test-secret": CONTROL_SECRET } })).json() as { simulationCount: number };
-    for (let round = 1; round <= 3; round += 1) {
+    for (let round = 1; round <= 1; round += 1) {
       await launchRound(playerA.page, playerB.page, owner.page, round);
       await expect.poll(async () => {
         const response = await request.get(`${REALTIME_URL}/__test/stats`, { headers: { "x-test-secret": CONTROL_SECRET } });
         return ((await response.json()) as { simulationCount: number }).simulationCount;
       }, { timeout: 30_000 }).toBe(initialStats.simulationCount + round);
-      if (round === 3) break;
+      if (round === 1) break;
       await expect.poll(async () => {
         if (await playerA.page.getByRole("heading", { name: "對戰結果" }).isVisible()) return "result";
         if (await playerA.page.getByRole("button", { name: "在判定線發射" }).isEnabled().catch(() => false)) return "next-round";
@@ -107,7 +107,8 @@ test("真實 Socket 自定對基本造型三角色完成讓位、觀戰、三輪
 
     for (const page of [owner.page, playerA.page, playerB.page]) {
       await expect(page.getByRole("heading", { name: "對戰結果" })).toBeVisible({ timeout: 30_000 });
-      await expect(page.locator(".scoreline")).toHaveText(/^(?:2:[01]|[01]:2)$/);
+      await expect(page.locator(".scoreline")).toHaveText(/^(?:1:0|0:0)$/);
+      await expect(page.getByRole("button", { name: "在判定線發射", exact: true })).toHaveCount(0);
       await expect(page.getByText("對戰分：", { exact: false })).toHaveCount(2);
       await expect(page.getByText("挑戰分：", { exact: false })).toHaveCount(2);
       await expect(page.getByText("總分：", { exact: false })).toHaveCount(2);
@@ -152,16 +153,15 @@ test("發射與對戰斷線可恢復 checkpoint，119 秒可取結果而超過 1
     await peer.context.setOffline(true);
     await peer.context.setOffline(false);
     await expect(peer.page.getByText("已恢復上次的房間位置。")).toBeVisible();
-    await launchRound(owner.page, peer.page);
     await expect(owner.page.getByRole("heading", { name: "對戰結果" })).toBeVisible();
     for (const page of [owner.page, peer.page]) {
-      await expect(page.locator(".scoreline")).toHaveText("2:0");
+      await expect(page.locator(".scoreline")).toHaveText("1:0");
       await expect(page.getByText("對戰分：", { exact: false })).toHaveCount(2);
       await expect(page.getByText("挑戰分：", { exact: false })).toHaveCount(2);
       await expect(page.getByText("總分：", { exact: false })).toHaveCount(2);
-      await expect(page.locator(".score-grid dl").nth(0)).toContainText("對戰分：2");
+      await expect(page.locator(".score-grid dl").nth(0)).toContainText("對戰分：1");
       await expect(page.locator(".score-grid dl").nth(0)).toContainText("挑戰分：0.3");
-      await expect(page.locator(".score-grid dl").nth(0)).toContainText("總分：2.3");
+      await expect(page.locator(".score-grid dl").nth(0)).toContainText("總分：1.3");
       await expect(page.locator(".score-grid dl").nth(1)).toContainText("對戰分：0");
       await expect(page.locator(".score-grid dl").nth(1)).toContainText("挑戰分：0.0");
       await expect(page.locator(".score-grid dl").nth(1)).toContainText("總分：0.0");

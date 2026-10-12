@@ -11,6 +11,7 @@ export const EXPECTED_MIGRATIONS = Object.freeze([
   Object.freeze({ id: "0004_scoped_readiness_acl", sha256: "d1d75158a9fc771e412ee524b6a0d344bc0925e87199ad1e1f97db2cd8989aa6" }),
   Object.freeze({ id: "0005_custom_layer_outlines", sha256: "405093243c08b5bfa3fea72f1a4f2f184a54ea41240c5ccc1096a3308efce89c" }),
   Object.freeze({ id: "0006_custom_outline_installation_guard", sha256: "cc94c007653eb355eb614073bc4c09b064e1013f313362fab43e8775e06e0778" }),
+  Object.freeze({ id: "0007_single_round_matches", sha256: "bb4093d1fb2d578a03a84c98ab3d7e33fe45611d47da9eeb9e44f5a4fe232485" }),
 ]);
 
 type MigrationTransaction = Readonly<{

@@ -45,12 +45,12 @@ test("two guests play custom versus basic full-length rounds and can rematch", a
       await expect(player.getByTestId("battle-arena-3d").locator("canvas")).toBeVisible();
     }
     await Promise.all([page, peer].map(player => expect(player.getByRole("heading", { name: "對戰結果" })).toBeVisible({ timeout: 240_000 })));
-    expect(Date.now() - started).toBeGreaterThanOrEqual(60_000);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(10_000);
     for (const player of [page, peer]) {
       const observations = await player.evaluate(() => (window as unknown as { fullRoundObservations: { phase: string; elapsed: number }[] }).fullRoundObservations);
       const results = observations.filter(entry => entry.phase === "result");
-      expect(results.length).toBeGreaterThanOrEqual(2);
-      expect(results.every(entry => entry.elapsed === 30000)).toBe(true);
+      expect(results.length).toBe(1);
+      expect(results.every(entry => entry.elapsed === 10000)).toBe(true);
       expect(observations.filter(entry => entry.phase === "summon").length).toBe(results.length);
       expect(observations.filter(entry => entry.phase === "strike").length).toBe(results.length);
       await player.getByRole("button", { name: "返回房間", exact: true }).click();
@@ -62,7 +62,7 @@ test("two guests play custom versus basic full-length rounds and can rematch", a
   } finally { await context.close(); }
 });
 
-for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle plays full 30 second 3D rounds and returns to same room for rematch`, async ({ page }, testInfo) => {
+for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle plays single 10 second 3D rounds and returns to same room for rematch`, async ({ page }, testInfo) => {
   test.setTimeout(350_000);
   test.skip(process.env.CINEMATIC_BATTLES !== "1", "Run with CINEMATIC_BATTLES=1 for full-length playback");
   const errors: string[] = [];
@@ -75,12 +75,14 @@ for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle
   // Record transitions inside the page: software WebGL can delay test-driver
   // round trips beyond the short three-second finisher window.
   await page.addInitScript(() => {
-    const observations: { phase: string; shattered: string; elapsed: number; winnerText: string }[] = [];
+    const observations: { phase: string; shattered: string; elapsed: number; winnerText: string; skillText: string; skillVisible: boolean }[] = [];
     Object.assign(window, { cinematicObservations: observations });
     new MutationObserver(() => {
       const arena = document.querySelector('[data-testid="battle-arena-3d"]');
       if (!arena) return;
-      const entry = { phase: arena.getAttribute("data-phase") ?? "", shattered: arena.getAttribute("data-shattered") ?? "none", elapsed: Number(arena.parentElement?.getAttribute("data-elapsed-ms")), winnerText: arena.querySelector(".cinema-result strong")?.textContent ?? "" };
+      const skill = arena.querySelector(".cinema-skill strong");
+      const bounds = skill?.getBoundingClientRect();
+      const entry = { phase: arena.getAttribute("data-phase") ?? "", shattered: arena.getAttribute("data-shattered") ?? "none", elapsed: Number(arena.parentElement?.getAttribute("data-elapsed-ms")), winnerText: arena.querySelector(".cinema-result strong")?.textContent ?? "", skillText: skill?.textContent ?? "", skillVisible: Boolean(skill && bounds && bounds.width > 0 && bounds.height > 0 && getComputedStyle(skill).visibility !== "hidden") };
       const previous = observations.at(-1);
       if (!previous || previous.phase !== entry.phase || previous.shattered !== entry.shattered || previous.winnerText !== entry.winnerText) observations.push(entry);
     }).observe(document, { subtree: true, attributes: true, childList: true });
@@ -90,13 +92,13 @@ for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle
   await expect(page.getByText("已連線", { exact: true })).toBeVisible({ timeout: 90_000 });
   if (shape === "custom") await expect(page.locator(".layer-list")).toContainText("自定造型");
   await page.getByRole("button", { name: "對戰大廳", exact: true }).click();
-  await page.getByLabel("房間名稱").fill("30秒生肖驗收");
+  await page.getByLabel("房間名稱").fill("10秒單場驗收");
   await page.getByRole("button", { name: "建立房間", exact: true }).click();
   const code = await page.locator(".room-heading .eyebrow").textContent();
   await page.getByRole("button", { name: "加入電腦玩家", exact: true }).click();
   await expect(page.getByRole("heading", { name: "電腦玩家", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "上載當前設計並準備", exact: true }).click();
-  for (let round = 0; round < 8; round++) {
+  for (let round = 0; round < 1; round++) {
     // Intentionally do not tap: deadline must launch at the minimum force.
     await expect(page.getByText("你的判定：Miss", { exact: true })).toBeVisible({ timeout: 15_000 });
     const arena = page.getByTestId("battle-arena-3d");
@@ -106,9 +108,8 @@ for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle
     const initialElapsed = Number(await page.getByTestId("cinematic-battle").getAttribute("data-elapsed-ms"));
     await expect(arena).toBeInViewport({ ratio: .5 });
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("battle.png") });
-    await expect(arena).toHaveAttribute("data-phase", "summon", { timeout: 55_000 });
-    expect(Date.now()-began+initialElapsed).toBeGreaterThan(23_000);
-    await expect(page.locator(".cinema-skill strong")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { cinematicObservations: {phase:string;skillText:string;skillVisible:boolean}[] }).cinematicObservations.some(entry => entry.phase === "summon" && entry.skillVisible && entry.skillText.length > 0)), { timeout: 20_000 }).toBe(true);
+    expect(Date.now()-began+initialElapsed).toBeGreaterThan(7_500);
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("summon.png") });
     await expect.poll(() => page.evaluate(() => (window as unknown as { cinematicObservations: {phase:string}[] }).cinematicObservations.filter((entry,index,entries) => entry.phase === "strike" && entries[index-1]?.phase !== "strike").length), { timeout: 10_000 }).toBe(round + 1);
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("strike.png") });
@@ -116,10 +117,10 @@ for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle
     // screenshots are written. Real physics may also produce a draw/replay.
     await expect.poll(() => page.evaluate(() => (window as unknown as { cinematicObservations: { phase: string; winnerText: string }[] }).cinematicObservations.filter(entry => entry.phase === "result" && entry.winnerText !== "").length), { timeout: 10_000 }).toBe(round + 1);
     const completedRound = await page.evaluate(() => (window as unknown as { cinematicObservations: { phase: string; winnerText: string; shattered: string; elapsed: number }[] }).cinematicObservations.filter(entry => entry.phase === "result" && entry.winnerText !== "").at(-1)!);
-    expect(completedRound.elapsed).toBe(30000);
+    expect(completedRound.elapsed).toBe(10000);
     expect(completedRound.winnerText).toMatch(/^(平手|玩家一勝出|玩家二勝出)$/u);
     expect(completedRound.shattered).toBe(completedRound.winnerText === "平手" ? "none" : completedRound.winnerText === "玩家一勝出" ? "player2" : "player1");
-    expect(Date.now()-began+initialElapsed).toBeGreaterThan(29_000);
+    expect(Date.now()-began+initialElapsed).toBeGreaterThan(9_000);
     if (round === 0) await page.screenshot({ path: testInfo.outputPath("result.png") });
     const finished = page.getByRole("heading", { name: "對戰結果" });
     await expect.poll(async () => await finished.isVisible() || !(await arena.isVisible()), { timeout: 15_000 }).toBe(true);
@@ -128,9 +129,9 @@ for (const shape of ["basic", "custom"] as const) test(`${shape} computer battle
   await expect(page.getByRole("heading", { name: "對戰結果" })).toBeVisible();
   const observed = await page.evaluate(() => (window as unknown as { cinematicObservations: {phase:string;elapsed:number}[] }).cinematicObservations);
   for (const entry of observed) {
-    if (entry.phase === "summon") expect(entry.elapsed).toBeGreaterThanOrEqual(24000);
-    if (entry.phase === "strike") expect(entry.elapsed).toBeGreaterThanOrEqual(27000);
-    if (entry.phase === "result") expect(entry.elapsed).toBe(30000);
+    if (entry.phase === "summon") expect(entry.elapsed).toBeGreaterThanOrEqual(8000);
+    if (entry.phase === "strike") expect(entry.elapsed).toBeGreaterThanOrEqual(9000);
+    if (entry.phase === "result") expect(entry.elapsed).toBe(10000);
   }
   await page.getByRole("button", { name: "返回房間", exact: true }).click();
   await expect(page.locator(".room-heading .eyebrow")).toHaveText(code!);

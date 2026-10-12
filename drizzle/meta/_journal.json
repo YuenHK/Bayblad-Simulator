@@ -50,6 +50,13 @@
       "when": 1790467200001,
       "tag": "0006_custom_outline_installation_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791763200000,
+      "tag": "0007_single_round_matches",
+      "breakpoints": true
     }
   ]
 }

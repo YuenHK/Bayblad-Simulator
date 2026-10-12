@@ -1285,12 +1285,13 @@ export class RealtimeGateway {
       match.roundHistory.push(persistedAttempt);
       const startsAtMs = this.#now() + 1_000;
       const zodiacIndex = Math.abs(seed % 12);
+      const presentationSteps = Math.round(ROUND_DURATION_MS * 30 / 1000);
       const presentationFrames = this.#cinematicBattles
-        ? Array.from({ length: 901 }, (_, index) => presentationFrame(result, index * ROUND_DURATION_MS / 900))
+        ? Array.from({ length: presentationSteps + 1 }, (_, index) => presentationFrame(result, index * ROUND_DURATION_MS / presentationSteps))
         : result.frames;
       let previousTick = 0;
       for (const [sequence, frame] of presentationFrames.entries()) {
-        const elapsedMs = sequence * ROUND_DURATION_MS / 900;
+        const elapsedMs = sequence * ROUND_DURATION_MS / presentationSteps;
         const delayMs = this.#cinematicBattles ? (sequence === 0 ? 0 : Math.max(0, startsAtMs + elapsedMs - 150 - this.#now())) : Math.max(0, frame.tick - previousTick) * (1_000 / 60);
         previousTick = frame.tick;
         if (delayMs > 0) await this.#frameScheduler(delayMs, controller.signal);
@@ -1312,15 +1313,11 @@ export class RealtimeGateway {
       if (this.#matches.get(roomId) !== match || match.generation !== generation) return;
       const candidateWinners = [...match.roundWinners];
       if (result.outcome.winner !== "draw") candidateWinners.push(result.outcome.winner);
-      const p1Wins = candidateWinners.filter((winner) => winner === "player1").length;
-      const p2Wins = candidateWinners.length - p1Wins;
-      const completedScore = p1Wins === 2 || p2Wins === 2
-        ? this.#scoreMatch({
+      const completedScore = this.#scoreMatch({
             player1MassG: design1.massG,
             player2MassG: design2.massG,
             roundWinners: candidateWinners,
-          })
-        : null;
+          });
       const roundFinished: RoundFinishedEvent = {
         type: "round.finished", roomId, matchId: match.matchId, roundId,
         winner: result.outcome.winner, protocolVersion: PROTOCOL_VERSION,
@@ -1367,14 +1364,6 @@ export class RealtimeGateway {
         }
         return;
       }
-      if (this.#cinematicBattles) await this.#frameScheduler(2_500, controller.signal);
-      if (this.#matches.get(roomId) !== match || match.generation !== generation) return;
-      await this.#transitionRoomPhase(roomId, "launch", "next-round");
-      this.#broadcastRoom(roomId);
-      this.#broadcastLobby();
-      this.#launch.cleanupRound(roomId, roundId);
-      this.#battleEngine.cleanup(match.matchId, roundId);
-      this.#scheduleRound(roomId, match);
     } catch (error) {
       if (!match.officiallyCompleted && !(error instanceof Error && (error.name === "AbortError" || error.name === "MatchPersistenceTerminalError" || error.name === "RoundPersistenceTerminalError"))) {
         for (const player of match.players) this.#emitErrorToSession(player.sessionId, "BATTLE_FAILED");

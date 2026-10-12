@@ -654,7 +654,7 @@ export const battleFrameEventSchema = z
     tick: safeNonnegativeIntegerSchema,
     presentation: z.object({
       startsAtMs: safeNonnegativeIntegerSchema,
-      durationMs: z.union([z.literal(30000), z.literal(60000)]),
+      durationMs: z.union([z.literal(10000), z.literal(30000), z.literal(60000)]),
       elapsedMs: z.number().min(0).max(60000),
       zodiacIndex: z.number().int().min(0).max(11),
       skillName: z.string().min(1).max(40),
@@ -723,7 +723,7 @@ export const matchFinishedEventSchema = z
     matchId: correlationIdSchema,
     player1: matchScoreSchema,
     player2: matchScoreSchema,
-    roundWinners: z.array(matchRoundWinnerSchema).min(2).max(3),
+    roundWinners: z.array(matchRoundWinnerSchema).min(0).max(3),
     ...serverEnvelopeShape,
   })
   .strict()
@@ -732,7 +732,7 @@ export const matchFinishedEventSchema = z
       (winner) => winner === "player1",
     ).length;
     const player2Wins = match.roundWinners.length - player1Wins;
-    const completed = player1Wins === 2 || player2Wins === 2;
+    const completed = match.roundWinners.length <= 1 || player1Wins === 2 || player2Wins === 2;
     const endedEarly =
       match.roundWinners.length === 3 &&
       match.roundWinners[0] === match.roundWinners[1];

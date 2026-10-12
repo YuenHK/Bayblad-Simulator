@@ -1379,7 +1379,10 @@ describe("serverEventSchema", () => {
     ).toBe(false);
   });
 
-  it("accepts only complete best-of-three match results", () => {
+  it("accepts single-round decisions, draws and completed legacy best-of-three results", () => {
+    expect(serverEventSchema.safeParse({ ...matchFinished, roundWinners: ["player1"], player1: { battlePoints: 1, challengePoints: 0, total: 1 }, player2: { battlePoints: 0, challengePoints: .5, total: .5 } }).success).toBe(true);
+    expect(serverEventSchema.safeParse({ ...matchFinished, roundWinners: [], player1: { battlePoints: 0, challengePoints: 0, total: 0 }, player2: { battlePoints: 0, challengePoints: .5, total: .5 } }).success).toBe(true);
+    expect(serverEventSchema.safeParse({ ...matchFinished, roundWinners: [] }).success).toBe(false);
     const validStraightWin = {
       ...matchFinished,
       player1: { battlePoints: 2, challengePoints: 0, total: 2 },
