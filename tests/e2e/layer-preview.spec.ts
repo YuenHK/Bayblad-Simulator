@@ -20,11 +20,11 @@ for (const width of [390, 1024, 1440]) {
   });
 }
 
-test("3D starts tilted 45 degrees on X, visibly spins, pauses and retains zoom gestures", async ({ page }) => {
+test("3D starts tilted 90 degrees on X, visibly spins, pauses and retains zoom gestures", async ({ page }) => {
   await page.goto("designer");
   await page.getByRole("tab", { name: "3D 預覽", exact: true }).click();
   const preview = page.getByTestId("top-preview-3d");
-  await expect(preview).toHaveAttribute("data-preview-rotation", `${Math.PI / 4},0`);
+  await expect(preview).toHaveAttribute("data-preview-rotation", `${Math.PI / 2},0`);
   const canvas = preview.locator("canvas");
   await expect(canvas).toBeVisible();
   await page.waitForTimeout(400);
