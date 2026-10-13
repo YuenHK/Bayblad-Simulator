@@ -228,10 +228,10 @@ describe("ExplodedView", () => {
 });
 
 describe("TopPreview3D", () => {
-  it("從上方微傾開始，可暫停自轉，手勢及減少動態效果會停止自轉", () => {
+  it("預設沿 X 軸下傾 45 度，可暫停自轉，手勢及減少動態效果會停止自轉", () => {
     const { rerender } = render(<TopPreview3D design={designFixture()} detectWebGL={() => true} />);
     const controls = screen.getByTestId("top-preview-3d");
-    expect(controls).toHaveAttribute("data-preview-rotation", `${Math.PI / 9},0`);
+    expect(controls).toHaveAttribute("data-preview-rotation", `${Math.PI / 4},0`);
     const pause = screen.getByRole("button", { name: "暫停自轉" });
     fireEvent.click(pause);
     expect(screen.getByRole("button", { name: "開始自轉" })).toBeVisible();

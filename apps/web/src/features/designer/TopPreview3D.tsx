@@ -253,7 +253,7 @@ export function TopPreview3D({
   detectWebGL = canUseWebGL,
   reducedMotion = false,
 }: TopPreview3DProps) {
-  const [rotation, setRotation] = useState<PreviewRotation>({ x: Math.PI / 9, y: 0 });
+  const [rotation, setRotation] = useState<PreviewRotation>({ x: Math.PI / 4, y: 0 });
   const [autoRotate, setAutoRotate] = useState(true);
   const [interacting, setInteracting] = useState(false);
   const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
