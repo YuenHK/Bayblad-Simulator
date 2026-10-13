@@ -75,3 +75,11 @@
   .game-designer.maker-workbench .design-action-row > button { width: 100%; }
   .game-designer.maker-workbench .design-action-row .readiness-button { order: -1; margin: 0; width: 100%; }
 }
+.layer-top-views { display: grid; width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.layer-top-views figure { margin: 0; min-width: 0; display: grid; justify-items: center; gap: 6px; }
+.layer-top-views figcaption { text-align: center; }
+.game-designer.maker-workbench .layer-top-views .top-view-svg { height: clamp(140px, 24vh, 240px); max-height: 240px; }
+@media (max-width: 520px) {
+  .layer-top-views { grid-template-columns: 1fr; }
+  .game-designer.maker-workbench .layer-top-views .top-view-svg { height: 130px; }
+}

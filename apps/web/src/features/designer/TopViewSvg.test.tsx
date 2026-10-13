@@ -28,6 +28,7 @@ vi.mock("@react-three/fiber", async () => {
     </div>
   ),
   useThree: mockUseThree,
+  useFrame: vi.fn(),
   };
 });
 
@@ -227,6 +228,22 @@ describe("ExplodedView", () => {
 });
 
 describe("TopPreview3D", () => {
+  it("從上方微傾開始，可暫停自轉，手勢及減少動態效果會停止自轉", () => {
+    const { rerender } = render(<TopPreview3D design={designFixture()} detectWebGL={() => true} />);
+    const controls = screen.getByTestId("top-preview-3d");
+    expect(controls).toHaveAttribute("data-preview-rotation", `${Math.PI / 9},0`);
+    const pause = screen.getByRole("button", { name: "暫停自轉" });
+    fireEvent.click(pause);
+    expect(screen.getByRole("button", { name: "開始自轉" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "開始自轉" }));
+    fireEvent.pointerDown(controls, { pointerId: 12, clientX: 20, clientY: 20 });
+    expect(screen.getByTestId("mock-webgl-canvas")).toHaveAttribute("data-frameloop", "demand");
+    fireEvent.pointerUp(controls, { pointerId: 12 });
+    expect(screen.getByTestId("mock-webgl-canvas")).toHaveAttribute("data-frameloop", "always");
+    rerender(<TopPreview3D design={designFixture()} detectWebGL={() => true} reducedMotion />);
+    expect(screen.getByTestId("mock-webgl-canvas")).toHaveAttribute("data-frameloop", "demand");
+    expect(screen.getByRole("button", { name: "開始自轉" })).toBeDisabled();
+  });
   it("WebGL 不可用時顯示可用的分解圖及說明", () => {
     render(<TopPreview3D design={designFixture()} forceFallback />);
 
@@ -250,8 +267,8 @@ describe("TopPreview3D", () => {
     expect(detectWebGL).toHaveBeenCalledTimes(1);
   });
 
-  it("提供穩定 selector 並以 demand frameloop 及受限 DPR 運作", () => {
-    render(<TopPreview3D design={designFixture()} detectWebGL={() => true} />);
+  it("減少動態效果時以 demand frameloop 及受限 DPR 運作", () => {
+    render(<TopPreview3D design={designFixture()} detectWebGL={() => true} reducedMotion />);
     expect(screen.getByTestId("top-preview-3d")).toHaveAccessibleName(
       /3D 陀螺預覽控制/,
     );

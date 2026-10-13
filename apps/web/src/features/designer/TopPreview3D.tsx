@@ -1,4 +1,4 @@
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { MATERIALS, type Layer, type TopDesign } from "@steam-top/domain";
 import {
   useCallback,
@@ -12,6 +12,7 @@ import {
 import {
   ExtrudeGeometry,
   OrthographicCamera,
+  type Group,
 } from "three";
 
 import {
@@ -40,6 +41,7 @@ export type TopPreview3DProps = Readonly<{
   design: TopDesign;
   forceFallback?: boolean;
   detectWebGL?: () => boolean;
+  reducedMotion?: boolean;
 }>;
 
 export function layerStackZ(position: Layer["position"]): number {
@@ -116,11 +118,13 @@ function PreviewScene({
   rotation,
   zoom,
   bounds,
+  autoRotating,
 }: Readonly<{
   design: TopDesign;
   rotation: PreviewRotation;
   zoom: number;
   bounds: PreviewBounds;
+  autoRotating: boolean;
 }>) {
   return (
     <>
@@ -132,7 +136,7 @@ function PreviewScene({
       <ambientLight intensity={1.2} />
       <directionalLight position={[45, -30, 70]} intensity={2.3} />
       <directionalLight position={[-35, 25, 25]} intensity={0.8} />
-      <CenteredModel centerZMm={bounds.centerZMm} rotation={rotation}>
+      <CenteredModel centerZMm={bounds.centerZMm} rotation={rotation} autoRotating={autoRotating}>
         {design.layers.map((layer) => (
           <AcrylicLayer key={layer.id} layer={layer} design={design} />
         ))}
@@ -182,13 +186,22 @@ export function CenteredModel({
   centerZMm,
   rotation,
   children,
+  autoRotating = false,
 }: Readonly<{
   centerZMm: number;
   rotation: PreviewRotation;
   children: ReactNode;
+  autoRotating?: boolean;
 }>) {
+  const pivot = useRef<Group>(null);
+  const spin = useRef(0);
+  useFrame((_state, delta) => {
+    if (autoRotating) spin.current = (spin.current + Math.min(delta, 0.1) * Math.PI / 10) % (Math.PI * 2);
+    if (pivot.current) pivot.current.rotation.z = rotation.y + spin.current;
+  });
   return (
     <group
+      ref={pivot}
       name="preview-rotation-pivot"
       rotation={[rotation.x, 0, rotation.y]}
     >
@@ -238,8 +251,13 @@ export function TopPreview3D({
   design,
   forceFallback = false,
   detectWebGL = canUseWebGL,
+  reducedMotion = false,
 }: TopPreview3DProps) {
-  const [rotation, setRotation] = useState<PreviewRotation>({ x: 0.85, y: -0.55 });
+  const [rotation, setRotation] = useState<PreviewRotation>({ x: Math.PI / 9, y: 0 });
+  const [autoRotate, setAutoRotate] = useState(true);
+  const [interacting, setInteracting] = useState(false);
+  const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
+  const autoRotating = autoRotate && !reducedMotion && !interacting && pageVisible;
   const [zoom, setZoom] = useState(1);
   const [gestureStatus, setGestureStatus] = useState("可拖動旋轉或雙指縮放");
   const [contextLost, setContextLost] = useState(false);
@@ -255,6 +273,7 @@ export function TopPreview3D({
     if (!pointers.current.has(pointerId)) return;
     pointers.current.delete(pointerId);
     const active = selectGesturePointers(pointers.current);
+    setInteracting(active.length > 0);
     pinchDistance.current = active.length === 2
       ? pointerDistance(active[0], active[1])
       : null;
@@ -268,11 +287,18 @@ export function TopPreview3D({
   }, []);
 
   useEffect(() => {
+    const visibility = () => setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", visibility);
+    return () => document.removeEventListener("visibilitychange", visibility);
+  }, []);
+
+  useEffect(() => {
     if (!webGLAvailable) return;
     const finishFromWindow = (event: PointerEvent) => finishPointer(event.pointerId);
     const clearFromBlur = () => {
       pointers.current.clear();
       pinchDistance.current = null;
+      setInteracting(false);
       setGestureStatus("可拖動旋轉或雙指縮放");
     };
     window.addEventListener("pointerup", finishFromWindow);
@@ -293,6 +319,7 @@ export function TopPreview3D({
 
   const beginPointer = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
+    setInteracting(true);
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -358,6 +385,7 @@ export function TopPreview3D({
           const rotationStep = 0.12;
           if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
             event.preventDefault();
+            setAutoRotate(false);
             setRotation((current) => ({
               x: current.x + (event.key === "ArrowUp" ? -rotationStep : event.key === "ArrowDown" ? rotationStep : 0),
               y: current.y + (event.key === "ArrowLeft" ? -rotationStep : event.key === "ArrowRight" ? rotationStep : 0),
@@ -375,13 +403,14 @@ export function TopPreview3D({
         }}
         onWheel={(event) => {
           event.preventDefault();
+          setAutoRotate(false);
           setZoom((current) => clampPreviewZoom(current * Math.exp(-event.deltaY * 0.0015)));
           setGestureStatus("已用滾輪縮放預覽");
         }}
       >
         <Canvas
           orthographic
-          frameloop="demand"
+          frameloop={autoRotating ? "always" : "demand"}
           dpr={[1, 1.5]}
           camera={{ position: [0, 0, 150], zoom: 1, near: 0.1, far: 400 }}
           gl={{ antialias: true, alpha: true }}
@@ -392,9 +421,12 @@ export function TopPreview3D({
             rotation={rotation}
             zoom={zoom}
             bounds={bounds}
+            autoRotating={autoRotating}
           />
         </Canvas>
       </div>
+      <button type="button" disabled={reducedMotion} onClick={() => setAutoRotate(value => !value)}>{autoRotate && !reducedMotion ? "暫停自轉" : "開始自轉"}</button>
+      {reducedMotion ? <p className="gesture-hint">減少動態效果已啟用，不會自動旋轉。</p> : null}
       <p className="gesture-hint">單指拖動旋轉，雙指或滾輪縮放</p>
       <p className="sr-only" role="status" aria-live="polite">{gestureStatus}</p>
     </PreviewErrorBoundary>

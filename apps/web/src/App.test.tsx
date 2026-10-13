@@ -20,6 +20,14 @@ class AppTransport implements RealtimeTransport {
 
 describe("App upload lifecycle", () => {
   afterEach(() => vi.useRealTimers());
+  it("不再提供實驗室或操作教學，但不清除以前的本機資料", () => {
+    localStorage.setItem("steam-top:learning:notebook:v1", "keep");
+    render(<App client={new RealtimeClient({ transport: new AppTransport() })} />);
+    expect(screen.queryByRole("button", { name: "實驗室" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "開始教學" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("steam-top:learning:notebook:v1")).toBe("keep");
+    localStorage.removeItem("steam-top:learning:notebook:v1");
+  });
   it("入房自動準備一次，完成後不自動再戰，轉到觀賽再坐下才再次準備", async () => {
     const transport = new AppTransport();
     const client = new RealtimeClient({ transport });

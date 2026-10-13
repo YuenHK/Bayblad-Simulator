@@ -3,30 +3,31 @@ import type { TopDesign } from "@steam-top/domain";
 import { PREVIEW_HOLES, screwCenters } from "./previewGeometry";
 
 const MASK_EXTENT_MM = 42;
-const MASK_SIZE_MM = MASK_EXTENT_MM * 2;
 
 export function SvgCutoutMask({
   design,
   id,
+  extentMm = MASK_EXTENT_MM,
 }: Readonly<{
   design: TopDesign;
   id: string;
+  extentMm?: number;
 }>) {
   return (
     <mask
       id={id}
       data-testid="acrylic-cutout-mask"
       maskUnits="userSpaceOnUse"
-      x={-MASK_EXTENT_MM}
-      y={-MASK_EXTENT_MM}
-      width={MASK_SIZE_MM}
-      height={MASK_SIZE_MM}
+      x={-extentMm}
+      y={-extentMm}
+      width={extentMm * 2}
+      height={extentMm * 2}
     >
       <rect
-        x={-MASK_EXTENT_MM}
-        y={-MASK_EXTENT_MM}
-        width={MASK_SIZE_MM}
-        height={MASK_SIZE_MM}
+        x={-extentMm}
+        y={-extentMm}
+        width={extentMm * 2}
+        height={extentMm * 2}
         fill="white"
       />
       <circle
