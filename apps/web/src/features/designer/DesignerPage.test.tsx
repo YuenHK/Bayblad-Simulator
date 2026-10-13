@@ -94,7 +94,7 @@ describe("DesignerPage", () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
-    for (const label of ["頂層", "中層", "底層"]) expect(screen.getByRole("img", { name: `${label}俯視圖` })).toBeVisible();
+    expect(screen.getByRole("img", { name: "頂層俯視圖" })).toBeVisible();
     expect(screen.getByRole("tab", { name: "俯視圖" })).toHaveAttribute("aria-selected", "true");
 
     screen.getByRole("tab", { name: "俯視圖" }).focus();

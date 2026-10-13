@@ -331,8 +331,8 @@ export function DesignerPage({
             role="tabpanel"
             aria-labelledby={`preview-tab-${previewMode}`}
           >
-            {previewMode === "top" ? <LayerTopViews design={design} /> : null}
-            {previewMode === "exploded" ? <ExplodedView design={design} /> : null}
+            {previewMode === "top" ? <LayerTopViews design={design} selectedLayerId={selectedLayer.id} /> : null}
+            {previewMode === "exploded" ? <ExplodedView design={design} scale={3} /> : null}
             {previewMode === "3d" ? (
               <PreviewErrorBoundary design={design} resetKey={previewLoadAttempt}>
                 <Suspense fallback={<p role="status">正在載入 3D 預覽……</p>}>

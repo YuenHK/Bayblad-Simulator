@@ -9,8 +9,9 @@
 .game-designer.maker-workbench .metrics div { display: grid; align-content: start; justify-content: start; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 .game-designer.maker-workbench .validation { padding: 0; margin-top: 8px; }
 .game-designer.maker-workbench .design-export-controls { margin-top: 12px; border-top: 1px solid var(--game-line, #ccd5e3); padding-top: 12px; }
-.game-designer.maker-workbench .design-action-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.game-designer.maker-workbench .design-action-row .readiness-button { order: 3; margin: 0 0 0 auto; width: auto; }
+.game-designer.maker-workbench .design-action-row { display: flex; flex-wrap: wrap; align-items: stretch; justify-content: flex-start; gap: 10px; }
+.game-designer.maker-workbench .design-action-row > button { min-height: 44px; margin: 0; display: inline-flex; align-items: center; justify-content: center; }
+.game-designer.maker-workbench .design-action-row .readiness-button { order: 0; margin: 0; width: auto; }
 .game-designer.maker-workbench .preview-heading-row { flex-direction: column; align-items: stretch; gap: 10px; }
 .game-designer.maker-workbench .preview-stage { flex: 1; min-height: 330px; }
 .game-designer.maker-workbench .preview-3d-controls, .game-designer.maker-workbench .exploded-view-svg { height: clamp(330px, 45vh, 460px); }
@@ -78,6 +79,8 @@
 .layer-top-views { display: grid; width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .layer-top-views figure { margin: 0; min-width: 0; display: grid; justify-items: center; gap: 6px; }
 .layer-top-views figcaption { text-align: center; }
+.layer-top-views.selected-layer-view { grid-template-columns: 1fr; }
+.game-designer.maker-workbench .layer-top-views.selected-layer-view .top-view-svg { height: clamp(280px, 36vh, 360px); max-height: 360px; }
 .game-designer.maker-workbench .layer-top-views .top-view-svg { height: clamp(140px, 24vh, 240px); max-height: 240px; }
 @media (max-width: 520px) {
   .layer-top-views { grid-template-columns: 1fr; }
