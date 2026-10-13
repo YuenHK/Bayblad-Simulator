@@ -23,11 +23,11 @@ for (const width of [390, 1024, 1440]) {
   });
 }
 
-test("3D starts at 180 degrees on X, visibly spins, pauses and retains zoom gestures", async ({ page }) => {
+test("3D starts in the reference elevated angle, visibly spins, pauses and retains zoom gestures", async ({ page }) => {
   await page.goto("designer");
   await page.getByRole("tab", { name: "3D 預覽", exact: true }).click();
   const preview = page.getByTestId("top-preview-3d");
-  await expect(preview).toHaveAttribute("data-preview-rotation", `${Math.PI},0`);
+  await expect(preview).toHaveAttribute("data-preview-rotation", `${-Math.PI * 3 / 8},0`);
   const canvas = preview.locator("canvas");
   await expect(canvas).toBeVisible();
   await page.waitForTimeout(400);
@@ -68,4 +68,22 @@ test("desktop actions stay together at equal height and enlarged boards fit", as
     });
   });
   expect(fits).toBe(true);
+});
+
+test("reference design shows the top face and all three board thicknesses", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("designer");
+  for (const [label, shape, diameter, color] of [["頂層", "polygon", "55", "#60a5fa"], ["中層", "star", "48", "#bfdbfe"], ["底層", "circle", "40", "#2563eb"]]) {
+    await page.getByRole("button", { name: `編輯${label}`, exact: true }).click();
+    await page.getByRole("combobox", { name: "形狀", exact: true }).selectOption(shape!);
+    await page.getByRole("spinbutton", { name: "直徑（mm）", exact: true }).fill(diameter!);
+    await page.getByRole("textbox", { name: "顏色", exact: true }).fill(color!);
+  }
+  await page.getByRole("button", { name: "編輯頂層", exact: true }).click();
+  await page.getByRole("tab", { name: "3D 預覽", exact: true }).click();
+  await expect(page.getByTestId("top-preview-3d")).toHaveAttribute("data-preview-rotation", `${-Math.PI * 3 / 8},0`);
+  await expect(page.getByTestId("top-preview-3d").locator("canvas")).toBeVisible();
+  await page.getByRole("button", { name: "暫停自轉", exact: true }).click();
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.screenshot({ path: testInfo.outputPath("reference-angle.png"), fullPage: true, animations: "disabled" });
 });
