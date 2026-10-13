@@ -20,7 +20,7 @@ import { ExplodedView } from "./ExplodedView";
 import { LayerControls } from "./LayerControls";
 import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
 import { TopViewSvg } from "./TopViewSvg";
-import { useDesigner } from "./useDesigner";
+import { useDesigner, type DesignerOptions } from "./useDesigner";
 
 const POSITION_LABELS = {
   top: "頂層",
@@ -63,7 +63,9 @@ type Preview3DModule = Readonly<{
   default: ComponentType<Readonly<{ design: TopDesign }>>;
 }>;
 
-export type DesignerPageProps = Readonly<{
+export type DesignerPageProps = DesignerOptions & Readonly<{
+  practiceMode?: boolean;
+  onReadinessChange?: (valid: boolean) => void;
   load3DPreview?: () => Promise<Preview3DModule>;
   onUseDesign?: (design: TopDesign) => void | Promise<void>;
 }>;
@@ -80,8 +82,13 @@ function format(value: number, digits = 1): string {
 export function DesignerPage({
   load3DPreview = loadDefault3DPreview,
   onUseDesign,
+  initialDesign,
+  persistDraft,
+  onDesignChange,
+  practiceMode = false,
+  onReadinessChange,
 }: DesignerPageProps = {}) {
-  const { design, validation, prediction, dispatch } = useDesigner();
+  const { design, validation, prediction, dispatch } = useDesigner({ ...(initialDesign ? { initialDesign } : {}), ...(persistDraft !== undefined ? { persistDraft } : {}), ...(onDesignChange ? { onDesignChange } : {}) });
   const [selectedLayerId, setSelectedLayerId] = useState(
     () => design.layers[0].id,
   );
@@ -267,9 +274,13 @@ export function DesignerPage({
     });
   };
   const readinessValid = validation.valid && invalidFieldKeys.size === 0;
+  const readinessCallback = useRef(onReadinessChange);
+  readinessCallback.current = onReadinessChange;
+  useEffect(() => readinessCallback.current?.(readinessValid), [readinessValid]);
+  const WorkspaceContainer = practiceMode ? "section" : "main";
 
   return (
-    <main className="designer-shell game-designer maker-workbench" data-workspace={workspaceTab}>
+    <WorkspaceContainer className="designer-shell game-designer maker-workbench" data-workspace={workspaceTab}>
       <header className="page-heading">
         <p className="eyebrow">STEAM 陀螺</p>
         <h1>陀螺設計器</h1>
@@ -390,7 +401,7 @@ export function DesignerPage({
               </ul>
             ) : null}
           </div>
-          <DesignExportControls design={design} invalidFields={invalidFieldKeys.size > 0}>
+          {practiceMode ? <p className="field-note">練習副本：不會更改設計室草稿或正式分數。</p> : <DesignExportControls design={design} invalidFields={invalidFieldKeys.size > 0}>
           <button
             className="readiness-button"
             type="button"
@@ -407,9 +418,9 @@ export function DesignerPage({
           >
             {readinessValid && onUseDesign ? "用此設計參戰" : readinessValid ? "規格通過，可參戰" : "規格未通過，請先修正"}
           </button>
-          </DesignExportControls>
+          </DesignExportControls>}
         </aside>
       </div>
-    </main>
+    </WorkspaceContainer>
   );
 }

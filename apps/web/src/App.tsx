@@ -1,8 +1,9 @@
 import { ProjectResources } from "./features/project/ProjectResources";
 import type { TopDesign } from "@steam-top/domain";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { DesignerPage } from "./features/designer/DesignerPage";
-import { loadDesignerDraft } from "./features/designer/designerDraft";
+import { loadDesignerDraft, saveDesignerDraft } from "./features/designer/designerDraft";
+import { TUTORIAL_KEY } from "./features/learning/notebook";
 import { LobbyPage } from "./features/lobby/LobbyPage";
 import { RoomPage } from "./features/room/RoomPage";
 import { GameAudio } from "./features/game/GameAudio";
@@ -12,13 +13,16 @@ import { createRealtimeClient, type RealtimeClient } from "./realtime/socket-cli
 import { createSafeStorage, type SafeStorage } from "./realtime/safe-storage";
 
 const DESIGN_ID_KEY = "steam-top.design-id";
+const LearningPage = lazy(() => import("./features/learning/LearningPage").then(module => ({ default: module.LearningPage })));
 const browserStorage = (): Storage | null => { try { return window.localStorage; } catch { return null; } };
 
 export function App({ client: suppliedClient, storage: suppliedStorage }: Readonly<{ client?: RealtimeClient; storage?: SafeStorage }>) {
   const storage = useMemo(() => suppliedStorage ?? createSafeStorage(browserStorage()), [suppliedStorage]);
   const client = useMemo(() => suppliedClient ?? createRealtimeClient(), [suppliedClient]);
   const state = useSyncExternalStore(client.subscribe, client.getState, client.getState);
-  const [page, setPage] = useState<"designer" | "lobby" | "room">("designer");
+  const [page, setPage] = useState<"designer" | "lobby" | "room" | "learning">("designer");
+  const [showTutorialWelcome, setShowTutorialWelcome] = useState(() => !storage.get(TUTORIAL_KEY));
+  const [startTutorial, setStartTutorial] = useState(false);
   const [design, setDesign] = useState<TopDesign>(() => loadDesignerDraft());
   const [designId, setDesignId] = useState<string | null>(() => storage.get(DESIGN_ID_KEY));
   const [actionError, setActionError] = useState<string | null>(null);
@@ -29,7 +33,7 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
   const reducedMotion = systemReducedMotion || !gamePreferences.motionEnabled;
   const actionController = useRef<AbortController | null>(null);
   const autoReadySeat = useRef<string | null>(null);
-  const pendingNavigation = useRef<"designer" | "lobby" | null>(null);
+  const pendingNavigation = useRef<"designer" | "lobby" | "learning" | null>(null);
   useEffect(() => { if (state.lastError) pendingNavigation.current = null; }, [state.lastError]);
 
   useEffect(() => { client.start(); return () => { actionController.current?.abort(); client.stop(); void gameAudio.dispose(); }; }, [client, gameAudio]);
@@ -74,7 +78,7 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
   };
 
   const send = (command: Parameters<RealtimeClient["command"]>[0]) => { setActionError(null); try { client.command(command); } catch (error) { setActionError(error instanceof Error ? error.message : "操作失敗。"); } };
-  const navigate = (next: "designer" | "lobby") => {
+  const navigate = (next: "designer" | "lobby" | "learning") => {
     if (!state.room) { setPage(next); return; }
     pendingNavigation.current = next; setActionError(null);
     try { client.command({ type: "room.leave", roomId: state.room.roomId }); }
@@ -102,14 +106,16 @@ export function App({ client: suppliedClient, storage: suppliedStorage }: Readon
   const phase = state.matchFinished || state.cancelledReason ? "result" : state.room?.phase ?? "waiting";
   const battleFocus = page === "room" && phase === "launch" && state.room?.viewer.role !== "spectator";
   return <div className={`app-root student-game quality-${gamePreferences.quality}${reducedMotion ? " reduced-game-motion" : ""}${battleFocus ? " battle-focus-mode" : ""}`} onPointerDownCapture={() => { if (gamePreferences.soundEnabled) void gameAudio.unlock().catch(() => undefined); }}>
-    <nav className="app-nav game-hud" aria-label="主要導航"><div className="app-brand"><img className="brand-icon" src={`${import.meta.env.BASE_URL}icons/favicon.svg`} alt="" width={28} height={28} /><span className="brand-title">STEAM 陀螺</span><small>YUENHK</small></div><div className="nav-actions"><button aria-current={page === "designer" ? "page" : undefined} disabled={navigationDisabled} onClick={() => navigate("designer")}>設計室</button><button aria-current={page === "lobby" ? "page" : undefined} disabled={navigationDisabled} onClick={() => navigate("lobby")}>對戰大廳</button></div>{state.identity ? <span className="player-identity" aria-label={`身份來源：${state.identity.status}`}>{state.identity.displayName}</span> : null}<span className={`connection-status status-${state.status}`} aria-live="polite">{state.identityStatus === "waking" ? "等候伺服器回應……" : state.identityStatus === "loading" ? "連接伺服器中……" : connectionLabel}</span><GameHudControls preferences={gamePreferences} onChange={setGamePreferences} /></nav>
+    <nav className="app-nav game-hud" aria-label="主要導航"><div className="app-brand"><img className="brand-icon" src={`${import.meta.env.BASE_URL}icons/favicon.svg`} alt="" width={28} height={28} /><span className="brand-title">STEAM 陀螺</span><small>YUENHK</small></div><div className="nav-actions"><button aria-current={page === "designer" ? "page" : undefined} disabled={navigationDisabled} onClick={() => navigate("designer")}>設計室</button><button aria-current={page === "lobby" ? "page" : undefined} disabled={navigationDisabled} onClick={() => navigate("lobby")}>對戰大廳</button><button aria-current={page === "learning" ? "page" : undefined} disabled={navigationDisabled} onClick={() => { setStartTutorial(false); navigate("learning"); }}>實驗室</button></div>{state.identity ? <span className="player-identity" aria-label={`身份來源：${state.identity.status}`}>{state.identity.displayName}</span> : null}<span className={`connection-status status-${state.status}`} aria-live="polite">{state.identityStatus === "waking" ? "等候伺服器回應……" : state.identityStatus === "loading" ? "連接伺服器中……" : connectionLabel}</span><GameHudControls preferences={gamePreferences} onChange={setGamePreferences} /></nav>
     {state.sessionStatus === "resumed" ? <p className="system-banner" role="status">已恢復上次的房間位置。</p> : null}
     {state.sessionStatus === "replaced" ? <p className="system-banner warning" role="status">舊連線已過期，已為你建立新訪客連線。</p> : null}
     {state.platformPaused ? <p className="system-banner warning" role="status">平台現正暫停：不可建立或加入房間，也不可開始新對戰；已開始的對戰可繼續完成。</p> : null}
     {(actionError || state.lastError) ? <div className="system-banner error" role="alert"><span>{actionError ?? state.lastError}</span>{state.identityStatus === "unavailable" ? <button type="button" onClick={() => client.retryIdentity()}>重試連線</button> : null}<button type="button" onClick={() => { setActionError(null); client.dismissError(); }} aria-label="關閉錯誤訊息">關閉</button></div> : null}
     {state.identityStatus === "waking" ? <p className="system-banner" role="status">伺服器可能正在喚醒，首次連線可能需約一分鐘。正在自動重試，請稍候；你仍可繼續設計陀螺。</p> : null}
     {busy ? <p className="system-banner" role="status">正在處理……</p> : null}
+    {page === "designer" && showTutorialWelcome && !state.room ? <section className="system-banner" aria-label="首次操作教學"><p>第一次使用？用獨立副本試一次設計、比較、測試與節拍對戰，不影響你的設計或正式分數。</p><button onClick={() => { setShowTutorialWelcome(false); setStartTutorial(true); navigate("learning"); }}>開始教學</button><button onClick={() => { storage.set(TUTORIAL_KEY, "skipped"); setShowTutorialWelcome(false); }}>稍後再試</button></section> : null}
     {page === "designer" ? <DesignerPage onUseDesign={useFromDesigner} /> : null}
+    {page === "learning" ? <Suspense fallback={<p role="status">正在載入實驗室……</p>}><LearningPage initialDesign={loadDesignerDraft()} startTutorial={startTutorial} reducedMotion={reducedMotion} gameAudio={gameAudio} onAdopt={next => { saveDesignerDraft(next); setDesign(next); setDesignId(null); storage.remove(DESIGN_ID_KEY); setPage("designer"); }} /></Suspense> : null}
     {page === "lobby" ? <LobbyPage rooms={state.lobbyRooms} disabled={state.platformPaused || busy || state.pendingActions > 0 || state.status !== "online"} onCommand={send} /> : null}
     {page === "room" && state.room ? <RoomPage snapshot={state.room} design={design} designId={designId} departurePending={state.departurePending} actionsDisabled={busy || state.pendingActions > 0 || state.status !== "online"} onUseDesign={ready} onCommand={send} onLeave={() => send({ type: "room.leave", roomId: state.room!.roomId })} gameAudio={gameAudio} gameQuality={gamePreferences.quality} reducedMotion={reducedMotion} battle={{
       phase, clockReady: state.clockReady && state.status === "online", clockSamples: state.clockSamples, clockQuality: state.clockQuality, schedule: state.schedule ? { ...state.schedule, serverTargetTimeMs: client.serverToClientTime(state.schedule.serverTargetTimeMs), serverDeadlineTimeMs: client.serverToClientTime(state.schedule.serverDeadlineTimeMs) } : undefined, privateGrade: state.privateGrade ?? undefined,

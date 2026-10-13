@@ -7,7 +7,7 @@ import {
   type PerformancePrediction,
   type TopDesign,
 } from "@steam-top/domain";
-import { useEffect, useMemo, useReducer } from "react";
+import { useEffect, useMemo, useReducer, useRef } from "react";
 
 import { loadDesignerDraft, saveDesignerDraft } from "./designerDraft";
 
@@ -181,15 +181,19 @@ export function designerReducer(
   }
 }
 
-export function useDesigner(): DesignerState & {
+export type DesignerOptions = Readonly<{ initialDesign?: TopDesign; persistDraft?: boolean; onDesignChange?: (design: TopDesign) => void }>;
+
+export function useDesigner({ initialDesign, persistDraft = true, onDesignChange }: DesignerOptions = {}): DesignerState & {
   dispatch: React.Dispatch<DesignerAction>;
 } {
   const [design, dispatch] = useReducer(
     designerReducer,
-    undefined,
-    loadDesignerDraft,
+    initialDesign,
+    (initial) => initial ?? loadDesignerDraft(),
   );
-  useEffect(() => saveDesignerDraft(design), [design]);
+  const callback = useRef(onDesignChange);
+  callback.current = onDesignChange;
+  useEffect(() => { if (persistDraft) saveDesignerDraft(design); callback.current?.(design); }, [design, persistDraft]);
   const validation = useMemo(() => validateDesign(design), [design]);
   const prediction = useMemo(() => predictDesignPerformance(design), [design]);
 
