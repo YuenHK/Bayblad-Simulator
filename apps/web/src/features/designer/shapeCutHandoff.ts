@@ -1,3 +1,5 @@
+import { stlExportFailure } from './stlExportRecovery';
+
 /** Browser-only, one-shot handoff. Both GitHub Pages apps share an origin. */
 export function startShapeCutHandoff(generate: () => Promise<ArrayBuffer>) {
   const token = crypto.randomUUID();
@@ -52,7 +54,7 @@ export function startShapeCutHandoff(generate: () => Promise<ArrayBuffer>) {
       if (result.byteLength < 84 || result.byteLength > 20 * 1024 * 1024) throw new Error('STL 大小超出傳送限制。');
       bytes = result;
       send();
-    }).catch(() => finish(new Error('未能產生 STL，請檢查網絡後重試。')));
+    }).catch(error => finish(stlExportFailure(error)));
   });
   return { done, cancel: () => cancel() };
 }

@@ -45,3 +45,11 @@ it('offers a download fallback when the transfer popup is blocked', async () => 
   expect(await screen.findByRole('alert')).toHaveTextContent('新分頁');
   expect(screen.getByRole('button', { name: '下載 STL（供 3D打印)' })).toBeEnabled();
 });
+
+it('identifies an outdated export module and offers a design-preserving update', async () => {
+  vi.mocked(exportBoardsStl).mockRejectedValueOnce(new TypeError('Failed to fetch dynamically imported module: https://example.test/old.js'));
+  render(<DesignExportControls design={makeDefaultDesign()} invalidFields={false} />);
+  await userEvent.setup().click(screen.getByRole('button', { name: '下載 STL（供 3D打印)' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('網站可能已更新');
+  expect(screen.getByRole('button', { name: '保留設計並更新頁面' })).toBeEnabled();
+});

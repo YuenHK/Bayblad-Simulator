@@ -77,3 +77,9 @@ it('detects a closed receiver', async () => {
   await vi.advanceTimersByTimeAsync(500);
   await failed;
 });
+
+it('preserves the outdated-module recovery signal when STL generation fails', async () => {
+  vi.spyOn(window, 'open').mockReturnValue({ postMessage: vi.fn(), closed: false } as unknown as Window);
+  const transfer = startShapeCutHandoff(async () => { throw new TypeError('Failed to fetch dynamically imported module'); });
+  await expect(transfer.done).rejects.toMatchObject({ needsReload: true });
+});

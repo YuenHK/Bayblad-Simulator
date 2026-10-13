@@ -1,11 +1,13 @@
 import type { TopDesign } from '@steam-top/domain';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { startShapeCutHandoff } from './shapeCutHandoff';
+import { StlExportFailure, stlExportFailure, updatePageForStl } from './stlExportRecovery';
 
 export function DesignExportControls({ design, invalidFields, children }: Readonly<{ design: TopDesign; invalidFields: boolean; children?: ReactNode }>) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
+  const [needsReload, setNeedsReload] = useState(false);
   const exporting = useRef(false);
   const cancelTransfer = useRef<(() => void) | undefined>(undefined);
   useEffect(() => () => cancelTransfer.current?.(), []);
@@ -14,6 +16,7 @@ export function DesignExportControls({ design, invalidFields, children }: Readon
     exporting.current = true;
     setBusy(true);
     setError('');
+    setNeedsReload(false);
     setStatus('正在傳送三層板材，請在新分頁繼續。');
     try {
       const snapshot = structuredClone(design);
@@ -27,6 +30,7 @@ export function DesignExportControls({ design, invalidFields, children }: Readon
     } catch (cause) {
       setStatus('');
       setError(cause instanceof Error ? cause.message : '傳送失敗，請使用「下載 STL」。');
+      setNeedsReload(cause instanceof StlExportFailure && cause.needsReload);
     } finally {
       cancelTransfer.current = undefined;
       exporting.current = false;
@@ -38,6 +42,7 @@ export function DesignExportControls({ design, invalidFields, children }: Readon
     exporting.current = true;
     setBusy(true);
     setError('');
+    setNeedsReload(false);
     setStatus('正在準備三層板材檔案，請稍候。');
     try {
       // Capture the design at click time; do not mix later edits into this export.
@@ -54,8 +59,10 @@ export function DesignExportControls({ design, invalidFields, children }: Readon
         // Safari needs time to consume the Blob after the click.
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       }
-    } catch {
-      setError('未能產生 STL，請檢查網絡後再按下載重試。');
+    } catch (reason) {
+      const failure = stlExportFailure(reason);
+      setError(failure.message);
+      setNeedsReload(failure.needsReload);
     } finally {
       exporting.current = false;
       setBusy(false);
@@ -75,5 +82,8 @@ export function DesignExportControls({ design, invalidFields, children }: Readon
     {invalidFields ? <p className="issue-message">請先修正數值欄位，再下載 STL。</p> : null}
     {status ? <p role="status">{status}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
+    {needsReload ? <button type="button" disabled={invalidFields || busy} onClick={() => {
+      if (!updatePageForStl(design)) setError('瀏覽器未能儲存目前設計，因此沒有更新頁面。請先保留設計參數或截圖。');
+    }}>保留設計並更新頁面</button> : null}
   </div>;
 }

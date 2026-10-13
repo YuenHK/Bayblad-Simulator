@@ -28,7 +28,6 @@ for (const [width, custom] of [[1280, false], [390, false], [1280, true]] as con
     expect(stlPath).not.toBeNull();
     expect((await stat(stlPath!)).size).toBeGreaterThan(84);
   }
-  if (width < 1000) await page.getByRole('tab', { name: '預測結果', exact: true }).click();
   const buttons = page.locator('.design-action-row > button');
   const bounds = await buttons.evaluateAll(nodes => nodes.map(n => ({ height: n.getBoundingClientRect().height, x: n.getBoundingClientRect().x })));
   expect(bounds).toHaveLength(3);
@@ -40,7 +39,7 @@ for (const [width, custom] of [[1280, false], [390, false], [1280, true]] as con
   await page.getByRole('button', { name: '傳送至 ShapeCut（供 雷射切割)', exact: true }).click();
   const receiver = await popupPromise;
   await expect(receiver.getByRole('button', { name: '開始製作', exact: true })).toBeVisible({ timeout: 60_000 });
-  await expect(receiver.getByText('bayblad-3layers-6mm-mm.stl', { exact: true }).first()).toBeVisible();
+  await expect(receiver.getByText(/^模型：\s*bayblad-3layers-6mm-mm\.stl$/u).first()).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: 'ShapeCut 已接收板材' })).toBeVisible();
   await receiver.screenshot({ path: testInfo.outputPath('shapecut-material.png'), fullPage: true });
   // No automatic conversion or download: the user retains control over fabrication.
@@ -56,5 +55,22 @@ for (const [width, custom] of [[1280, false], [390, false], [1280, true]] as con
     await expect(receiver.getByRole('combobox', { name: '選擇預覽切片' }).locator('option')).toHaveCount(3);
     await receiver.screenshot({ path: testInfo.outputPath('custom-shapecut-result.png'), fullPage: true });
   }
+  await receiver.close();
+});
+
+test('expired export chunk recovers without losing the design and then really transfers', async ({ page }) => {
+  await page.goto('.');
+  await page.getByRole('spinbutton', { name: '直徑（mm）', exact: true }).fill('47');
+  await page.route('**/assets/loadBoardsStl-*.js', route => route.fulfill({ status: 404, body: 'not found', contentType: 'text/plain' }), { times: 1 });
+  await page.getByRole('button', { name: '下載 STL（供 3D打印)', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('網站可能已更新');
+  await page.getByRole('button', { name: '保留設計並更新頁面', exact: true }).click();
+  await expect(page).toHaveURL(/updated=/);
+  await expect(page.getByRole('spinbutton', { name: '直徑（mm）', exact: true })).toHaveValue('47');
+  const popup = page.waitForEvent('popup');
+  await page.getByRole('button', { name: '傳送至 ShapeCut（供 雷射切割)', exact: true }).click();
+  const receiver = await popup;
+  await expect(receiver.getByRole('button', { name: '開始製作', exact: true })).toBeEnabled({ timeout: 60_000 });
+  await expect(page.getByRole('status').filter({ hasText: 'ShapeCut 已接收板材' })).toBeVisible();
   await receiver.close();
 });
