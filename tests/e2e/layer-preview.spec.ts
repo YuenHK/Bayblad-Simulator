@@ -67,6 +67,10 @@ test("desktop actions stay together at equal height and enlarged boards fit", as
   for (const rect of rects) expect(rect).not.toBeNull();
   expect(new Set(rects.map(r => r!.y)).size).toBe(1);
   expect(new Set(rects.map(r => r!.height)).size).toBe(1);
+  for (const rect of rects) expect(rect!.width).toBeCloseTo(rects[0]!.width, 0);
+  const row = await page.locator('.design-action-row').boundingBox();
+  expect(rects[0]!.x).toBeCloseTo(row!.x, 0);
+  expect(rects[2]!.x + rects[2]!.width).toBeCloseTo(row!.x + row!.width, 0);
   for (let i = 1; i < rects.length; i++) expect(rects[i]!.x - rects[i - 1]!.x - rects[i - 1]!.width).toBeCloseTo(10, 0);
   await page.getByRole("tab", { name: "分解圖", exact: true }).click();
   const graphic = page.getByRole("img", { name: "陀螺分解圖", exact: true });
