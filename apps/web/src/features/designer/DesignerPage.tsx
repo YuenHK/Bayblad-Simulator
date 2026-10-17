@@ -90,7 +90,7 @@ export function DesignerPage({
   const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null);
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
-  const [previewMode, setPreviewMode] = useState<PreviewMode>("top");
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("3d");
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("shape");
   const [tool, setTool] = useState<ToolTab>("shape");
   const [layerModes, setLayerModes] = useState<Record<string, "basic" | "custom">>({});

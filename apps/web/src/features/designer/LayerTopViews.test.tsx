@@ -6,6 +6,7 @@ import { DesignerPage } from "./DesignerPage";
 it("shows only the selected board at a common scale", async () => {
   render(<DesignerPage />);
   const user = userEvent.setup();
+  await user.click(screen.getByRole("tab", { name: "俯視圖" }));
   const boxes: (string | null)[] = [];
   for (const [index, label] of ["頂層", "中層", "底層"].entries()) {
     await user.click(screen.getByRole("button", { name: `編輯${label}` }));

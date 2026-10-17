@@ -7,6 +7,7 @@ for (const width of [390, 1024, 1440]) {
     await expect(page.getByRole("button", { name: "實驗室", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "開始教學", exact: true })).toHaveCount(0);
     if (width < 900) await page.getByRole("tab", { name: "預覽", exact: true }).click();
+    await page.getByRole("tab", { name: "俯視圖", exact: true }).click();
     const boxes: string[] = [];
     for (const label of ["頂層", "中層", "底層"]) {
       await page.getByRole("button", { name: `編輯${label}`, exact: true }).click();
@@ -25,7 +26,7 @@ for (const width of [390, 1024, 1440]) {
 
 test("3D starts in the reference elevated angle, visibly spins, pauses and retains zoom gestures", async ({ page }) => {
   await page.goto("designer");
-  await page.getByRole("tab", { name: "3D 預覽", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "3D 預覽", exact: true })).toHaveAttribute("aria-selected", "true");
   const preview = page.getByTestId("top-preview-3d");
   await expect(preview).toHaveAttribute("data-preview-rotation", `${-Math.PI * 3 / 8},0`);
   const canvas = preview.locator("canvas");
@@ -45,6 +46,16 @@ test("3D starts in the reference elevated angle, visibly spins, pauses and retai
   await expect(preview).not.toHaveAttribute("data-preview-rotation", rotation!);
   await preview.press("+");
   await expect(preview).not.toHaveAttribute("data-preview-zoom", "1");
+});
+
+test("reload opens 3D again even after switching to top view", async ({ page }) => {
+  await page.goto("designer");
+  await expect(page.getByRole("tab", { name: "3D 預覽", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "俯視圖", exact: true }).click();
+  await expect(page.getByRole("img", { name: "頂層俯視圖" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "3D 預覽", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("top-preview-3d").locator("canvas")).toBeVisible();
 });
 
 test("desktop actions stay together at equal height and enlarged boards fit", async ({ page }) => {

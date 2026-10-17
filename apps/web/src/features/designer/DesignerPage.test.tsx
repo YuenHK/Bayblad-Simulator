@@ -90,12 +90,16 @@ describe("DesignerPage", () => {
     consoleError.mockRestore();
   });
 
-  it("初始顯示俯視圖，可用鍵盤切換分解圖和 3D 預覽", async () => {
+  it("初始選中 3D 預覽，仍可用鍵盤切換俯視圖和分解圖", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
 
+    expect(screen.getByRole("tab", { name: "3D 預覽" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("裝置未能啟用 3D，已顯示分解圖")).toBeVisible();
+
+    screen.getByRole("tab", { name: "3D 預覽" }).focus();
+    await user.keyboard("{Home}");
     expect(screen.getByRole("img", { name: "頂層俯視圖" })).toBeVisible();
-    expect(screen.getByRole("tab", { name: "俯視圖" })).toHaveAttribute("aria-selected", "true");
 
     screen.getByRole("tab", { name: "俯視圖" }).focus();
     await user.keyboard("{ArrowRight}");
@@ -108,6 +112,7 @@ describe("DesignerPage", () => {
   it("設計輸入會即時更新俯視圖", async () => {
     const user = userEvent.setup();
     render(<DesignerPage />);
+    await user.click(screen.getByRole("tab", { name: "俯視圖" }));
     const topPath = screen.getAllByTestId("layer-path").find(
       (path) => path.getAttribute("data-position") === "top",
     )!;

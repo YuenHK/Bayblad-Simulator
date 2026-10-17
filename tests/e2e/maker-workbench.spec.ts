@@ -19,6 +19,7 @@ for (const [width, height] of [[1440,900], [1280,720], [1024,768], [768,1024], [
     await page.getByRole("tab", { name: width! < 900 ? "造型" : "層板造型", exact: true }).click();
     if (width! < 900) {
       await page.getByRole("tab", { name: "預覽", exact: true }).click();
+      await page.getByRole("tab", { name: "俯視圖", exact: true }).click();
       await expect(page.getByRole("img", { name: "中層俯視圖" })).toBeVisible();
       await expect(page.getByRole("spinbutton", { name: "直徑（mm）", exact: true })).toHaveCount(0);
     }
